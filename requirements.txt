@@ -15,3 +15,5 @@ matplotlib>=3.5.0
 
 # --- Sistem Araçları ---
 screeninfo  # Ekran çözünürlüğü tespiti için (Ursina kullanabilir)
+flake8
+pytest
