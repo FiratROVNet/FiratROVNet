@@ -1,0 +1,17 @@
+# --- Derin Öğrenme ve Yapay Zeka ---
+torch>=2.0.0
+torch-geometric>=2.3.0
+
+# --- 3D Simülasyon ve Oyun Motoru ---
+ursina>=5.0.0
+panda3d  # Ursina'nın altyapısı (Otomatik gelir ama garanti olsun)
+
+# --- Matematik ve Veri İşleme ---
+numpy>=1.21.0
+networkx>=3.0  # Graf ve yol hesaplama (Zincirleme etki için)
+
+# --- Görselleştirme ve Grafikler ---
+matplotlib>=3.5.0
+
+# --- Sistem Araçları ---
+screeninfo  # Ekran çözünürlüğü tespiti için (Ursina kullanabilir)
