@@ -32,7 +32,8 @@ jobs:
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
       # 4. Testleri Çalıştır
-      - name: Test with pytest
+      - name: Run Tests
         run: |
-          conda install pytest
-          pytest # Şimdi test_main.py dosyanı bulup test edecek
+          export DISPLAY=:0
+          export LIBGL_ALWAYS_SOFTWARE=1
+          python run_tests.py
