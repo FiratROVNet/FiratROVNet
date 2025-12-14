@@ -4,7 +4,7 @@ import random
 import threading
 import code
 import sys
-import torch # <--- YENİ EKLENDİ (Tensörler için)
+    
 from .config import cfg # <-- BU SATIRI EKLE
 
   
@@ -129,14 +129,15 @@ class Ortam:
         window.center_on_screen()
         application.run_in_background = True
         window.color = color.rgb(10, 30, 50)  # Arka plan
-
-        # Kamera pozisyonu ve hedefi
-        self.saved_camera_pos = camera.position
-        self.saved_camera_target = camera.position + camera.forward
-
-        # EditorCamera
+        
+        # Sağ tıklama menüsünü kapat (mouse.right event'lerini yakalamak için)
+        try:
+            window.context_menu = False
+        except:
+            pass
+        EditorCamera()
         self.editor_camera = EditorCamera()
-        self.editor_camera.enabled = True  # Başlangıçta kapalı
+        self.editor_camera.enabled = False  # Başlangıçta kapalı
 
         # --- Sahne Nesneleri ---
         self.surface = Entity(
@@ -174,35 +175,8 @@ class Ortam:
         self.rovs = []
         self.engeller = []
 
-        # Kullanıcı update fonksiyonu
-        self.user_update_logic = None
-
         # Konsol verileri
         self.konsol_verileri = {}
-
-    # --- EditorCamera Toggle ve Açı + Zoom Sabitleme ---
-    def toggle_editor_camera(self):
-        ec = self.editor_camera
-        self.saved_camera_pos=camera.position
-        if not ec.enabled:
-            # EditorCamera aç
-            ec.enabled = True
-            mouse.locked = True
-            mouse.visible = False
-            print("🎥 EditorCamera AÇIK")
-        else:
-            # EditorCamera kapat ve pozisyon + hedefi kaydet
-            self.saved_camera_pos = self.saved_camera_pos
-            self.saved_camera_target = ec.position + ec.forward  # Zoom + Açıyı kaydet
-
-            ec.enabled = False
-            mouse.locked = False
-            mouse.visible = True
-            print("🎥 EditorCamera KAPALI")
-
-            # Kamerayı tam olarak kaydedilen pozisyon ve hedefe ayarla
-            camera.position = self.saved_camera_pos
-            camera.look_at(self.saved_camera_target)
 
     # --- Simülasyon Nesnelerini Oluştur ---
     def sim_olustur(self, n_rovs=3, n_engels=15):
@@ -240,66 +214,6 @@ class Ortam:
             self.rovs.append(new_rov)
 
         print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {n_engels} Gri Kaya.")
-    # --- YENİ EKLENEN METOT: SİMÜLASYONDAN GAT VERİSİNE ---
-    def get_gat_data(self):
-        """
-        Simülasyonun anlık durumunu GAT modeline uygun tensörlere çevirir.
-        """
-        n = len(self.rovs)
-        x = torch.zeros((n, 7), dtype=torch.float)
-        positions = [r.position for r in self.rovs]
-        sources, targets = [], []
-
-        # Limitler
-        L = {'LEADER': 60.0, 'DISCONNECT': 35.0, 'OBSTACLE': 20.0, 'COLLISION': 8.0}
-
-        for i in range(n):
-            code = 0
-            # 1. Liderden Uzaklık
-            if i != 0 and distance(positions[i], positions[0]) > L['LEADER']: code = 5
-            # 2. Kopma
-            dists = [distance(positions[i], positions[j]) for j in range(n) if i != j]
-            if dists and min(dists) > L['DISCONNECT']: code = 3
-            # 3. Engel
-            min_engel = 999
-            for engel in self.engeller:
-                d = distance(positions[i], engel.position) - 6 
-                if d < min_engel: min_engel = d
-            if min_engel < L['OBSTACLE']: code = 1
-            # 4. Çarpışma
-            for j in range(n):
-                if i != j and distance(positions[i], positions[j]) < L['COLLISION']:
-                    code = 2; break
-            
-            # Özellik Vektörü
-            x[i][0] = code / 5.0
-            x[i][1] = self.rovs[i].battery / 100.0
-            x[i][2] = 0.9
-            x[i][3] = abs(self.rovs[i].y) / 100.0
-            x[i][4] = self.rovs[i].velocity.x
-            x[i][5] = self.rovs[i].velocity.z
-            x[i][6] = self.rovs[i].role
-
-            # Graf Bağlantıları
-            for j in range(n):
-                if i != j and distance(positions[i], positions[j]) < L['DISCONNECT']:
-                    sources.append(i); targets.append(j)
-
-        edge_index = torch.tensor([sources, targets], dtype=torch.long)
-        
-        # Basit Veri Sınıfı (PyG Data yapısını taklit eder)
-        class MiniData:
-            def __init__(self, x, edge_index): self.x, self.edge_index = x, edge_index
-        return MiniData(x, edge_index)
-
-    # --- Kullanıcı Update Fonksiyonu ---
-    def _internal_update(self):
-        if self.user_update_logic:
-            try:
-                self.user_update_logic()
-            except Exception as e:
-                print(f"Update Hatası: {e}")
-                self.user_update_logic = None
 
     # --- İnteraktif Shell ---
     def _start_shell(self):
