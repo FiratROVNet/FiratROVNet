@@ -5,4 +5,4 @@ dependencies:
   - python=3.10.19
   - pip
   - pip:
-      - requirements.txt
+      - -r requirements.txt
