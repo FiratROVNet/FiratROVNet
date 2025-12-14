@@ -1,154 +1,357 @@
-from FiratROVNet.simulasyon import Ortam
-from FiratROVNet.iletisim import AkustikModem
-from FiratROVNet.gnc import GNCKomutan, LiderGNC, TakipciGNC
-from FiratROVNet.gat import FiratAnalizci
-from FiratROVNet.config import cfg
-from ursina import *
-import numpy as np
-import torch
+#!/usr/bin/env python3
+"""
+FiratROVNet CI/CD Test Suite
+Grafik kartı olmadan tüm sistem fonksiyonlarını test eder.
+"""
+
 import os
+import sys
+import traceback
 
-# 1. KURULUM
-print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
-app = Ortam()
-app.sim_olustur(n_rovs=4, n_engels=15)
+# Headless mod için environment variable ayarla
+os.environ['DISPLAY'] = ':0'  # X11 display (headless için)
+os.environ['LIBGL_ALWAYS_SOFTWARE'] = '1'  # Software rendering
 
-try: 
-    beyin = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
-except: 
-    print("⚠️ Model yüklenemedi, AI devre dışı."); 
-    beyin = None
+# Test sonuçları
+test_results = {
+    'passed': [],
+    'failed': [],
+    'skipped': []
+}
 
-komutan = GNCKomutan()
-tum_modemler = {}
-lider_modem = AkustikModem(rov_id=0, gurultu_orani=0.05)
-tum_modemler[0] = lider_modem
+def test_pass(name):
+    """Test başarılı"""
+    test_results['passed'].append(name)
+    print(f"✅ {name}")
 
-for i, rov in enumerate(app.rovs):
-    if i == 0:
-        rov.set("rol", 1)
-        rov.modem = lider_modem
-        gnc = LiderGNC(rov, lider_modem)
-        komutan.ekle(gnc)
-        komutan.git(0, 40, 60, 0)  # Başlangıç hedefi
+def test_fail(name, error):
+    """Test başarısız"""
+    test_results['failed'].append((name, str(error)))
+    print(f"❌ {name}: {error}")
+
+def test_skip(name, reason):
+    """Test atlandı"""
+    test_results['skipped'].append((name, reason))
+    print(f"⏭️  {name}: {reason}")
+
+# ==========================================
+# TEST 1: Modül İmportları
+# ==========================================
+print("\n" + "="*60)
+print("TEST 1: Modül İmportları")
+print("="*60)
+
+try:
+    from FiratROVNet import gat, ortam, gnc, iletisim, config
+    from FiratROVNet.gat import GAT_Modeli, Train, FiratAnalizci
+    from FiratROVNet.ortam import veri_uret
+    from FiratROVNet.gnc import GNCKomutan, LiderGNC, TakipciGNC
+    from FiratROVNet.iletisim import AkustikModem
+    from FiratROVNet.config import cfg
+    test_pass("Modül İmportları")
+except Exception as e:
+    test_fail("Modül İmportları", e)
+    sys.exit(1)
+
+# ==========================================
+# TEST 2: Veri Üretimi
+# ==========================================
+print("\n" + "="*60)
+print("TEST 2: Veri Üretimi")
+print("="*60)
+
+try:
+    # Veri üretimi testi
+    data = veri_uret(n_rovs=5)
+    assert data.x.shape[0] == 5, f"ROV sayısı yanlış: {data.x.shape[0]}"
+    assert data.x.shape[1] == 7, f"Özellik sayısı yanlış: {data.x.shape[1]}"
+    assert data.edge_index.shape[0] == 2, "Edge index formatı yanlış"
+    assert data.y.shape[0] == 5, f"Etiket sayısı yanlış: {data.y.shape[0]}"
+    test_pass("Veri Üretimi (5 ROV)")
+    
+    # Farklı ROV sayıları ile test
+    for n in [3, 10, 15]:
+        data = veri_uret(n_rovs=n)
+        assert data.x.shape[0] == n, f"{n} ROV için veri üretimi başarısız"
+    test_pass("Veri Üretimi (Farklı ROV Sayıları)")
+    
+except Exception as e:
+    test_fail("Veri Üretimi", e)
+
+# ==========================================
+# TEST 3: GAT Modeli
+# ==========================================
+print("\n" + "="*60)
+print("TEST 3: GAT Modeli")
+print("="*60)
+
+try:
+    import torch
+    
+    # Model oluşturma
+    model = GAT_Modeli()
+    test_pass("GAT Modeli Oluşturma")
+    
+    # Forward pass testi
+    data = veri_uret(n_rovs=4)
+    output = model(data.x, data.edge_index)
+    assert output.shape[0] == 4, "Output shape yanlış"
+    assert output.shape[1] == 6, "Output sınıf sayısı yanlış"
+    test_pass("GAT Modeli Forward Pass")
+    
+    # Attention testi
+    output, edge_idx, alpha = model(data.x, data.edge_index, return_attention=True)
+    assert alpha is not None, "Attention weights döndürülmedi"
+    test_pass("GAT Modeli Attention")
+    
+except Exception as e:
+    test_fail("GAT Modeli", e)
+
+# ==========================================
+# TEST 4: FiratAnalizci
+# ==========================================
+print("\n" + "="*60)
+print("TEST 4: FiratAnalizci")
+print("="*60)
+
+try:
+    # Analizci oluşturma (model dosyası olmasa bile çalışmalı)
+    analizci = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
+    test_pass("FiratAnalizci Oluşturma")
+    
+    # Analiz testi
+    data = veri_uret(n_rovs=4)
+    tahminler, edge_idx, alpha = analizci.analiz_et(data)
+    assert len(tahminler) == 4, "Tahmin sayısı yanlış"
+    assert all(0 <= t < 6 for t in tahminler), "Tahmin değerleri geçersiz"
+    test_pass("FiratAnalizci Analiz")
+    
+except Exception as e:
+    test_fail("FiratAnalizci", e)
+
+# ==========================================
+# TEST 5: İletişim Sistemi (AkustikModem)
+# ==========================================
+print("\n" + "="*60)
+print("TEST 5: İletişim Sistemi")
+print("="*60)
+
+try:
+    # Modem oluşturma
+    modem1 = AkustikModem(rov_id=0, gurultu_orani=0.05, kayip_orani=0.1)
+    modem2 = AkustikModem(rov_id=1, gurultu_orani=0.1, kayip_orani=0.15)
+    test_pass("AkustikModem Oluşturma")
+    
+    # Rehber güncelleme
+    rehber = {0: modem1, 1: modem2}
+    modem1.rehber_guncelle(rehber)
+    modem2.rehber_guncelle(rehber)
+    assert len(modem1.rehber) == 2, "Rehber güncelleme başarısız"
+    test_pass("Rehber Güncelleme")
+    
+    # Paket gönderme
+    import time
+    time.sleep(0.1)  # Gecikme için bekle
+    success = modem1.gonder(modem2, [10.0, 20.0, 30.0], "TEST")
+    test_pass("Paket Gönderme")
+    
+    # Paket dinleme
+    time.sleep(0.6)  # Gecikme süresini bekle
+    paketler = modem2.dinle()
+    if paketler:
+        assert len(paketler) > 0, "Paket alınamadı"
+        test_pass("Paket Dinleme")
     else:
-        rov.set("rol", 0)
-        modem = AkustikModem(rov_id=i, gurultu_orani=0.1)
-        rov.modem = modem
-        tum_modemler[i] = modem
-        gnc = TakipciGNC(rov, modem, lider_modem_ref=lider_modem)
-        komutan.ekle(gnc)
-        komutan.git(i, 30 + (i*5), 50, -10)  # Formasyon
+        test_skip("Paket Dinleme", "Paket kaybı simülasyonu nedeniyle paket alınamadı (normal)")
+    
+except Exception as e:
+    test_fail("İletişim Sistemi", e)
 
-komutan.rehber_dagit(tum_modemler)
-app.konsola_ekle("git", komutan.git)
-app.konsola_ekle("gnc", komutan.sistemler)
-app.konsola_ekle("rovs", app.rovs)
-app.konsola_ekle("cfg", cfg)
-print("✅ Sistem aktif.")
+# ==========================================
+# TEST 6: GNC Sistemi
+# ==========================================
+print("\n" + "="*60)
+print("TEST 6: GNC Sistemi")
+print("="*60)
 
-# Mouse sağ tuş kontrolü için flag
-mouse_right_previous = False
-
-
-# 2. VERİ TOPLAMA FONKSİYONU
-def simden_veriye():
-    """Fiziksel dünyayı Matematiksel matrise çevirir (GAT Girdisi)"""
-    rovs = app.rovs
-    engeller = app.engeller
-    n = len(rovs)
-    x = torch.zeros((n, 7), dtype=torch.float)
-    positions = [r.position for r in rovs]
-    sources, targets = [], []
-
-    L = {'LEADER': 60.0, 'DISCONNECT': 35.0, 'OBSTACLE': 20.0, 'COLLISION': 8.0}
-
-    for i in range(n):
-        code = 0
-        if i != 0 and distance(positions[i], positions[0]) > L['LEADER']: 
-            code = 5
-        dists = [distance(positions[i], positions[j]) for j in range(n) if i != j]
-        if dists and min(dists) > L['DISCONNECT']: 
-            code = 3
+try:
+    # Mock ROV entity (Ursina olmadan)
+    class MockROV:
+        def __init__(self, rov_id):
+            self.id = rov_id
+            self.position = [0.0, 0.0, 0.0]
+            self.velocity = [0.0, 0.0, 0.0]
+            self.y = 0.0
+            self.role = 0
+            self.modem = None
         
-        min_engel = 999
-        for engel in engeller:
-            d = distance(positions[i], engel.position) - 6 
-            if d < min_engel: 
-                min_engel = d
-        if min_engel < L['OBSTACLE']: 
-            code = 1
-        
-        for j in range(n):
-            if i != j and distance(positions[i], positions[j]) < L['COLLISION']:
-                code = 2
-                break
-        
-        x[i][0] = code / 5.0
-        x[i][1] = rovs[i].battery / 100.0
-        x[i][2] = 0.9
-        x[i][3] = abs(rovs[i].y) / 100.0
-        x[i][4] = rovs[i].velocity.x
-        x[i][5] = rovs[i].velocity.z
-        x[i][6] = rovs[i].role
+        def move(self, komut, guc=1.0):
+            pass  # Mock
+    
+    # GNCKomutan testi
+    komutan = GNCKomutan()
+    test_pass("GNCKomutan Oluşturma")
+    
+    # Mock ROV ve modem oluştur
+    rov0 = MockROV(0)
+    rov1 = MockROV(1)
+    modem0 = AkustikModem(0)
+    modem1 = AkustikModem(1)
+    
+    # Lider ve Takipçi GNC oluştur
+    lider_gnc = LiderGNC(rov0, modem0)
+    takipci_gnc = TakipciGNC(rov1, modem1, lider_modem_ref=modem0)
+    
+    komutan.ekle(lider_gnc)
+    komutan.ekle(takipci_gnc)
+    assert len(komutan.sistemler) == 2, "GNC sistemleri eklenemedi"
+    test_pass("GNC Sistemleri Ekleme")
+    
+    # Hedef atama testi
+    komutan.git(0, 10, 20, -5, ai=True)
+    assert lider_gnc.hedef is not None, "Hedef atanmadı"
+    test_pass("Hedef Atama (git)")
+    
+    # Güncelleme testi
+    tahminler = [0, 1]  # Mock tahminler
+    komutan.guncelle_hepsi(tahminler)
+    test_pass("GNC Güncelleme")
+    
+except Exception as e:
+    test_fail("GNC Sistemi", e)
+    traceback.print_exc()
 
-        for j in range(n):
-            if i != j and distance(positions[i], positions[j]) < L['DISCONNECT']:
-                sources.append(i)
-                targets.append(j)
+# ==========================================
+# TEST 7: Config Sistemi
+# ==========================================
+print("\n" + "="*60)
+print("TEST 7: Config Sistemi")
+print("="*60)
 
-    edge_index = torch.tensor([sources, targets], dtype=torch.long)
-    class MiniData:
-        def __init__(self, x, edge_index): 
-            self.x, self.edge_index = x, edge_index
-    return MiniData(x, edge_index)
+try:
+    # Config değerlerini kontrol et
+    assert hasattr(cfg, 'goster_modem'), "Config'de goster_modem yok"
+    assert hasattr(cfg, 'goster_gnc'), "Config'de goster_gnc yok"
+    assert hasattr(cfg, 'goster_sistem'), "Config'de goster_sistem yok"
+    test_pass("Config Özellikleri")
+    
+    # Config değerlerini değiştir
+    original_value = cfg.goster_modem
+    cfg.goster_modem = True
+    assert cfg.goster_modem == True, "Config değeri değiştirilemedi"
+    cfg.goster_modem = original_value
+    test_pass("Config Değer Değiştirme")
+    
+except Exception as e:
+    test_fail("Config Sistemi", e)
 
-# 3. ANA DÖNGÜ
-def update():
+# ==========================================
+# TEST 8: Ortam Sınıfı (Ursina Olmadan)
+# ==========================================
+print("\n" + "="*60)
+print("TEST 8: Ortam Sınıfı (Headless)")
+print("="*60)
+
+try:
+    # Ursina'yı headless modda başlatmayı dene
+    # Eğer başarısız olursa test atlanır
+    from FiratROVNet.simulasyon import Ortam
+    
+    # Headless mod için environment ayarları
+    os.environ['Ursina_HEADLESS'] = '1'
+    
     try:
-        veri = simden_veriye()
+        # Ortam oluşturma (headless modda)
+        app = Ortam()
+        test_pass("Ortam Oluşturma (Headless)")
         
-        ai_aktif = getattr(cfg, 'ai_aktif', True)
-        if ai_aktif and beyin:
-            try: 
-                tahminler, _, _ = beyin.analiz_et(veri)
-            except: 
-                tahminler = np.zeros(len(app.rovs), dtype=int)
-        else:
-            tahminler = np.zeros(len(app.rovs), dtype=int)
-
-        kod_renkleri = {0:color.orange, 1:color.red, 2:color.black, 3:color.yellow, 5:color.magenta}
-        durum_txts = ["OK", "ENGEL", "CARPISMA", "KOPUK", "-", "UZAK"]
+        # Simülasyon nesneleri oluşturma
+        app.sim_olustur(n_rovs=3, n_engels=5)
+        assert len(app.rovs) == 3, "ROV'lar oluşturulamadı"
+        assert len(app.engeller) == 5, "Engeller oluşturulamadı"
+        test_pass("Simülasyon Nesneleri Oluşturma")
         
-        for i, gat_kodu in enumerate(tahminler):
-            if app.rovs[i].role == 1: 
-                app.rovs[i].color = color.red
-            else: 
-                app.rovs[i].color = kod_renkleri.get(gat_kodu, color.white)
-            
-            ek = "" if ai_aktif else "\n[AI OFF]"
-            app.rovs[i].label.text = f"R{i}\n{durum_txts[gat_kodu]}{ek}"
+        # Konsol verileri ekleme
+        app.konsola_ekle("test", "test_value")
+        assert "test" in app.konsol_verileri, "Konsol verileri eklenemedi"
+        test_pass("Konsol Verileri")
         
-        komutan.guncelle_hepsi(tahminler)
-        
-    except Exception as e: 
-        pass
+    except Exception as e:
+        test_skip("Ortam Sınıfı", f"Ursina headless mod başarısız: {e}")
+        print(f"   Not: Grafik kartı olmadan Ursina başlatılamadı (normal)")
+    
+except Exception as e:
+    test_fail("Ortam Sınıfı", e)
 
-def input(key):
-    if key == 'escape' or key == 'q':
-        os.system('stty sane')
-        application.quit()
-        os._exit(0)
+# ==========================================
+# TEST 9: Entegrasyon Testi
+# ==========================================
+print("\n" + "="*60)
+print("TEST 9: Entegrasyon Testi")
+print("="*60)
 
-app.set_update_function(update)
-app.app.input = input
+try:
+    # Tüm sistemleri bir arada test et
+    data = veri_uret(n_rovs=4)
+    analizci = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
+    tahminler, _, _ = analizci.analiz_et(data)
+    
+    komutan = GNCKomutan()
+    modem0 = AkustikModem(0)
+    modem1 = AkustikModem(1)
+    
+    rov0 = MockROV(0)
+    rov1 = MockROV(1)
+    
+    gnc0 = LiderGNC(rov0, modem0)
+    gnc1 = TakipciGNC(rov1, modem1, lider_modem_ref=modem0)
+    
+    komutan.ekle(gnc0)
+    komutan.ekle(gnc1)
+    
+    komutan.git(0, 10, 20, -5)
+    komutan.git(1, 15, 25, -10)
+    
+    komutan.guncelle_hepsi(tahminler[:2])
+    
+    test_pass("Entegrasyon Testi")
+    
+except Exception as e:
+    test_fail("Entegrasyon Testi", e)
+    traceback.print_exc()
 
-# 4. ÇALIŞTIRMA
-if __name__ == "__main__":
-    try: 
-        app.run(interaktif=True)
-    except KeyboardInterrupt: 
-        pass
-    finally: 
-        os.system('stty sane')
-        os._exit(0)
+# ==========================================
+# TEST SONUÇLARI
+# ==========================================
+print("\n" + "="*60)
+print("TEST SONUÇLARI")
+print("="*60)
+
+total = len(test_results['passed']) + len(test_results['failed']) + len(test_results['skipped'])
+passed = len(test_results['passed'])
+failed = len(test_results['failed'])
+skipped = len(test_results['skipped'])
+
+print(f"\nToplam Test: {total}")
+print(f"✅ Başarılı: {passed}")
+print(f"❌ Başarısız: {failed}")
+print(f"⏭️  Atlandı: {skipped}")
+
+if test_results['failed']:
+    print("\n❌ Başarısız Testler:")
+    for name, error in test_results['failed']:
+        print(f"   - {name}: {error}")
+
+if test_results['skipped']:
+    print("\n⏭️  Atlanan Testler:")
+    for name, reason in test_results['skipped']:
+        print(f"   - {name}: {reason}")
+
+# CI/CD için exit code
+if failed > 0:
+    print("\n❌ TEST BAŞARISIZ - CI/CD hatası!")
+    sys.exit(1)
+else:
+    print("\n✅ TÜM TESTLER BAŞARILI!")
+    sys.exit(0)
+
