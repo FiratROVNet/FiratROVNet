@@ -45,7 +45,7 @@ try:
     from FiratROVNet import gat, ortam, gnc, iletisim, config
     from FiratROVNet.gat import GAT_Modeli, Train, FiratAnalizci
     from FiratROVNet.ortam import veri_uret
-    from FiratROVNet.gnc import GNCKomutan, LiderGNC, TakipciGNC
+    from FiratROVNet.gnc import Filo, LiderGNC, TakipciGNC
     from FiratROVNet.iletisim import AkustikModem
     from FiratROVNet.config import cfg
     record_test_pass("Modül İmportları")
@@ -188,9 +188,9 @@ try:
         def move(self, komut, guc=1.0):
             pass  # Mock
     
-    # GNCKomutan testi
-    komutan = GNCKomutan()
-    record_test_pass("GNCKomutan Oluşturma")
+    # Filo testi
+    filo = Filo()
+    record_test_pass("Filo Oluşturma")
     
     # Mock ROV ve modem oluştur
     rov0 = MockROV(0)
@@ -202,19 +202,19 @@ try:
     lider_gnc = LiderGNC(rov0, modem0)
     takipci_gnc = TakipciGNC(rov1, modem1, lider_modem_ref=modem0)
     
-    komutan.ekle(lider_gnc)
-    komutan.ekle(takipci_gnc)
-    assert len(komutan.sistemler) == 2, "GNC sistemleri eklenemedi"
+    filo.ekle(lider_gnc)
+    filo.ekle(takipci_gnc)
+    assert len(filo.sistemler) == 2, "GNC sistemleri eklenemedi"
     record_test_pass("GNC Sistemleri Ekleme")
     
     # Hedef atama testi
-    komutan.git(0, 10, 20, -5, ai=True)
+    filo.git(0, 10, 20, -5, ai=True)
     assert lider_gnc.hedef is not None, "Hedef atanmadı"
     record_test_pass("Hedef Atama (git)")
     
     # Güncelleme testi
     tahminler = [0, 1]  # Mock tahminler
-    komutan.guncelle_hepsi(tahminler)
+    filo.guncelle_hepsi(tahminler)
     record_test_pass("GNC Güncelleme")
     
 except Exception as e:
@@ -296,7 +296,7 @@ try:
     analizci = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
     tahminler, _, _ = analizci.analiz_et(data)
     
-    komutan = GNCKomutan()
+    filo = Filo()
     modem0 = AkustikModem(0)
     modem1 = AkustikModem(1)
     
@@ -306,13 +306,13 @@ try:
     gnc0 = LiderGNC(rov0, modem0)
     gnc1 = TakipciGNC(rov1, modem1, lider_modem_ref=modem0)
     
-    komutan.ekle(gnc0)
-    komutan.ekle(gnc1)
+    filo.ekle(gnc0)
+    filo.ekle(gnc1)
     
-    komutan.git(0, 10, 20, -5)
-    komutan.git(1, 15, 25, -10)
+    filo.git(0, 10, 20, -5)
+    filo.git(1, 15, 25, -10)
     
-    komutan.guncelle_hepsi(tahminler[:2])
+    filo.guncelle_hepsi(tahminler[:2])
     
     record_test_pass("Entegrasyon Testi")
     
