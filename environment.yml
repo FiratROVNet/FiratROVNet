@@ -1,0 +1,8 @@
+name: firat-rovnet-env
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+      - your-required-python-packages
