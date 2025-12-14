@@ -190,7 +190,7 @@ try:
     
     # GNCKomutan testi
     komutan = GNCKomutan()
-    test_pass("GNCKomutan Oluşturma")
+    record_test_pass("GNCKomutan Oluşturma")
     
     # Mock ROV ve modem oluştur
     rov0 = MockROV(0)
@@ -205,20 +205,20 @@ try:
     komutan.ekle(lider_gnc)
     komutan.ekle(takipci_gnc)
     assert len(komutan.sistemler) == 2, "GNC sistemleri eklenemedi"
-    test_pass("GNC Sistemleri Ekleme")
+    record_test_pass("GNC Sistemleri Ekleme")
     
     # Hedef atama testi
     komutan.git(0, 10, 20, -5, ai=True)
     assert lider_gnc.hedef is not None, "Hedef atanmadı"
-    test_pass("Hedef Atama (git)")
+    record_test_pass("Hedef Atama (git)")
     
     # Güncelleme testi
     tahminler = [0, 1]  # Mock tahminler
     komutan.guncelle_hepsi(tahminler)
-    test_pass("GNC Güncelleme")
+    record_test_pass("GNC Güncelleme")
     
 except Exception as e:
-    test_fail("GNC Sistemi", e)
+    record_test_fail("GNC Sistemi", e)
     traceback.print_exc()
 
 # ==========================================
@@ -233,17 +233,17 @@ try:
     assert hasattr(cfg, 'goster_modem'), "Config'de goster_modem yok"
     assert hasattr(cfg, 'goster_gnc'), "Config'de goster_gnc yok"
     assert hasattr(cfg, 'goster_sistem'), "Config'de goster_sistem yok"
-    test_pass("Config Özellikleri")
+    record_test_pass("Config Özellikleri")
     
     # Config değerlerini değiştir
     original_value = cfg.goster_modem
     cfg.goster_modem = True
     assert cfg.goster_modem == True, "Config değeri değiştirilemedi"
     cfg.goster_modem = original_value
-    test_pass("Config Değer Değiştirme")
+    record_test_pass("Config Değer Değiştirme")
     
 except Exception as e:
-    test_fail("Config Sistemi", e)
+    record_test_fail("Config Sistemi", e)
 
 # ==========================================
 # TEST 8: Ortam Sınıfı (Ursina Olmadan)
@@ -263,25 +263,25 @@ try:
     try:
         # Ortam oluşturma (headless modda)
         app = Ortam()
-        test_pass("Ortam Oluşturma (Headless)")
+        record_test_pass("Ortam Oluşturma (Headless)")
         
         # Simülasyon nesneleri oluşturma
         app.sim_olustur(n_rovs=3, n_engels=5)
         assert len(app.rovs) == 3, "ROV'lar oluşturulamadı"
         assert len(app.engeller) == 5, "Engeller oluşturulamadı"
-        test_pass("Simülasyon Nesneleri Oluşturma")
+        record_test_pass("Simülasyon Nesneleri Oluşturma")
         
         # Konsol verileri ekleme
         app.konsola_ekle("test", "test_value")
         assert "test" in app.konsol_verileri, "Konsol verileri eklenemedi"
-        test_pass("Konsol Verileri")
+        record_test_pass("Konsol Verileri")
         
     except Exception as e:
-        test_skip("Ortam Sınıfı", f"Ursina headless mod başarısız: {e}")
+        record_test_skip("Ortam Sınıfı", f"Ursina headless mod başarısız: {e}")
         print(f"   Not: Grafik kartı olmadan Ursina başlatılamadı (normal)")
     
 except Exception as e:
-    test_fail("Ortam Sınıfı", e)
+    record_test_fail("Ortam Sınıfı", e)
 
 # ==========================================
 # TEST 9: Entegrasyon Testi
@@ -314,10 +314,10 @@ try:
     
     komutan.guncelle_hepsi(tahminler[:2])
     
-    test_pass("Entegrasyon Testi")
+    record_test_pass("Entegrasyon Testi")
     
 except Exception as e:
-    test_fail("Entegrasyon Testi", e)
+    record_test_fail("Entegrasyon Testi", e)
     traceback.print_exc()
 
 # ==========================================
