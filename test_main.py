@@ -347,11 +347,12 @@ if test_results['skipped']:
     for name, reason in test_results['skipped']:
         print(f"   - {name}: {reason}")
 
-# CI/CD için exit code
-if failed > 0:
-    print("\n❌ TEST BAŞARISIZ - CI/CD hatası!")
-    sys.exit(1)
-else:
-    print("\n✅ TÜM TESTLER BAŞARILI!")
-    sys.exit(0)
+# CI/CD için exit code (sadece direkt çalıştırıldığında)
+if __name__ == "__main__":
+    if failed > 0:
+        print("\n❌ TEST BAŞARISIZ - CI/CD hatası!")
+        sys.exit(1)
+    else:
+        print("\n✅ TÜM TESTLER BAŞARILI!")
+        sys.exit(0)
 
