@@ -19,17 +19,17 @@ test_results = {
     'skipped': []
 }
 
-def test_pass(name):
+def record_test_pass(name):
     """Test başarılı"""
     test_results['passed'].append(name)
     print(f"✅ {name}")
 
-def test_fail(name, error):
+def record_test_fail(name, error):
     """Test başarısız"""
     test_results['failed'].append((name, str(error)))
     print(f"❌ {name}: {error}")
 
-def test_skip(name, reason):
+def record_test_skip(name, reason):
     """Test atlandı"""
     test_results['skipped'].append((name, reason))
     print(f"⏭️  {name}: {reason}")
@@ -48,9 +48,9 @@ try:
     from FiratROVNet.gnc import GNCKomutan, LiderGNC, TakipciGNC
     from FiratROVNet.iletisim import AkustikModem
     from FiratROVNet.config import cfg
-    test_pass("Modül İmportları")
+    record_test_pass("Modül İmportları")
 except Exception as e:
-    test_fail("Modül İmportları", e)
+    record_test_fail("Modül İmportları", e)
     sys.exit(1)
 
 # ==========================================
@@ -67,16 +67,16 @@ try:
     assert data.x.shape[1] == 7, f"Özellik sayısı yanlış: {data.x.shape[1]}"
     assert data.edge_index.shape[0] == 2, "Edge index formatı yanlış"
     assert data.y.shape[0] == 5, f"Etiket sayısı yanlış: {data.y.shape[0]}"
-    test_pass("Veri Üretimi (5 ROV)")
+    record_test_pass("Veri Üretimi (5 ROV)")
     
     # Farklı ROV sayıları ile test
     for n in [3, 10, 15]:
         data = veri_uret(n_rovs=n)
         assert data.x.shape[0] == n, f"{n} ROV için veri üretimi başarısız"
-    test_pass("Veri Üretimi (Farklı ROV Sayıları)")
+    record_test_pass("Veri Üretimi (Farklı ROV Sayıları)")
     
 except Exception as e:
-    test_fail("Veri Üretimi", e)
+    record_test_fail("Veri Üretimi", e)
 
 # ==========================================
 # TEST 3: GAT Modeli
@@ -90,22 +90,22 @@ try:
     
     # Model oluşturma
     model = GAT_Modeli()
-    test_pass("GAT Modeli Oluşturma")
+    record_test_pass("GAT Modeli Oluşturma")
     
     # Forward pass testi
     data = veri_uret(n_rovs=4)
     output = model(data.x, data.edge_index)
     assert output.shape[0] == 4, "Output shape yanlış"
     assert output.shape[1] == 6, "Output sınıf sayısı yanlış"
-    test_pass("GAT Modeli Forward Pass")
+    record_test_pass("GAT Modeli Forward Pass")
     
     # Attention testi
     output, edge_idx, alpha = model(data.x, data.edge_index, return_attention=True)
     assert alpha is not None, "Attention weights döndürülmedi"
-    test_pass("GAT Modeli Attention")
+    record_test_pass("GAT Modeli Attention")
     
 except Exception as e:
-    test_fail("GAT Modeli", e)
+    record_test_fail("GAT Modeli", e)
 
 # ==========================================
 # TEST 4: FiratAnalizci
@@ -117,17 +117,17 @@ print("="*60)
 try:
     # Analizci oluşturma (model dosyası olmasa bile çalışmalı)
     analizci = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
-    test_pass("FiratAnalizci Oluşturma")
+    record_test_pass("FiratAnalizci Oluşturma")
     
     # Analiz testi
     data = veri_uret(n_rovs=4)
     tahminler, edge_idx, alpha = analizci.analiz_et(data)
     assert len(tahminler) == 4, "Tahmin sayısı yanlış"
     assert all(0 <= t < 6 for t in tahminler), "Tahmin değerleri geçersiz"
-    test_pass("FiratAnalizci Analiz")
+    record_test_pass("FiratAnalizci Analiz")
     
 except Exception as e:
-    test_fail("FiratAnalizci", e)
+    record_test_fail("FiratAnalizci", e)
 
 # ==========================================
 # TEST 5: İletişim Sistemi (AkustikModem)
@@ -140,32 +140,32 @@ try:
     # Modem oluşturma
     modem1 = AkustikModem(rov_id=0, gurultu_orani=0.05, kayip_orani=0.1)
     modem2 = AkustikModem(rov_id=1, gurultu_orani=0.1, kayip_orani=0.15)
-    test_pass("AkustikModem Oluşturma")
+    record_test_pass("AkustikModem Oluşturma")
     
     # Rehber güncelleme
     rehber = {0: modem1, 1: modem2}
     modem1.rehber_guncelle(rehber)
     modem2.rehber_guncelle(rehber)
     assert len(modem1.rehber) == 2, "Rehber güncelleme başarısız"
-    test_pass("Rehber Güncelleme")
+    record_test_pass("Rehber Güncelleme")
     
     # Paket gönderme
     import time
     time.sleep(0.1)  # Gecikme için bekle
     success = modem1.gonder(modem2, [10.0, 20.0, 30.0], "TEST")
-    test_pass("Paket Gönderme")
+    record_test_pass("Paket Gönderme")
     
     # Paket dinleme
     time.sleep(0.6)  # Gecikme süresini bekle
     paketler = modem2.dinle()
     if paketler:
         assert len(paketler) > 0, "Paket alınamadı"
-        test_pass("Paket Dinleme")
+        record_test_pass("Paket Dinleme")
     else:
-        test_skip("Paket Dinleme", "Paket kaybı simülasyonu nedeniyle paket alınamadı (normal)")
+        record_test_skip("Paket Dinleme", "Paket kaybı simülasyonu nedeniyle paket alınamadı (normal)")
     
 except Exception as e:
-    test_fail("İletişim Sistemi", e)
+    record_test_fail("İletişim Sistemi", e)
 
 # ==========================================
 # TEST 6: GNC Sistemi
