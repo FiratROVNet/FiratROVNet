@@ -66,22 +66,32 @@ filo.guncelle_hepsi(tahminler)
 
 ---
 
-### 4. **`move(rov_id, yon, birim=1.0)`** - Manuel Hareket
-ROV'a bir birimlik hareket verir (havuz sınır kontrolü otomatik)
+### 4. **`move(rov_id, yon, guc=1.0)`** - Güç Bazlı Manuel Hareket
+ROV'a güç bazlı hareket komutu verir (gerçek dünya gibi motor gücü kontrolü)
 
 ```python
-filo.move(0, 'ileri')      # ROV-0 bir birim ileri
-filo.move(1, 'sag', 2.0)   # ROV-1 iki birim sağa
-filo.move(2, 'cik')        # ROV-2 bir birim yukarı
+filo.move(0, 'ileri', 1.0)   # ROV-0 %100 güçle ileri
+filo.move(1, 'sag', 0.5)     # ROV-1 %50 güçle sağa
+filo.move(2, 'cik', 0.3)     # ROV-2 %30 güçle yukarı
+filo.move(3, 'dur', 0.0)     # ROV-3 dur (güç=0)
+filo.move(0, 'ileri')        # ROV-0 %100 güçle ileri (varsayılan)
 ```
 
 **Yönler:**
-- `'ileri'`, `'geri'`, `'sag'`, `'sol'`, `'cik'`, `'bat'`
+- `'ileri'`, `'geri'`, `'sag'`, `'sol'`, `'cik'`, `'bat'`, `'dur'`
+
+**Güç Parametresi:**
+- `1.0` = %100 güç (maksimum hız)
+- `0.5` = %50 güç (yarı hız)
+- `0.3` = %30 güç (düşük hız)
+- `0.0` = %0 güç (dur)
 
 **Özellikler:**
-- ✅ Havuz sınır kontrolü otomatik
+- ✅ Gerçek dünya gibi motor gücü kontrolü
+- ✅ Havuz sınır kontrolü otomatik (sınırda hareket engellenir)
 - ✅ Lider ROV batırılamaz kontrolü
-- ✅ Sınırda otomatik durdurma
+- ✅ Güç değeri 0.0-1.0 arası otomatik sınırlanır
+- ✅ Sürekli hareket (her frame güç uygulanır)
 
 ---
 
@@ -195,12 +205,17 @@ filo.git(0, 40, 60, 0, ai=True)   # AI açık
 filo.git(1, 35, 50, -10, ai=False) # AI kapalı (kör mod)
 ```
 
-**Senaryo 5: Manuel Hareket**
+**Senaryo 5: Güç Bazlı Manuel Hareket**
 ```python
-# ROV'ları manuel kontrol et
-filo.move(0, 'ileri', 2.0)  # ROV-0 iki birim ileri
-filo.move(1, 'sag')         # ROV-1 bir birim sağa
-filo.move(2, 'cik', 1.5)    # ROV-2 1.5 birim yukarı
+# ROV'ları güç bazlı manuel kontrol et
+filo.move(0, 'ileri', 1.0)   # ROV-0 %100 güçle ileri
+filo.move(1, 'sag', 0.5)     # ROV-1 %50 güçle sağa
+filo.move(2, 'cik', 0.3)     # ROV-2 %30 güçle yukarı
+filo.move(3, 'dur', 0.0)     # ROV-3 dur
+
+# Yavaş hareket
+filo.move(0, 'ileri', 0.2)   # ROV-0 %20 güçle yavaş ileri
+filo.move(1, 'geri', 0.1)    # ROV-1 %10 güçle çok yavaş geri
 ```
 
 **Senaryo 6: ROV Ayarları**

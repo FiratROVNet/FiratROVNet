@@ -1,5 +1,5 @@
 import numpy as np
-from ursina import Vec3, time
+from ursina import Vec3, time, distance
 from .config import cfg
 from .iletisim import AkustikModem
 import math
@@ -229,9 +229,30 @@ class Filo:
         return tum_modemler
 
     def guncelle_hepsi(self, tahminler):
+        """
+        Tüm GNC sistemlerini günceller.
+        
+        Args:
+            tahminler: GAT kodları listesi (her ROV için)
+        """
+        if len(self.sistemler) == 0:
+            return  # Henüz GNC sistemi eklenmemiş
+        
         for i, gnc in enumerate(self.sistemler):
             if i < len(tahminler):
-                gnc.guncelle(tahminler[i])
+                try:
+                    # Manuel kontrol kontrolü - eğer manuel kontrol açıksa otomatik hareket yok
+                    if not gnc.manuel_kontrol:
+                        gnc.guncelle(tahminler[i])
+                    # else:
+                    #     # Manuel kontrol aktif, otomatik hareket yok (normal)
+                    #     pass
+                except Exception as e:
+                    # Hata ayıklama için (sadece geliştirme sırasında)
+                    # print(f"[HATA] GNC-{i} guncelle(): {e}")
+                    # import traceback
+                    # traceback.print_exc()
+                    pass
 
     # --- GÜNCELLENEN GİT FONKSİYONU ---
     def git(self, rov_id, x, z, y=None, ai=True):
@@ -301,71 +322,94 @@ class Filo:
             print(f"❌ [HATA] Geçersiz ROV ID: {rov_id}")
             return None
 
-    def move(self, rov_id, yon, birim=1.0):
+    def move(self, rov_id, yon, guc=1.0):
         """
-        ROV'a bir birimlik hareket verir.
+        ROV'a güç bazlı hareket komutu verir (gerçek dünya gibi, gerçekçi fizik ile).
         
         Args:
             rov_id: ROV ID
-            yon: Hareket yönü ('ileri', 'geri', 'sag', 'sol', 'cik', 'bat')
-            birim: Hareket birimi (varsayılan: 1.0)
+            yon: Hareket yönü ('ileri', 'geri', 'sag', 'sol', 'cik', 'bat', 'dur')
+            guc: Motor gücü (0.0 - 1.0 arası, varsayılan: 1.0)
+                - 1.0 = %100 güç (maksimum hız)
+                - 0.5 = %50 güç (yarı hız)
+                - 0.0 = %0 güç (dur)
         
         Örnekler:
-            filo.move(0, 'ileri')  # ROV-0 bir birim ileri
-            filo.move(1, 'sag', 2.0)  # ROV-1 iki birim sağa
-            filo.move(2, 'cik')  # ROV-2 bir birim yukarı
+            filo.move(0, 'ileri', 1.0)   # ROV-0 %100 güçle ileri
+            filo.move(1, 'sag', 0.5)     # ROV-1 %50 güçle sağa
+            filo.move(2, 'cik', 0.3)      # ROV-2 %30 güçle yukarı
+            filo.move(3, 'dur', 0.0)      # ROV-3 dur (güç=0)
+            filo.move(0, 'ileri')         # ROV-0 %100 güçle ileri (varsayılan)
         """
         if 0 <= rov_id < len(self.sistemler):
-            rov = self.sistemler[rov_id].rov
-            # Havuz sınır kontrolü yapılacak
+            # Manuel kontrolü aç
+            self.sistemler[rov_id].manuel_kontrol = True
+            gnc = self.sistemler[rov_id]
+            rov = gnc.rov
+            
+            # Güç değerini kontrol et (0.0 - 1.0 arası)
+            guc = max(0.0, min(1.0, guc))
+            
+            # 'dur' komutu özel durum
+            if yon == 'dur' or guc == 0.0:
+                rov.manuel_hareket['yon'] = None
+                rov.manuel_hareket['guc'] = 0.0
+                rov.velocity *= 0.9  # Yavaşça dur (momentum korunumu)
+                print(f"🛑 [FİLO] ROV-{rov_id} durduruluyor")
+                return
+            
+            # Lider ROV batırılamaz kontrolü
+            if yon == 'bat' and rov.role == 1:
+                print(f"⚠️ [FİLO] ROV-{rov_id} lider, batırılamaz!")
+                return
+            
+            # Havuz sınır kontrolü (hareket öncesi)
             if rov.environment_ref:
                 havuz_genisligi = getattr(rov.environment_ref, 'havuz_genisligi', 200)
                 havuz_yari_genislik = havuz_genisligi / 2
                 
-                # Mevcut pozisyon
-                yeni_x, yeni_y, yeni_z = rov.x, rov.y, rov.z
+                # Sınırda mı kontrol et
+                sinirda_x = abs(rov.x) >= havuz_yari_genislik * 0.95
+                sinirda_z = abs(rov.z) >= havuz_yari_genislik * 0.95
+                sinirda_y_ust = rov.y >= 0.3
+                sinirda_y_alt = rov.y <= -95
                 
-                # Hareket vektörü
-                hareket_miktari = birim * 1.0
+                # Sınırda ise o yöne hareketi engelle
+                if sinirda_x and ((yon == 'sag' and rov.x > 0) or (yon == 'sol' and rov.x < 0)):
+                    print(f"⚠️ [FİLO] ROV-{rov_id} havuz sınırında (X), {yon} yönünde hareket engellendi")
+                    return
                 
-                if yon == 'ileri':
-                    yeni_z += hareket_miktari
-                elif yon == 'geri':
-                    yeni_z -= hareket_miktari
-                elif yon == 'sag':
-                    yeni_x += hareket_miktari
-                elif yon == 'sol':
-                    yeni_x -= hareket_miktari
-                elif yon == 'cik':
-                    yeni_y += hareket_miktari
-                elif yon == 'bat':
-                    if rov.role != 1:  # Lider batırılamaz
-                        yeni_y -= hareket_miktari
-                    else:
-                        print(f"⚠️ [FİLO] ROV-{rov_id} lider, batırılamaz!")
-                        return
+                if sinirda_z and ((yon == 'ileri' and rov.z > 0) or (yon == 'geri' and rov.z < 0)):
+                    print(f"⚠️ [FİLO] ROV-{rov_id} havuz sınırında (Z), {yon} yönünde hareket engellendi")
+                    return
                 
-                # Havuz sınır kontrolü
-                if abs(yeni_x) > havuz_yari_genislik:
-                    yeni_x = np.sign(yeni_x) * havuz_yari_genislik
-                    print(f"⚠️ [FİLO] ROV-{rov_id} havuz sınırına ulaştı (X)")
+                if sinirda_y_ust and yon == 'cik':
+                    print(f"⚠️ [FİLO] ROV-{rov_id} su yüzeyinde, yukarı hareket engellendi")
+                    return
                 
-                if abs(yeni_z) > havuz_yari_genislik:
-                    yeni_z = np.sign(yeni_z) * havuz_yari_genislik
-                    print(f"⚠️ [FİLO] ROV-{rov_id} havuz sınırına ulaştı (Z)")
-                
-                # Y ekseni kontrolü (su yüzeyi ve deniz tabanı)
-                if yeni_y > 0.5:
-                    yeni_y = 0.5
-                if yeni_y < -100:
-                    yeni_y = -100
-                
-                # Pozisyonu güncelle
-                rov.position = Vec3(yeni_x, yeni_y, yeni_z)
-                print(f"✅ [FİLO] ROV-{rov_id} {yon} yönünde {birim} birim hareket etti")
-            else:
-                # Environment referansı yoksa direkt move komutu kullan
-                rov.move(yon, birim)
+                if sinirda_y_alt and yon == 'bat':
+                    print(f"⚠️ [FİLO] ROV-{rov_id} deniz tabanında, aşağı hareket engellendi")
+                    return
+            
+            # Yönü vektöre çevir
+            hareket_vektoru = Vec3(0, 0, 0)
+            if yon == 'ileri': hareket_vektoru.z = 1.0
+            elif yon == 'geri': hareket_vektoru.z = -1.0
+            elif yon == 'sag': hareket_vektoru.x = 1.0
+            elif yon == 'sol': hareket_vektoru.x = -1.0
+            elif yon == 'cik': hareket_vektoru.y = 1.0
+            elif yon == 'bat' and rov.role != 1: hareket_vektoru.y = -1.0
+            
+            # Manuel hareket modunu aktif et (sürekli hareket için)
+            rov.manuel_hareket['yon'] = yon
+            rov.manuel_hareket['guc'] = guc
+            
+            # Gerçekçi fizik sistemi ile hareket uygula
+            gnc.apply_movement(hareket_vektoru, guc_carpani=guc, momentum_korunumu=True)
+            
+            # Güç yüzdesi mesajı
+            guc_yuzdesi = int(guc * 100)
+            print(f"🔵 [FİLO] ROV-{rov_id} {yon} yönünde %{guc_yuzdesi} güçle hareket ediyor (gerçekçi fizik)")
         else:
             print(f"❌ [HATA] Geçersiz ROV ID: {rov_id}")
 
@@ -389,9 +433,77 @@ class TemelGNC:
     def rehber_guncelle(self, rehber):
         if self.modem: self.modem.rehber_guncelle(rehber)
 
+    def apply_movement(self, vektor, guc_carpani=1.0, momentum_korunumu=True):
+        """
+        Su altında gerçekçi fizik kurallarıyla ROV hareketi uygular.
+        
+        Bu fonksiyon hem git() hem de move() için ortak alt yapıdır.
+        Momentum korunumu, su direnci ve çarpışma tepkisi içerir.
+        
+        Args:
+            vektor: Hareket vektörü (Vec3)
+            guc_carpani: Güç çarpanı (0.0-1.0, varsayılan: 1.0)
+            momentum_korunumu: Momentum korunumu aktif mi (varsayılan: True)
+        """
+        # Batarya bitmişse hareket ettirme
+        if self.rov.battery <= 0 or self.rov.batarya_bitti:
+            return
+        
+        if vektor.length() == 0: 
+            return
+        
+        # Güç hesaplama (su direnci ve momentum korunumu ile)
+        max_guc = self.hiz_limiti * guc_carpani
+        
+        # Su direnci faktörü (derinlik arttıkça direnç artar)
+        derinlik_faktoru = 1.0 - (abs(self.rov.y) / 100.0) * 0.1  # %10'a kadar direnç
+        derinlik_faktoru = max(0.9, min(1.0, derinlik_faktoru))
+        
+        # Momentum korunumu: Mevcut hızı dikkate al
+        if momentum_korunumu:
+            mevcut_hiz = self.rov.velocity.length()
+            # İvme hesapla (daha güçlü hareket için)
+            ivme_buyuklugu = max_guc * derinlik_faktoru * time.dt * 10.0  # 10x çarpan (daha hızlı hareket)
+            # Vektörü normalize et (güvenli şekilde)
+            vektor_magnitude = vektor.length()
+            if vektor_magnitude > 0:
+                vektor_normalized = vektor / vektor_magnitude
+            else:
+                return  # Sıfır vektör, hareket yok
+            ivme = vektor_normalized * ivme_buyuklugu
+            self.rov.velocity += ivme
+        else:
+            # Momentum korunumu kapalıysa direkt hız uygula
+            vektor_magnitude = vektor.length()
+            if vektor_magnitude > 0:
+                vektor_normalized = vektor / vektor_magnitude
+                self.rov.velocity = vektor_normalized * max_guc * derinlik_faktoru
+            else:
+                return  # Sıfır vektör, hareket yok
+        
+        # Hız limiti kontrolü
+        if self.rov.velocity.length() > max_guc:
+            hiz_magnitude = self.rov.velocity.length()
+            if hiz_magnitude > 0:
+                self.rov.velocity = (self.rov.velocity / hiz_magnitude) * max_guc
+            else:
+                self.rov.velocity = Vec3(0, 0, 0)
+        
+        # Çalıştırılan gücü güncelle (batarya tüketimi için)
+        self.rov.calistirilan_guc = min(1.0, self.rov.velocity.length() / 100.0)
+        
+        # Lider ROV için aşağı hızı engelle
+        if self.rov.role == 1 and self.rov.velocity.y < 0:
+            self.rov.velocity.y = 0
+
     def vektor_to_motor(self, vektor, guc_carpani=1.0):
+        """
+        Vektörü motor komutlarına çevirir (eski yöntem, geriye uyumluluk için).
+        Yeni kod için apply_movement() kullanılmalı.
+        """
         if vektor.length() == 0: return
 
+        # Yön bazlı hareket (eski yöntem)
         guc = self.hiz_limiti * guc_carpani
 
         if vektor.x > 0.1: self.rov.move("sag", abs(vektor.x) * guc)
@@ -412,8 +524,12 @@ class TemelGNC:
 # ==========================================
 class LiderGNC(TemelGNC):
     def guncelle(self, gat_kodu):
-        if self.manuel_kontrol: return 
-        if self.hedef is None: return
+        if self.manuel_kontrol: 
+            return  # Manuel kontrol aktif, otomatik hareket yok
+        if self.hedef is None: 
+            return  # Hedef atanmamış
+        if self.rov.battery <= 0 or self.rov.batarya_bitti: 
+            return  # Batarya bitmişse hareket ettirme
         
         # --- AI KONTROLÜ ---
         # Eğer AI kapalıysa, gelen uyarıyı görmezden gel (0 kabul et)
@@ -422,22 +538,40 @@ class LiderGNC(TemelGNC):
         
         mevcut = self.rov.position
         fark = self.hedef - mevcut
-        if fark.length() < 1.0: return
+        mesafe = fark.length()
+        if mesafe < 1.0: 
+            return  # Hedefe çok yakın, dur
+        
+        # Hedef yönü hesapla
+        if mesafe > 0:
+            yon = fark / mesafe  # normalize() yerine direkt bölme (daha güvenli)
+        else:
+            return
 
         # Lider için hedef her zaman su yüzeyinde (y >= 0)
-        if self.hedef.y < 0: self.hedef.y = 0
-        yon = fark.normalized()
+        if self.hedef.y < 0: 
+            self.hedef.y = 0
         
         # Lider için aşağı yön bileşenini kaldır (batırılamaz)
         if yon.y < 0:
             yon.y = 0
-            if yon.length() > 0:
-                yon = yon.normalized()
+            # Yönü yeniden normalize et
+            yon_magnitude = yon.length()
+            if yon_magnitude > 0:
+                yon = yon / yon_magnitude
+            else:
+                # Sadece yukarı hareket
+                yon = Vec3(0, 1, 0)
 
         if gat_kodu == 1: yon += Vec3(1, 0, 0) 
         elif gat_kodu == 2: yon = Vec3(0, 0, 0)
 
-        self.vektor_to_motor(yon)
+        # Yeni gerçekçi fizik sistemi kullan
+        if yon.length() > 0:
+            self.apply_movement(yon, guc_carpani=1.0, momentum_korunumu=True)
+        else:
+            # Dur komutu
+            self.rov.velocity *= 0.9  # Yavaşça dur
 
 class TakipciGNC(TemelGNC):
     def __init__(self, rov_entity, modem, lider_modem_ref=None):
@@ -447,16 +581,77 @@ class TakipciGNC(TemelGNC):
     def guncelle(self, gat_kodu):
         if self.manuel_kontrol: return
         if self.hedef is None: return
+        if self.rov.battery <= 0 or self.rov.batarya_bitti: return  # Batarya bitmişse hareket ettirme
 
         # --- AI KONTROLÜ ---
         # Eğer AI kapalıysa, tehlike yokmuş gibi (0) davran
         if not self.ai_aktif:
             gat_kodu = 0
 
-        fark = self.hedef - self.rov.position
-        if fark.length() < 1.5: return
+        # GAT Kodu 3 (KOPMA) - Sisteme yaklaş
+        if gat_kodu == 3:
+            # En yakın ROV'u bul (iletişim menzili içinde)
+            iletisim_menzili = self.rov.sensor_config.get("iletisim_menzili", 35.0)
+            en_yakin_rov = None
+            en_yakin_mesafe = 999.0
+            
+            # Lider ROV'u öncelikle hedefle
+            if self.rov.environment_ref:
+                for diger_rov in self.rov.environment_ref.rovs:
+                    if diger_rov.id == self.rov.id:
+                        continue
+                    
+                    mesafe = distance(self.rov.position, diger_rov.position)
+                    
+                    # Lider varsa öncelik ver
+                    if diger_rov.role == 1:
+                        if mesafe < en_yakin_mesafe:
+                            en_yakin_mesafe = mesafe
+                            en_yakin_rov = diger_rov
+                    # Lider yoksa en yakın ROV'u seç
+                    elif en_yakin_rov is None or (en_yakin_rov.role != 1 and mesafe < en_yakin_mesafe):
+                        en_yakin_mesafe = mesafe
+                        en_yakin_rov = diger_rov
+            
+            # En yakın ROV'a yaklaş
+            if en_yakin_rov:
+                hedef_pozisyon = en_yakin_rov.position
+                # Hedefe doğru git (yukarı da çık, sinyal daha iyi alınır)
+                yaklasma_farki = hedef_pozisyon - self.rov.position
+                yaklasma_farki.y += 5.0  # Yukarı çık
+                yaklasma_mesafesi = yaklasma_farki.length()
+                if yaklasma_mesafesi > 0:
+                    yaklasma_vektoru = yaklasma_farki / yaklasma_mesafesi
+                else:
+                    yaklasma_vektoru = Vec3(0, 1, 0)  # Sadece yukarı
+                
+                # İletişim menzili içine girince normal hedefe dön
+                if en_yakin_mesafe < iletisim_menzili * 0.8:  # %80 menzil içindeyse
+                    # Normal hedefe dön
+                    fark = self.hedef - self.rov.position
+                    mesafe = fark.length()
+                    if mesafe > 1.5:
+                        nihai_vektor = fark / mesafe  # normalize() yerine direkt bölme
+                    else:
+                        nihai_vektor = Vec3(0, 0, 0)
+                else:
+                    # Hala menzil dışındaysa yaklaşmaya devam et
+                    nihai_vektor = yaklasma_vektoru
+                
+                guc = 1.2  # Biraz daha hızlı yaklaş
+                self.apply_movement(nihai_vektor, guc_carpani=guc, momentum_korunumu=True)
+                return  # Kopma durumunda erken çık
         
-        hedef_vektoru = fark.normalized()
+        fark = self.hedef - self.rov.position
+        mesafe = fark.length()
+        if mesafe < 1.5: 
+            return  # Hedefe çok yakın, dur
+        
+        # Hedef yönü hesapla
+        if mesafe > 0:
+            hedef_vektoru = fark / mesafe  # normalize() yerine direkt bölme (daha güvenli)
+        else:
+            return
         kacinma_vektoru = Vec3(0,0,0)
 
         # GAT Tepkileri
@@ -464,8 +659,6 @@ class TakipciGNC(TemelGNC):
             kacinma_vektoru = Vec3(0, 1.0, 0) + (hedef_vektoru * -0.5)
         elif gat_kodu == 2: 
             kacinma_vektoru = -hedef_vektoru * 1.5
-        elif gat_kodu == 3: 
-            kacinma_vektoru = Vec3(0, 0.2, 0) 
         elif gat_kodu == 5: 
             pass
 
@@ -479,4 +672,9 @@ class TakipciGNC(TemelGNC):
         if gat_kodu == 5: guc = 1.5 
         if gat_kodu == 1: guc = 0.5 
         
-        self.vektor_to_motor(nihai_vektor, guc_carpani=guc)
+        # Yeni gerçekçi fizik sistemi kullan
+        if nihai_vektor.length() > 0:
+            self.apply_movement(nihai_vektor, guc_carpani=guc, momentum_korunumu=True)
+        else:
+            # Dur komutu
+            self.rov.velocity *= 0.9  # Yavaşça dur
