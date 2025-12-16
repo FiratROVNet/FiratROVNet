@@ -7,10 +7,35 @@ Grafik kartı olmadan tüm sistem fonksiyonlarını test eder.
 import os
 import sys
 import traceback
+import math
 
 # Headless mod için environment variable ayarla
 os.environ['DISPLAY'] = ':0'  # X11 display (headless için)
 os.environ['LIBGL_ALWAYS_SOFTWARE'] = '1'  # Software rendering
+
+# Mock distance fonksiyonu (Ursina olmadan)
+def mock_distance(a, b):
+    """İki nokta arası mesafe hesaplar"""
+    if hasattr(a, 'position'):
+        a = a.position
+    if hasattr(b, 'position'):
+        b = b.position
+    
+    if hasattr(a, 'x'):
+        ax, ay, az = a.x, a.y, a.z
+    elif isinstance(a, (list, tuple)):
+        ax, ay, az = a[0], a[1], a[2]
+    else:
+        ax, ay, az = 0, 0, 0
+    
+    if hasattr(b, 'x'):
+        bx, by, bz = b.x, b.y, b.z
+    elif isinstance(b, (list, tuple)):
+        bx, by, bz = b[0], b[1], b[2]
+    else:
+        bx, by, bz = 0, 0, 0
+    
+    return math.sqrt((bx - ax)**2 + (by - ay)**2 + (bz - az)**2)
 
 # Test sonuçları
 test_results = {
@@ -48,6 +73,11 @@ try:
     from FiratROVNet.gnc import Filo, LiderGNC, TakipciGNC
     from FiratROVNet.iletisim import AkustikModem
     from FiratROVNet.config import cfg
+    # Mock distance fonksiyonunu gnc modülüne ekle (test için)
+    import FiratROVNet.gnc as gnc_module
+    if not hasattr(gnc_module, 'distance'):
+        from ursina import distance as ursina_distance
+        gnc_module.distance = ursina_distance
     record_test_pass("Modül İmportları")
 except Exception as e:
     record_test_fail("Modül İmportları", e)
@@ -176,17 +206,63 @@ print("="*60)
 
 try:
     # Mock ROV entity (Ursina olmadan)
+    class MockVec3:
+        """Mock Vec3 sınıfı (Ursina olmadan)"""
+        def __init__(self, x=0.0, y=0.0, z=0.0):
+            self.x = x
+            self.y = y
+            self.z = z
+        
+        def __sub__(self, other):
+            if isinstance(other, (list, tuple)):
+                other = MockVec3(other[0], other[1], other[2])
+            return MockVec3(self.x - other.x, self.y - other.y, self.z - other.z)
+        
+        def __add__(self, other):
+            if isinstance(other, (list, tuple)):
+                other = MockVec3(other[0], other[1], other[2])
+            return MockVec3(self.x + other.x, self.y + other.y, self.z + other.z)
+        
+        def length(self):
+            return (self.x**2 + self.y**2 + self.z**2) ** 0.5
+        
+        def normalized(self):
+            l = self.length()
+            if l > 0:
+                return MockVec3(self.x/l, self.y/l, self.z/l)
+            return MockVec3(0, 0, 0)
+    
     class MockROV:
         def __init__(self, rov_id):
             self.id = rov_id
-            self.position = [0.0, 0.0, 0.0]
-            self.velocity = [0.0, 0.0, 0.0]
+            self.position = MockVec3(0.0, 0.0, 0.0)
+            self.velocity = MockVec3(0.0, 0.0, 0.0)
             self.y = 0.0
+            self.x = 0.0  # Position'dan ayrı attribute
+            self.z = 0.0  # Position'dan ayrı attribute
             self.role = 0
             self.modem = None
+            self.yuzeyde = False  # Yüzeyde mi? (y >= 0)
+            self.sensor_config = {
+                "engel_mesafesi": 20.0,
+                "iletisim_menzili": 35.0,
+                "min_pil_uyarisi": 10.0,
+                "kacinma_mesafesi": 8.0
+            }
+            self.environment_ref = None
+            self.filo_ref = None
+            self.battery = 100.0
+            self.batarya_bitti = False
         
         def move(self, komut, guc=1.0):
             pass  # Mock
+        
+        def set(self, key, value):
+            """Mock set metodu"""
+            if key == "rol":
+                self.role = value
+            elif key in self.sensor_config:
+                self.sensor_config[key] = value
     
     # Filo testi
     filo = Filo()

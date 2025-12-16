@@ -1298,7 +1298,9 @@ class LiderGNC(TemelGNC):
         asil_lider_mi = self._asil_lider_mi()
         
         # YÜZEYDE DİĞER LİDER BULMA: Sadece asıl lider değilse ve yüzeydeyse diğer lideri bul
-        if not asil_lider_mi and self.rov.yuzeyde:
+        # Güvenlik kontrolü: MockROV için yuzeyde attribute'u olmayabilir
+        rov_yuzeyde = getattr(self.rov, 'yuzeyde', self.rov.y >= 0 if hasattr(self.rov, 'y') else False)
+        if not asil_lider_mi and rov_yuzeyde:
             diger_lider = self._yuzeydeki_diger_lider_bul()
             if diger_lider:
                 if not self.diger_lider_bulundu:
@@ -1314,7 +1316,7 @@ class LiderGNC(TemelGNC):
                     self.diger_lider_bulundu = False
         
         # Diğer lider hedefi varsa ona doğru ilerle (sadece asıl lider değilse)
-        if not asil_lider_mi and self.diger_lider_hedefi is not None and self.rov.yuzeyde:
+        if not asil_lider_mi and self.diger_lider_hedefi is not None and rov_yuzeyde:
             # Önce asıl lidere mesafeyi kontrol et
             diger_lider = self._yuzeydeki_diger_lider_bul()
             if diger_lider:
@@ -1380,7 +1382,7 @@ class LiderGNC(TemelGNC):
                     yon = fark.normalized()
                     self.vektor_to_motor(yon, guc_carpani=1.0)
                 return
-        elif not self.rov.yuzeyde:
+        elif not rov_yuzeyde:
             # Yüzeyden ayrıldıysa diğer lider hedefini sıfırla
             self.diger_lider_hedefi = None
             self.diger_lider_bulundu = False
@@ -1546,7 +1548,9 @@ class TakipciGNC(TemelGNC):
                 self.iletisim_kopma_sayaci = max(0, self.iletisim_kopma_sayaci - 2)
         
         # YÜZEY İLETİŞİMİ: Yüzeydeyse ve başka yüzeydeki lider varsa ona doğru ilerle
-        if self.rov.yuzeyde:
+        # Güvenlik kontrolü: MockROV için yuzeyde attribute'u olmayabilir
+        rov_yuzeyde = getattr(self.rov, 'yuzeyde', self.rov.y >= 0 if hasattr(self.rov, 'y') else False)
+        if rov_yuzeyde:
             yuzeydeki_lider = self._yuzeydeki_lider_bul()
             if yuzeydeki_lider:
                 # Yüzeydeki liderin konumuna doğru ilerle
@@ -1562,7 +1566,7 @@ class TakipciGNC(TemelGNC):
                 return
         
         # YENİDEN BAĞLANMA: Yüzeydeyse ve sonar mesafesi içinde başka ROV varsa takipçi ol ve bat
-        if self.rov.yuzeyde:
+        if rov_yuzeyde:
             yakin_rov = self._sonar_mesafesinde_rov_bul()
             if yakin_rov and yakin_rov.role == 1:  # Lider ROV bulundu
                 # Takipçi ol
