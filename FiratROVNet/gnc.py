@@ -896,8 +896,11 @@ class Filo:
             print(f"   💡 Çözüm: filo.ekle() ile daha fazla GNC sistemi ekleyin")
             return
         
-        # Manuel modu kapat, otopilotu aç
-        self.sistemler[rov_id].manuel_kontrol = False
+        # Manuel modu kapat, otopilotu aç (sadece otomatik rol değişimi aktifse)
+        # Eğer manuel kontrol aktifse (otomatik_rol_degisimi_aktif = False), manuel kontrolü kapatma
+        # Çünkü kullanıcı manuel kontrol istiyor, ama hedefe gitmesini de istiyor
+        if self.otomatik_rol_degisimi_aktif:
+            self.sistemler[rov_id].manuel_kontrol = False
         
         # AI Durumunu Ayarla
         self.sistemler[rov_id].ai_aktif = ai
