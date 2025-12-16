@@ -16,6 +16,7 @@ class Filo:
         self.orijinal_lider_id = 0  # Orijinal lider ID
         self.lider_degisim_sayaci = {}  # {rov_id: sayac} - Lider değişim sayacı (sonsuz döngü önleme)
         self.korunan_rovlar = set()  # {rov_id} - Sonsuz döngü önleme tarafından korunan ROV'lar (takipçi yapılmaz)
+        self.otomatik_rol_degisimi_aktif = True  # Otomatik lider/takipçi rol değişimi aktif mi?
 
     def ekle(self, gnc_objesi):
         self.sistemler.append(gnc_objesi)
@@ -253,6 +254,33 @@ class Filo:
         print(f"✅ GNC Sistemi Kuruldu: {len(rovs)} ROV (Lider: ROV-{lider_id})")
         
         return tum_modemler
+    
+    def manuel_kontrol_all(self, aktif=True):
+        """
+        Tüm ROV'ları manuel kontrol moduna alır veya otomatik moda geri döndürür.
+        Manuel kontrol aktifken, otomatik lider/takipçi rol değişimleri durdurulur.
+        
+        Args:
+            aktif (bool): True ise tüm ROV'ları manuel kontrol moduna alır ve otomatik rol değişimini kapatır.
+                         False ise otomatik moda geri döndürür.
+        
+        Örnek:
+            # Tüm ROV'ları manuel kontrol moduna al
+            filo.manuel_kontrol_all(True)
+            
+            # Otomatik moda geri döndür
+            filo.manuel_kontrol_all(False)
+        """
+        for gnc in self.sistemler:
+            gnc.manuel_kontrol = aktif
+        
+        # Otomatik rol değişimini de kontrol et
+        self.otomatik_rol_degisimi_aktif = not aktif
+        
+        if aktif:
+            print(f"🔧 [FİLO] Tüm ROV'lar manuel kontrol moduna alındı. Otomatik rol değişimi KAPALI.")
+        else:
+            print(f"🤖 [FİLO] Tüm ROV'lar otomatik moda döndürüldü. Otomatik rol değişimi AÇIK.")
 
     def guncelle_hepsi(self, tahminler):
         # Önce tüm GNC sistemlerini güncelle
@@ -260,11 +288,13 @@ class Filo:
             if i < len(tahminler):
                 gnc.guncelle(tahminler[i])
         
-        # ÇOKLU LİDER DURUMU: Her grupta sadece bir lider olmalı (önce düzenle)
-        self._coklu_lider_duzenle()
-        
-        # SÜRÜ AYRILMA TESPİTİ: Lideri olmayan sürüler için otomatik lider seçimi (sonra kontrol et)
-        self._suru_ayrilma_tespiti()
+        # Otomatik rol değişimi aktifse, lider/takipçi atamalarını yap
+        if self.otomatik_rol_degisimi_aktif:
+            # ÇOKLU LİDER DURUMU: Her grupta sadece bir lider olmalı (önce düzenle)
+            self._coklu_lider_duzenle()
+            
+            # SÜRÜ AYRILMA TESPİTİ: Lideri olmayan sürüler için otomatik lider seçimi (sonra kontrol et)
+            self._suru_ayrilma_tespiti()
     
     def _coklu_lider_duzenle(self):
         """
