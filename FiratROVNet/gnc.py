@@ -919,7 +919,8 @@ class Filo:
             print(f"✅ [FİLO] ROV-{rov_id} hedefi başarıyla atandı")
             
             # Eğer lider ROV'a hedef verildiyse, takipçilerin hedeflerini otomatik güncelle
-            if self.sistemler[rov_id].rov.role == 1:  # Lider ise
+            # Sadece otomatik rol değişimi aktifse (manuel kontrol kapalıysa)
+            if self.otomatik_rol_degisimi_aktif and self.sistemler[rov_id].rov.role == 1:  # Lider ise
                 self._takipci_hedeflerini_guncelle(rov_id, x, hedef_y, z)
         except Exception as e:
             print(f"❌ [HATA] Hedef atama sırasında hata: {e}")
