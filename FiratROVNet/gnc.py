@@ -1409,7 +1409,11 @@ class LiderGNC(TemelGNC):
             return
 
         if self.hedef.y < 0: self.hedef.y = 0
-        hedef_vektoru = fark.normalized()
+        # Güvenlik: fark'ı normalize et (MockVec3 veya Vec3 olabilir)
+        if hasattr(fark, 'normalized'):
+            hedef_vektoru = fark.normalized()
+        else:
+            hedef_vektoru = Vec3(0, 0, 0)
         
         # BİRLEŞTİRİLMİŞ YAKINLAŞMA ÖNLEME VE GAT KODLARI
         kacinma_vektoru = self._yaklasma_onleme_vektoru(gat_kodu, hedef_vektoru)
@@ -1610,11 +1614,19 @@ class TakipciGNC(TemelGNC):
         
         # Hedefe ulaşma kontrolü: Yatay düzlemde (x, z) mesafesi kontrol et
         # Dikey (y) mesafesi farklı olabilir, bu yüzden sadece yatay mesafeye bak
-        yatay_fark = Vec3(fark.x, 0, fark.z)
+        # Güvenlik: fark MockVec3 olabilir, Vec3'e dönüştür
+        if hasattr(fark, 'x') and hasattr(fark, 'y') and hasattr(fark, 'z'):
+            yatay_fark = Vec3(fark.x, 0, fark.z)
+        else:
+            yatay_fark = Vec3(0, 0, 0)
         if yatay_fark.length() < 0.5:  # Yatay düzlemde 0.5 birim yakınsa hedefe ulaşıldı
             return
         
-        hedef_vektoru = fark.normalized()
+        # Güvenlik: fark'ı normalize et (MockVec3 veya Vec3 olabilir)
+        if hasattr(fark, 'normalized'):
+            hedef_vektoru = fark.normalized()
+        else:
+            hedef_vektoru = Vec3(0, 0, 0)
         
         # BİRLEŞTİRİLMİŞ YAKINLAŞMA ÖNLEME VE GAT KODLARI
         # GAT kodlarına göre en uygun kaçınma vektörünü hesapla
