@@ -244,4 +244,5 @@ if __name__ == "__main__":
             os.system('stty sane')
         except:
             pass
-        os._exit(0)
+        os._exit(0) 
+        #Güncelleme 
