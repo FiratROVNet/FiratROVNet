@@ -1400,7 +1400,11 @@ class LiderGNC(TemelGNC):
         
         # Hedefe ulaşma kontrolü: Yatay düzlemde (x, z) mesafesi kontrol et
         # Dikey (y) mesafesi farklı olabilir, bu yüzden sadece yatay mesafeye bak
-        yatay_fark = Vec3(fark.x, 0, fark.z)
+        # Güvenlik: fark MockVec3 olabilir, Vec3'e dönüştür
+        if hasattr(fark, 'x') and hasattr(fark, 'y') and hasattr(fark, 'z'):
+            yatay_fark = Vec3(fark.x, 0, fark.z)
+        else:
+            yatay_fark = Vec3(0, 0, 0)
         if yatay_fark.length() < 0.5:  # Yatay düzlemde 0.5 birim yakınsa hedefe ulaşıldı
             return
 

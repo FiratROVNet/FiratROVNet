@@ -207,30 +207,81 @@ print("="*60)
 try:
     # Mock ROV entity (Ursina olmadan)
     class MockVec3:
-        """Mock Vec3 sınıfı (Ursina olmadan)"""
+        """Mock Vec3 sınıfı (Ursina olmadan) - Ursina Vec3 ile uyumlu"""
         def __init__(self, x=0.0, y=0.0, z=0.0):
-            self.x = x
-            self.y = y
-            self.z = z
+            self.x = float(x)
+            self.y = float(y)
+            self.z = float(z)
+        
+        def __len__(self):
+            """Ursina Vec3 uyumluluğu için"""
+            return 3
+        
+        def __getitem__(self, index):
+            """Liste gibi erişim için"""
+            if index == 0:
+                return self.x
+            elif index == 1:
+                return self.y
+            elif index == 2:
+                return self.z
+            raise IndexError("Index out of range")
         
         def __sub__(self, other):
+            """Çıkarma işlemi"""
             if isinstance(other, (list, tuple)):
                 other = MockVec3(other[0], other[1], other[2])
-            return MockVec3(self.x - other.x, self.y - other.y, self.z - other.z)
+            elif hasattr(other, 'x') and hasattr(other, 'y') and hasattr(other, 'z'):
+                # Ursina Vec3 veya MockVec3
+                return MockVec3(self.x - other.x, self.y - other.y, self.z - other.z)
+            return MockVec3(self.x, self.y, self.z)
+        
+        def __rsub__(self, other):
+            """Sağdan çıkarma (other - self)"""
+            if isinstance(other, (list, tuple)):
+                other = MockVec3(other[0], other[1], other[2])
+            elif hasattr(other, 'x') and hasattr(other, 'y') and hasattr(other, 'z'):
+                return MockVec3(other.x - self.x, other.y - self.y, other.z - self.z)
+            return MockVec3(-self.x, -self.y, -self.z)
         
         def __add__(self, other):
+            """Toplama işlemi"""
             if isinstance(other, (list, tuple)):
                 other = MockVec3(other[0], other[1], other[2])
-            return MockVec3(self.x + other.x, self.y + other.y, self.z + other.z)
+            elif hasattr(other, 'x') and hasattr(other, 'y') and hasattr(other, 'z'):
+                return MockVec3(self.x + other.x, self.y + other.y, self.z + other.z)
+            return MockVec3(self.x, self.y, self.z)
+        
+        def __mul__(self, scalar):
+            """Çarpma işlemi (vektör * skaler)"""
+            return MockVec3(self.x * scalar, self.y * scalar, self.z * scalar)
+        
+        def __rmul__(self, scalar):
+            """Sağdan çarpma (skaler * vektör)"""
+            return MockVec3(self.x * scalar, self.y * scalar, self.z * scalar)
+        
+        def __truediv__(self, scalar):
+            """Bölme işlemi"""
+            if scalar != 0:
+                return MockVec3(self.x / scalar, self.y / scalar, self.z / scalar)
+            return MockVec3(0, 0, 0)
         
         def length(self):
+            """Vektör uzunluğu"""
             return (self.x**2 + self.y**2 + self.z**2) ** 0.5
         
         def normalized(self):
+            """Normalize edilmiş vektör"""
             l = self.length()
             if l > 0:
                 return MockVec3(self.x/l, self.y/l, self.z/l)
             return MockVec3(0, 0, 0)
+        
+        def dot(self, other):
+            """Nokta çarpımı"""
+            if hasattr(other, 'x') and hasattr(other, 'y') and hasattr(other, 'z'):
+                return self.x * other.x + self.y * other.y + self.z * other.z
+            return 0.0
     
     class MockROV:
         def __init__(self, rov_id):
