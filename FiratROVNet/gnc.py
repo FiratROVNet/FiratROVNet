@@ -11,8 +11,6 @@ import random
 class Filo:
     def __init__(self):
         self.sistemler = [] 
-        self.asil_hedef = None  # Asıl hedef (orijinal liderin hedefi)
-        self.orijinal_lider_id = 0  # Orijinal lider ID
 
     def ekle(self, gnc_objesi):
         self.sistemler.append(gnc_objesi)
@@ -23,7 +21,7 @@ class Filo:
                 if isinstance(sistem, LiderGNC):
                     sistem.rehber_guncelle(modem_rehberi)
 
-    def otomatik_kurulum(self, rovs, lider_id=0, modem_ayarlari=None, baslangic_hedefleri=None, sensor_ayarlari=None):
+    def otomatik_kurulum(self, rovs, modem_ayarlari=None, baslangic_hedefleri=None, sensor_ayarlari=None):
         """
         ROV filo sistemini otomatik olarak kurar ve yapılandırır.
         
@@ -32,11 +30,12 @@ class Filo:
         
         Args:
             rovs: ROV entity listesi (Ortam.rovs)
-            lider_id (int): Lider ROV'un ID'si (varsayılan: 0)
             modem_ayarlari (dict, optional): Modem parametreleri. Örnek:
+                # Format 1: Tüm ROV'lar için ortak ayarlar (dict değil, None)
+                # Format 2: Her ROV için özel ayarlar (ROV ID ile)
                 {
-                    'lider': {'gurultu_orani': 0.05, 'kayip_orani': 0.1, 'gecikme': 0.5},
-                    'takipci': {'gurultu_orani': 0.1, 'kayip_orani': 0.1, 'gecikme': 0.5}
+                    0: {'gurultu_orani': 0.05, 'kayip_orani': 0.1, 'gecikme': 0.5},
+                    1: {'gurultu_orani': 0.1, 'kayip_orani': 0.1, 'gecikme': 0.5}
                 }
             baslangic_hedefleri (dict, optional): ROV ID'lerine göre başlangıç hedefleri. Örnek:
                 {
@@ -52,12 +51,7 @@ class Filo:
                     'iletisim_menzili': 40.0,
                     'min_pil_uyarisi': 15.0
                 }
-                # Format 2: Lider ve takipçi için ayrı ayarlar
-                {
-                    'lider': {'engel_mesafesi': 30.0, 'iletisim_menzili': 50.0, 'min_pil_uyarisi': 20.0},
-                    'takipci': {'engel_mesafesi': 25.0, 'iletisim_menzili': 40.0, 'min_pil_uyarisi': 15.0}
-                }
-                # Format 3: Her ROV için özel ayarlar (ROV ID ile)
+                # Format 2: Her ROV için özel ayarlar (ROV ID ile)
                 {
                     0: {'engel_mesafesi': 30.0, 'iletisim_menzili': 50.0},  # Lider
                     1: {'engel_mesafesi': 25.0, 'iletisim_menzili': 40.0},  # Takipçi 1
@@ -84,47 +78,45 @@ class Filo:
             )
             
             # Özel modem ayarları ile
+            # Önce ROV rolleri manuel olarak ayarlanmalı
+            app.rovs[0].set("rol", 1)  # ROV-0 lider
+            for i in range(1, len(app.rovs)):
+                app.rovs[i].set("rol", 0)  # Diğerleri takipçi
+            
             tum_modemler = filo.otomatik_kurulum(
                 rovs=app.rovs,
                 modem_ayarlari={
-                    'lider': {'gurultu_orani': 0.03, 'kayip_orani': 0.05, 'gecikme': 0.3},
-                    'takipci': {'gurultu_orani': 0.15, 'kayip_orani': 0.2, 'gecikme': 0.6}
+                    0: {'gurultu_orani': 0.03, 'kayip_orani': 0.05, 'gecikme': 0.3},
+                    1: {'gurultu_orani': 0.15, 'kayip_orani': 0.2, 'gecikme': 0.6}
                 }
             )
             
             # Tüm parametrelerle tam kontrol
+            # Önce ROV rolleri manuel olarak atanmalı
+            app.rovs[0].set("rol", 1)  # ROV-0 lider
+            app.rovs[1].set("rol", 0)  # ROV-1 takipçi
+            app.rovs[2].set("rol", 0)  # ROV-2 takipçi
+            
             tum_modemler = filo.otomatik_kurulum(
                 rovs=app.rovs,
-                lider_id=0,
                 modem_ayarlari={
-                    'lider': {'gurultu_orani': 0.02, 'kayip_orani': 0.05, 'gecikme': 0.4},
-                    'takipci': {'gurultu_orani': 0.12, 'kayip_orani': 0.15, 'gecikme': 0.5}
+                    0: {'gurultu_orani': 0.02, 'kayip_orani': 0.05, 'gecikme': 0.4},
+                    1: {'gurultu_orani': 0.12, 'kayip_orani': 0.15, 'gecikme': 0.5},
+                    2: {'gurultu_orani': 0.12, 'kayip_orani': 0.15, 'gecikme': 0.5}
                 },
                 baslangic_hedefleri={
                     0: (40, 0, 60),
                     1: (35, -10, 50),
-                    2: (40, -10, 50),
-                    3: (45, -10, 50)
+                    2: (40, -10, 50)
                 },
                 sensor_ayarlari={
-                    'lider': {'engel_mesafesi': 30.0, 'iletisim_menzili': 50.0, 'min_pil_uyarisi': 20.0},
-                    'takipci': {'engel_mesafesi': 25.0, 'iletisim_menzili': 40.0, 'min_pil_uyarisi': 15.0}
+                    0: {'engel_mesafesi': 30.0, 'iletisim_menzili': 50.0, 'min_pil_uyarisi': 20.0},
+                    1: {'engel_mesafesi': 25.0, 'iletisim_menzili': 40.0, 'min_pil_uyarisi': 15.0},
+                    2: {'engel_mesafesi': 25.0, 'iletisim_menzili': 40.0, 'min_pil_uyarisi': 15.0}
                 }
             )
         """
-        # Varsayılan modem ayarları
-        if modem_ayarlari is None:
-            modem_ayarlari = {
-                'lider': {'gurultu_orani': 0.05, 'kayip_orani': 0.1, 'gecikme': 0.5},
-                'takipci': {'gurultu_orani': 0.1, 'kayip_orani': 0.1, 'gecikme': 0.5}
-            }
-        
-        # Varsayılan sensör ayarları (sensor_ayarlari None ise otomatik uygulanır)
-        if sensor_ayarlari is None:
-            sensor_ayarlari = {
-                'lider': {'engel_mesafesi': 30.0, 'iletisim_menzili': 50.0, 'min_pil_uyarisi': 20.0, 'kacinma_mesafesi': 4.0},
-                'takipci': {'engel_mesafesi': 10.0, 'iletisim_menzili': 40.0, 'min_pil_uyarisi': 15.0, 'kacinma_mesafesi': 4.0}
-            }
+        # Varsayılan sensör ayarları (sensor_ayarlari None ise uygulanmaz)
         
         # Sensör ayarları için kontrol listesi
         varsayilan_sensor_ayarlari = {
@@ -135,7 +127,13 @@ class Filo:
         }
         
         tum_modemler = {}
-        lider_modem = None
+        
+        # Varsayılan modem ayarları (tüm ROV'lar için aynı)
+        varsayilan_modem_ayarlari = {
+            'gurultu_orani': 0.1,
+            'kayip_orani': 0.1,
+            'gecikme': 0.5
+        }
         
         # Her ROV için işlem yap
         for i, rov in enumerate(rovs):
@@ -146,108 +144,61 @@ class Filo:
                     for key, value in sensor_ayarlari.items():
                         if key in varsayilan_sensor_ayarlari:
                             rov.set(key, value)
-                # Format 2: Lider ve takipçi için ayrı ayarlar
-                elif 'lider' in sensor_ayarlari or 'takipci' in sensor_ayarlari:
-                    if i == lider_id and 'lider' in sensor_ayarlari:
-                        for key, value in sensor_ayarlari['lider'].items():
-                            if key in varsayilan_sensor_ayarlari:
-                                rov.set(key, value)
-                    elif i != lider_id and 'takipci' in sensor_ayarlari:
-                        for key, value in sensor_ayarlari['takipci'].items():
-                            if key in varsayilan_sensor_ayarlari:
-                                rov.set(key, value)
                 # Format 3: Her ROV için özel ayarlar (ROV ID ile)
                 elif isinstance(sensor_ayarlari, dict) and i in sensor_ayarlari:
                     for key, value in sensor_ayarlari[i].items():
                         if key in varsayilan_sensor_ayarlari:
                             rov.set(key, value)
             
-            if i == lider_id:
-                # Lider ROV
-                rov.set("rol", 1)
-                lider_modem = AkustikModem(
-                    rov_id=i,
-                    gurultu_orani=modem_ayarlari['lider'].get('gurultu_orani', 0.05),
-                    kayip_orani=modem_ayarlari['lider'].get('kayip_orani', 0.1),
-                    gecikme=modem_ayarlari['lider'].get('gecikme', 0.5)
-                )
-                rov.modem = lider_modem
-                tum_modemler[i] = lider_modem
-                
-                # LiderGNC oluştur ve ekle (Filo referansı ile)
-                gnc = LiderGNC(rov, lider_modem, filo_ref=self)
-                self.ekle(gnc)
-                
-                # Başlangıç hedefi varsa ata (hedef_atama ile)
-                if baslangic_hedefleri and i in baslangic_hedefleri:
-                    hedef = baslangic_hedefleri[i]
-                    # (x, y, z) formatında
-                    if len(hedef) >= 3:
-                        gnc.hedef_atama(hedef[0], hedef[1], hedef[2])
-                    else:
-                        # Geriye uyumluluk: (x, z, y) formatı
-                        gnc.hedef_atama(hedef[0], hedef[2] if len(hedef) > 2 else 0, hedef[1] if len(hedef) > 1 else 0)
-                elif baslangic_hedefleri is None:
-                    # Varsayılan lider hedefi
-                    gnc.hedef_atama(40, 0, 60)
-            else:
-                # Takipçi ROV
-                rov.set("rol", 0)
-                modem = AkustikModem(
-                    rov_id=i,
-                    gurultu_orani=modem_ayarlari['takipci'].get('gurultu_orani', 0.1),
-                    kayip_orani=modem_ayarlari['takipci'].get('kayip_orani', 0.1),
-                    gecikme=modem_ayarlari['takipci'].get('gecikme', 0.5)
-                )
-                rov.modem = modem
-                tum_modemler[i] = modem
-                
-                # TakipciGNC oluştur ve ekle (lider_modem referansı ile)
-                gnc = TakipciGNC(rov, modem, lider_modem_ref=lider_modem)
-                self.ekle(gnc)
-                
-                # Başlangıç hedefi varsa ata (hedef_atama ile)
-                if baslangic_hedefleri and i in baslangic_hedefleri:
-                    hedef = baslangic_hedefleri[i]
-                    # (x, y, z) formatında
-                    if len(hedef) >= 3:
-                        gnc.hedef_atama(hedef[0], hedef[1], hedef[2])
-                    else:
-                        # Geriye uyumluluk: (x, z, y) formatı
-                        gnc.hedef_atama(hedef[0], hedef[2] if len(hedef) > 2 else 0, hedef[1] if len(hedef) > 1 else 0)
+            # Modem oluştur
+            if modem_ayarlari:
+                # Her ROV için özel modem ayarları varsa kullan
+                if isinstance(modem_ayarlari, dict) and i in modem_ayarlari:
+                    modem_ayar = modem_ayarlari[i]
                 else:
-                    # Takipçi için hedef yoksa, liderin hedefine göre otomatik belirle
-                    # Lider hedefi bul (lider zaten yukarıda oluşturuldu)
-                    lider_gnc = self.sistemler[lider_id] if lider_id < len(self.sistemler) else None
-                    if lider_gnc and lider_gnc.hedef:
-                        # Lider hedefine göre formasyon
-                        self._takipci_hedefi_belirle(gnc, i, lider_gnc.hedef.x, lider_gnc.hedef.y, lider_gnc.hedef.z, lider_id)
-                    else:
-                        # Lider hedefi henüz yoksa, varsayılan takipçi hedefi (formasyon)
-                        offset_x = 30 + (i * 5)
-                        gnc.hedef_atama(offset_x, -10, 50)
+                    # Varsayılan ayarlar
+                    modem_ayar = varsayilan_modem_ayarlari
+            else:
+                modem_ayar = varsayilan_modem_ayarlari
+            
+            modem = AkustikModem(
+                rov_id=i,
+                gurultu_orani=modem_ayar.get('gurultu_orani', 0.1),
+                kayip_orani=modem_ayar.get('kayip_orani', 0.1),
+                gecikme=modem_ayar.get('gecikme', 0.5)
+            )
+            rov.modem = modem
+            tum_modemler[i] = modem
+            
+            # ROV'un rolü zaten atanmış olmalı (rov.set("rol", ...) ile manuel)
+            # Eğer rol atanmamışsa varsayılan olarak takipçi (0)
+            if not hasattr(rov, 'role') or rov.role is None:
+                rov.set("rol", 0)
+            
+            # ROV'un rolüne göre GNC sistemi oluştur
+            if rov.role == 1:
+                # LiderGNC oluştur
+                gnc = LiderGNC(rov, modem, filo_ref=self)
+            else:
+                # TakipciGNC oluştur (lider_modem_ref=None, manuel olarak ayarlanabilir)
+                gnc = TakipciGNC(rov, modem, lider_modem_ref=None)
+            
+            self.ekle(gnc)
+            
+            # Başlangıç hedefi varsa ata
+            if baslangic_hedefleri and i in baslangic_hedefleri:
+                hedef = baslangic_hedefleri[i]
+                # (x, y, z) formatında
+                if len(hedef) >= 3:
+                    gnc.hedef_atama(hedef[0], hedef[1], hedef[2])
+                else:
+                    # Geriye uyumluluk: (x, z, y) formatı
+                    gnc.hedef_atama(hedef[0], hedef[2] if len(hedef) > 2 else 0, hedef[1] if len(hedef) > 1 else 0)
         
         # Rehberi dağıt
         self.rehber_dagit(tum_modemler)
         
-        # Asıl hedefi belirle (orijinal liderin hedefi)
-        if lider_id < len(self.sistemler):
-            orijinal_lider_gnc = self.sistemler[lider_id]
-            if orijinal_lider_gnc.hedef:
-                self.asil_hedef = orijinal_lider_gnc.hedef
-            elif baslangic_hedefleri and lider_id in baslangic_hedefleri:
-                hedef = baslangic_hedefleri[lider_id]
-                if len(hedef) >= 3:
-                    self.asil_hedef = Vec3(hedef[0], hedef[1], hedef[2])
-                else:
-                    self.asil_hedef = Vec3(hedef[0], hedef[2] if len(hedef) > 2 else 0, hedef[1] if len(hedef) > 1 else 0)
-            else:
-                # Varsayılan hedef
-                self.asil_hedef = Vec3(40, 0, 60)
-        
-        self.orijinal_lider_id = lider_id
-        
-        print(f"✅ GNC Sistemi Kuruldu: {len(rovs)} ROV (Lider: ROV-{lider_id})")
+        print(f"✅ GNC Sistemi Kuruldu: {len(rovs)} ROV")
         
         return tum_modemler
     
@@ -281,81 +232,6 @@ class Filo:
                 gnc.guncelle(tahminler[i])
     
     
-    def _takipci_hedefi_belirle(self, takipci_gnc, takipci_rov_id, lider_x, lider_y, lider_z, lider_rov_id):
-        """
-        Tek bir takipçi ROV için hedef belirler (liderin hedefine göre +-10 metre mesafede).
-        
-        Args:
-            takipci_gnc: Takipçi GNC objesi
-            takipci_rov_id: Takipçi ROV'un ID'si
-            lider_x: Lider hedef X koordinatı
-            lider_y: Lider hedef Y koordinatı (derinlik)
-            lider_z: Lider hedef Z koordinatı
-            lider_rov_id: Lider ROV'un ID'si
-        """
-        formasyon_mesafesi = 10.0  # +-10 metre
-        
-        # Formasyon offset'leri (her takipçi için farklı pozisyon)
-        # Basit formasyon: Lider merkezde, takipçiler çevresinde
-        formasyon_offsetleri = [
-            (-formasyon_mesafesi, -formasyon_mesafesi),  # Takipçi 1: Sol-Alt
-            (formasyon_mesafesi, -formasyon_mesafesi),   # Takipçi 2: Sağ-Alt
-            (-formasyon_mesafesi, formasyon_mesafesi),   # Takipçi 3: Sol-Üst
-            (formasyon_mesafesi, formasyon_mesafesi),   # Takipçi 4: Sağ-Üst
-            (0, -formasyon_mesafesi),                    # Takipçi 5: Alt
-            (0, formasyon_mesafesi),                     # Takipçi 6: Üst
-            (-formasyon_mesafesi, 0),                    # Takipçi 7: Sol
-            (formasyon_mesafesi, 0),                     # Takipçi 8: Sağ
-        ]
-        
-        # Takipçi index'i: Lider hariç, takipçilerin sırası
-        takipci_index = 0
-        for i, gnc in enumerate(self.sistemler):
-            if i == lider_rov_id:
-                continue
-            if i == takipci_rov_id:
-                break
-            if gnc.rov.role == 0:  # Takipçi ise
-                takipci_index += 1
-        
-        # Formasyon offset'ini al (eğer takipçi sayısı offset sayısından fazlaysa, tekrar kullan)
-        offset_x, offset_z = formasyon_offsetleri[takipci_index % len(formasyon_offsetleri)]
-        
-        # Takipçi hedefi: Lider hedefi + offset
-        takipci_x = lider_x + offset_x
-        takipci_z = lider_z + offset_z
-        takipci_y = lider_y  # Aynı derinlik (veya -10 gibi sabit bir değer)
-        
-        # Eğer lider yüzeydeyse (y >= 0), takipçiler su altında olmalı
-        if lider_y >= 0:
-            takipci_y = -10.0  # Su altı derinliği
-        
-        # Hedef atama
-        try:
-            takipci_gnc.hedef_atama(takipci_x, takipci_y, takipci_z)
-        except Exception as e:
-            print(f"⚠️ [UYARI] ROV-{takipci_rov_id} hedefi belirlenirken hata: {e}")
-    
-    def _takipci_hedeflerini_guncelle(self, lider_rov_id, lider_x, lider_y, lider_z):
-        """
-        Lider ROV'un hedefi değiştiğinde, tüm takipçi ROV'ların hedeflerini
-        liderin hedefine göre +-10 metre mesafede formasyon şeklinde günceller.
-        
-        Args:
-            lider_rov_id: Lider ROV'un ID'si
-            lider_x: Lider hedef X koordinatı
-            lider_y: Lider hedef Y koordinatı (derinlik)
-            lider_z: Lider hedef Z koordinatı
-        """
-        for i, gnc in enumerate(self.sistemler):
-            # Lider ROV'u atla
-            if i == lider_rov_id:
-                continue
-            
-            # Sadece takipçi ROV'lar için hedef güncelle
-            if gnc.rov.role == 0:  # Takipçi ise
-                self._takipci_hedefi_belirle(gnc, i, lider_x, lider_y, lider_z, lider_rov_id)
-                print(f"✅ [FİLO] ROV-{i} hedefi otomatik güncellendi: Lider hedefine göre formasyon")
     
     
     def set(self, rov_id, ayar_adi, deger):
@@ -505,9 +381,6 @@ class Filo:
             self.sistemler[rov_id].hedef_atama(x, hedef_y, z)
             print(f"✅ [FİLO] ROV-{rov_id} hedefi başarıyla atandı")
             
-            # Eğer lider ROV'a hedef verildiyse, takipçilerin hedeflerini otomatik güncelle
-            if self.sistemler[rov_id].rov.role == 1:  # Lider ise
-                self._takipci_hedeflerini_guncelle(rov_id, x, hedef_y, z)
         except Exception as e:
             print(f"❌ [HATA] Hedef atama sırasında hata: {e}")
             import traceback

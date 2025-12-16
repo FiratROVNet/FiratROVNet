@@ -107,9 +107,13 @@ app.sim_olustur(
 
 # Filo Kurulumu (ZORUNLU ADIM)
 filo = Filo()
+# ROV rollerini manuel olarak ayarla
+app.rovs[0].set("rol", 1)  # ROV-0 lider
+for i in range(1, len(app.rovs)):
+    app.rovs[i].set("rol", 0)  # Diğerleri takipçi
+
 filo.otomatik_kurulum(
     rovs=app.rovs,
-    lider_id=0,
     baslangic_hedefleri={
         0: (-20, 0, -20),  # Lider başlangıç noktası
         1: (-25, -5, -25), 

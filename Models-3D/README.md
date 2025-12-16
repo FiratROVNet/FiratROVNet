@@ -108,3 +108,4 @@ app.sim_olustur(n_rovs=4, rov_model_yolu="my_rov.obj")
 rovs[0].model = "Models-3D/lider_rov.obj"
 ```
 
+
