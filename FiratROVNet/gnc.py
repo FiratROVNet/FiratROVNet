@@ -11,12 +11,8 @@ import random
 class Filo:
     def __init__(self):
         self.sistemler = [] 
-        self.suru_lider_secildi = {}  # {grup_id: True} - Hangi gruplar için lider seçildi
         self.asil_hedef = None  # Asıl hedef (orijinal liderin hedefi)
         self.orijinal_lider_id = 0  # Orijinal lider ID
-        self.lider_degisim_sayaci = {}  # {rov_id: sayac} - Lider değişim sayacı (sonsuz döngü önleme)
-        self.korunan_rovlar = set()  # {rov_id} - Sonsuz döngü önleme tarafından korunan ROV'lar (takipçi yapılmaz)
-        self.otomatik_rol_degisimi_aktif = True  # Otomatik lider/takipçi rol değişimi aktif mi?
 
     def ekle(self, gnc_objesi):
         self.sistemler.append(gnc_objesi)
@@ -258,10 +254,9 @@ class Filo:
     def manuel_kontrol_all(self, aktif=True):
         """
         Tüm ROV'ları manuel kontrol moduna alır veya otomatik moda geri döndürür.
-        Manuel kontrol aktifken, otomatik lider/takipçi rol değişimleri durdurulur.
         
         Args:
-            aktif (bool): True ise tüm ROV'ları manuel kontrol moduna alır ve otomatik rol değişimini kapatır.
+            aktif (bool): True ise tüm ROV'ları manuel kontrol moduna alır.
                          False ise otomatik moda geri döndürür.
         
         Örnek:
@@ -274,198 +269,17 @@ class Filo:
         for gnc in self.sistemler:
             gnc.manuel_kontrol = aktif
         
-        # Otomatik rol değişimini de kontrol et
-        self.otomatik_rol_degisimi_aktif = not aktif
-        
         if aktif:
-            print(f"🔧 [FİLO] Tüm ROV'lar manuel kontrol moduna alındı. Otomatik rol değişimi KAPALI.")
+            print(f"🔧 [FİLO] Tüm ROV'lar manuel kontrol moduna alındı.")
         else:
-            print(f"🤖 [FİLO] Tüm ROV'lar otomatik moda döndürüldü. Otomatik rol değişimi AÇIK.")
+            print(f"🤖 [FİLO] Tüm ROV'lar otomatik moda döndürüldü.")
 
     def guncelle_hepsi(self, tahminler):
-        # Önce tüm GNC sistemlerini güncelle
+        # Tüm GNC sistemlerini güncelle
         for i, gnc in enumerate(self.sistemler):
             if i < len(tahminler):
                 gnc.guncelle(tahminler[i])
-        
-        # Otomatik rol değişimi aktifse, lider/takipçi atamalarını yap
-        if self.otomatik_rol_degisimi_aktif:
-            # ÇOKLU LİDER DURUMU: Her grupta sadece bir lider olmalı (önce düzenle)
-            self._coklu_lider_duzenle()
-            
-            # SÜRÜ AYRILMA TESPİTİ: Lideri olmayan sürüler için otomatik lider seçimi (sonra kontrol et)
-            self._suru_ayrilma_tespiti()
     
-    def _coklu_lider_duzenle(self):
-        """
-        Birden fazla lider durumunda: Her grupta sadece bir lider olmalı.
-        Aynı grupta birden fazla lider varsa, asıl hedefe en yakın olan asıl liderdir.
-        Farklı gruplardaki liderler birbirini etkilemez (iletişim kopmuş gruplar kendi liderlerini tutar).
-        Ayrıca GNC tipini dinamik olarak günceller (TakipciGNC -> LiderGNC veya tersi).
-        """
-        # GNC tipini role göre güncelle
-        for i, gnc in enumerate(self.sistemler):
-            # TakipciGNC ama ROV lider olduysa -> LiderGNC'ye dönüştür
-            if isinstance(gnc, TakipciGNC) and gnc.rov.role == 1:
-                self._gnc_tipini_degistir(i, 'lider')
-            # LiderGNC ama ROV takipçi olduysa -> TakipciGNC'ye dönüştür
-            elif isinstance(gnc, LiderGNC) and gnc.rov.role == 0:
-                # En yakın lideri bul
-                en_yakin_lider_modem = self._en_yakin_lider_modem_bul(gnc.rov)
-                self._gnc_tipini_degistir(i, 'takipci', lider_modem_ref=en_yakin_lider_modem)
-        
-        # İletişim bağlantılarına göre grupları bul
-        gruplar = self._rov_gruplarini_bul()
-        
-        # Her grup için ayrı ayrı kontrol et (farklı gruplar birbirini etkilemez)
-        for grup in gruplar:
-            grup_liderleri = []
-            for gnc_index in grup:
-                gnc = self.sistemler[gnc_index]
-                if gnc.rov.role == 1:
-                    grup_liderleri.append((gnc_index, gnc))
-            
-            # Bir grupta birden fazla lider varsa, asıl hedefe en yakın olanı asıl lider yap
-            # ÖNEMLİ: Sadece aynı gruptaki liderler arasında seçim yapılır
-            if len(grup_liderleri) > 1:
-                # Asıl hedef yoksa, orijinal liderin hedefini kullan
-                if self.asil_hedef is None:
-                    if self.orijinal_lider_id < len(self.sistemler):
-                        orijinal_lider_gnc = self.sistemler[self.orijinal_lider_id]
-                        if orijinal_lider_gnc.hedef:
-                            self.asil_hedef = orijinal_lider_gnc.hedef
-                        else:
-                            self.asil_hedef = Vec3(40, 0, 60)
-                
-                # Asıl hedefe en yakın lideri bul (sadece bu grup içinde)
-                asil_lider_index = None
-                asil_lider_gnc = None
-                en_yakin_mesafe = float('inf')
-                
-                for lider_index, lider_gnc in grup_liderleri:
-                    mesafe = distance(lider_gnc.rov.position, self.asil_hedef)
-                    if mesafe < en_yakin_mesafe:
-                        en_yakin_mesafe = mesafe
-                        asil_lider_index = lider_index
-                        asil_lider_gnc = lider_gnc
-                
-                # Diğer liderleri takipçi yap (sadece bu grup içinde)
-                # ÖNEMLİ: Sadece aynı gruptaki liderler etkilenir, farklı gruplardaki liderler korunur
-                for lider_index, lider_gnc in grup_liderleri:
-                    if lider_index != asil_lider_index:
-                        # Sonsuz döngü önleme: Aynı ROV çok sık lider/takipçi değiştiriyorsa durdur
-                        rov_id = lider_gnc.rov.id
-                        if rov_id not in self.lider_degisim_sayaci:
-                            self.lider_degisim_sayaci[rov_id] = 0
-                        
-                        self.lider_degisim_sayaci[rov_id] += 1
-                        
-                        # Eğer son 10 frame'de 5 kereden fazla değiştiyse, durdur (sonsuz döngü)
-                        if self.lider_degisim_sayaci[rov_id] > 5:
-                            # Bu ROV'u korunan listesine ekle (sadece bir kez)
-                            if rov_id not in self.korunan_rovlar:
-                                print(f"⚠️ [SONSUZ DÖNGÜ ÖNLEME] ROV-{rov_id} çok sık lider/takipçi değiştiriyor, lider olarak bırakılıyor")
-                                self.korunan_rovlar.add(rov_id)
-                            # Sayacı sıfırla ve bu ROV'u lider olarak bırak (sonsuz döngüyü durdur)
-                            self.lider_degisim_sayaci[rov_id] = 0
-                            # Bu ROV'u lider olarak bırak, takipçi yapma
-                            continue
-                        
-                        # Eğer bu ROV korunan listede ise, takipçi yapma
-                        if rov_id in self.korunan_rovlar:
-                            continue
-                        
-                        # ÖNEMLİ: Eğer bu ROV asıl liderle iletişim kuruyorsa, takipçi yapma
-                        # Bu, geçici iletişim kopmalarını önler
-                        asil_lider_rov = asil_lider_gnc.rov
-                        mesafe = distance(lider_gnc.rov.position, asil_lider_rov.position)
-                        rov_yuzeyde = lider_gnc.rov.y >= 0
-                        asil_lider_yuzeyde = asil_lider_rov.y >= 0
-                        
-                        iletisim_var = False
-                        if rov_yuzeyde and asil_lider_yuzeyde:
-                            iletisim_var = True
-                        else:
-                            iletisim_menzili = lider_gnc.rov.sensor_config.get("iletisim_menzili", 35.0)
-                            # Çok yakınsa (10m içinde) iletişim var say
-                            if mesafe < 10.0:
-                                iletisim_var = True
-                            else:
-                                iletisim_var = mesafe < iletisim_menzili
-                        
-                        # Eğer iletişim varsa, takipçi yapma (geçici kopmaları önle)
-                        if iletisim_var:
-                            continue
-                        
-                        # Sadece aynı gruptaki liderleri takipçi yap
-                        # Farklı gruplardaki liderler (iletişim kopmuş) korunur
-                        print(f"🔄 [SÜRÜ LİDER] ROV-{lider_gnc.rov.id} aynı grupta asıl hedefe uzak, takipçi yapılıyor (Asıl lider: ROV-{asil_lider_gnc.rov.id})")
-                        lider_gnc.rov.set("rol", 0)
-                        # Asıl liderin modem referansını al
-                        asil_lider_modem = asil_lider_gnc.modem if asil_lider_gnc.modem else None
-                        self._gnc_tipini_degistir(lider_index, 'takipci', lider_modem_ref=asil_lider_modem)
-                        
-                        # Takipçi hedefini asıl liderin yakınına ayarla
-                        takipci_gnc = self.sistemler[lider_index]
-                        if isinstance(takipci_gnc, TakipciGNC):
-                            offset_x = (lider_index - asil_lider_index) * 5.0  # Formasyon offset
-                            takipci_gnc.hedef = Vec3(
-                                asil_lider_gnc.rov.x + offset_x,
-                                asil_lider_gnc.rov.y,
-                                asil_lider_gnc.rov.z
-                            )
-                        
-                        # Lider değişim sayacını artır (takipçi yapıldığı için)
-                        self.lider_degisim_sayaci[rov_id] += 0.5
-        
-        # Lider değişim sayacını azalt (her frame'de bir)
-        # Bu sayede sürekli değişen ROV'lar tespit edilir
-        for rov_id in list(self.lider_degisim_sayaci.keys()):
-            if self.lider_degisim_sayaci[rov_id] > 0:
-                self.lider_degisim_sayaci[rov_id] = max(0, self.lider_degisim_sayaci[rov_id] - 0.1)
-                # Eğer sayac 0'a düştüyse, dict'ten kaldır
-                if self.lider_degisim_sayaci[rov_id] <= 0:
-                    del self.lider_degisim_sayaci[rov_id]
-        
-        # Tüm liderleri bul (takipçi bağlantıları için)
-        liderler = []
-        for i, gnc in enumerate(self.sistemler):
-            if gnc.rov.role == 1:
-                liderler.append((i, gnc))
-        
-        # Her takipçi için en yakın iletişim menzilindeki lideri bul
-        if len(liderler) > 0:
-            # Her takipçi için en yakın iletişim menzilindeki lideri bul
-            for i, gnc in enumerate(self.sistemler):
-                if gnc.rov.role == 0 and isinstance(gnc, TakipciGNC):  # Takipçi ise
-                    en_yakin_lider = None
-                    en_yakin_mesafe = float('inf')
-                    
-                    for lider_id, lider_gnc in liderler:
-                        lider_rov = lider_gnc.rov
-                        mesafe = distance(gnc.rov.position, lider_rov.position)
-                        
-                        # Yüzey iletişimi kontrolü
-                        gnc_yuzeyde = gnc.rov.y >= 0
-                        lider_yuzeyde = lider_rov.y >= 0
-                        
-                        iletisim_var = False
-                        if gnc_yuzeyde and lider_yuzeyde:
-                            # Yüzey iletişimi sınırsız
-                            iletisim_var = True
-                        else:
-                            # Su altı iletişimi
-                            iletisim_menzili = gnc.rov.sensor_config.get("iletisim_menzili", 35.0)
-                            iletisim_var = mesafe < iletisim_menzili
-                        
-                        # İletişim menzilindeyse ve daha yakınsa
-                        if iletisim_var and mesafe < en_yakin_mesafe:
-                            en_yakin_mesafe = mesafe
-                            en_yakin_lider = lider_gnc
-                    
-                    # En yakın liderle bağlantıyı güncelle (TakipciGNC için lider_ref)
-                    if en_yakin_lider:
-                        gnc.lider_ref = en_yakin_lider.modem if en_yakin_lider.modem else None
     
     def _takipci_hedefi_belirle(self, takipci_gnc, takipci_rov_id, lider_x, lider_y, lider_z, lider_rov_id):
         """
@@ -543,233 +357,6 @@ class Filo:
                 self._takipci_hedefi_belirle(gnc, i, lider_x, lider_y, lider_z, lider_rov_id)
                 print(f"✅ [FİLO] ROV-{i} hedefi otomatik güncellendi: Lider hedefine göre formasyon")
     
-    def _gnc_tipini_degistir(self, index, yeni_tip, lider_modem_ref=None):
-        """
-        GNC tipini dinamik olarak değiştirir.
-        
-        Args:
-            index: GNC sisteminin indeksi
-            yeni_tip: 'lider' veya 'takipci'
-            lider_modem_ref: TakipciGNC için lider modem referansı
-        """
-        if index >= len(self.sistemler):
-            return
-        
-        mevcut_gnc = self.sistemler[index]
-        rov = mevcut_gnc.rov
-        modem = mevcut_gnc.modem
-        
-        # Aynı tipteyse değiştirme
-        if (yeni_tip == 'lider' and isinstance(mevcut_gnc, LiderGNC)) or \
-           (yeni_tip == 'takipci' and isinstance(mevcut_gnc, TakipciGNC)):
-            return
-        
-        # Yeni GNC oluştur
-        if yeni_tip == 'lider':
-            # Filo referansını bul (self Filo sınıfının instance'ı)
-            filo_ref = self if isinstance(self, Filo) else None
-            # Eğer mevcut GNC'de Filo referansı varsa onu kullan
-            if isinstance(mevcut_gnc, LiderGNC) and hasattr(mevcut_gnc, 'filo_ref') and mevcut_gnc.filo_ref:
-                filo_ref = mevcut_gnc.filo_ref
-            yeni_gnc = LiderGNC(rov, modem, filo_ref=filo_ref)
-        else:  # takipci
-            yeni_gnc = TakipciGNC(rov, modem, lider_modem_ref=lider_modem_ref)
-        
-        # Özellikleri kopyala
-        yeni_gnc.hedef = mevcut_gnc.hedef
-        yeni_gnc.hiz_limiti = mevcut_gnc.hiz_limiti
-        yeni_gnc.manuel_kontrol = mevcut_gnc.manuel_kontrol
-        yeni_gnc.ai_aktif = mevcut_gnc.ai_aktif
-        
-        # LiderGNC özel özellikleri
-        if isinstance(yeni_gnc, LiderGNC) and isinstance(mevcut_gnc, LiderGNC):
-            yeni_gnc.diger_lider_hedefi = mevcut_gnc.diger_lider_hedefi
-            yeni_gnc.diger_lider_bulundu = mevcut_gnc.diger_lider_bulundu
-        
-        # Eski GNC'yi yeni ile değiştir
-        self.sistemler[index] = yeni_gnc
-    
-    def _en_yakin_lider_modem_bul(self, rov):
-        """En yakın lider ROV'un modem referansını bulur"""
-        en_yakin_lider_modem = None
-        en_yakin_mesafe = float('inf')
-        
-        for gnc in self.sistemler:
-            if gnc.rov.role == 1 and gnc.rov.id != rov.id:  # Lider ve kendisi değil
-                mesafe = distance(rov.position, gnc.rov.position)
-                if mesafe < en_yakin_mesafe:
-                    en_yakin_mesafe = mesafe
-                    en_yakin_lider_modem = gnc.modem
-        
-        return en_yakin_lider_modem
-    
-    def _suru_ayrilma_tespiti(self):
-        """
-        Sürü ayrılma tespiti: Lideri olmayan sürüler için otomatik lider seçimi.
-        Bir sürüde sadece bir lider olabilir. Asıl hedefe en yakın olan lider seçilir.
-        Seçilen lider yüzeye çıkar ve diğer liderle iletişim kurup ona doğru ilerler.
-        """
-        if len(self.sistemler) == 0:
-            return
-        
-        # İletişim bağlantılarına göre ROV gruplarını bul
-        gruplar = self._rov_gruplarini_bul()
-        
-        # Her grup için kontrol et
-        for grup_id, grup in enumerate(gruplar):
-            # Grubun lideri var mı?
-            grup_lideri = None
-            for gnc_index in grup:
-                gnc = self.sistemler[gnc_index]
-                if gnc.rov.role == 1:
-                    grup_lideri = gnc_index
-                    # Bu grup için lider var, flag'i temizle
-                    if grup_id in self.suru_lider_secildi:
-                        del self.suru_lider_secildi[grup_id]
-                    break
-            
-            # Lideri yoksa ve daha önce lider seçilmemişse, asıl hedefe en yakın olanı lider seç
-            # ÖNEMLİ: Sadece gerçekten lideri olmayan gruplar için lider seç
-            if grup_lideri is None and len(grup) > 1 and grup_id not in self.suru_lider_secildi:
-                # Asıl hedef yoksa, orijinal liderin hedefini kullan
-                if self.asil_hedef is None:
-                    if self.orijinal_lider_id < len(self.sistemler):
-                        orijinal_lider_gnc = self.sistemler[self.orijinal_lider_id]
-                        if orijinal_lider_gnc.hedef:
-                            self.asil_hedef = orijinal_lider_gnc.hedef
-                        else:
-                            self.asil_hedef = Vec3(40, 0, 60)
-                
-                # Asıl hedefe en yakın ROV'u lider seç
-                yeni_lider_index = None
-                en_yakin_mesafe = float('inf')
-                
-                for gnc_index in grup:
-                    gnc = self.sistemler[gnc_index]
-                    mesafe = distance(gnc.rov.position, self.asil_hedef)
-                    if mesafe < en_yakin_mesafe:
-                        en_yakin_mesafe = mesafe
-                        yeni_lider_index = gnc_index
-                
-                if yeni_lider_index is None:
-                    continue
-                
-                yeni_lider_gnc = self.sistemler[yeni_lider_index]
-                
-                # Sonsuz döngü önleme: Eğer bu ROV son zamanlarda çok sık lider/takipçi değiştirdiyse, lider seçme
-                rov_id = yeni_lider_gnc.rov.id
-                if rov_id in self.lider_degisim_sayaci and self.lider_degisim_sayaci[rov_id] > 3:
-                    # Bu ROV çok sık değişiyor, lider seçme
-                    continue
-                
-                print(f"🔴 [SÜRÜ AYRILMA] Grup lideri yok! ROV-{yeni_lider_gnc.rov.id} asıl hedefe en yakın, lider seçildi.")
-                
-                # Bu grup için lider seçildi flag'ini ayarla
-                self.suru_lider_secildi[grup_id] = True
-                
-                # ROV'u lider yap
-                yeni_lider_gnc.rov.set("rol", 1)
-                
-                # GNC tipini değiştir
-                self._gnc_tipini_degistir(yeni_lider_index, 'lider')
-                
-                # Lideri yüzeye çıkar (hedef yüzeye ayarla)
-                yeni_lider_gnc.hedef = Vec3(
-                    yeni_lider_gnc.rov.x,
-                    0.0,  # Yüzey
-                    yeni_lider_gnc.rov.z
-                )
-                
-                # Diğer grup üyelerini takipçi yap ve yeni lideri takip etmelerini sağla
-                for gnc_index in grup:
-                    if gnc_index != yeni_lider_index:
-                        gnc = self.sistemler[gnc_index]
-                        if gnc.rov.role == 1:  # Eğer lider ise takipçi yap
-                            gnc.rov.set("rol", 0)
-                        
-                        # Yeni liderin modem referansını al
-                        yeni_lider_modem = yeni_lider_gnc.modem if yeni_lider_gnc.modem else None
-                        
-                        # GNC tipini takipçi yap
-                        self._gnc_tipini_degistir(gnc_index, 'takipci', lider_modem_ref=yeni_lider_modem)
-                        
-                        # Takipçi hedefini yeni liderin yakınına ayarla (formasyon)
-                        takipci_gnc = self.sistemler[gnc_index]
-                        if isinstance(takipci_gnc, TakipciGNC):
-                            # Yeni liderin konumuna göre formasyon hedefi
-                            offset_x = (gnc_index - yeni_lider_index) * 5.0  # Formasyon offset
-                            takipci_gnc.hedef = Vec3(
-                                yeni_lider_gnc.rov.x + offset_x,
-                                yeni_lider_gnc.rov.y,
-                                yeni_lider_gnc.rov.z
-                            )
-    
-    def _rov_gruplarini_bul(self):
-        """
-        İletişim bağlantılarına göre ROV'ları gruplara ayırır.
-        İletişim kurabilen ROV'lar aynı gruptadır.
-        
-        Returns:
-            list: Her grup bir liste içinde GNC indekslerini içerir
-        """
-        n = len(self.sistemler)
-        if n == 0:
-            return []
-        
-        # İletişim grafiği oluştur
-        iletisim_grafi = {}
-        for i in range(n):
-            iletisim_grafi[i] = []
-        
-        # Her ROV çifti için iletişim kontrolü
-        for i in range(n):
-            for j in range(i + 1, n):
-                gnc_i = self.sistemler[i]
-                gnc_j = self.sistemler[j]
-                rov_i = gnc_i.rov
-                rov_j = gnc_j.rov
-                
-                mesafe = distance(rov_i.position, rov_j.position)
-                rov_i_yuzeyde = rov_i.y >= 0
-                rov_j_yuzeyde = rov_j.y >= 0
-                
-                iletisim_var = False
-                # Yüzey iletişimi
-                if rov_i_yuzeyde and rov_j_yuzeyde:
-                    iletisim_var = True
-                # Su altı iletişimi
-                else:
-                    iletisim_menzili = rov_i.sensor_config.get("iletisim_menzili", 35.0)
-                    iletisim_var = mesafe < iletisim_menzili
-                
-                if iletisim_var:
-                    iletisim_grafi[i].append(j)
-                    iletisim_grafi[j].append(i)
-        
-        # BFS ile grupları bul
-        ziyaret_edildi = [False] * n
-        gruplar = []
-        
-        for i in range(n):
-            if not ziyaret_edildi[i]:
-                # Yeni grup başlat
-                grup = []
-                kuyruk = [i]
-                ziyaret_edildi[i] = True
-                
-                while kuyruk:
-                    mevcut = kuyruk.pop(0)
-                    grup.append(mevcut)
-                    
-                    # Komşuları ekle
-                    for komsu in iletisim_grafi[mevcut]:
-                        if not ziyaret_edildi[komsu]:
-                            ziyaret_edildi[komsu] = True
-                            kuyruk.append(komsu)
-                
-                gruplar.append(grup)
-        
-        return gruplar
     
     def set(self, rov_id, ayar_adi, deger):
         """
@@ -896,11 +483,8 @@ class Filo:
             print(f"   💡 Çözüm: filo.ekle() ile daha fazla GNC sistemi ekleyin")
             return
         
-        # Manuel modu kapat, otopilotu aç (sadece otomatik rol değişimi aktifse)
-        # Eğer manuel kontrol aktifse (otomatik_rol_degisimi_aktif = False), manuel kontrolü kapatma
-        # Çünkü kullanıcı manuel kontrol istiyor, ama hedefe gitmesini de istiyor
-        if self.otomatik_rol_degisimi_aktif:
-            self.sistemler[rov_id].manuel_kontrol = False
+        # Manuel modu kapat, otopilotu aç
+        self.sistemler[rov_id].manuel_kontrol = False
         
         # AI Durumunu Ayarla
         self.sistemler[rov_id].ai_aktif = ai
@@ -922,8 +506,7 @@ class Filo:
             print(f"✅ [FİLO] ROV-{rov_id} hedefi başarıyla atandı")
             
             # Eğer lider ROV'a hedef verildiyse, takipçilerin hedeflerini otomatik güncelle
-            # Sadece otomatik rol değişimi aktifse (manuel kontrol kapalıysa)
-            if self.otomatik_rol_degisimi_aktif and self.sistemler[rov_id].rov.role == 1:  # Lider ise
+            if self.sistemler[rov_id].rov.role == 1:  # Lider ise
                 self._takipci_hedeflerini_guncelle(rov_id, x, hedef_y, z)
         except Exception as e:
             print(f"❌ [HATA] Hedef atama sırasında hata: {e}")
@@ -1321,12 +904,13 @@ class TemelGNC:
 class LiderGNC(TemelGNC):
     def __init__(self, rov_entity, modem, filo_ref=None):
         super().__init__(rov_entity, modem)
-        self.diger_lider_hedefi = None  # Yüzeydeki diğer liderin konumu
-        self.diger_lider_bulundu = False  # Diğer lider bulundu mu?
         self.filo_ref = filo_ref  # Filo referansı (asıl hedef kontrolü için)
     
     def guncelle(self, gat_kodu):
-        if self.manuel_kontrol: return 
+        # Manuel kontrol aktifse ama hedef varsa, hedefe gitmeye devam et
+        # Sadece hedef yoksa ve manuel kontrol aktifse, dur
+        if self.manuel_kontrol and self.hedef is None:
+            return 
         
         # ASIL LİDER KONTROLÜ: Asıl hedefe en yakın olan lider, diğer liderleri takip etmez
         asil_lider_mi = self._asil_lider_mi()
@@ -1489,75 +1073,6 @@ class LiderGNC(TemelGNC):
 
         self.vektor_to_motor(yon)
     
-    def _asil_lider_mi(self):
-        """Bu lider asıl lider mi? (Asıl hedefe en yakın olan)"""
-        if self.filo_ref is None or self.filo_ref.asil_hedef is None:
-            return False
-        
-        # Asıl hedefe mesafeyi hesapla
-        mesafe = distance(self.rov.position, self.filo_ref.asil_hedef)
-        
-        # Sadece aynı gruptaki liderler arasında asıl hedefe en yakın olanı bul
-        # Farklı gruplardaki liderler birbirini etkilemez
-        en_yakin_mesafe = float('inf')
-        
-        # Kendi grubundaki liderleri bul
-        if hasattr(self.rov, 'environment_ref') and self.rov.environment_ref:
-            iletisim_menzili = self.rov.sensor_config.get("iletisim_menzili", 35.0)
-            
-            for gnc in self.filo_ref.sistemler:
-                if gnc.rov.role == 1 and gnc.rov.id != self.rov.id:
-                    # İletişim kontrolü (aynı grupta mı?)
-                    diger_rov = gnc.rov
-                    diger_mesafe = distance(self.rov.position, diger_rov.position)
-                    rov_yuzeyde = self.rov.y >= 0
-                    diger_rov_yuzeyde = diger_rov.y >= 0
-                    
-                    iletisim_var = False
-                    if rov_yuzeyde and diger_rov_yuzeyde:
-                        iletisim_var = True
-                    else:
-                        iletisim_var = diger_mesafe < iletisim_menzili
-                    
-                    # Sadece aynı gruptaki liderlerle karşılaştır
-                    if iletisim_var:
-                        lider_mesafe = distance(diger_rov.position, self.filo_ref.asil_hedef)
-                        if lider_mesafe < en_yakin_mesafe:
-                            en_yakin_mesafe = lider_mesafe
-        
-        # Eğer aynı grupta başka lider yoksa, bu lider asıl liderdir
-        if en_yakin_mesafe == float('inf'):
-            return True
-        
-        # Bu lider aynı gruptaki liderler arasında asıl hedefe en yakın mı?
-        return abs(mesafe - en_yakin_mesafe) < 0.1  # Küçük tolerans
-    
-    def _yuzeydeki_diger_lider_bul(self):
-        """Yüzeydeki diğer lider ROV'u bulur (asıl lider hariç)"""
-        if not hasattr(self.rov, 'environment_ref') or not self.rov.environment_ref:
-            return None
-        
-        for diger_rov in self.rov.environment_ref.rovs:
-            if diger_rov.id == self.rov.id:
-                continue
-            if diger_rov.role == 1 and diger_rov.y >= 0:  # Lider ve yüzeyde
-                # Asıl lider kontrolü: Sadece aynı gruptaki liderlerle karşılaştır
-                if self.filo_ref and self.filo_ref.asil_hedef:
-                    # İletişim kontrolü (aynı grupta mı?)
-                    iletisim_menzili = self.rov.sensor_config.get("iletisim_menzili", 35.0)
-                    mesafe = distance(self.rov.position, diger_rov.position)
-                    # Yüzeyde oldukları için iletişim var
-                    iletisim_var = True
-                    
-                    # Sadece aynı gruptaki liderlerle karşılaştır
-                    if iletisim_var:
-                        diger_lider_mesafe = distance(diger_rov.position, self.filo_ref.asil_hedef)
-                        bu_lider_mesafe = distance(self.rov.position, self.filo_ref.asil_hedef)
-                        # Eğer diğer lider asıl hedefe daha yakınsa, onu takip etme
-                        if diger_lider_mesafe < bu_lider_mesafe:
-                            continue
-                return diger_rov
-        return None
 
 class TakipciGNC(TemelGNC):
     def __init__(self, rov_entity, modem, lider_modem_ref=None):
@@ -1566,76 +1081,11 @@ class TakipciGNC(TemelGNC):
         self.iletisim_kopma_sayaci = 0  # İletişim kopma sayacı (gecikme için)
 
     def guncelle(self, gat_kodu):
-        if self.manuel_kontrol: return
+        # Manuel kontrol aktifse ama hedef varsa, hedefe gitmeye devam et
+        # Sadece hedef yoksa ve manuel kontrol aktifse, dur
+        if self.manuel_kontrol and self.hedef is None:
+            return
         
-        # İLETİŞİM KOPMA KONTROLÜ: Liderle iletişim yoksa otomatik lider ol
-        # ÖNEMLİ: Sadece kendi grubunda lider yoksa lider ol
-        # ÖNEMLİ: Daha uzun süre beklemek için sayacı artırdık (geçici kopmaları önlemek için)
-        if not self.rov.lider_ile_iletisim:
-            self.iletisim_kopma_sayaci += 1
-            # 50 frame (yaklaşık 1.5 saniye) iletişim yoksa lider ol
-            # Bu, çarpışma önleme mekanizmasının neden olduğu geçici iletişim kopmalarını önler
-            if self.iletisim_kopma_sayaci >= 50:
-                # Kendi grubunda lider var mı kontrol et
-                grup_lideri_var = self._kendi_grubunda_lider_var_mi()
-                if not grup_lideri_var:
-                    self._lider_ol()
-                else:
-                    # Grubunda lider var, sayacı sıfırla
-                    self.iletisim_kopma_sayaci = 0
-                return
-        else:
-            # İletişim varsa, sayacı yavaşça azalt (histerezis için)
-            if self.iletisim_kopma_sayaci > 0:
-                self.iletisim_kopma_sayaci = max(0, self.iletisim_kopma_sayaci - 2)
-        
-        # YÜZEY İLETİŞİMİ: Yüzeydeyse ve başka yüzeydeki lider varsa ona doğru ilerle
-        # Güvenlik kontrolü: MockROV için yuzeyde attribute'u olmayabilir
-        rov_yuzeyde = getattr(self.rov, 'yuzeyde', self.rov.y >= 0 if hasattr(self.rov, 'y') else False)
-        if rov_yuzeyde:
-            yuzeydeki_lider = self._yuzeydeki_lider_bul()
-            if yuzeydeki_lider:
-                # Yüzeydeki liderin konumuna doğru ilerle
-                lider_pozisyon = yuzeydeki_lider.position
-                fark = lider_pozisyon - self.rov.position
-                if fark.length() > 1.0:
-                    hedef_vektoru = fark.normalized()
-                    # Yüzeyde yatay hareket (y ekseni sabit)
-                    hedef_vektoru.y = 0
-                    if hedef_vektoru.length() > 0:
-                        hedef_vektoru = hedef_vektoru.normalized()
-                        self.vektor_to_motor(hedef_vektoru, guc_carpani=1.0)
-                return
-        
-        # YENİDEN BAĞLANMA: Yüzeydeyse ve sonar mesafesi içinde başka ROV varsa takipçi ol ve bat
-        if rov_yuzeyde:
-            yakin_rov = self._sonar_mesafesinde_rov_bul()
-            if yakin_rov and yakin_rov.role == 1:  # Lider ROV bulundu
-                # Takipçi ol
-                self.rov.set("rol", 0)
-                
-                # GPS bilgilerinden derinlik al ve farklı derinlikte batır
-                lider_derinlik = yakin_rov.y  # Lider ROV'un derinliği (y koordinatı)
-                
-                # Bu ROV için hedef derinlik: Lider derinliği - (ROV ID * 5) metre
-                # Böylece her ROV farklı derinlikte olur ve çarpışmaz
-                hedef_derinlik = lider_derinlik - (self.rov.id * 5.0)
-                # Minimum derinlik kontrolü (çok derine gitmesin)
-                hedef_derinlik = max(hedef_derinlik, -90.0)
-                
-                # Mevcut derinlik
-                mevcut_derinlik = self.rov.y
-                
-                # Derinlik farkına göre batırma hızı
-                derinlik_farki = hedef_derinlik - mevcut_derinlik
-                if derinlik_farki < -0.5:  # Hedef derinlik daha derinde
-                    # Batırma hızı: Derinlik farkına göre (maksimum -3.0)
-                    batirma_hizi = max(derinlik_farki * 0.5, -3.0)
-                    self.rov.velocity.y = batirma_hizi
-                elif self.rov.y >= 0:
-                    # Hala yüzeydeyse, hedef derinliğe doğru batır
-                    self.rov.velocity.y = -2.0
-                return
         
         if self.hedef is None: return
 
@@ -1715,85 +1165,3 @@ class TakipciGNC(TemelGNC):
         
         self.vektor_to_motor(nihai_vektor, guc_carpani=guc)
     
-    def _kendi_grubunda_lider_var_mi(self):
-        """Kendi grubunda (iletişim bağlantılı) lider var mı kontrol eder"""
-        if not hasattr(self.rov, 'environment_ref') or not self.rov.environment_ref:
-            return False
-        
-        iletisim_menzili = self.rov.sensor_config.get("iletisim_menzili", 35.0)
-        
-        for diger_rov in self.rov.environment_ref.rovs:
-            if diger_rov.id == self.rov.id:
-                continue
-            
-            mesafe = distance(self.rov.position, diger_rov.position)
-            rov_yuzeyde = self.rov.y >= 0
-            diger_rov_yuzeyde = diger_rov.y >= 0
-            
-            iletisim_var = False
-            if rov_yuzeyde and diger_rov_yuzeyde:
-                iletisim_var = True
-            else:
-                iletisim_var = mesafe < iletisim_menzili
-            
-            # İletişim kurabildiği bir ROV lider ise, kendi grubunda lider var
-            if iletisim_var and diger_rov.role == 1:
-                return True
-        
-        return False
-    
-    def _lider_ol(self):
-        """Takipçi ROV'u lider yapar (iletişim koptuğunda)"""
-        if self.rov.role == 1:  # Zaten lider
-            return
-        
-        # Kendi grubunda lider yoksa, bu ROV lider ol
-        # Sonsuz döngü önleme: Eğer bu ROV son zamanlarda çok sık lider/takipçi değiştirdiyse, lider olma
-        rov_id = self.rov.id
-        # Filo referansını bul (ROV'dan veya environment_ref'den)
-        filo_ref = None
-        if hasattr(self.rov, 'filo_ref'):
-            filo_ref = self.rov.filo_ref
-        elif hasattr(self.rov, 'environment_ref') and self.rov.environment_ref:
-            if hasattr(self.rov.environment_ref, 'filo'):
-                filo_ref = self.rov.environment_ref.filo
-        
-        if filo_ref and rov_id in filo_ref.lider_degisim_sayaci and filo_ref.lider_degisim_sayaci[rov_id] > 3:
-            # Bu ROV çok sık değişiyor, lider olma (sonsuz döngü önleme)
-            return
-        
-        print(f"🔴 [İLETİŞİM KOPMA] ROV-{self.rov.id} liderle iletişim koptu, otomatik lider oldu!")
-        self.rov.set("rol", 1)
-        
-        # Lider değişim sayacını artır
-        if filo_ref:
-            if rov_id not in filo_ref.lider_degisim_sayaci:
-                filo_ref.lider_degisim_sayaci[rov_id] = 0
-            filo_ref.lider_degisim_sayaci[rov_id] += 0.5
-    
-    def _yuzeydeki_lider_bul(self):
-        """Yüzeydeki lider ROV'u bulur"""
-        if not hasattr(self.rov, 'environment_ref') or not self.rov.environment_ref:
-            return None
-        
-        for diger_rov in self.rov.environment_ref.rovs:
-            if diger_rov.id == self.rov.id:
-                continue
-            if diger_rov.role == 1 and diger_rov.y >= 0:  # Lider ve yüzeyde
-                return diger_rov
-        return None
-    
-    def _sonar_mesafesinde_rov_bul(self):
-        """Sonar mesafesi (engel_mesafesi) içinde başka ROV var mı kontrol eder"""
-        if not hasattr(self.rov, 'environment_ref') or not self.rov.environment_ref:
-            return None
-        
-        sonar_mesafesi = self.rov.sensor_config.get("engel_mesafesi", 20.0)
-        
-        for diger_rov in self.rov.environment_ref.rovs:
-            if diger_rov.id == self.rov.id:
-                continue
-            mesafe = distance(self.rov.position, diger_rov.position)
-            if mesafe <= sonar_mesafesi:
-                return diger_rov
-        return None
