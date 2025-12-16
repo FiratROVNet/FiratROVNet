@@ -4,8 +4,6 @@ import random
 import threading
 import code
 import sys
-import torch
-import math
     
 from .config import cfg # <-- BU SATIRI EKLE
 
@@ -13,28 +11,15 @@ from .config import cfg # <-- BU SATIRI EKLE
 
 # --- FİZİK SABİTLERİ ---
 SURTUNME_KATSAYISI = 0.95
-HIZLANMA_CARPANI = 0.5
+HIZLANMA_CARPANI = 30  # Artırıldı: 0.5 -> 5.0 (daha hızlı hareket için)
 KALDIRMA_KUVVETI = 2.0
-BATARYA_SOMURME_KATSAYISI = 0.01  # Batarya tüketim katsayısı (küçük değer, batarya yavaş bitsin)
 
 
 
 class ROV(Entity):
-    def __init__(self, rov_id, model_yolu=None, **kwargs):
+    def __init__(self, rov_id, **kwargs):
         super().__init__()
-        
-        # 3D Model Desteği
-        if model_yolu:
-            # Model yolu verilmişse kullan (zaten _rov_modeli_bul tarafından kontrol edilmiş)
-            if os.path.exists(model_yolu):
-                self.model = model_yolu
-            else:
-                # Model bulunamadı, varsayılan cube kullan
-                self.model = 'cube'
-        else:
-            # Varsayılan: cube modeli
-            self.model = 'cube'
-        
+        self.model = 'cube'
         self.color = color.orange # Turuncu her zaman görünür
         self.scale = (1.5, 0.8, 2.5)
         self.collider = 'box'
@@ -48,14 +33,13 @@ class ROV(Entity):
         self.id = rov_id
         self.velocity = Vec3(0, 0, 0)
         self.battery = 100.0
-        self.role = 0
-        self.batarya_bitti = False  # Batarya bitme durumu
-        self.calistirilan_guc = 0.0  # Çalıştırılan güç (batarya tüketimi için) 
+        self.role = 0 
         
         self.sensor_config = {
             "engel_mesafesi": 20.0,
             "iletisim_menzili": 35.0,
-            "min_pil_uyarisi": 10.0
+            "min_pil_uyarisi": 10.0,
+            "kacinma_mesafesi": 8.0  # Kaçınma mesafesi (ROV'lar ve engeller için)
         }
         self.environment_ref = None
         
@@ -71,99 +55,47 @@ class ROV(Entity):
         self.engel_cizgi = None  # Kesikli çizgi entity'si
         
         # Sonar iletişim bilgisi (ROV'lar arası kesikli çizgi için)
-        self.iletisim_rovlari = {}  # {rov_id: {'mesafe': float, 'cizgi': Entity}} 
+        self.iletisim_rovlari = {}  # {rov_id: {'mesafe': float, 'cizgi': Entity, 'yuzey_iletisimi': bool}}
+        
+        # İletişim durumu (liderle iletişim var mı?)
+        self.lider_ile_iletisim = False  # Liderle iletişim durumu
+        self.yuzeyde = False  # Yüzeyde mi? (y >= 0) 
 
     def update(self):
-        # Batarya tüketimi (gerçekçi fizik)
-        if self.battery > 0:
-            # Çalıştırılan güç hesapla (hız ve hareket durumuna göre)
-            mevcut_guc = abs(self.velocity.length()) / 100.0  # 0.0-1.0 arası normalize
-            if mevcut_guc > 0.01:  # Hareket varsa
-                self.calistirilan_guc = mevcut_guc
-                # Batarya tüketimi: batarya = batarya - gecen_sure * rov_calistirilan_guc * somurme_katsayisi
-                self.battery -= time.dt * self.calistirilan_guc * BATARYA_SOMURME_KATSAYISI
-                self.battery = max(0.0, self.battery)  # Negatif olamaz
-            else:
-                self.calistirilan_guc = 0.0  # Duruyorsa güç tüketimi yok
-        
-        # Batarya bitti mi kontrol et
-        if self.battery <= 0 and not self.batarya_bitti:
-            self.batarya_bitti = True
-            # Manuel kontrolü aç (sürüden ayrıl)
-            if self.environment_ref:
-                # GNC sistemine eriş (eğer varsa)
-                for gnc in getattr(self.environment_ref, 'gnc_sistemleri', []):
-                    if hasattr(gnc, 'rov') and gnc.rov.id == self.id:
-                        gnc.manuel_kontrol = True
-                        break
-            # Yüzeye çık
-            self.velocity = Vec3(0, 0, 0)
-            # Renk değiştir (batarya bitti rengi)
-            self.color = color.rgb(100, 100, 100)  # Gri (batarya bitti)
-            print(f"[ROV-{self.id}] Batarya bitti! Yuzeye cikiyor...")
-        
-        # Batarya bitmişse hareket ettirme
-        if self.batarya_bitti:
-            # Sadece yüzeye çık
-            if self.y < 0:
-                self.velocity.y = 2.0  # Yüzeye çık
-            else:
-                self.velocity = Vec3(0, 0, 0)  # Yüzeyde dur
-            # Manuel hareketi engelle
-            if self.manuel_hareket['yon'] is not None:
-                self.manuel_hareket['yon'] = None
-                self.manuel_hareket['guc'] = 0.0
-            return  # Batarya bitmişse diğer işlemleri yapma
-        
-        # Manuel hareket kontrolü (sürekli hareket için - gerçekçi fizik ile)
+        # Manuel hareket kontrolü (sürekli hareket için)
         if self.manuel_hareket['yon'] is not None and self.manuel_hareket['guc'] > 0:
             if self.manuel_hareket['yon'] == 'dur':
-                self.velocity *= 0.9  # Yavaşça dur (momentum korunumu)
+                self.velocity *= 0.8  # Yavaşça dur (momentum korunumu)
                 if self.velocity.length() < 0.1:
                     self.velocity = Vec3(0, 0, 0)
                     self.manuel_hareket['yon'] = None
                     self.manuel_hareket['guc'] = 0.0
             else:
-                # Sürekli hareket: Gerçekçi fizik ile
+                # Sürekli hareket: move metodunu çağır
                 yon = self.manuel_hareket['yon']
                 guc = self.manuel_hareket['guc']
-                
-                # Yönü vektöre çevir
-                hareket_vektoru = Vec3(0, 0, 0)
-                if yon == 'ileri': hareket_vektoru.z = 1.0
-                elif yon == 'geri': hareket_vektoru.z = -1.0
-                elif yon == 'sag': hareket_vektoru.x = 1.0
-                elif yon == 'sol': hareket_vektoru.x = -1.0
-                elif yon == 'cik': hareket_vektoru.y = 1.0
-                elif yon == 'bat' and self.role != 1: hareket_vektoru.y = -1.0
-                
-                # Gerçekçi fizik: Momentum korunumu ve su direnci
-                max_guc = 100.0 * guc  # Hız limiti
-                
-                # Su direnci faktörü (derinlik arttıkça direnç artar)
-                derinlik_faktoru = 1.0 - (abs(self.y) / 100.0) * 0.1
-                derinlik_faktoru = max(0.9, min(1.0, derinlik_faktoru))
-                
-                # Momentum korunumu: Mevcut hızı dikkate al
-                mevcut_hiz = self.velocity.length()
-                if mevcut_hiz > 0:
-                    # Yeni hız = eski hız + ivme (momentum korunumu)
-                    ivme = hareket_vektoru.normalized() * max_guc * derinlik_faktoru * time.dt * 0.5
-                    self.velocity += ivme
-                else:
-                    # Sıfırdan başlıyorsa direkt ivme uygula
-                    ivme = hareket_vektoru.normalized() * max_guc * derinlik_faktoru * time.dt * 0.5
-                    self.velocity += ivme
-                
-                # Hız limiti kontrolü
-                if self.velocity.length() > max_guc:
-                    self.velocity = self.velocity.normalized() * max_guc
-                
-                # Lider ROV için aşağı hızı engelle
-                if self.role == 1 and self.velocity.y < 0:
-                    self.velocity.y = 0
+                self.move(yon, guc)
         
-        # Havuz sınır kontrolü
+        # Engel tespiti (her zaman çalışır, manuel kontrol olsun olmasın)
+        if self.environment_ref:
+            self._engel_tespiti()
+        
+        # Sonar iletişim tespiti (ROV'lar arası kesikli çizgi)
+        if self.environment_ref:
+            self._sonar_iletisim()
+        
+        # Yüzey durumu güncelle
+        self.yuzeyde = self.y >= 0
+        
+        # Liderle iletişim kontrolü (takipçi ROV'lar için)
+        if self.role == 0 and self.environment_ref:  # Takipçi ise
+            self._lider_iletisim_kontrolu()
+        
+        # Fizik
+        self.position += self.velocity * time.dt
+        self.velocity *= SURTUNME_KATSAYISI
+        
+        # Simülasyon sınır kontrolü (ROV'ların dışarı çıkmasını önle)
         if self.environment_ref:
             havuz_genisligi = getattr(self.environment_ref, 'havuz_genisligi', 200)
             havuz_yari_genislik = havuz_genisligi / 2
@@ -177,38 +109,15 @@ class ROV(Entity):
                 self.z = np.sign(self.z) * havuz_yari_genislik
                 self.velocity.z = 0  # Sınırda durdur
         
-        # Engel tespiti (her zaman çalışır, manuel kontrol olsun olmasın)
-        if self.environment_ref:
-            self._engel_tespiti()
-        
-        # Sonar iletişim tespiti (ROV'lar arası kesikli çizgi)
-        if self.environment_ref:
-            self._sonar_iletisim()
-        
-        # Fizik
-        self.position += self.velocity * time.dt
-        self.velocity *= SURTUNME_KATSAYISI
-        
-        # Çarpışma kontrolü
-        if self.environment_ref:
-            self._carpisma_kontrolu()
-        
-        if self.role == 1: # Lider - Su yüzeyinde kalmalı, batırılamaz
-            # Lider her zaman su yüzeyine çıkar
+        if self.role == 1: # Lider
             if self.y < 0:
-                self.velocity.y += KALDIRMA_KUVVETI * 2.0 * time.dt  # Daha güçlü kaldırma
-                if self.y > -0.3: self.velocity.y *= 0.3
-            # Su yüzeyi limitleri
-            if self.y < -1.0: 
-                self.y = -1.0  # Su yüzeyine zorla çıkar
-                self.velocity.y = max(0, self.velocity.y)  # Aşağı hızı sıfırla
+                self.velocity.y += KALDIRMA_KUVVETI * time.dt
+                if self.y > -0.5: self.velocity.y *= 0.5
+            if self.y < -2: self.y = -2
             if self.y > 0.5: 
                 self.y = 0.5
                 self.velocity.y = 0
-            # Lider asla batırılamaz - aşağı hızı engelle
-            if self.velocity.y < 0:
-                self.velocity.y = 0
-        else: # Takipçi - Serbest hareket
+        else: # Takipçi
             if self.y > 0: 
                 self.y = 0
                 self.velocity.y = 0
@@ -218,33 +127,18 @@ class ROV(Entity):
 
         if self.velocity.length() > 0.01: 
             self.battery -= 0.01 * time.dt
+        
+        # Yakınlaşma önleme (10 metre mesafede uzaklaşma)
+        if self.environment_ref:
+            self._yaklasma_onleme()
+        
+        # Çarpışma kontrolü
+        if self.environment_ref:
+            self._carpisma_kontrolu()
 
     def move(self, komut, guc=1.0):
-        """
-        ROV'a hareket komutu verir.
-        
-        Args:
-            komut: Hareket yönü ('ileri', 'geri', 'sag', 'sol', 'cik', 'bat', 'dur')
-            guc: Motor gücü (0.0-1.0, varsayılan: 1.0)
-        
-        Not: Eğer guc > 0 ise, manuel hareket modu aktif olur ve sürekli hareket eder.
-        """
-        # Güç değerini sınırla
-        guc = max(0.0, min(1.0, guc))
-        
-        # Manuel hareket modunu ayarla (sürekli hareket için)
-        if guc > 0 and komut != 'dur':
-            self.manuel_hareket['yon'] = komut
-            self.manuel_hareket['guc'] = guc
-        elif komut == 'dur' or guc == 0:
-            self.manuel_hareket['yon'] = None
-            self.manuel_hareket['guc'] = 0.0
-            self.velocity = Vec3(0, 0, 0)
-            return
-        
-        # Anlık hareket uygula
         thrust = guc * HIZLANMA_CARPANI * time.dt
-        if self.battery <= 0 or self.batarya_bitti: return  # Batarya bitmişse hareket ettirme
+        if self.battery <= 0: return
 
         if komut == "ileri":  self.velocity.z += thrust
         elif komut == "geri": self.velocity.z -= thrust
@@ -252,55 +146,46 @@ class ROV(Entity):
         elif komut == "sol":  self.velocity.x -= thrust
         elif komut == "cik":  self.velocity.y += thrust 
         elif komut == "bat":  
-            # Lider batırılamaz
-            if self.role == 1: 
-                pass  # Lider için bat komutu işe yaramaz
-            else: 
-                self.velocity.y -= thrust
+            if self.role == 1: pass
+            else: self.velocity.y -= thrust 
+        elif komut == "dur":
+            self.velocity = Vec3(0,0,0)
 
     def set(self, ayar_adi, deger):
         if ayar_adi == "rol":
-            eski_rol = self.role
             self.role = int(deger)
             if self.role == 1:
                 self.color = color.red
                 self.label.text = f"LIDER-{self.id}"
-                # Lider olduğunda su yüzeyine çıkar
-                if self.y < 0:
-                    self.y = 0
-                    self.velocity.y = 0
-                print(f"✅ ROV-{self.id} artık LİDER (Su yüzeyinde).")
+                print(f"✅ ROV-{self.id} artık LİDER.")
             else:
                 self.color = color.orange
                 self.label.text = f"ROV-{self.id}"
-                # Takipçi olduğunda artık batırılabilir
-                print(f"✅ ROV-{self.id} artık TAKİPÇİ (Batırılabilir).")
-        elif ayar_adi == "renk":
-            # Renk ayarlama
-            if isinstance(deger, (tuple, list)) and len(deger) >= 3:
-                self.color = color.rgb(int(deger[0]), int(deger[1]), int(deger[2]))
-            elif isinstance(deger, str):
-                # Renk ismi ile
-                renk_dict = {
-                    'kirmizi': color.red, 'mavi': color.blue, 'yesil': color.green,
-                    'sari': color.yellow, 'turuncu': color.orange, 'mor': color.magenta,
-                    'beyaz': color.white, 'siyah': color.black
-                }
-                self.color = renk_dict.get(deger.lower(), color.white)
+                print(f"✅ ROV-{self.id} artık TAKİPÇİ.")
         elif ayar_adi in self.sensor_config: 
             self.sensor_config[ayar_adi] = deger
 
     def get(self, veri_tipi):
-        if veri_tipi == "gps": return np.array([self.x, self.y, self.z])
-        elif veri_tipi == "hiz": return np.array([self.velocity.x, self.velocity.y, self.velocity.z])
-        elif veri_tipi == "batarya": return self.battery
-        elif veri_tipi == "rol": return self.role
-        elif veri_tipi == "renk": return self.color
+        if veri_tipi == "gps": 
+            return np.array([self.x, self.y, self.z])
+        elif veri_tipi == "hiz": 
+            return np.array([self.velocity.x, self.velocity.y, self.velocity.z])
+        elif veri_tipi == "batarya": 
+            return self.battery
+        elif veri_tipi == "rol": 
+            return self.role
+        elif veri_tipi == "renk": 
+            return self.color
         elif veri_tipi == "sensör" or veri_tipi == "sensor":
             return self.sensor_config.copy()
-        elif veri_tipi == "engel_mesafesi": return self.sensor_config.get("engel_mesafesi")
-        elif veri_tipi == "iletisim_menzili": return self.sensor_config.get("iletisim_menzili")
-        elif veri_tipi == "min_pil_uyarisi": return self.sensor_config.get("min_pil_uyarisi")
+        elif veri_tipi == "engel_mesafesi": 
+            return self.sensor_config.get("engel_mesafesi")
+        elif veri_tipi == "iletisim_menzili": 
+            return self.sensor_config.get("iletisim_menzili")
+        elif veri_tipi == "min_pil_uyarisi": 
+            return self.sensor_config.get("min_pil_uyarisi")
+        elif veri_tipi == "kacinma_mesafesi":
+            return self.sensor_config.get("kacinma_mesafesi")
         elif veri_tipi == "sonar":
             min_dist = 999.0
             if self.environment_ref:
@@ -311,7 +196,7 @@ class ROV(Entity):
             menzil = self.sensor_config["engel_mesafesi"]
             return min_dist if min_dist < menzil else -1
         return None
-
+    
     def _engel_tespiti(self):
         """
         Engelleri tespit eder ve kesikli çizgi çizer.
@@ -421,12 +306,17 @@ class ROV(Entity):
         """
         Yakın ROV'ları tespit eder ve aralarında kesikli çizgi çizer (sonar iletişimi).
         Manuel kontrol olsun olmasın her zaman çalışır.
+        
+        YENİ: Yüzey iletişimi desteği - yüzeydeki ROV'lar arası iletişim sınırsızdır.
         """
         if not self.environment_ref:
             return
         
-        # İletişim menzili
+        # İletişim menzili (su altı için)
         iletisim_menzili = self.sensor_config.get("iletisim_menzili", 35.0)
+        
+        # Yüzey kontrolü (y >= 0 ise yüzeyde sayılır)
+        self_yuzeyde = self.y >= 0
         
         # Mevcut iletişimdeki ROV'ları kontrol et
         aktif_iletisim_rovlari = {}
@@ -441,12 +331,22 @@ class ROV(Entity):
                 continue
             
             mesafe = distance(self.position, diger_rov.position)
+            diger_rov_yuzeyde = diger_rov.y >= 0
             
-            # İletişim menzili içindeyse
-            if mesafe < iletisim_menzili:
+            # YÜZEY İLETİŞİMİ: Her iki ROV da yüzeydeyse iletişim sınırsız
+            if self_yuzeyde and diger_rov_yuzeyde:
+                # Yüzeydeki ROV'lar arası iletişim sınırsız (radyo dalgaları)
                 aktif_iletisim_rovlari[diger_rov.id] = {
                     'rov': diger_rov,
-                    'mesafe': mesafe
+                    'mesafe': mesafe,
+                    'yuzey_iletisimi': True  # Yüzey iletişimi işareti
+                }
+            # SU ALTI İLETİŞİMİ: Normal menzil kontrolü
+            elif mesafe < iletisim_menzili:
+                aktif_iletisim_rovlari[diger_rov.id] = {
+                    'rov': diger_rov,
+                    'mesafe': mesafe,
+                    'yuzey_iletisimi': False
                 }
         
         # Eski iletişim çizgilerini temizle (artık iletişimde olmayanlar)
@@ -465,6 +365,7 @@ class ROV(Entity):
         for rov_id, iletisim_bilgisi in aktif_iletisim_rovlari.items():
             diger_rov = iletisim_bilgisi['rov']
             mesafe = iletisim_bilgisi['mesafe']
+            yuzey_iletisimi = iletisim_bilgisi.get('yuzey_iletisimi', False)
             
             # Eğer zaten iletişim varsa güncelle, yoksa yeni çiz
             if rov_id in self.iletisim_rovlari:
@@ -472,37 +373,43 @@ class ROV(Entity):
                 if self.iletisim_rovlari[rov_id].get('cizgi'):
                     destroy(self.iletisim_rovlari[rov_id]['cizgi'])
             
-            # Yeni çizgi çiz
-            cizgi = self._rov_arasi_cizgi_ciz(diger_rov, mesafe)
+            # Yeni çizgi çiz (yüzey iletişimi için özel stil)
+            cizgi = self._rov_arasi_cizgi_ciz(diger_rov, mesafe, yuzey_iletisimi=yuzey_iletisimi)
             
             # İletişim bilgisini güncelle
             self.iletisim_rovlari[rov_id] = {
                 'rov': diger_rov,
                 'mesafe': mesafe,
-                'cizgi': cizgi
+                'cizgi': cizgi,
+                'yuzey_iletisimi': yuzey_iletisimi
             }
     
-    def _rov_arasi_cizgi_ciz(self, diger_rov, mesafe):
+    def _rov_arasi_cizgi_ciz(self, diger_rov, mesafe, yuzey_iletisimi=False):
         """
-        İki ROV arasında kesikli çizgi çizer (sonar iletişimi).
+        İki ROV arasında kesikli çizgi çizer (sonar iletişimi veya yüzey iletişimi).
         
         Args:
             diger_rov: İletişim kurulan diğer ROV
             mesafe: İki ROV arasındaki mesafe
+            yuzey_iletisimi: True ise yüzey iletişimi (radyo dalgaları), False ise su altı (sonar)
         
         Returns:
             Entity: Çizgi entity'si
         """
-        # Çizgi rengi: mesafeye göre (yakın = mavi, uzak = cyan)
-        iletisim_menzili = self.sensor_config.get("iletisim_menzili", 35.0)
-        mesafe_orani = mesafe / iletisim_menzili
-        
-        if mesafe_orani < 0.3:  # Çok yakın
-            cizgi_rengi = color.blue
-        elif mesafe_orani < 0.6:  # Orta mesafe
-            cizgi_rengi = color.cyan
-        else:  # Uzak ama hala menzil içinde
-            cizgi_rengi = color.rgb(100, 200, 255)  # Açık mavi
+        # YÜZEY İLETİŞİMİ: Yeşil renk (radyo dalgaları)
+        if yuzey_iletisimi:
+            cizgi_rengi = color.green
+        else:
+            # SU ALTI İLETİŞİMİ: Mesafeye göre renk (yakın = mavi, uzak = cyan)
+            iletisim_menzili = self.sensor_config.get("iletisim_menzili", 35.0)
+            mesafe_orani = mesafe / iletisim_menzili
+            
+            if mesafe_orani < 0.3:  # Çok yakın
+                cizgi_rengi = color.blue
+            elif mesafe_orani < 0.6:  # Orta mesafe
+                cizgi_rengi = color.cyan
+            else:  # Uzak ama hala menzil içinde
+                cizgi_rengi = color.rgb(100, 200, 255)  # Açık mavi
         
         # Kesikli çizgi için noktalar oluştur
         baslangic = self.position
@@ -551,6 +458,129 @@ class ROV(Entity):
             mevcut_pozisyon += parca_uzunlugu + bosluk_uzunlugu
         
         return cizgi_entity
+    
+    def _lider_iletisim_kontrolu(self):
+        """
+        Takipçi ROV'un liderle iletişim durumunu kontrol eder.
+        İletişim koptuysa, ROV otomatik olarak lider olur (GNC sistemi tarafından işlenecek).
+        ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (10m içinde) iletişim kopmasını görmezden gel.
+        """
+        if not self.environment_ref or self.role == 1:  # Lider ise kontrol etme
+            return
+        
+        # Lider ROV'u bul
+        lider_rov = None
+        for rov in self.environment_ref.rovs:
+            if rov.role == 1:
+                lider_rov = rov
+                break
+        
+        if lider_rov is None:
+            # Lider yok, iletişim yok
+            self.lider_ile_iletisim = False
+            return
+        
+        mesafe = distance(self.position, lider_rov.position)
+        self_yuzeyde = self.y >= 0
+        lider_yuzeyde = lider_rov.y >= 0
+        
+        # YÜZEY İLETİŞİMİ: Her iki ROV da yüzeydeyse iletişim var
+        if self_yuzeyde and lider_yuzeyde:
+            self.lider_ile_iletisim = True
+        # SU ALTI İLETİŞİMİ: Normal menzil kontrolü
+        else:
+            iletisim_menzili = self.sensor_config.get("iletisim_menzili", 35.0)
+            
+            # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (10m içinde) iletişim kopmasını görmezden gel
+            # Bu, çarpışma önleme mekanizmasının neden olduğu geçici iletişim kopmalarını önler
+            yakin_mesafe_esigi = 10.0  # 10 metre
+            if mesafe < yakin_mesafe_esigi:
+                # Çok yakınsa, iletişim var say (geçici kopmaları önle)
+                self.lider_ile_iletisim = True
+            else:
+                self.lider_ile_iletisim = mesafe < iletisim_menzili
+    
+    def _yaklasma_onleme(self):
+        """
+        Sensör mesafesine göre ROV'lar ve engellerden uzaklaşma.
+        Çarpışmayı önlemek için proaktif kaçınma davranışı.
+        """
+        if not self.environment_ref:
+            return
+        
+        # Kaçınma mesafesini sensör ayarlarından al
+        kacinma_mesafesi = self.sensor_config.get("kacinma_mesafesi", None)
+        if kacinma_mesafesi is None:
+            # Eğer kacinma_mesafesi yoksa, engel_mesafesi'nin bir kısmını kullan
+            engel_mesafesi = self.sensor_config.get("engel_mesafesi", 20.0)
+            kacinma_mesafesi = engel_mesafesi * 0.2  # Engel mesafesinin %20'si
+        
+        uzaklasma_vektoru = Vec3(0, 0, 0)
+        
+        # Diğer ROV'lardan uzaklaşma
+        for diger_rov in self.environment_ref.rovs:
+            if diger_rov.id == self.id:
+                continue
+            
+            mesafe = distance(self.position, diger_rov.position)
+            
+            # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (2m içinde) kaçınma mekanizmasını devre dışı bırak
+            # Bu, ROV'ların birbirini sürekli itmesini önler
+            minimum_mesafe = 2.0  # 2 metre - çok yakınsa kaçınma yok
+            if mesafe < minimum_mesafe:
+                continue  # Çok yakınsa kaçınma yapma
+            
+            # Kaçınma mesafesi veya daha küçük mesafede uzaklaş
+            if mesafe <= kacinma_mesafesi and mesafe > 0:
+                # Uzaklaşma yönü (bu ROV'dan diğer ROV'a)
+                uzaklasma_yonu = (self.position - diger_rov.position).normalized()
+                # Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
+                # Ancak gücü daha da yumuşat (çok agresif olmasın)
+                uzaklasma_gucu = (kacinma_mesafesi - mesafe) / kacinma_mesafesi
+                uzaklasma_gucu *= 0.3  # Gücü %30'a indir (daha yumuşak)
+                uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
+        
+        # Engellerden uzaklaşma
+        for engel in self.environment_ref.engeller:
+            mesafe = distance(self.position, engel.position)
+            # Engel boyutunu dikkate al
+            engel_yari_cap = max(engel.scale_x, engel.scale_y, engel.scale_z) / 2
+            gercek_mesafe = mesafe - engel_yari_cap
+            
+            # ÖNEMLİ: Engel çok yakınsa (engel yarıçapı + 1m içinde) kaçınma mekanizmasını devre dışı bırak
+            # Bu, ROV'ların engellere çok yaklaşmasını önler ama sürekli itmeyi engeller
+            minimum_engel_mesafe = engel_yari_cap + 1.0  # Engel yarıçapı + 1 metre
+            if gercek_mesafe < minimum_engel_mesafe:
+                continue  # Çok yakınsa kaçınma yapma (sadece çarpışma kontrolü yeterli)
+            
+            # Kaçınma mesafesi veya daha küçük mesafede uzaklaş
+            if gercek_mesafe <= kacinma_mesafesi and gercek_mesafe > 0:
+                # Uzaklaşma yönü (bu ROV'dan engele)
+                uzaklasma_yonu = (self.position - engel.position).normalized()
+                # Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
+                # Ancak gücü daha da yumuşat (çok agresif olmasın)
+                uzaklasma_gucu = (kacinma_mesafesi - gercek_mesafe) / kacinma_mesafesi
+                uzaklasma_gucu *= 0.3  # Gücü %30'a indir (daha yumuşak)
+                uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
+        
+        # Uzaklaşma vektörünü uygula
+        if uzaklasma_vektoru.length() > 0:
+            # Normalize et ve güç uygula
+            uzaklasma_vektoru = uzaklasma_vektoru.normalized()
+            uzaklasma_gucu = min(uzaklasma_vektoru.length(), 1.0)  # Maksimum %100 güç
+            
+            # Daha yumuşak uzaklaşma için gücü azalt (çarpışma önleme daha yumuşak olsun)
+            yumusaklik_carpani = 0.2  # Uzaklaşma gücünü %20'ye indir (daha yumuşak)
+            uzaklasma_gucu *= yumusaklik_carpani
+            
+            # Hız vektörüne ekle (momentum korunumu için)
+            uzaklasma_hizi = uzaklasma_vektoru * uzaklasma_gucu * HIZLANMA_CARPANI * time.dt
+            self.velocity += uzaklasma_hizi
+            
+            # Hız limiti (aşırı hızlanmayı önle)
+            max_hiz = 50.0
+            if self.velocity.length() > max_hiz:
+                self.velocity = self.velocity.normalized() * max_hiz
     
     def _carpisma_kontrolu(self):
         """
@@ -721,367 +751,51 @@ class Ortam:
 
         # ROV ve engel listeleri
         self.rovs = []
+        self.filo = None  # Filo referansı (main.py'den set edilecek)
         self.engeller = []
-        
-        # Hedef nokta (varsayılan)
-        self.hedef_nokta = Vec3(40, 0, 60)
-        
-        # Havuz genişliği (varsayılan)
-        self.havuz_genisligi = 200.0
 
         # Konsol verileri
         self.konsol_verileri = {}
-        
-        # Hedef nokta görsel işareti
-        self.hedef_isareti = None
-        
-        # AI ve GNC referansları (main.py'den set edilecek)
-        self.beyin = None
-        self.filo = None
 
     # --- Simülasyon Nesnelerini Oluştur ---
-    def sim_olustur(self, n_rovs=3, n_engels=15, hedef_nokta=None, havuz_genisligi=200, rov_model_yolu=None):
-        """
-        Simülasyon nesnelerini oluşturur.
-        
-        Args:
-            n_rovs: ROV sayısı
-            n_engels: Engel sayısı
-            hedef_nokta: Hedef nokta (Vec3)
-            havuz_genisligi: Havuz genişliği
-            rov_model_yolu: 3D model dosya yolu (Models-3D klasöründen yüklenecek)
-        
-        Args:
-            n_rovs: ROV sayısı
-            n_engels: Engel sayısı
-            hedef_nokta: Hedef nokta (Vec3) - engeller bu noktadan uzak olur
-            havuz_genisligi: Havuz genişliği (varsayılan: 200)
-        """
-        # Havuz genişliğini kaydet
-        self.havuz_genisligi = havuz_genisligi
-        
-        # Hedef noktayı ayarla
-        if hedef_nokta is None:
-            self.hedef_nokta = Vec3(40, 0, 60)
-        else:
-            self.hedef_nokta = hedef_nokta
-        
-        # Hedef nokta görsel işareti oluştur
-        self._hedef_isareti_olustur()
-        
-        # Havuz sınırları
-        havuz_yari_genislik = havuz_genisligi / 2
-        hedef_guvenlik_mesafesi = 30.0  # Hedeften minimum mesafe
-        
-        # Engeller - Tüm havuza yayılmış, hedeften uzak
-        engel_deneme_sayisi = 0
-        max_deneme = n_engels * 10  # Maksimum deneme sayısı
-        
-        while len(self.engeller) < n_engels and engel_deneme_sayisi < max_deneme:
-            engel_deneme_sayisi += 1
-            
-            # Tüm havuza geniş şekilde yayılmış random pozisyon (daha geniş alan)
-            x = random.uniform(-havuz_yari_genislik * 0.9, havuz_yari_genislik * 0.9)
-            z = random.uniform(-havuz_yari_genislik * 0.9, havuz_yari_genislik * 0.9)
-            y = random.uniform(-90, -10)
-            
-            # Hedef noktadan uzaklık kontrolü
-            engel_pos = Vec3(x, y, z)
-            if distance(engel_pos, self.hedef_nokta) < hedef_guvenlik_mesafesi:
-                continue  # Hedefe çok yakın, tekrar dene
-            
-            # Boyutlar
-            s_x = random.uniform(4, 12)
-            s_y = random.uniform(4, 12)
-            s_z = random.uniform(4, 12)
-            
-            # Geniş gri aralığında kaya renkleri (daha geniş spektrum)
-            # 40-200 arası gri tonları
-            gri_tonu = random.randint(40, 200)
-            # Biraz varyasyon ekle (benek efekti için)
-            r_varyasyon = random.randint(-15, 15)
-            g_varyasyon = random.randint(-15, 15)
-            b_varyasyon = random.randint(-15, 15)
-            
-            kaya_rengi = color.rgb(
-                max(30, min(220, gri_tonu + r_varyasyon)),
-                max(30, min(220, gri_tonu + g_varyasyon)),
-                max(30, min(220, gri_tonu + b_varyasyon))
-            )
-            
+    def sim_olustur(self, n_rovs=3, n_engels=15, havuz_genisligi=200):
+        # Engeller
+        for _ in range(n_engels):
+            x = random.uniform(-200, 200)
+            z = random.uniform(-200, 200)
+            y = random.uniform(-90, 0)
+
+            s_x = random.uniform(15,80)
+            s_y = random.uniform(15,80)
+            s_z = random.uniform(-30,30)
+
+            gri = random.randint(80,100)
+            kaya_rengi = color.rgb(gri, gri, gri)
+
             engel = Entity(
                 model='icosphere',
                 color=kaya_rengi,
-                texture='noise',  # Benek efekti için noise texture
-                scale=(s_x, s_y, s_z),
-                position=(x, y, z),
-                rotation=(random.randint(0, 360), random.randint(0, 360), random.randint(0, 360)),
+                texture='noise',
+                scale=(s_x,s_y,s_z),
+                position=(x,y,z),
+                rotation=(random.randint(0,360), random.randint(0,360), random.randint(0,360)),
                 collider='mesh',
                 unlit=True
             )
             self.engeller.append(engel)
-        
-        # ROV'lar - Engellerden ve hedeften uzak oluştur
-        rov_guvenlik_mesafesi = 15.0  # Engellerden minimum mesafe
-        rov_deneme_sayisi = 0
-        max_rov_deneme = n_rovs * 20
-        
+
+        # ROV'lar
         for i in range(n_rovs):
-            gecerli_pozisyon = False
-            deneme = 0
-            
-            while not gecerli_pozisyon and deneme < max_rov_deneme:
-                deneme += 1
-                x = random.uniform(-havuz_yari_genislik * 0.3, havuz_yari_genislik * 0.3)
-                z = random.uniform(-havuz_yari_genislik * 0.3, havuz_yari_genislik * 0.3)
-                y = -2  # Su yüzeyine yakın
-                
-                rov_pos = Vec3(x, y, z)
-                gecerli_pozisyon = True
-                
-                # Hedeften uzak mı?
-                if distance(rov_pos, self.hedef_nokta) < hedef_guvenlik_mesafesi:
-                    gecerli_pozisyon = False
-                    continue
-                
-                # Engellerden uzak mı?
-                for engel in self.engeller:
-                    if distance(rov_pos, engel.position) < rov_guvenlik_mesafesi:
-                        gecerli_pozisyon = False
-                        break
-                
-                if gecerli_pozisyon:
-                    # Model yolunu otomatik bul (eğer verilmişse)
-                    kullanilacak_model = self._rov_modeli_bul(rov_model_yolu)
-                    # None ise varsayılan cube kullanılacak (ROV.__init__ içinde)
-                    new_rov = ROV(rov_id=i, position=(x, y, z), model_yolu=kullanilacak_model)
-                    new_rov.environment_ref = self
-                    self.rovs.append(new_rov)
-                    break
-            
-            # Eğer geçerli pozisyon bulunamazsa varsayılan pozisyon
-            if not gecerli_pozisyon:
-                x = -20 + (i * 10)
-                z = -20 + (i * 10)
-                kullanilacak_model = self._rov_modeli_bul(rov_model_yolu)
-                # None ise varsayılan cube kullanılacak (ROV.__init__ içinde)
-                new_rov = ROV(rov_id=i, position=(x, -2, z), model_yolu=kullanilacak_model)
-                new_rov.environment_ref = self
-                self.rovs.append(new_rov)
-        
-        # Model yükleme durumunu bildir (sadece bir kez)
-        if rov_model_yolu:
-            models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Models-3D')
-            full_path = os.path.join(models_dir, rov_model_yolu)
-            full_path = os.path.normpath(full_path)
-            if os.path.exists(full_path) and os.path.isfile(full_path):
-                print(f"[Ortam] ROV modeli yuklendi: {rov_model_yolu}")
-            else:
-                print(f"[Ortam] ROV modeli bulunamadi: {rov_model_yolu}, varsayilan 'cube' kullaniliyor")
-        
-        print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {len(self.engeller)} Kaya, Hedef: {self.hedef_nokta}")
-    
-    def _rov_modeli_bul(self, model_yolu):
-        """
-        ROV model dosyasını bulur.
-        
-        Args:
-            model_yolu: Model dosya yolu (None, dosya adı veya tam yol)
-                - None: Otomatik arama yapılır (rov.obj, rov.glb, vb.)
-                - "rov.obj": Models-3D klasöründen aranır
-                - "submarine/model.obj": Models-3D/submarine/model.obj aranır
-                - Tam yol: Verilen yol kullanılır
-        
-        Returns:
-            str: Model yolu veya None (varsayılan cube kullanılır)
-        """
-        models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Models-3D')
-        
-        if model_yolu is None:
-            # Varsayılan: Models-3D klasöründen otomatik arama
-            # Yaygın uzantıları dene: obj, glb, gltf, fbx, dae
-            yaygin_uzantilar = ['obj', 'glb', 'gltf', 'fbx', 'dae']
-            for uzanti in yaygin_uzantilar:
-                model_adi = f'rov.{uzanti}'
-                full_path = os.path.join(models_dir, model_adi)
-                if os.path.exists(full_path):
-                    print(f"[Ortam] ROV modeli bulundu: {model_adi}")
-                    return full_path
-            return None  # Model bulunamadı, varsayılan cube kullanılacak
-        else:
-            # Model yolu verilmişse
-            # Önce tam yol olarak dene (mutlak yol)
-            if os.path.isabs(model_yolu):
-                if os.path.exists(model_yolu):
-                    return model_yolu
-            else:
-                # Göreceli yol: Models-3D klasöründen dene (alt klasörler dahil)
-                full_path = os.path.join(models_dir, model_yolu)
-                # Normalize path (.. ve . işlemlerini çöz)
-                full_path = os.path.normpath(os.path.abspath(full_path))
-                if os.path.exists(full_path) and os.path.isfile(full_path):
-                    return full_path
-                
-                # Eğer sadece uzantı verilmişse (örn: "obj"), "rov.obj" olarak dene
-                model_basename = os.path.basename(model_yolu)
-                
-                # Uzantıyı al (nokta ile veya noktasız)
-                if '.' in model_basename:
-                    uzanti = model_basename.split('.')[-1]
-                else:
-                    uzanti = model_basename
-                
-                # "rov." ile başlamıyorsa ve sadece uzantıysa, "rov." ekle
-                if not model_basename.startswith('rov.') and len(model_basename.split('.')) == 1:
-                    rov_model_adi = f'rov.{uzanti}'
-                    full_path = os.path.join(models_dir, rov_model_adi)
-                    full_path = os.path.normpath(full_path)
-                    if os.path.exists(full_path):
-                        return full_path
-            
-            # Model bulunamadı, sessizce None döndür (varsayılan cube kullanılacak)
-            return None
-    
-    def _hedef_isareti_olustur(self):
-        """
-        Hedef noktayı görsel işaret ile gösterir.
-        """
-        # Eski işareti kaldır
-        if self.hedef_isareti:
-            destroy(self.hedef_isareti)
-        
-        # Hedef nokta işareti oluştur (3D ok veya işaret)
-        # Ana işaret (ok)
-        self.hedef_isareti = Entity(
-            model='cube',
-            position=self.hedef_nokta,
-            scale=(2, 0.2, 2),
-            color=color.green,
-            unlit=True
-        )
-        
-        # Üstte dönen ok işareti
-        ok_isareti = Entity(
-            model='cube',
-            position=self.hedef_nokta + Vec3(0, 3, 0),
-            scale=(0.5, 2, 0.5),
-            color=color.yellow,
-            parent=self.hedef_isareti,
-            unlit=True
-        )
-        
-        # Altında ışık halkası
-        halka = Entity(
-            model='circle',
-            position=self.hedef_nokta + Vec3(0, 0.1, 0),
-            scale=(5, 1, 5),
-            color=color.rgb(0, 255, 0),
-            alpha=0.4,  # Yarı saydam
-            rotation_x=90,
-            unlit=True,
-            double_sided=True,
-            transparent=True
-        )
-        
-        # Animasyon için referans
-        self.hedef_isareti.ok = ok_isareti
-        self.hedef_isareti.halka = halka
-    
-    def _hedef_isareti_guncelle(self):
-        """
-        Hedef işaretini animasyonlu olarak günceller (döndürme, parıldama).
-        """
-        if self.hedef_isareti:
-            # Ok işaretini döndür
-            if hasattr(self.hedef_isareti, 'ok'):
-                self.hedef_isareti.ok.rotation_y += time.dt * 90  # Saniyede 90 derece
-            
-            # Halkayı parıldat (alpha değişimi)
-            if hasattr(self.hedef_isareti, 'halka'):
-                # Sinüs dalgası ile parıldama (0.3-0.7 arası)
-                alpha = 0.5 + 0.2 * math.sin(time.time() * 2)
-                self.hedef_isareti.halka.alpha = alpha
+            x = random.uniform(-10,10)
+            z = random.uniform(-10,10)
+            new_rov = ROV(rov_id=i, position=(x,-2,z))  # ROV sınıfın kendi tanımlı olmalı
+            new_rov.environment_ref = self
+            # Filo referansını ekle (eğer varsa)
+            if hasattr(self, 'filo'):
+                new_rov.filo_ref = self.filo
+            self.rovs.append(new_rov)
 
-    # --- GAT Veri Dönüşüm Fonksiyonu ---
-    def simden_veriye(self, limitler=None):
-        """
-        Fiziksel dünyayı Matematiksel matrise çevirir (GAT Girdisi)
-        
-        Args:
-            limitler (dict, optional): Mesafe limitleri. Varsayılan değerler:
-                - 'LEADER': 60.0 (Liderden uzaklık limiti)
-                - 'DISCONNECT': 35.0 (Bağlantı kopma limiti)
-                - 'OBSTACLE': 20.0 (Engel tespit limiti)
-                - 'COLLISION': 8.0 (Çarpışma tespit limiti)
-        
-        Returns:
-            MiniData: x (özellik matrisi) ve edge_index (graf bağlantıları) içeren nesne
-        """
-        # Varsayılan limitler
-        if limitler is None:
-            limitler = {
-                'LEADER': 60.0,
-                'DISCONNECT': 35.0,
-                'OBSTACLE': 20.0,
-                'COLLISION': 8.0
-            }
-        
-        rovs = self.rovs
-        engeller = self.engeller
-        n = len(rovs)
-        x = torch.zeros((n, 7), dtype=torch.float)
-        positions = [r.position for r in rovs]
-        sources, targets = [], []
-
-        for i in range(n):
-            code = 0
-            # Liderden uzaklık kontrolü
-            if i != 0 and distance(positions[i], positions[0]) > limitler['LEADER']: 
-                code = 5
-            
-            # Bağlantı kopma kontrolü
-            dists = [distance(positions[i], positions[j]) for j in range(n) if i != j]
-            if dists and min(dists) > limitler['DISCONNECT']: 
-                code = 3
-            
-            # Engel tespiti
-            min_engel = 999
-            for engel in engeller:
-                d = distance(positions[i], engel.position) - 6 
-                if d < min_engel: 
-                    min_engel = d
-            if min_engel < limitler['OBSTACLE']: 
-                code = 1
-            
-            # Çarpışma kontrolü
-            for j in range(n):
-                if i != j and distance(positions[i], positions[j]) < limitler['COLLISION']:
-                    code = 2
-                    break
-            
-            # Özellik vektörü oluştur
-            x[i][0] = code / 5.0
-            x[i][1] = rovs[i].battery / 100.0
-            x[i][2] = 0.9  # SNR (sabit)
-            x[i][3] = abs(rovs[i].y) / 100.0
-            x[i][4] = rovs[i].velocity.x
-            x[i][5] = rovs[i].velocity.z
-            x[i][6] = rovs[i].role
-
-            # Graf bağlantıları (iletişim menzili içindeki ROV'lar)
-            for j in range(n):
-                if i != j and distance(positions[i], positions[j]) < limitler['DISCONNECT']:
-                    sources.append(i)
-                    targets.append(j)
-
-        edge_index = torch.tensor([sources, targets], dtype=torch.long)
-        
-        # MiniData sınıfı (PyG Data yapısını taklit eder)
-        class MiniData:
-            def __init__(self, x, edge_index): 
-                self.x, self.edge_index = x, edge_index
-        
-        return MiniData(x, edge_index)
+        print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {n_engels} Gri Kaya.")
 
     # --- İnteraktif Shell ---
     def _start_shell(self):
@@ -1114,121 +828,9 @@ class Ortam:
             os.system('stty sane')
             os._exit(0)
 
-    # --- ROV Görsel Güncellemeleri ---
-    def guncelle_rov_gorselleri(self, tahminler, ai_aktif=True):
-        """
-        ROV'ların renk ve label'larını GAT kodlarına göre günceller.
-        
-        Args:
-            tahminler: GAT kodları listesi (her ROV için)
-            ai_aktif: AI aktif mi (varsayılan: True)
-        """
-        kod_renkleri = {0:color.orange, 1:color.red, 2:color.black, 3:color.yellow, 5:color.magenta}
-        durum_txts = ["OK", "ENGEL", "CARPISMA", "KOPUK", "-", "UZAK"]
-        
-        # Her ROV için GAT koduna göre renk belirleme (manuel kontrol olsun olmasın)
-        for i, gat_kodu in enumerate(tahminler):
-            if i >= len(self.rovs):
-                continue
-                
-            rov = self.rovs[i]
-            
-            # Batarya bitmişse özel renk (gri)
-            if rov.batarya_bitti:
-                rov.color = color.rgb(100, 100, 100)  # Gri (batarya bitti)
-            # Lider ROV her zaman kırmızı (batarya bitmemişse)
-            elif rov.role == 1: 
-                rov.color = color.red
-            else: 
-                # GAT koduna göre renk (manuel kontrol olsun olmasın)
-                rov.color = kod_renkleri.get(gat_kodu, color.white)
-            
-            # Sensör bazlı engel tespiti (GAT olmasa bile, batarya bitmemişse)
-            if not rov.batarya_bitti and rov.tespit_edilen_engel is not None:
-                # Engel tespit edildi, renk kırmızıya yakın olsun
-                if gat_kodu == 0:  # GAT engel tespit etmediyse ama sensör tespit ettiyse
-                    rov.color = color.rgb(255, 100, 0)  # Turuncu-kırmızı
-            
-            ek = "" if ai_aktif else "\n[AI OFF]"
-            # Engel mesafesi bilgisi ekle
-            if rov.tespit_edilen_engel is not None:
-                mesafe_bilgisi = f"\n{rov.engel_mesafesi:.1f}m"
-            else:
-                mesafe_bilgisi = ""
-            # Batarya bilgisi ekle (emoji yerine metin kullan)
-            batarya_bilgisi = f"\nBAT:{rov.battery:.0f}%"
-            if rov.batarya_bitti:
-                batarya_bilgisi = "\nBAT:BITTI"
-            rov.label.text = f"R{i}\n{durum_txts[gat_kodu]}{mesafe_bilgisi}{batarya_bilgisi}{ek}"
-    
-    # --- Ana Update Fonksiyonu ---
-    def guncelle(self):
-        """
-        Simülasyonun ana update fonksiyonu.
-        GAT analizi, görsel güncellemeler ve GNC güncellemelerini yapar.
-        """
-        try:
-            # Simülasyondan GAT verisi al
-            veri = self.simden_veriye()
-            
-            # AI analizi
-            ai_aktif = getattr(cfg, 'ai_aktif', True)
-            if ai_aktif and self.beyin:
-                try: 
-                    tahminler, _, _ = self.beyin.analiz_et(veri)
-                except: 
-                    tahminler = np.zeros(len(self.rovs), dtype=int)
-            else:
-                tahminler = np.zeros(len(self.rovs), dtype=int)
-            
-            # ROV görsel güncellemeleri
-            self.guncelle_rov_gorselleri(tahminler, ai_aktif)
-            
-            # GNC güncellemeleri
-            if self.filo:
-                if len(self.filo.sistemler) > 0:
-                    self.filo.guncelle_hepsi(tahminler)
-                else:
-                    # GNC sistemleri henüz eklenmemiş
-                    pass
-            else:
-                # Filo henüz set edilmemiş, ROV'lar hareket etmeyecek
-                # İlk birkaç frame'de bu normal olabilir
-                pass
-                
-        except Exception as e: 
-            # Hata ayıklama için (geliştirme sırasında)
-            # print(f"[HATA] guncelle(): {e}")
-            # import traceback
-            # traceback.print_exc()
-            pass  # Sessizce devam et
-
     # --- Update Fonksiyonunu Set Et ---
-    def set_update_function(self, func=None):
-        """
-        Update fonksiyonunu ayarlar.
-        
-        Args:
-            func: Özel update fonksiyonu (None ise varsayılan guncelle() kullanılır)
-        """
-        if func is None:
-            # Varsayılan update fonksiyonu
-            def wrapped_update():
-                # Hedef işaretini güncelle (animasyon)
-                if self.hedef_isareti:
-                    self._hedef_isareti_guncelle()
-                # Ana güncelleme
-                self.guncelle()
-            self.app.update = wrapped_update
-        else:
-            # Özel update fonksiyonu
-            def wrapped_update():
-                # Hedef işaretini güncelle (animasyon)
-                if self.hedef_isareti:
-                    self._hedef_isareti_guncelle()
-                # Kullanıcı update fonksiyonunu çağır
-                func()
-            self.app.update = wrapped_update
+    def set_update_function(self, func):
+        self.app.update = func
 
     # --- Konsola Veri Ekle ---
     def konsola_ekle(self, isim, nesne):
