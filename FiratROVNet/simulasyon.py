@@ -4,6 +4,7 @@ import random
 import threading
 import code
 import sys
+import torch
     
 from .config import cfg # <-- BU SATIRI EKLE
 
@@ -13,6 +14,7 @@ from .config import cfg # <-- BU SATIRI EKLE
 SURTUNME_KATSAYISI = 0.95
 HIZLANMA_CARPANI = 30  # Artırıldı: 0.5 -> 5.0 (daha hızlı hareket için)
 KALDIRMA_KUVVETI = 2.0
+BATARYA_SOMURME_KATSAYISI = 0.001  # Batarya sömürme katsayısı (gerçekçi değer: maksimum güçte ~66 saniye dayanır)
 
 
 
@@ -32,8 +34,9 @@ class ROV(Entity):
         
         self.id = rov_id
         self.velocity = Vec3(0, 0, 0)
-        self.battery = 100.0
-        self.role = 0 
+        self.battery = 1.0  # Batarya 0-1 arası (1.0 = %100 dolu)
+        self.role = 0
+        self.calistirilan_guc = 0.0  # ROV'un çalıştırdığı güç (0.0-1.0 arası) 
         
         self.sensor_config = {
             "engel_mesafesi": 20.0,
@@ -126,7 +129,7 @@ class ROV(Entity):
                 self.velocity.y = 0
 
         if self.velocity.length() > 0.01: 
-            self.battery -= 0.01 * time.dt
+            self.battery -= BATARYA_SOMURME_KATSAYISI * time.dt
         
         # Yakınlaşma önleme (10 metre mesafede uzaklaşma)
         if self.environment_ref:
@@ -137,8 +140,10 @@ class ROV(Entity):
             self._carpisma_kontrolu()
 
     def move(self, komut, guc=1.0):
+        # Batarya bitmişse hareket ettirme
+        if self.battery <= 0:
+            return
         thrust = guc * HIZLANMA_CARPANI * time.dt
-        if self.battery <= 0: return
 
         if komut == "ileri":  self.velocity.z += thrust
         elif komut == "geri": self.velocity.z -= thrust
@@ -765,8 +770,8 @@ class Ortam:
             z = random.uniform(-200, 200)
             y = random.uniform(-90, 0)
 
-            s_x = random.uniform(15,80)
-            s_y = random.uniform(15,80)
+            s_x = random.uniform(15,40)
+            s_y = random.uniform(15,40)
             s_z = random.uniform(-30,30)
 
             gri = random.randint(80,100)
@@ -835,6 +840,63 @@ class Ortam:
     # --- Konsola Veri Ekle ---
     def konsola_ekle(self, isim, nesne):
         self.konsol_verileri[isim] = nesne
+
+    # --- Veri Toplama Fonksiyonu (GAT Girdisi) ---
+    def simden_veriye(self):
+        """
+        Fiziksel dünyayı Matematiksel matrise çevirir (GAT Girdisi)
+        
+        Returns:
+            MiniData: GAT modeli için hazırlanmış veri yapısı (x, edge_index)
+        """
+        rovs = self.rovs
+        engeller = self.engeller
+        n = len(rovs)
+        x = torch.zeros((n, 7), dtype=torch.float)
+        positions = [r.position for r in rovs]
+        sources, targets = [], []
+
+        L = {'LEADER': 60.0, 'DISCONNECT': 35.0, 'OBSTACLE': 20.0, 'COLLISION': 8.0}
+
+        for i in range(n):
+            code = 0
+            if i != 0 and distance(positions[i], positions[0]) > L['LEADER']: 
+                code = 5
+            dists = [distance(positions[i], positions[j]) for j in range(n) if i != j]
+            if dists and min(dists) > L['DISCONNECT']: 
+                code = 3
+            
+            min_engel = 999
+            for engel in engeller:
+                d = distance(positions[i], engel.position) - 6 
+                if d < min_engel: 
+                    min_engel = d
+            if min_engel < L['OBSTACLE']: 
+                code = 1
+            
+            for j in range(n):
+                if i != j and distance(positions[i], positions[j]) < L['COLLISION']:
+                    code = 2
+                    break
+            
+            x[i][0] = code / 5.0
+            x[i][1] = rovs[i].battery  # Batarya artık 0-1 arası, bölmeye gerek yok
+            x[i][2] = 0.9
+            x[i][3] = abs(rovs[i].y) / 100.0
+            x[i][4] = rovs[i].velocity.x
+            x[i][5] = rovs[i].velocity.z
+            x[i][6] = rovs[i].role
+
+            for j in range(n):
+                if i != j and distance(positions[i], positions[j]) < L['DISCONNECT']:
+                    sources.append(i)
+                    targets.append(j)
+
+        edge_index = torch.tensor([sources, targets], dtype=torch.long)
+        class MiniData:
+            def __init__(self, x, edge_index): 
+                self.x, self.edge_index = x, edge_index
+        return MiniData(x, edge_index)
 
     # --- Main Run Fonksiyonu ---
     def run(self, interaktif=False):
