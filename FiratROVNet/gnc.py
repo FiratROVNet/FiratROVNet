@@ -941,7 +941,7 @@ class TakipciGNC(TemelGNC):
 
         guc = 1.0
         if gat_kodu == 5: guc = 1.5 
-        if gat_kodu == 1: guc = 0.5 
+        if gat_kodu == 1: guc = 0.5  # ENGEL: Yavaş hareket 
         
         self.vektor_to_motor(nihai_vektor, guc_carpani=guc)
     
