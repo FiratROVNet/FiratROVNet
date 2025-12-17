@@ -139,6 +139,8 @@ Simülasyonu güvenli şekilde kapatmak için:
 👨‍💻 Geliştirici
 
 Ömer Faruk Çelik
+Mustafa Polat
+Gizem Yılmaz
 Fırat Üniversitesi
 Otonom Sistemler & Yapay Zeka Laboratuvarı
 📜 Lisans
