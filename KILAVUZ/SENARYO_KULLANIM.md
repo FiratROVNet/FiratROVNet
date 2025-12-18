@@ -185,7 +185,7 @@ senaryo.guncelle(delta_time=0.016)  # 16ms (60 FPS)
 ### Örnek: Simülasyon Döngüsü
 
 ```python
-import senaryo
+from FiratROVNet import senaryo
 
 # Senaryo oluştur
 senaryo.uret(n_rovs=2, n_engels=10)
@@ -213,7 +213,7 @@ senaryo.temizle()
 ### Örnek 1: Basit Veri Toplama
 
 ```python
-import senaryo
+from FiratROVNet import senaryo
 
 # Senaryo oluştur
 senaryo.uret(n_rovs=4, n_engels=20)
@@ -231,7 +231,7 @@ senaryo.temizle()
 ### Örnek 2: AI Eğitimi İçin Veri Seti
 
 ```python
-import senaryo
+from FiratROVNet import senaryo
 import numpy as np
 
 # Senaryo oluştur
@@ -267,7 +267,7 @@ senaryo.temizle()
 ### Örnek 3: Farklı Senaryolar
 
 ```python
-import senaryo
+from FiratROVNet import senaryo
 
 # Senaryo 1: Küçük havuz, az engel
 senaryo.uret(n_rovs=2, n_engels=5, havuz_genisligi=100)
@@ -293,7 +293,7 @@ senaryo.temizle()
 ### Örnek 4: Filo Komutları
 
 ```python
-import senaryo
+from FiratROVNet import senaryo
 
 senaryo.uret(n_rovs=3, n_engels=15)
 

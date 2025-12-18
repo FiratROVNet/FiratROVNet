@@ -5,15 +5,18 @@ Bu modül, GUI olmadan (headless) simülasyon ortamları oluşturur ve
 yapay zeka algoritmalarını eğitmek için veri üretir.
 
 Kullanım:
-    import senaryo
+    from FiratROVNet import senaryo
     
     # Senaryo oluştur
     senaryo.uret(n_rovs=4, n_engels=20, havuz_genisligi=200)
     
     # Veri al
+    batarya = senaryo.get(0, "batarya")
+    gps = senaryo.get(0, "gps")
+    sonar = senaryo.get(0, "sonar")
+    
+    # veya Filo üzerinden
     batarya = senaryo.filo.get(0, "batarya")
-    gps = senaryo.filo.get(0, "gps")
-    sonar = senaryo.filo.get(0, "sonar")
 """
 
 import os
