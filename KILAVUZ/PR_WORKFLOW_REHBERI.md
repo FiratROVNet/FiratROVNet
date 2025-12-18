@@ -416,3 +416,5 @@ git checkout feature/yeni-ozellik
 
 **Son Güncelleme**: 2024  
 **Versiyon**: 1.0
+
+

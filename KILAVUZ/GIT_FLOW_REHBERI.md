@@ -497,3 +497,6 @@ git reset --hard HEAD~1
 
 **Son Güncelleme**: 2024  
 **Versiyon**: 1.0
+
+
+
