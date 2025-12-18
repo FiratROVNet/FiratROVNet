@@ -1,6 +1,6 @@
 # 📊 Senaryo Modülü Kullanım Rehberi
 
-`senaryo.py` modülü, GUI olmadan (headless) simülasyon ortamları oluşturur ve yapay zeka algoritmalarını eğitmek için veri üretir.
+`FiratROVNet.senaryo` modülü, GUI olmadan (headless) simülasyon ortamları oluşturur ve yapay zeka algoritmalarını eğitmek için veri üretir.
 
 ---
 
@@ -19,7 +19,7 @@
 ### Basit Senaryo Oluşturma
 
 ```python
-import senaryo
+from FiratROVNet import senaryo
 
 # Senaryo oluştur
 senaryo.uret(n_rovs=4, n_engels=20, havuz_genisligi=200)
@@ -40,7 +40,7 @@ senaryo.temizle()
 ### Filo Üzerinden Erişim
 
 ```python
-import senaryo
+from FiratROVNet import senaryo
 
 senaryo.uret(n_rovs=3, n_engels=15)
 

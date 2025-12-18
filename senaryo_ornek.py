@@ -1,10 +1,12 @@
 """
 Senaryo Modülü Kullanım Örnekleri
 
-Bu dosya, senaryo.py modülünün nasıl kullanılacağını gösterir.
+Bu dosya, FiratROVNet.senaryo modülünün nasıl kullanılacağını gösterir.
 """
 
-import senaryo
+from FiratROVNet import senaryo
+# veya
+# from FiratROVNet.senaryo import uret, get, filo, temizle
 import numpy as np
 
 # ==========================================
