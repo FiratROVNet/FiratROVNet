@@ -41,7 +41,7 @@ except ImportError as e:
 # 3. Kütüphane Bilgileri (Metadata)
 __university__ = "Fırat Üniversitesi"
 __lab__ = "Otonom Sistemler & Yapay Zeka Laboratuvarı"
-__version__ = "1.7.3"
+__version__ = "1.7.4"
 __author__ = "Ömer Faruk Çelik"
 
 # 4. Dışarıdan Erişilebilecekler Listesi (Kritik Kısım)
