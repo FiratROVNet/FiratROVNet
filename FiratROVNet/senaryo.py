@@ -159,20 +159,23 @@ class Senaryo:
             # Headless mod için minimal engel objesi (Ursina Entity yerine)
             try:
                 # Ursina Entity oluşturmayı dene
-                if self.app is not None:
-                    engel = Entity(
-                        model='icosphere',
-                        color=engel_rengi,
-                        scale=(s_x, s_y, s_z),
-                        position=(x, y, z),
-                        rotation=(random.randint(0, 360), random.randint(0, 360), random.randint(0, 360)),
-                        collider='mesh',
-                        unlit=True
-                    )
+                if self.app is not None and URSINA_AVAILABLE:
                     try:
-                        engel.visible = False
-                    except:
-                        pass
+                        engel = Entity(
+                            model='icosphere',
+                            color=engel_rengi,
+                            scale=(s_x, s_y, s_z),
+                            position=(x, y, z),
+                            rotation=(random.randint(0, 360), random.randint(0, 360), random.randint(0, 360)),
+                            collider='mesh',
+                            unlit=True
+                        )
+                        try:
+                            engel.visible = False
+                        except:
+                            pass
+                    except Exception as engel_error:
+                        raise Exception(f"Engel oluşturulamadı: {engel_error}")
                 else:
                     raise Exception("Ursina app yok")
             except Exception as e:
@@ -205,22 +208,26 @@ class Senaryo:
             # ROV oluştur (headless mod için)
             try:
                 # Ursina ROV oluşturmayı dene
-                if self.app is not None:
-                    rov = ROV(rov_id=i, position=pozisyon)
-                    rov.environment_ref = self.ortam
-                    
-                    # Headless modda görsel özellikleri kapat
+                if self.app is not None and ROV_AVAILABLE:
                     try:
-                        rov.visible = False
-                    except:
-                        pass
-                    try:
-                        if hasattr(rov, 'label'):
-                            rov.label.enabled = False
-                    except:
-                        pass
+                        rov = ROV(rov_id=i, position=pozisyon)
+                        rov.environment_ref = self.ortam
+                        
+                        # Headless modda görsel özellikleri kapat
+                        try:
+                            rov.visible = False
+                        except:
+                            pass
+                        try:
+                            if hasattr(rov, 'label'):
+                                rov.label.enabled = False
+                        except:
+                            pass
+                    except Exception as rov_error:
+                        # ROV oluşturma hatası
+                        raise Exception(f"ROV oluşturulamadı: {rov_error}")
                 else:
-                    raise Exception("Ursina app yok")
+                    raise Exception("Ursina app veya ROV sınıfı yok")
             except Exception as e:
                 # ROV oluşturulamazsa minimal ROV objesi
                 # Vec3 oluşturma
