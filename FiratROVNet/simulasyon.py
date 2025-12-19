@@ -5,6 +5,8 @@ import threading
 import code
 import sys
 import torch
+from math import sin, cos, atan2, degrees, pi
+import os
     
 from .config import cfg # <-- BU SATIRI EKLE
 
@@ -21,16 +23,31 @@ BATARYA_SOMURME_KATSAYISI = 0.001  # Batarya sömürme katsayısı (gerçekçi d
 class ROV(Entity):
     def __init__(self, rov_id, **kwargs):
         super().__init__()
-        self.model = 'cube'
-        self.color = color.orange # Turuncu her zaman görünür
-        self.scale = (1.5, 0.8, 2.5)
-        self.collider = 'box'
-        self.unlit = True 
+        
+        # FBX model kontrolü
+        rov_model_path = "./Models-3D/water/my_models/submarine/submarine1.fbx"
+        
+        if os.path.exists(rov_model_path):
+            # FBX model kullan - Model çok büyük olduğu için yaklaşık 1000 kat küçültülüyor
+            self.model = rov_model_path
+            self.scale = (0.01, 0.01, 0.01)  # FBX model için çok küçük scale (1000 kat küçültme)
+            self.collider = 'mesh'  # FBX model için mesh collider
+            self.unlit = False  # FBX model için lighting açık
+            self.color = color.white  # FBX model için beyaz (GAT kodları için override edilebilir)
+            self.gat_kodu = 0  # GAT kodu için değişken (başlangıç: 0 = OK)
+        else:
+            # Fallback: Mevcut cube model
+            self.model = 'cube'
+            self.color = color.orange  # Turuncu her zaman görünür
+            self.scale = (1.5, 0.8, 2.5)
+            self.collider = 'box'
+            self.unlit = True
+            self.gat_kodu = 0  # GAT kodu için değişken 
         
         if 'position' in kwargs: self.position = kwargs['position']
         else: self.position = (0, -5, 0)
 
-        self.label = Text(text=f"ROV-{rov_id}", parent=self, y=1.5, scale=12, billboard=True, color=color.white)
+        self.label = Text(text=f"ROV-{rov_id}", parent=self, y=3.0, scale=20, billboard=True, color=color.white, origin=(0, 0))
         
         self.id = rov_id
         self.velocity = Vec3(0, 0, 0)
@@ -204,56 +221,102 @@ class ROV(Entity):
     
     def _engel_tespiti(self):
         """
-        Engelleri tespit eder ve kesikli çizgi çizer.
-        Manuel kontrol olsun olmasın her zaman çalışır.
+        GÜNCELLENMİŞ: Hem algılama hem de çizim noktasını düzeltir.
+        Çizgiyi merkeze değil, engelin yüzeyine çizer.
         """
-        if not self.environment_ref:
+        if not self.environment_ref or not hasattr(self.environment_ref, 'engeller'):
             return
         
         min_mesafe = 999.0
         en_yakin_engel = None
+        en_yakin_nokta = None  # Çizgi çekilecek nokta
         
-        # Tüm engelleri kontrol et
-        for engel in self.environment_ref.engeller:
-            mesafe = distance(self.position, engel.position)
-            # Engel boyutunu dikkate al
-            engel_yari_cap = max(engel.scale_x, engel.scale_y, engel.scale_z) / 2
-            gercek_mesafe = mesafe - engel_yari_cap
-            
-            if gercek_mesafe < min_mesafe:
-                min_mesafe = gercek_mesafe
-                en_yakin_engel = engel
-        
-        # Sensör menzili kontrolü
         engel_mesafesi_limit = self.sensor_config.get("engel_mesafesi", 20.0)
         
-        # Eğer engel tespit edildiyse
+        for engel in self.environment_ref.engeller:
+            if not engel or not hasattr(engel, 'position') or engel.position is None:
+                continue
+            
+            # 1. Scale alma (Güvenli yöntem)
+            if hasattr(engel, 'scale'):
+                if hasattr(engel.scale, 'x'):
+                    s_x, s_y, s_z = engel.scale.x, engel.scale.y, engel.scale.z
+                else:
+                    s_x = engel.scale[0] if len(engel.scale) > 0 else 1.0
+                    s_y = engel.scale[1] if len(engel.scale) > 1 else 1.0
+                    s_z = engel.scale[2] if len(engel.scale) > 2 else 1.0
+            else:
+                s_x, s_y, s_z = 1.0, 1.0, 1.0
+            
+            yatay_yaricap = max(s_x, s_z) / 2
+            dikey_yaricap = s_y / 2
+            
+            # 2. Vektör Hesaplamaları
+            # Engelin merkezinden ROV'a doğru olan vektör
+            fark_vektoru = self.position - engel.position
+            
+            # Yatay uzaklık (Y eksenini yok sayarak)
+            yatay_uzaklik = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
+            
+            # Dikey uzaklık
+            dy = abs(fark_vektoru.y)
+            
+            # 3. Kapsama Alanı Kontrolü
+            dikey_tolerans = 10.0 
+            
+            if dy <= (dikey_yaricap + dikey_tolerans):
+                duvara_mesafe = yatay_uzaklik - yatay_yaricap
+                
+                # İçindeyse mesafe 0
+                if duvara_mesafe < 0:
+                    duvara_mesafe = 0
+                
+                if duvara_mesafe < min_mesafe:
+                    min_mesafe = duvara_mesafe
+                    en_yakin_engel = engel
+                    
+                    # --- KRİTİK DÜZELTME: YÜZEY NOKTASINI HESAPLA ---
+                    # Merkeze değil, yüzeye çizgi çekeceğiz.
+                    # Engelin merkezinden ROV'a doğru, yarıçap kadar git.
+                    if yatay_uzaklik > 0.001:  # Sıfıra bölme hatasını önle
+                        yon_x = fark_vektoru.x / yatay_uzaklik
+                        yon_z = fark_vektoru.z / yatay_uzaklik
+                    else:
+                        yon_x, yon_z = 1, 0
+                        
+                    # Yüzeydeki nokta (X ve Z'de sınırda, Y'de ROV ile aynı hizada olsun ki çizgi düz dursun)
+                    hedef_x = engel.position.x + (yon_x * yatay_yaricap)
+                    hedef_z = engel.position.z + (yon_z * yatay_yaricap)
+                    
+                    en_yakin_nokta = Vec3(hedef_x, self.position.y, hedef_z)
+
+        # Tespit Sonucu
         if en_yakin_engel and min_mesafe < engel_mesafesi_limit:
             self.tespit_edilen_engel = en_yakin_engel
             self.engel_mesafesi = min_mesafe
             
-            # Kesikli çizgi çiz (veya güncelle)
-            self._kesikli_cizgi_ciz(en_yakin_engel, min_mesafe)
+            # Çizgi fonksiyonuna artık hesapladığımız NOKTAYI gönderiyoruz
+            self._kesikli_cizgi_ciz(en_yakin_nokta, min_mesafe)
         else:
-            # Engel tespit edilmediyse çizgiyi kaldır
             self.tespit_edilen_engel = None
             self.engel_mesafesi = 999.0
-            if self.engel_cizgi:
+            if hasattr(self, 'engel_cizgi') and self.engel_cizgi:
                 destroy(self.engel_cizgi)
                 self.engel_cizgi = None
     
-    def _kesikli_cizgi_ciz(self, engel, mesafe):
+    def _kesikli_cizgi_ciz(self, hedef_nokta, mesafe):
         """
-        ROV'dan engele doğru kesikli çizgi çizer.
+        ROV'dan belirli bir hedef noktaya (engel yüzeyine) kesikli çizgi çizer.
+        Argüman: hedef_nokta (Vec3) - Engelin yüzeyindeki nokta
         """
-        # Eski çizgiyi kaldır
+        # Eski çizgiyi temizle
         if self.engel_cizgi:
             if hasattr(self.engel_cizgi, 'children'):
                 for child in self.engel_cizgi.children:
                     destroy(child)
             destroy(self.engel_cizgi)
         
-        # Çizgi rengi: mesafeye göre (yakın = kırmızı, uzak = sarı)
+        # Renk belirle
         if mesafe < 5.0:
             cizgi_rengi = color.red
         elif mesafe < 10.0:
@@ -261,50 +324,47 @@ class ROV(Entity):
         else:
             cizgi_rengi = color.yellow
         
-        # Kesikli çizgi için noktalar oluştur
-        baslangic = self.position
-        bitis = engel.position
-        yon = (bitis - baslangic)
-        if yon.length() == 0:
+        if hedef_nokta is None:
             return
-        yon = yon.normalized()
-        toplam_mesafe = distance(baslangic, bitis)
+
+        baslangic = self.position
+        bitis = hedef_nokta  # Artık doğrudan hesaplanan yüzey noktası
         
-        # Kesikli çizgi parçaları (her 2 birimde bir parça)
+        yon = (bitis - baslangic)
+        toplam_mesafe = yon.length()
+        
+        if toplam_mesafe == 0:
+            return
+            
+        yon = yon.normalized()
+        
+        # Parça ayarları
         parca_uzunlugu = 2.0
         bosluk_uzunlugu = 1.0
         
-        # Ana çizgi entity'si (parçaları tutmak için)
         self.engel_cizgi = Entity()
         
-        # Çizgi parçalarını oluştur
         mevcut_pozisyon = 0.0
         
         while mevcut_pozisyon < toplam_mesafe:
-            # Parça başlangıcı
             parca_baslangic = baslangic + yon * mevcut_pozisyon
             
-            # Parça bitişi
-            parca_bitis_uzunlugu = min(parca_uzunlugu, toplam_mesafe - mevcut_pozisyon)
-            if parca_bitis_uzunlugu <= 0:
+            kalin_uzunluk = min(parca_uzunlugu, toplam_mesafe - mevcut_pozisyon)
+            if kalin_uzunluk <= 0: 
                 break
             
-            parca_bitis = parca_baslangic + yon * parca_bitis_uzunlugu
+            parca_bitis = parca_baslangic + yon * kalin_uzunluk
+            orta_nokta = (parca_baslangic + parca_bitis) / 2
             
-            # Parça entity'si oluştur (basit küp)
-            parca = Entity(
+            Entity(
                 model='cube',
-                position=(parca_baslangic + parca_bitis) / 2,
-                scale=(0.15, 0.15, parca_bitis_uzunlugu),
+                position=orta_nokta,
+                scale=(0.15, 0.15, kalin_uzunluk),
                 color=cizgi_rengi,
                 parent=self.engel_cizgi,
                 unlit=True
-            )
+            ).look_at(parca_bitis, up=Vec3(0,1,0))
             
-            # Yönlendirme (basit yöntem)
-            parca.look_at(parca_bitis, up=Vec3(0, 1, 0))
-            
-            # Sonraki parça için pozisyon güncelle
             mevcut_pozisyon += parca_uzunlugu + bosluk_uzunlugu
     
     def _sonar_iletisim(self):
@@ -690,22 +750,185 @@ class Ortam:
         EditorCamera()
         self.editor_camera = EditorCamera()
         self.editor_camera.enabled = False  # Başlangıçta kapalı
-
+# --- IŞIKLANDIRMA (Adanın ve ROV'ların net görünmesi için şart) ---
+        # Güneş ışığı (Gölgeler için)
+        self.sun = DirectionalLight()
+        self.sun.look_at(Vec3(1, -1, -1))
+        self.sun.color = color.white
+        
+        # Ortam ışığı (Karanlıkta kalan yerleri aydınlatmak için)
+        self.ambient = AmbientLight()
+        self.ambient.color = color.rgba(100, 100, 100, 1) # Hafif gri ortam ışığı
+        
+        # Gökyüzü (Arka planın mavi olması için)
+        self.sky = Sky()
         # --- Sahne Nesneleri ---
-        self.surface = Entity(
-            model='plane',
-            scale=(500,1,500),
-            color=color.cyan,
-            alpha=0.3,
-            y=0,
-            unlit=True,
-            double_sided=True,
-            transparent=True
-        )
-
         # Su hacmi parametreleri
         su_hacmi_yuksekligi = 100.0
         su_hacmi_merkez_y = -50.0
+        # Su yüzeyi
+        self.WATER_SURFACE_Y_BASE = su_hacmi_merkez_y + (su_hacmi_yuksekligi / 2)  # Su yüzeyi base pozisyonu
+        
+        # 1. GÖRÜNTÜ AYARI: texture_scale değerini (10, 10) gibi makul bir değere düşürdük.
+        self.ocean_surface = Entity(
+            model="plane",
+            scale=(500, 1, 500),
+            position=(0, self.WATER_SURFACE_Y_BASE, 0),
+            texture="./Models-3D/water/my_models/water4.jpg",
+            texture_scale=(1, 1),  # 50 yerine 10 yaptık, artık küçük kareler görünmeyecek
+            normals=Texture('./Models-3D/water/my_models/map/water4_normal.png'),
+            double_sided=True,
+            color=color.rgb(0.3, 0.5, 0.9),
+            alpha=0.25,  # Biraz daha görünür yaptık
+            render_queue=0  # Önce su yüzeyini render et (z-order)
+        )
+
+
+        
+        self.SEA_FLOOR_Y = su_hacmi_merkez_y - (su_hacmi_yuksekligi / 2)  # Deniz tabanı pozisyonu
+        
+        # Animasyon değişkenlerini self.ocean_surface içine gömüyoruz ki kaybolmasınlar
+        self.ocean_surface.sim_time = 0.0
+        self.ocean_surface.u_offset = 0.0
+        self.ocean_surface.v_offset = 0.0
+        self.ocean_surface.WAVE_SPEED_U = 0.02
+        self.ocean_surface.WAVE_SPEED_V = 0.005
+        self.ocean_surface.WAVE_AMP = 1.5
+        self.ocean_surface.WAVE_FREQ = 0.8
+        self.ocean_surface.Y_BASE = self.WATER_SURFACE_Y_BASE
+        
+        # 2. HAREKET AYARI: Update fonksiyonunu doğrudan nesneye tanımlıyoruz.
+        # Bu fonksiyon Ursina tarafından otomatik olarak her karede çağrılır.
+        def update_ocean():
+            # Zamanı ilerlet
+            dt = time.dt if hasattr(time, 'dt') and time.dt > 0 else 0.016
+            self.ocean_surface.sim_time += dt
+            
+            # Dalga Yüksekliği (Fiziksel)
+            self.ocean_surface.y = self.ocean_surface.Y_BASE + \
+                                   sin(self.ocean_surface.sim_time * self.ocean_surface.WAVE_FREQ) * \
+                                   self.ocean_surface.WAVE_AMP
+            
+            # Doku Kaydırma (Görsel Akıntı)
+            self.ocean_surface.u_offset += dt * self.ocean_surface.WAVE_SPEED_U
+            self.ocean_surface.v_offset += dt * self.ocean_surface.WAVE_SPEED_V
+            
+            self.ocean_surface.texture_offset = (
+                self.ocean_surface.u_offset % 1.0, 
+                self.ocean_surface.v_offset % 1.0
+            )
+        
+        # Fonksiyonu entity'nin update slotuna bağlıyoruz
+        self.ocean_surface.update = update_ocean
+        ocean_taban_model_path = "./Models-3D/water/my_models/ocean_taban/sand_envi_034.fbx"
+        ocean_taban_texture_path = "./Models-3D/water/my_models/ocean_taban/sand_envi_034-0.jpg"
+        if os.path.exists(ocean_taban_model_path):
+            self.ocean_taban = Entity(
+                model=ocean_taban_model_path,
+                scale=(2.2 * (500 / 500), 1, 1.8 * (500 / 500)),
+                position=(0, self.SEA_FLOOR_Y-8, 0),
+                texture=ocean_taban_texture_path,
+                double_sided=True,
+                collider='mesh',
+                unlit=False,
+                alpha=1.0,
+                transparent=True,
+                render_queue=0
+            )
+        else:
+            self.ocean_taban = None
+
+
+        
+        # Ada modeli (su yüzeyinin üstünde, deniz tabanına değen)
+        island_model_path = "./Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
+        island_texture_path = "./Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
+        
+        if os.path.exists(island_model_path):
+            # 1. GÖRSEL ADA (Sadece görüntü için, ROV'lar bunu görmez)
+            max_wave_height = self.WATER_SURFACE_Y_BASE + 1.5
+            island_y_position = max_wave_height + 5 
+            
+            self.island = Entity(
+                model=island_model_path,
+                position=(0, island_y_position, 0),
+                scale=(0.3, 0.8, 0.3),
+                texture=island_texture_path if os.path.exists(island_texture_path) else None,
+                collider='mesh',
+                unlit=False,
+                double_sided=True, 
+                color=color.white,
+                alpha=1.0,
+                transparent=True,
+                render_queue=0
+            )
+            
+            # --- ÇOK KATMANLI HİTBOX SİSTEMİ ---
+            # Adanın şekline (Ters Koni) uygun olarak yukarıdan aşağıya küçülen küreler
+            # visible=False yaparak gizli tutuyoruz (debug için True yapabilirsin)
+            
+            hitbox_katmanlari = []
+            
+            # KATMAN 1: Su Yüzeyi (En Geniş)
+            # Yüzeyin hemen altında, adanın en geniş kısmı
+            # ROV'lar genellikle y=-2 ile y=-10 arasında olduğu için bu derinlikte
+            hitbox_katmanlari.append(Entity(
+                model='icosphere',
+                position=(0, -5, 0),    # Su yüzeyinin hemen altı (ROV'ların bulunduğu derinlik)
+                scale=(55, 15, 55),     # Geniş ve yassı (ters koni üst kısmı)
+                visible=False,          # Debug için görünür (production'da False yap)
+                collider='sphere',
+                color=color.rgba(255, 0, 0, 0.3),  # Debug için kırmızı
+                unlit=True  # Hitbox'lar için lighting gerekmez
+            ))
+            
+            # KATMAN 2: Orta Derinlik (Orta Genişlik)
+            hitbox_katmanlari.append(Entity(
+                model='icosphere',
+                position=(0, -25, 0),   # Orta derinlik
+                scale=(40, 20, 40),     # Biraz daha dar
+                visible=False,
+                collider='sphere',
+                color=color.rgba(0, 255, 0, 0.3),  # Debug için yeşil
+                unlit=True
+            ))
+            
+            # KATMAN 3: Derin Kısım (En Dar - Adanın ucu)
+            hitbox_katmanlari.append(Entity(
+                model='icosphere',
+                position=(0, -45, 0),   # Derin kısım
+                scale=(30, 20, 30),     # Daha dar
+                visible=False,
+                collider='sphere',
+                color=color.rgba(0, 0, 255, 0.3),  # Debug için mavi
+                unlit=True
+            ))
+
+            # KATMAN 4: Zemin/Kök (Opsiyonel - Adanın zemine değdiği yer çok inceyse)
+            hitbox_katmanlari.append(Entity(
+                model='icosphere',
+                position=(0, -65, 0),   # En derin kısım
+                scale=(10, 20, 10),     # En dar
+                visible=False,
+                collider='sphere',
+                color=color.rgba(255, 255, 0, 0.3),  # Debug için sarı
+                unlit=True
+            ))
+            
+            # Engel listesini hazırla (eğer yoksa oluştur)
+            if not hasattr(self, 'engeller'):
+                self.engeller = []
+            
+            # Görsel adayı DEĞİL, oluşturduğumuz bu parçaları listeye ekliyoruz
+            # ROV'un sensörü hangisine yakınsa onu algılayacak.
+            for parca in hitbox_katmanlari:
+                self.engeller.append(parca)
+            
+            # Hitbox katmanlarını sakla (ileride güncelleme için)
+            self.island_hitboxes = hitbox_katmanlari
+        else:
+            # Fallback: Ada yoksa None
+            self.island = None
         
         self.water_volume = Entity(
             model='cube',
@@ -717,9 +940,9 @@ class Ortam:
             double_sided=True,
             transparent=True
         )
-
+        
         # Deniz tabanı kalınlığı: Su hacmi yüksekliğinin 0.1'i
-        seabed_kalinligi = su_hacmi_yuksekligi * 0.1
+        seabed_kalinligi = su_hacmi_yuksekligi * 0.15
         # Deniz tabanı alt yüzeyi: Su hacminin altı
         seabed_alt_yuzey = su_hacmi_merkez_y - (su_hacmi_yuksekligi / 2)
         # Deniz tabanı merkez y: Alt yüzeyin üstünde kalınlığın yarısı kadar
@@ -737,7 +960,7 @@ class Ortam:
         )
         
         # Çimen katmanı kalınlığı: Su hacmi yüksekliğinin 0.25'i
-        cimen_kalinligi = su_hacmi_yuksekligi * 0.25
+        cimen_kalinligi = su_hacmi_yuksekligi * 0.3
         # Çimen katmanı alt yüzeyi: Deniz tabanının altı
         cimen_alt_yuzey = seabed_merkez_y - (seabed_kalinligi / 2)
         # Çimen katmanı merkez y
@@ -757,33 +980,61 @@ class Ortam:
         # ROV ve engel listeleri
         self.rovs = []
         self.filo = None  # Filo referansı (main.py'den set edilecek)
-        self.engeller = []
+        # engeller listesi ada hitbox'ları eklendikten sonra oluşturuldu (ada varsa)
+        # Eğer ada yoksa veya engeller listesi oluşturulmadıysa, şimdi oluştur
+        if not hasattr(self, 'engeller'):
+            self.engeller = []
 
         # Konsol verileri
         self.konsol_verileri = {}
 
     # --- Simülasyon Nesnelerini Oluştur ---
     def sim_olustur(self, n_rovs=3, n_engels=15, havuz_genisligi=200):
+        # Ada hitbox'larını koru (eğer varsa)
+        ada_hitbox_backup = []
+        if hasattr(self, 'island_hitboxes') and self.island_hitboxes:
+            ada_hitbox_backup = self.island_hitboxes.copy()
+        
+        # Engeller (Kayalar) - Listeyi sıfırla ama ada hitbox'larını koruyacağız
+        self.engeller = []
+        
+        # Ada hitbox'larını geri ekle (eğer varsa)
+        if ada_hitbox_backup:
+            for hitbox in ada_hitbox_backup:
+                self.engeller.append(hitbox)
+        
         # Engeller (Kayalar)
+        # Kayalar su altında oluşmalı ve tabanları deniz tabanına değmeli
         for _ in range(n_engels):
             x = random.uniform(-200, 200)
             z = random.uniform(-200, 200)
-            y = random.uniform(-90, 0)
+            
+            # Kaya boyutları
+            s_x = random.uniform(15, 30)
+            s_y = random.uniform(15, 30)
+            s_z = random.uniform(15, 30)  # Z ekseni de pozitif olmalı (küre için)
 
-            s_x = random.uniform(15,40)
-            s_y = random.uniform(15,40)
-            s_z = random.uniform(-30,30)
+            # Kaya pozisyonu: Tabanı deniz tabanına değmeli, üstü su yüzeyinin altında olmalı
+            # Kaya merkez pozisyonu = deniz tabanı + (kaya yüksekliği / 2) ile su yüzeyi - (kaya yüksekliği / 2) arasında
+            kaya_alt_sinir = self.SEA_FLOOR_Y-8  # Kayanın alt kısmı deniz tabanında
+            kaya_ust_sinir = self.WATER_SURFACE_Y_BASE - (s_y / 2) - 2  # Kayanın üst kısmı su yüzeyinin 2 birim altında
+            
+            # Eğer kaya çok büyükse ve su yüzeyine sığmıyorsa, deniz tabanına yerleştir
+            if kaya_ust_sinir < kaya_alt_sinir:
+                y = self.SEA_FLOOR_Y + (s_y / 2)  # Tabanı deniz tabanında
+            else:
+                y = random.uniform(kaya_alt_sinir, kaya_ust_sinir)
 
-            gri = random.randint(80,100)
+            gri = random.randint(80, 100)
             kaya_rengi = color.rgb(gri, gri, gri)
 
             engel = Entity(
                 model='icosphere',
                 color=kaya_rengi,
                 texture='noise',
-                scale=(s_x,s_y,s_z),
-                position=(x,y,z),
-                rotation=(random.randint(0,360), random.randint(0,360), random.randint(0,360)),
+                scale=(s_x, s_y, s_z),
+                position=(x, self.SEA_FLOOR_Y, z),
+                rotation=(random.randint(0, 360), random.randint(0, 360), random.randint(0, 360)),
                 collider='mesh',
                 unlit=True
             )

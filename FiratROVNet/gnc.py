@@ -122,16 +122,16 @@ class Filo:
         # Varsayılan sensör ayarları (sensor_ayarlari None ise otomatik uygulanır)
         if sensor_ayarlari is None:
             sensor_ayarlari = {
-                'lider': {'engel_mesafesi': 30.0, 'iletisim_menzili': 50.0, 'min_pil_uyarisi': 20.0, 'kacinma_mesafesi': 4.0},
-                'takipci': {'engel_mesafesi': 10.0, 'iletisim_menzili': 40.0, 'min_pil_uyarisi': 15.0, 'kacinma_mesafesi': 4.0}
+                'lider': {'engel_mesafesi': 40.0, 'iletisim_menzili': 50.0, 'min_pil_uyarisi': 20.0, 'kacinma_mesafesi': 4.0},
+                'takipci': {'engel_mesafesi': 30.0, 'iletisim_menzili': 40.0, 'min_pil_uyarisi': 15.0, 'kacinma_mesafesi': 4.0}
             }
         
         # Sensör ayarları için kontrol listesi
         varsayilan_sensor_ayarlari = {
-            'engel_mesafesi': 10.0,
-            'iletisim_menzili': 35.0,
+            'engel_mesafesi': 30.0,
+            'iletisim_menzili': 40.0,
             'min_pil_uyarisi': 10.0,
-            'kacinma_mesafesi': 5.0
+            'kacinma_mesafesi': 10.0
         }
         
         tum_modemler = {}
