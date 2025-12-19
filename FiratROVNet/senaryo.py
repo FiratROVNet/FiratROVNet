@@ -156,30 +156,37 @@ class Senaryo:
                 engel_rengi = color.gray
             
             # Engel entity oluştur (headless, görsel olmayan)
+            # Headless mod için minimal engel objesi (Ursina Entity yerine)
             try:
-                engel = Entity(
-                    model='icosphere',
-                    color=engel_rengi,
-                    scale=(s_x, s_y, s_z),
-                    position=(x, y, z),
-                    rotation=(random.randint(0, 360), random.randint(0, 360), random.randint(0, 360)),
-                    collider='mesh',
-                    unlit=True
-                )
-                # Headless modda görsel özellikleri kapat
-                try:
-                    engel.visible = False
-                except:
-                    pass
+                # Ursina Entity oluşturmayı dene
+                if self.app is not None:
+                    engel = Entity(
+                        model='icosphere',
+                        color=engel_rengi,
+                        scale=(s_x, s_y, s_z),
+                        position=(x, y, z),
+                        rotation=(random.randint(0, 360), random.randint(0, 360), random.randint(0, 360)),
+                        collider='mesh',
+                        unlit=True
+                    )
+                    try:
+                        engel.visible = False
+                    except:
+                        pass
+                else:
+                    raise Exception("Ursina app yok")
             except Exception as e:
                 # Entity oluşturulamazsa minimal engel objesi
                 engel = type('Engel', (), {
-                    'position': Vec3(x, y, z),
+                    'position': Vec3(x, y, z) if hasattr(Vec3, '__init__') else type('Vec3', (), {'x': x, 'y': y, 'z': z})(),
                     'scale_x': s_x,
                     'scale_y': s_y,
                     'scale_z': s_z,
                     'scale': (s_x, s_y, s_z)
                 })()
+                # Vec3 oluşturma hatası için fallback
+                if not hasattr(engel.position, 'x'):
+                    engel.position = type('Vec3', (), {'x': x, 'y': y, 'z': z})()
             
             self.ortam.engeller.append(engel)
         
@@ -195,28 +202,40 @@ class Senaryo:
                 z = random.uniform(-10, 10)
                 pozisyon = (x, -2, z)
             
-            # ROV oluştur (headless mod için minimal)
+            # ROV oluştur (headless mod için)
             try:
-                rov = ROV(rov_id=i, position=pozisyon)
-                rov.environment_ref = self.ortam
-                
-                # Headless modda görsel özellikleri kapat
-                try:
-                    rov.visible = False
-                except:
-                    pass
-                try:
-                    if hasattr(rov, 'label'):
-                        rov.label.enabled = False
-                except:
-                    pass
+                # Ursina ROV oluşturmayı dene
+                if self.app is not None:
+                    rov = ROV(rov_id=i, position=pozisyon)
+                    rov.environment_ref = self.ortam
+                    
+                    # Headless modda görsel özellikleri kapat
+                    try:
+                        rov.visible = False
+                    except:
+                        pass
+                    try:
+                        if hasattr(rov, 'label'):
+                            rov.label.enabled = False
+                    except:
+                        pass
+                else:
+                    raise Exception("Ursina app yok")
             except Exception as e:
                 # ROV oluşturulamazsa minimal ROV objesi
-                print(f"⚠️ ROV-{i} oluşturulurken hata: {e}")
+                # Vec3 oluşturma
+                try:
+                    pos_vec = Vec3(*pozisyon) if len(pozisyon) == 3 else Vec3(pozisyon[0], pozisyon[1] if len(pozisyon) > 1 else -2, pozisyon[2] if len(pozisyon) > 2 else 0)
+                    vel_vec = Vec3(0, 0, 0)
+                except:
+                    # Vec3 yoksa minimal vektör
+                    pos_vec = type('Vec3', (), {'x': pozisyon[0], 'y': pozisyon[1] if len(pozisyon) > 1 else -2, 'z': pozisyon[2] if len(pozisyon) > 2 else 0})()
+                    vel_vec = type('Vec3', (), {'x': 0, 'y': 0, 'z': 0})()
+                
                 rov = type('ROV', (), {
                     'id': i,
-                    'position': Vec3(*pozisyon) if len(pozisyon) == 3 else Vec3(pozisyon[0], pozisyon[1] if len(pozisyon) > 1 else -2, pozisyon[2] if len(pozisyon) > 2 else 0),
-                    'velocity': Vec3(0, 0, 0),
+                    'position': pos_vec,
+                    'velocity': vel_vec,
                     'battery': 1.0,
                     'role': 0,
                     'sensor_config': {
@@ -229,30 +248,32 @@ class Senaryo:
                     'y': pozisyon[1] if len(pozisyon) > 1 else -2,
                     'x': pozisyon[0],
                     'z': pozisyon[2] if len(pozisyon) > 2 else 0,
-                    'modem': None,
-                    'set': lambda self, key, val: setattr(self, key, val) if key == 'rol' else None,
-                    'get': lambda self, key: self.battery if key == 'batarya' else None
+                    'modem': None
                 })()
-                # set ve get metodlarını düzgün ekle
+                
+                # set ve get metodlarını ekle
                 def set_method(key, val):
                     if key == 'rol':
                         rov.role = val
                     elif key in rov.sensor_config:
                         rov.sensor_config[key] = val
+                
                 def get_method(key):
                     if key == 'batarya':
                         return rov.battery
                     elif key == 'gps':
                         return np.array([rov.x, rov.y, rov.z])
                     elif key == 'hiz':
-                        return np.array([rov.velocity.x, rov.velocity.y, rov.velocity.z])
+                        v = rov.velocity
+                        return np.array([v.x if hasattr(v, 'x') else 0, v.y if hasattr(v, 'y') else 0, v.z if hasattr(v, 'z') else 0])
                     elif key == 'rol':
                         return rov.role
                     elif key in rov.sensor_config:
                         return rov.sensor_config[key]
                     return None
-                rov.set = lambda key, val: set_method(key, val)
-                rov.get = lambda key: get_method(key)
+                
+                rov.set = set_method
+                rov.get = get_method
             
             self.ortam.rovs.append(rov)
         
