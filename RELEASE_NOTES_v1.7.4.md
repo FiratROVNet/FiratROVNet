@@ -52,6 +52,16 @@ Değişiklik yok.
 
 ## 🚀 Kullanım
 
+Bu release'i kullanmak için:
+
+```bash
+# Belirli bir versiyona geç
+git checkout v1.7.4
+
+# veya pip ile yükle
+pip install git+https://github.com/FiratROVNet/FiratROVNet.git@v1.7.4
+```
+
 ### ROV Etiketleri
 ROV'lar üzerindeki etiketler artık daha büyük ve uzaktan okunabilir.
 
