@@ -30,7 +30,7 @@ class ROV(Entity):
         if 'position' in kwargs: self.position = kwargs['position']
         else: self.position = (0, -5, 0)
 
-        self.label = Text(text=f"ROV-{rov_id}", parent=self, y=1.5, scale=5, billboard=True, color=color.white)
+        self.label = Text(text=f"ROV-{rov_id}", parent=self, y=1.5, scale=12, billboard=True, color=color.white)
         
         self.id = rov_id
         self.velocity = Vec3(0, 0, 0)
@@ -764,7 +764,7 @@ class Ortam:
 
     # --- Simülasyon Nesnelerini Oluştur ---
     def sim_olustur(self, n_rovs=3, n_engels=15, havuz_genisligi=200):
-        # Engeller
+        # Engeller (Kayalar)
         for _ in range(n_engels):
             x = random.uniform(-200, 200)
             z = random.uniform(-200, 200)
@@ -801,7 +801,7 @@ class Ortam:
             self.rovs.append(new_rov)
 
         print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {n_engels} Gri Kaya.")
-
+    
     # --- İnteraktif Shell ---
     def _start_shell(self):
         import time

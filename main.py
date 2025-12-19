@@ -146,6 +146,10 @@ def update():
             else: 
                 app.rovs[i].color = kod_renkleri.get(gat_kodu, color.white)
             
+            # Label scale'ini büyüt (uzaktan okunabilir)
+            if app.rovs[i].label.scale < 12:
+                app.rovs[i].label.scale = 12
+            
             ek = "" if ai_aktif else "\n[AI OFF]"
             app.rovs[i].label.text = f"R{i}\n{durum_txts[gat_kodu]}{ek}"
         
