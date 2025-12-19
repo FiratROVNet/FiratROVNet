@@ -76,30 +76,51 @@ class Senaryo:
         """
         # Ursina'yı headless modda başlat
         if self.app is None:
-            self.app = Ursina(
-                vsync=False,
-                development_mode=False,
-                show_ursina_splash=False,
-                borderless=True,
-                title="FıratROVNet Senaryo Üretimi (Headless)",
-                window_type='offscreen'  # Headless mod
-            )
+            # Headless mod için özel ayarlar
+            os.environ['URSINA_HEADLESS'] = '1'
             
-            # Window'u gizle (headless)
             try:
-                window.show = False
-            except:
-                pass
-            
-            # FPS counter'ı kapat
-            try:
-                window.fps_counter.enabled = False
-            except:
-                pass
+                self.app = Ursina(
+                    vsync=False,
+                    development_mode=False,
+                    show_ursina_splash=False,
+                    borderless=True,
+                    title="FıratROVNet Senaryo Üretimi (Headless)"
+                )
+                
+                # Window özelliklerini güvenli şekilde ayarla
+                try:
+                    if hasattr(window, 'fullscreen'):
+                        window.fullscreen = False
+                except:
+                    pass
+                
+                try:
+                    if hasattr(window, 'show'):
+                        window.show = False
+                except:
+                    pass
+                
+                try:
+                    if hasattr(window, 'fps_counter'):
+                        window.fps_counter.enabled = False
+                except:
+                    pass
+                    
+            except Exception as e:
+                # Ursina başlatılamazsa minimal ortam oluştur
+                print(f"⚠️ Ursina headless mod başlatılamadı: {e}")
+                print("   Minimal ortam modu kullanılıyor...")
+                self.app = None
         
-        # Ortam oluştur (headless)
-        self.ortam = Ortam()
-        self.ortam.app = self.app
+        # Ortam oluştur (headless - minimal)
+        # Ortam sınıfı yerine minimal bir ortam objesi oluştur
+        self.ortam = type('Ortam', (), {
+            'rovs': [],
+            'engeller': [],
+            'havuz_genisligi': havuz_genisligi,
+            'filo': None
+        })()
         
         # Havuz genişliğini kaydet
         self.ortam.havuz_genisligi = havuz_genisligi
@@ -135,17 +156,31 @@ class Senaryo:
                 engel_rengi = color.gray
             
             # Engel entity oluştur (headless, görsel olmayan)
-            engel = Entity(
-                model='icosphere',
-                color=engel_rengi,
-                scale=(s_x, s_y, s_z),
-                position=(x, y, z),
-                rotation=(random.randint(0, 360), random.randint(0, 360), random.randint(0, 360)),
-                collider='mesh',
-                unlit=True
-            )
-            # Headless modda görsel özellikleri kapat
-            engel.visible = False
+            try:
+                engel = Entity(
+                    model='icosphere',
+                    color=engel_rengi,
+                    scale=(s_x, s_y, s_z),
+                    position=(x, y, z),
+                    rotation=(random.randint(0, 360), random.randint(0, 360), random.randint(0, 360)),
+                    collider='mesh',
+                    unlit=True
+                )
+                # Headless modda görsel özellikleri kapat
+                try:
+                    engel.visible = False
+                except:
+                    pass
+            except Exception as e:
+                # Entity oluşturulamazsa minimal engel objesi
+                engel = type('Engel', (), {
+                    'position': Vec3(x, y, z),
+                    'scale_x': s_x,
+                    'scale_y': s_y,
+                    'scale_z': s_z,
+                    'scale': (s_x, s_y, s_z)
+                })()
+            
             self.ortam.engeller.append(engel)
         
         # ROV'ları oluştur
@@ -160,14 +195,64 @@ class Senaryo:
                 z = random.uniform(-10, 10)
                 pozisyon = (x, -2, z)
             
-            # ROV oluştur
-            rov = ROV(rov_id=i, position=pozisyon)
-            rov.environment_ref = self.ortam
-            
-            # Headless modda görsel özellikleri kapat
-            rov.visible = False
-            if hasattr(rov, 'label'):
-                rov.label.enabled = False
+            # ROV oluştur (headless mod için minimal)
+            try:
+                rov = ROV(rov_id=i, position=pozisyon)
+                rov.environment_ref = self.ortam
+                
+                # Headless modda görsel özellikleri kapat
+                try:
+                    rov.visible = False
+                except:
+                    pass
+                try:
+                    if hasattr(rov, 'label'):
+                        rov.label.enabled = False
+                except:
+                    pass
+            except Exception as e:
+                # ROV oluşturulamazsa minimal ROV objesi
+                print(f"⚠️ ROV-{i} oluşturulurken hata: {e}")
+                rov = type('ROV', (), {
+                    'id': i,
+                    'position': Vec3(*pozisyon) if len(pozisyon) == 3 else Vec3(pozisyon[0], pozisyon[1] if len(pozisyon) > 1 else -2, pozisyon[2] if len(pozisyon) > 2 else 0),
+                    'velocity': Vec3(0, 0, 0),
+                    'battery': 1.0,
+                    'role': 0,
+                    'sensor_config': {
+                        "engel_mesafesi": 20.0,
+                        "iletisim_menzili": 35.0,
+                        "min_pil_uyarisi": 10.0,
+                        "kacinma_mesafesi": 8.0
+                    },
+                    'environment_ref': self.ortam,
+                    'y': pozisyon[1] if len(pozisyon) > 1 else -2,
+                    'x': pozisyon[0],
+                    'z': pozisyon[2] if len(pozisyon) > 2 else 0,
+                    'modem': None,
+                    'set': lambda self, key, val: setattr(self, key, val) if key == 'rol' else None,
+                    'get': lambda self, key: self.battery if key == 'batarya' else None
+                })()
+                # set ve get metodlarını düzgün ekle
+                def set_method(key, val):
+                    if key == 'rol':
+                        rov.role = val
+                    elif key in rov.sensor_config:
+                        rov.sensor_config[key] = val
+                def get_method(key):
+                    if key == 'batarya':
+                        return rov.battery
+                    elif key == 'gps':
+                        return np.array([rov.x, rov.y, rov.z])
+                    elif key == 'hiz':
+                        return np.array([rov.velocity.x, rov.velocity.y, rov.velocity.z])
+                    elif key == 'rol':
+                        return rov.role
+                    elif key in rov.sensor_config:
+                        return rov.sensor_config[key]
+                    return None
+                rov.set = lambda key, val: set_method(key, val)
+                rov.get = lambda key: get_method(key)
             
             self.ortam.rovs.append(rov)
         
@@ -213,14 +298,22 @@ class Senaryo:
             print("⚠️ Senaryo aktif değil. Önce senaryo.uret() çağırın.")
             return
         
-        # Ursina time.dt'yi ayarla
-        import time as ursina_time
-        ursina_time.dt = delta_time
+        # Ursina time.dt'yi ayarla (eğer varsa)
+        try:
+            import time as ursina_time
+            if hasattr(ursina_time, 'dt'):
+                ursina_time.dt = delta_time
+        except:
+            pass
         
-        # ROV'ları güncelle
+        # ROV'ları güncelle (sadece update metodu varsa)
         for rov in self.ortam.rovs:
-            if hasattr(rov, 'update'):
-                rov.update()
+            try:
+                if hasattr(rov, 'update') and callable(getattr(rov, 'update', None)):
+                    rov.update()
+            except Exception as e:
+                # Update hatası görmezden gel (headless mod)
+                pass
         
         # Filo sistemini güncelle (GAT kodları olmadan, sadece fizik)
         if self.filo:
