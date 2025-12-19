@@ -216,16 +216,21 @@ class Filo:
                         # Geriye uyumluluk: (x, z, y) formatı
                         gnc.hedef_atama(hedef[0], hedef[2] if len(hedef) > 2 else 0, hedef[1] if len(hedef) > 1 else 0)
                 else:
-                    # Takipçi için hedef yoksa, liderin hedefine göre otomatik belirle
-                    # Lider hedefi bul (lider zaten yukarıda oluşturuldu)
-                    lider_gnc = self.sistemler[lider_id] if lider_id < len(self.sistemler) else None
-                    if lider_gnc and lider_gnc.hedef:
-                        # Lider hedefine göre formasyon
-                        self._takipci_hedefi_belirle(gnc, i, lider_gnc.hedef.x, lider_gnc.hedef.y, lider_gnc.hedef.z, lider_id)
+                    # Takipçi için hedef yoksa
+                    # Eğer baslangic_hedefleri boş dict ise (senaryo modülü için), formasyon hesaplama yapma
+                    if baslangic_hedefleri == {}:
+                        # Senaryo modülü: Hedef atama yapma, ROV pozisyonları korunsun
+                        pass
                     else:
-                        # Lider hedefi henüz yoksa, varsayılan takipçi hedefi (formasyon)
-                        offset_x = 30 + (i * 5)
-                        gnc.hedef_atama(offset_x, -10, 50)
+                        # Normal mod: Liderin hedefine göre otomatik belirle
+                        lider_gnc = self.sistemler[lider_id] if lider_id < len(self.sistemler) else None
+                        if lider_gnc and lider_gnc.hedef:
+                            # Lider hedefine göre formasyon
+                            self._takipci_hedefi_belirle(gnc, i, lider_gnc.hedef.x, lider_gnc.hedef.y, lider_gnc.hedef.z, lider_id)
+                        else:
+                            # Lider hedefi henüz yoksa, varsayılan takipçi hedefi (formasyon)
+                            offset_x = 30 + (i * 5)
+                            gnc.hedef_atama(offset_x, -10, 50)
         
         # Rehberi dağıt
         self.rehber_dagit(tum_modemler)
