@@ -196,3 +196,4 @@ for rov_id, veri in veri_seti[0].items():
 senaryo.temizle()
 
 print("\n✅ Tüm örnekler tamamlandı!")
+

@@ -141,17 +141,31 @@ def update():
         durum_txts = ["OK", "ENGEL", "CARPISMA", "KOPUK", "-", "UZAK"]
         
         for i, gat_kodu in enumerate(tahminler):
+            # GAT kodunu ROV'a kaydet
+            app.rovs[i].gat_kodu = gat_kodu
+            
             if app.rovs[i].role == 1: 
                 app.rovs[i].color = color.red
             else: 
+                # GAT koduna göre renk değiştir (FBX model için de çalışır)
                 app.rovs[i].color = kod_renkleri.get(gat_kodu, color.white)
             
-            # Label scale'ini büyüt (uzaktan okunabilir)
-            if app.rovs[i].label.scale < 12:
-                app.rovs[i].label.scale = 12
+            # FBX model kullanılıyorsa, GAT kodunu görünür kılmak için color'ı blend et
+            # (FBX model texture kullanıyorsa color değişimi daha az görünür olabilir)
+            if hasattr(app.rovs[i], 'model') and isinstance(app.rovs[i].model, str) and app.rovs[i].model.endswith('.fbx'):
+                # FBX model için color'ı daha belirgin yapmak için alpha veya tint kullan
+                # Ursina'da color direkt olarak texture ile blend edilir
+                pass  # Color zaten ayarlandı, Ursina otomatik blend eder
+            
+            # Label scale'ini büyüt (uzaktan okunabilir) - GAT kodu için daha büyük
+            app.rovs[i].label.scale = 6000  # Sabit büyük scale
+            app.rovs[i].label.y = 300  # Y eksenini artır (ROV'un üstünde daha yüksekte)
+            app.rovs[i].label.color = app.rovs[i].color 
+            app.rovs[i].label.background = False  # Arka plan ekle (daha görünür)
             
             ek = "" if ai_aktif else "\n[AI OFF]"
-            app.rovs[i].label.text = f"R{i}\n{durum_txts[gat_kodu]}{ek}"
+            # GAT kodunu label'da büyük ve görünür şekilde göster
+            app.rovs[i].label.text = durum_txts[app.rovs[i].gat_kodu]
         
         filo.guncelle_hepsi(tahminler)
         

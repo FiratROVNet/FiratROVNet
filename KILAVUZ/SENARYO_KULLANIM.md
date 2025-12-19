@@ -359,3 +359,6 @@ senaryo.temizle()
 
 **Son Güncelleme**: 2024  
 **Versiyon**: 1.0
+
+
+
