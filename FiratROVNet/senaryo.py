@@ -301,7 +301,7 @@ class Senaryo:
                                 if hasattr(engel, 'scale_x'):
                                     scale_z = engel.scale_z if hasattr(engel, 'scale_z') else engel.scale_x
                                     avg_scale = (engel.scale_x + scale_z) / 2
-                                    d = d - (avg_scale / 2)
+                                    d = max(0, d - (avg_scale / 2))  # Negatif olmamalı
                                 
                                 if d < min_dist:
                                     min_dist = d
@@ -358,13 +358,7 @@ class Senaryo:
         # Filo sistemini kur
         self.filo = Filo()
         
-        # ROV rollerini ayarla (ilk ROV lider)
-        if len(self.ortam.rovs) > 0:
-            self.ortam.rovs[0].set("rol", 1)  # İlk ROV lider
-            for i in range(1, len(self.ortam.rovs)):
-                self.ortam.rovs[i].set("rol", 0)  # Diğerleri takipçi
-        
-        # Filo otomatik kurulum
+        # Filo otomatik kurulum (rol ataması otomatik_kurulum içinde yapılıyor)
         tum_modemler = self.filo.otomatik_kurulum(
             rovs=self.ortam.rovs,
             lider_id=0,
@@ -473,7 +467,16 @@ class Senaryo:
             print("⚠️ Filo sistemi kurulmamış.")
             return None
         
-        return self.filo.get(rov_id, veri_tipi)
+        # Filo üzerinden veri al
+        veri = self.filo.get(rov_id, veri_tipi)
+        
+        # Eğer filo None döndürdüyse, direkt ROV'tan al (fallback)
+        if veri is None and rov_id < len(self.ortam.rovs):
+            rov = self.ortam.rovs[rov_id]
+            if hasattr(rov, 'get'):
+                veri = rov.get(veri_tipi)
+        
+        return veri
     
     def set(self, rov_id, ayar_adi, deger):
         """
