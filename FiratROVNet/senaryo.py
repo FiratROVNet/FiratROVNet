@@ -412,19 +412,23 @@ class Senaryo:
                     rov.update()
                 else:
                     # Minimal ROV için basit fizik güncellemesi
-                    if hasattr(rov, 'velocity') and hasattr(rov, 'position'):
-                        # Hızı pozisyona uygula
+                    if hasattr(rov, 'velocity'):
                         v = rov.velocity
-                        if hasattr(v, 'x') and hasattr(rov.position, 'x'):
-                            rov.position.x += v.x * delta_time
-                            rov.position.y += v.y * delta_time
-                            rov.position.z += v.z * delta_time
-                            # Pozisyonu ROV'un x, y, z attribute'larına da yansıt
-                            rov.x = rov.position.x
-                            rov.y = rov.position.y
-                            rov.z = rov.position.z
-                        # Sürtünme (basit)
+                        # Hızı pozisyona uygula
                         if hasattr(v, 'x'):
+                            # Pozisyonu güncelle (x, y, z attribute'ları üzerinden)
+                            rov.x += v.x * delta_time
+                            rov.y += v.y * delta_time
+                            rov.z += v.z * delta_time
+                            
+                            # Position objesini de güncelle (varsa)
+                            if hasattr(rov, 'position'):
+                                if hasattr(rov.position, 'x'):
+                                    rov.position.x = rov.x
+                                    rov.position.y = rov.y
+                                    rov.position.z = rov.z
+                            
+                            # Sürtünme (basit)
                             v.x *= 0.95
                             v.y *= 0.95
                             v.z *= 0.95
