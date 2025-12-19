@@ -275,12 +275,60 @@ class Senaryo:
                         return np.array([v.x if hasattr(v, 'x') else 0, v.y if hasattr(v, 'y') else 0, v.z if hasattr(v, 'z') else 0])
                     elif key == 'rol':
                         return rov.role
+                    elif key == 'sonar':
+                        # Sonar hesaplama (minimal - engel mesafesi)
+                        if not hasattr(rov, 'environment_ref') or not rov.environment_ref:
+                            return -1
+                        min_dist = 999.0
+                        for engel in rov.environment_ref.engeller:
+                            if hasattr(engel, 'position'):
+                                engel_pos = engel.position
+                                if hasattr(engel_pos, 'x'):
+                                    dx = rov.x - engel_pos.x
+                                    dy = rov.y - engel_pos.y
+                                    dz = rov.z - engel_pos.z
+                                    d = np.sqrt(dx*dx + dy*dy + dz*dz)
+                                    if hasattr(engel, 'scale_x'):
+                                        avg_scale = (engel.scale_x + engel.scale_z) / 2 if hasattr(engel, 'scale_z') else engel.scale_x
+                                        d = d - (avg_scale / 2)
+                                    if d < min_dist:
+                                        min_dist = d
+                        menzil = rov.sensor_config.get("engel_mesafesi", 20.0)
+                        return min_dist if min_dist < menzil else -1
                     elif key in rov.sensor_config:
                         return rov.sensor_config[key]
                     return None
                 
+                def move_method(komut, guc=1.0):
+                    """ROV move metodu (minimal implementasyon)"""
+                    if rov.battery <= 0:
+                        return
+                    # time.dt için varsayılan değer
+                    dt = 0.016  # 60 FPS
+                    thrust = guc * 30.0 * dt  # HIZLANMA_CARPANI = 30
+                    
+                    v = rov.velocity
+                    if komut == "ileri":  
+                        v.z = (v.z if hasattr(v, 'z') else 0) + thrust
+                    elif komut == "geri": 
+                        v.z = (v.z if hasattr(v, 'z') else 0) - thrust
+                    elif komut == "sag":  
+                        v.x = (v.x if hasattr(v, 'x') else 0) + thrust
+                    elif komut == "sol":  
+                        v.x = (v.x if hasattr(v, 'x') else 0) - thrust
+                    elif komut == "cik":  
+                        v.y = (v.y if hasattr(v, 'y') else 0) + thrust
+                    elif komut == "bat":  
+                        if rov.role != 1:  # Lider batırılamaz
+                            v.y = (v.y if hasattr(v, 'y') else 0) - thrust
+                    elif komut == "dur":
+                        v.x = v.y = v.z = 0
+                    
+                    rov.velocity = v
+                
                 rov.set = set_method
                 rov.get = get_method
+                rov.move = move_method
             
             self.ortam.rovs.append(rov)
         
@@ -339,6 +387,24 @@ class Senaryo:
             try:
                 if hasattr(rov, 'update') and callable(getattr(rov, 'update', None)):
                     rov.update()
+                else:
+                    # Minimal ROV için basit fizik güncellemesi
+                    if hasattr(rov, 'velocity') and hasattr(rov, 'position'):
+                        # Hızı pozisyona uygula
+                        v = rov.velocity
+                        if hasattr(v, 'x') and hasattr(rov.position, 'x'):
+                            rov.position.x += v.x * delta_time
+                            rov.position.y += v.y * delta_time
+                            rov.position.z += v.z * delta_time
+                            # Pozisyonu ROV'un x, y, z attribute'larına da yansıt
+                            rov.x = rov.position.x
+                            rov.y = rov.position.y
+                            rov.z = rov.position.z
+                        # Sürtünme (basit)
+                        if hasattr(v, 'x'):
+                            v.x *= 0.95
+                            v.y *= 0.95
+                            v.z *= 0.95
             except Exception as e:
                 # Update hatası görmezden gel (headless mod)
                 pass
