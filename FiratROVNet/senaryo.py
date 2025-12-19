@@ -283,16 +283,28 @@ class Senaryo:
                         for engel in rov.environment_ref.engeller:
                             if hasattr(engel, 'position'):
                                 engel_pos = engel.position
+                                # Pozisyon erişimi (Vec3 veya dict)
                                 if hasattr(engel_pos, 'x'):
-                                    dx = rov.x - engel_pos.x
-                                    dy = rov.y - engel_pos.y
-                                    dz = rov.z - engel_pos.z
-                                    d = np.sqrt(dx*dx + dy*dy + dz*dz)
-                                    if hasattr(engel, 'scale_x'):
-                                        avg_scale = (engel.scale_x + engel.scale_z) / 2 if hasattr(engel, 'scale_z') else engel.scale_x
-                                        d = d - (avg_scale / 2)
-                                    if d < min_dist:
-                                        min_dist = d
+                                    engel_x, engel_y, engel_z = engel_pos.x, engel_pos.y, engel_pos.z
+                                elif isinstance(engel_pos, (list, tuple)) and len(engel_pos) >= 3:
+                                    engel_x, engel_y, engel_z = engel_pos[0], engel_pos[1], engel_pos[2]
+                                else:
+                                    continue
+                                
+                                # Mesafe hesaplama
+                                dx = rov.x - engel_x
+                                dy = rov.y - engel_y
+                                dz = rov.z - engel_z
+                                d = np.sqrt(dx*dx + dy*dy + dz*dz)
+                                
+                                # Engel boyutunu hesaba kat
+                                if hasattr(engel, 'scale_x'):
+                                    scale_z = engel.scale_z if hasattr(engel, 'scale_z') else engel.scale_x
+                                    avg_scale = (engel.scale_x + scale_z) / 2
+                                    d = d - (avg_scale / 2)
+                                
+                                if d < min_dist:
+                                    min_dist = d
                         menzil = rov.sensor_config.get("engel_mesafesi", 20.0)
                         return min_dist if min_dist < menzil else -1
                     elif key in rov.sensor_config:
@@ -303,11 +315,22 @@ class Senaryo:
                     """ROV move metodu (minimal implementasyon)"""
                     if rov.battery <= 0:
                         return
-                    # time.dt için varsayılan değer
-                    dt = 0.016  # 60 FPS
+                    
+                    # time.dt için varsayılan değer (Ursina'dan al veya varsayılan kullan)
+                    try:
+                        import time as ursina_time
+                        dt = getattr(ursina_time, 'dt', 0.016)
+                    except:
+                        dt = 0.016  # 60 FPS varsayılan
+                    
                     thrust = guc * 30.0 * dt  # HIZLANMA_CARPANI = 30
                     
                     v = rov.velocity
+                    if not hasattr(v, 'x'):
+                        # Velocity Vec3 değilse oluştur
+                        v = type('Vec3', (), {'x': 0, 'y': 0, 'z': 0})()
+                        rov.velocity = v
+                    
                     if komut == "ileri":  
                         v.z = (v.z if hasattr(v, 'z') else 0) + thrust
                     elif komut == "geri": 
