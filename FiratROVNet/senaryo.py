@@ -368,11 +368,13 @@ class Senaryo:
         self.filo = Filo()
         
         # Filo otomatik kurulum (rol ataması otomatik_kurulum içinde yapılıyor)
+        # Senaryo modülü için baslangic_hedefleri None bırakılıyor ki formasyon hesaplaması yapılmasın
+        # ROV pozisyonları başlangıç pozisyonlarında kalacak
         tum_modemler = self.filo.otomatik_kurulum(
             rovs=self.ortam.rovs,
             lider_id=0,
             modem_ayarlari=modem_ayarlari,
-            baslangic_hedefleri=None,  # Varsayılan hedefler kullanılacak
+            baslangic_hedefleri={},  # Boş dict = formasyon hesaplaması yapılmasın, ROV pozisyonları korunsun
             sensor_ayarlari=sensor_ayarlari
         )
         
