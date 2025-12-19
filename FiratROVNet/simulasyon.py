@@ -791,7 +791,7 @@ class Ortam:
         
         # Adalar (1-5 arası rastgele sayıda)
         n_adalar = random.randint(1, 5)
-        for _ in range(n_adalar):
+        for ada_idx in range(n_adalar):
             self._ada_olustur(havuz_genisligi)
 
         # ROV'lar
