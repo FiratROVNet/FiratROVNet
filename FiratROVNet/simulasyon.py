@@ -30,7 +30,7 @@ class ROV(Entity):
         if 'position' in kwargs: self.position = kwargs['position']
         else: self.position = (0, -5, 0)
 
-        self.label = Text(text=f"ROV-{rov_id}", parent=self, y=1.5, scale=5, billboard=True, color=color.white)
+        self.label = Text(text=f"ROV-{rov_id}", parent=self, y=1.5, scale=12, billboard=True, color=color.white)
         
         self.id = rov_id
         self.velocity = Vec3(0, 0, 0)
@@ -764,7 +764,7 @@ class Ortam:
 
     # --- Simülasyon Nesnelerini Oluştur ---
     def sim_olustur(self, n_rovs=3, n_engels=15, havuz_genisligi=200):
-        # Engeller
+        # Engeller (Kayalar)
         for _ in range(n_engels):
             x = random.uniform(-200, 200)
             z = random.uniform(-200, 200)
@@ -788,6 +788,11 @@ class Ortam:
                 unlit=True
             )
             self.engeller.append(engel)
+        
+        # Adalar (1-5 arası rastgele sayıda)
+        n_adalar = random.randint(1, 5)
+        for _ in range(n_adalar):
+            self._ada_olustur(havuz_genisligi)
 
         # ROV'lar
         for i in range(n_rovs):
@@ -800,7 +805,103 @@ class Ortam:
                 new_rov.filo_ref = self.filo
             self.rovs.append(new_rov)
 
-        print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {n_engels} Gri Kaya.")
+        print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {n_engels} Gri Kaya, {n_adalar} Ada.")
+    
+    def _ada_olustur(self, havuz_genisligi):
+        """
+        Ada oluşturur: Altı su zeminine değer, üstü su üstüne çıkar, üstünde ağaç vb yapılar vardır.
+        """
+        havuz_yari_genislik = havuz_genisligi / 2
+        
+        # Ada pozisyonu (havuz içinde rastgele)
+        ada_x = random.uniform(-havuz_yari_genislik + 50, havuz_yari_genislik - 50)
+        ada_z = random.uniform(-havuz_yari_genislik + 50, havuz_yari_genislik - 50)
+        
+        # Ada boyutları
+        ada_genislik = random.uniform(30, 60)  # X ve Z genişliği
+        ada_yukseklik = random.uniform(80, 120)  # Su altından su üstüne toplam yükseklik
+        
+        # Su seviyesi (y=0) referans alınarak:
+        # Ada altı: y = -100 (su zeminine değer)
+        # Ada üstü: y = ada_yukseklik - 100 (su üstüne çıkar)
+        ada_alt_y = -100.0
+        ada_ust_y = ada_alt_y + ada_yukseklik
+        
+        # Ada gövdesi (su altı + su üstü)
+        ada_govde = Entity(
+            model='cube',
+            color=color.rgb(139, 90, 43),  # Kahverengi (toprak/kaya)
+            position=(ada_x, (ada_alt_y + ada_ust_y) / 2, ada_z),  # Merkez y
+            scale=(ada_genislik, ada_yukseklik, ada_genislik),
+            collider='box',
+            unlit=True
+        )
+        self.engeller.append(ada_govde)
+        
+        # Ada üstünde ağaçlar ve yapılar
+        n_agac = random.randint(3, 8)  # Her adada 3-8 ağaç
+        for _ in range(n_agac):
+            # Ağaç pozisyonu (ada üstünde rastgele)
+            agac_x_offset = random.uniform(-ada_genislik/2 + 5, ada_genislik/2 - 5)
+            agac_z_offset = random.uniform(-ada_genislik/2 + 5, ada_genislik/2 - 5)
+            agac_x = ada_x + agac_x_offset
+            agac_z = ada_z + agac_z_offset
+            agac_y = ada_ust_y + random.uniform(2, 8)  # Ada üstünden 2-8 birim yukarı
+            
+            # Ağaç gövdesi (kahverengi silindir)
+            agac_govde_yukseklik = random.uniform(5, 12)
+            agac_govde = Entity(
+                model='cylinder',
+                color=color.rgb(101, 67, 33),  # Koyu kahverengi
+                position=(agac_x, agac_y + agac_govde_yukseklik/2, agac_z),
+                scale=(1.5, agac_govde_yukseklik, 1.5),
+                collider='box',
+                unlit=True
+            )
+            self.engeller.append(agac_govde)
+            
+            # Ağaç yaprakları (yeşil küre)
+            yaprak_boyutu = random.uniform(3, 6)
+            agac_yaprak = Entity(
+                model='sphere',
+                color=color.rgb(34, 139, 34),  # Orman yeşili
+                position=(agac_x, agac_y + agac_govde_yukseklik + yaprak_boyutu/2, agac_z),
+                scale=(yaprak_boyutu, yaprak_boyutu, yaprak_boyutu),
+                collider='sphere',
+                unlit=True
+            )
+            self.engeller.append(agac_yaprak)
+        
+        # Ada üstünde ek yapılar (kayalar, çalılar)
+        n_yapi = random.randint(2, 5)
+        for _ in range(n_yapi):
+            yapi_x_offset = random.uniform(-ada_genislik/2 + 3, ada_genislik/2 - 3)
+            yapi_z_offset = random.uniform(-ada_genislik/2 + 3, ada_genislik/2 - 3)
+            yapi_x = ada_x + yapi_x_offset
+            yapi_z = ada_z + yapi_z_offset
+            yapi_y = ada_ust_y + random.uniform(0.5, 3)
+            
+            # Küçük kaya veya çalı
+            yapi_tipi = random.choice(['kaya', 'cali'])
+            if yapi_tipi == 'kaya':
+                yapi = Entity(
+                    model='icosphere',
+                    color=color.rgb(100, 100, 100),  # Gri
+                    position=(yapi_x, yapi_y, yapi_z),
+                    scale=(random.uniform(2, 5), random.uniform(2, 5), random.uniform(2, 5)),
+                    collider='mesh',
+                    unlit=True
+                )
+            else:  # çalı
+                yapi = Entity(
+                    model='cube',
+                    color=color.rgb(0, 100, 0),  # Koyu yeşil
+                    position=(yapi_x, yapi_y, yapi_z),
+                    scale=(random.uniform(2, 4), random.uniform(1, 3), random.uniform(2, 4)),
+                    collider='box',
+                    unlit=True
+                )
+            self.engeller.append(yapi)
 
     # --- İnteraktif Shell ---
     def _start_shell(self):
