@@ -261,7 +261,16 @@ class Senaryo:
                 # set ve get metodlarını ekle
                 def set_method(key, val):
                     if key == 'rol':
-                        rov.role = val
+                        rov.role = int(val)  # Rol değerini integer'a çevir
+                        # Renk güncellemesi (opsiyonel)
+                        try:
+                            if hasattr(rov, 'color'):
+                                if int(val) == 1:  # Lider
+                                    rov.color = type('color', (), {'rgb': lambda *args: None})()  # Minimal color
+                                else:  # Takipçi
+                                    rov.color = type('color', (), {'rgb': lambda *args: None})()  # Minimal color
+                        except:
+                            pass
                     elif key in rov.sensor_config:
                         rov.sensor_config[key] = val
                 
