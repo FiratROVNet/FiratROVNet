@@ -7,10 +7,56 @@ import sys
 import torch
 from math import sin, cos, atan2, degrees, pi
 import os
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib.animation import FuncAnimation
+import queue
     
 from .config import cfg # <-- BU SATIRI EKLE
 
-  
+# ============================================================
+# KOORDİNAT SİSTEMİ TANIMI
+# ============================================================
+# Bu simülasyonda kullanılan koordinat sistemi:
+# - X ekseni: 2D düzlemde yatay (horizontal - birinci boyut)
+# - Y ekseni: 2D düzlemde dikey (horizontal - ikinci boyut)
+# - Z ekseni: Derinlik (depth) - pozitif değerler yüzeye yakın, negatif değerler derinlik
+#
+# Ursina engine'in kendi koordinat sistemi:
+# - Ursina X: horizontal (sağ-sol)
+# - Ursina Y: vertical (yukarı-aşağı)
+# - Ursina Z: depth (ileri-geri)
+#
+# Dönüşüm: Simülasyon (x_2d, y_2d, z_depth) -> Ursina (x_2d, z_depth, y_2d)
+# ============================================================
+
+def sim_to_ursina(x_2d, y_2d, z_depth):
+    """
+    Simülasyon koordinat sisteminden Ursina koordinat sistemine dönüşüm.
+    
+    Args:
+        x_2d: 2D düzlemde yatay (horizontal - birinci boyut)
+        y_2d: 2D düzlemde dikey (horizontal - ikinci boyut)
+        z_depth: Derinlik (depth)
+    
+    Returns:
+        (ursina_x, ursina_y, ursina_z): Ursina koordinatları
+    """
+    return (x_2d, z_depth, y_2d)
+
+def ursina_to_sim(ursina_x, ursina_y, ursina_z):
+    """
+    Ursina koordinat sisteminden simülasyon koordinat sistemine dönüşüm.
+    
+    Args:
+        ursina_x: Ursina X (horizontal)
+        ursina_y: Ursina Y (vertical)
+        ursina_z: Ursina Z (depth)
+    
+    Returns:
+        (x_2d, y_2d, z_depth): Simülasyon koordinatları
+    """
+    return (ursina_x, ursina_z, ursina_y)
 
 # --- FİZİK SABİTLERİ ---
 SURTUNME_KATSAYISI = 0.95
@@ -44,8 +90,19 @@ class ROV(Entity):
             self.unlit = True
             self.gat_kodu = 0  # GAT kodu için değişken 
         
-        if 'position' in kwargs: self.position = kwargs['position']
-        else: self.position = (0, -5, 0)
+        # Pozisyon: (x_2d, y_2d, z_depth) formatında
+        # Ursina'ya dönüştürülerek atanır: (x_2d, z_depth, y_2d)
+        if 'position' in kwargs:
+            pos = kwargs['position']
+            # Eğer 3 elemanlı tuple ise, simülasyon koordinat sisteminden Ursina'ya dönüştür
+            if isinstance(pos, (tuple, list)) and len(pos) == 3:
+                x_2d, y_2d, z_depth = pos
+                self.position = sim_to_ursina(x_2d, y_2d, z_depth)
+            else:
+                self.position = pos
+        else:
+            # Varsayılan pozisyon: (x_2d=-100, y_2d=0, z_depth=-10)
+            self.position = sim_to_ursina(-100, 0, -10)
 
         self.label = Text(text=f"ROV-{rov_id}", parent=self, y=3.0, scale=20, billboard=True, color=color.white, origin=(0, 0))
         
@@ -79,7 +136,7 @@ class ROV(Entity):
         
         # İletişim durumu (liderle iletişim var mı?)
         self.lider_ile_iletisim = False  # Liderle iletişim durumu
-        self.yuzeyde = False  # Yüzeyde mi? (y >= 0) 
+        self.yuzeyde = False  # Yüzeyde mi? (z_depth >= 0, yani derinlik pozitif) 
 
     def update(self):
         # Manuel hareket kontrolü (sürekli hareket için)
@@ -105,7 +162,12 @@ class ROV(Entity):
             self._sonar_iletisim()
         
         # Yüzey durumu güncelle
-        self.yuzeyde = self.y >= 0
+        # Not: Ursina'da y ekseni vertical, ama simülasyonda z_depth derinlik
+        # Ursina position=(x_2d, z_depth, y_2d) formatında
+        # Yüzey kontrolü: Ursina'da y >= 0 (z_depth >= 0)
+        # Ursina'dan simülasyon koordinat sistemine dönüşüm
+        x_2d, y_2d, z_depth = ursina_to_sim(self.position.x, self.position.y, self.position.z)
+        self.yuzeyde = z_depth >= 0  # Derinlik pozitif ise yüzeyde
         
         # Liderle iletişim kontrolü (takipçi ROV'lar için)
         if self.role == 0 and self.environment_ref:  # Takipçi ise
@@ -723,6 +785,271 @@ class ROV(Entity):
                         ayirma_mesafesi = (min_mesafe - mesafe)
                         self.position += carpisma_yonu * ayirma_mesafesi
 
+# ============================================================
+# HARİTA SİSTEMİ (Matplotlib - Ayrı Pencere)
+# ============================================================
+class Harita:
+    """
+    Google Maps benzeri harita sistemi (Matplotlib ile ayrı pencerede).
+    ROV'ları ok şeklinde, adaları ve engelleri gösterir.
+    """
+    def __init__(self, ortam_ref, pencere_boyutu=(800, 800)):
+        """
+        Args:
+            ortam_ref: Ortam sınıfı referansı
+            pencere_boyutu: Harita penceresi boyutu (genişlik, yükseklik)
+        """
+        self.ortam_ref = ortam_ref
+        self.pencere_boyutu = pencere_boyutu
+        self.manuel_engeller = []  # Elle eklenen engeller [(x_2d, y_2d), ...]
+        
+        # Durum Değişkenleri
+        self.gorunur = False
+        self.fig = None
+        self.ax = None
+        
+        # Thread Güvenliği İçin İstek Bayrakları
+        self._ac_istegi = False
+        self._kapat_istegi = False
+        
+        # Havuz genişliği
+        self.havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
+        
+        print("✅ Harita sistemi hazır. Kullanım: harita.goster(True)")
+    
+    def _setup_figure(self):
+        """Bu fonksiyon mutlaka ANA THREAD içinde çağrılmalıdır."""
+        try:
+            plt.ion()
+            # Yeni pencere oluştur
+            self.fig, self.ax = plt.subplots(figsize=(self.pencere_boyutu[0]/100, self.pencere_boyutu[1]/100))
+            self.fig.canvas.manager.set_window_title('ROV Haritasi')
+            
+            # Pencere kapatıldığında algıla
+            self.fig.canvas.mpl_connect('close_event', self._on_close)
+            
+            # İlk çizimi yap
+            self._ciz()
+            plt.show(block=False)
+            plt.pause(0.1)
+        except Exception as e:
+            print(f"❌ Harita penceresi başlatılamadı: {e}")
+
+    def _on_close(self, event):
+        """Pencere çarpıdan kapatıldığında."""
+        self.gorunur = False
+        self.fig = None
+        self.ax = None
+    
+    def _ciz_gps_pin(self, x, y, renk, yon=None):
+        """Uyarı vermeyen GPS pin çizimi."""
+        if not self.ax:
+            return
+        pin_boyut = 8.0
+        angle = atan2(yon[1], yon[0]) if yon and (yon[0] != 0 or yon[1] != 0) else pi/2
+        
+        ucu_x, ucu_y = x + cos(angle)*pin_boyut, y + sin(angle)*pin_boyut
+        t1x, t1y = x + cos(angle+pi/2)*pin_boyut*0.6, y + sin(angle+pi/2)*pin_boyut*0.6
+        t2x, t2y = x + cos(angle-pi/2)*pin_boyut*0.6, y + sin(angle-pi/2)*pin_boyut*0.6
+
+        # 'color' yerine 'facecolor' kullanarak UserWarning önlendi
+        from matplotlib import patches
+        # Renk tuple'ını matplotlib renk formatına çevir
+        if isinstance(renk, tuple) and len(renk) == 3:
+            renk_matplotlib = renk
+        else:
+            renk_matplotlib = (1.0, 0.5, 0.0)  # Varsayılan turuncu
+        
+        self.ax.add_patch(patches.Polygon([(ucu_x, ucu_y), (t1x, t1y), (t2x, t2y)],
+                          facecolor=renk_matplotlib, edgecolor='black', linewidth=1, zorder=10))
+        self.ax.plot(x, y, 'o', color='white', markersize=3, zorder=11, 
+                    markeredgecolor='black', markeredgewidth=1)
+
+    def _ciz_ada_sekli(self, x, y, boyut):
+        """Ada şeklinde çizim (ters koni/oval şekil)."""
+        from matplotlib.patches import Ellipse
+        ust_yaricap = boyut * 1.2
+        alt_yaricap = boyut * 0.6
+        ada_sekli = Ellipse((x, y), width=ust_yaricap*2, height=alt_yaricap*2, 
+                           angle=0, facecolor='#8B5A3C', edgecolor='black', 
+                           linewidth=2, zorder=4, alpha=0.8)
+        self.ax.add_patch(ada_sekli)
+        
+        # Ada üzerinde küçük detaylar (ağaç/tepe gibi) - sabit pozisyonlar
+        detay_positions = [
+            (0.3, 0.4), (-0.4, 0.2), (0.2, -0.3), (-0.3, -0.2), (0.0, 0.5)
+        ]
+        for dx, dy in detay_positions:
+            detay_x = x + dx * ust_yaricap * 0.6
+            detay_y = y + dy * alt_yaricap * 0.6
+            self.ax.plot(detay_x, detay_y, 'o', color='#654321', markersize=3, zorder=5)
+    
+    def _ciz(self):
+        """Eksenleri temizle ve her şeyi yeniden çiz."""
+        if self.ax is None:
+            return
+        
+        self.ax.clear()
+        self.ax.set_xlim(-self.havuz_genisligi, self.havuz_genisligi)
+        self.ax.set_ylim(-self.havuz_genisligi, self.havuz_genisligi)
+        self.ax.set_aspect('equal')
+        self.ax.grid(True, alpha=0.2)
+        self.ax.set_xlabel('X (2D Duzlem)', fontsize=10)
+        self.ax.set_ylabel('Y (2D Duzlem)', fontsize=10)
+        self.ax.set_title("FIRAT ROVNET - Gercek Zamanli Takip", fontsize=12, fontweight='bold')
+
+        # ROV'ları Çiz
+        if hasattr(self.ortam_ref, 'rovs') and self.ortam_ref.rovs:
+            for rov in self.ortam_ref.rovs:
+                # Ursina koordinat sisteminden simülasyon koordinat sistemine dönüşüm
+                x_2d, y_2d, z_depth = ursina_to_sim(rov.position.x, rov.position.y, rov.position.z)
+                
+                # ROV rengini matplotlib renk formatına çevir
+                if hasattr(rov, 'color'):
+                    if hasattr(rov.color, 'r'):
+                        renk = (rov.color.r, rov.color.g, rov.color.b)
+                    else:
+                        renk = (1.0, 0.5, 0.0)  # Varsayılan turuncu
+                else:
+                    renk = (1.0, 0.5, 0.0)
+                
+                # Velocity bilgisi (yön için)
+                yon = None
+                if hasattr(rov, 'velocity') and rov.velocity.length() > 0.1:
+                    yon = (rov.velocity.x, rov.velocity.z)
+                
+                self._ciz_gps_pin(x_2d, y_2d, renk, yon)
+
+        # Adaları Çiz
+        if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
+            from matplotlib import patches
+            for is_pos in self.ortam_ref.island_positions:
+                if len(is_pos) == 3:
+                    rad = is_pos[2]
+                else:
+                    rad = self.havuz_genisligi * 0.08  # Varsayılan boyut
+                ada = patches.Ellipse((is_pos[0], is_pos[1]), width=rad*2.4, height=rad*1.2, 
+                                     facecolor='#8B5A3C', edgecolor='black', alpha=0.7, zorder=4)
+                self.ax.add_patch(ada)
+
+        # Manuel Engeller
+        if self.manuel_engeller:
+            ex = [p[0] for p in self.manuel_engeller]
+            ey = [p[1] for p in self.manuel_engeller]
+            self.ax.scatter(ex, ey, c='red', marker='X', s=80, label="Engel", zorder=10,
+                          edgecolors='darkred', linewidths=2)
+        
+        # Legend (sadece engeller için)
+        if self.manuel_engeller:
+            self.ax.legend(loc='upper right', fontsize=9)
+
+        self.fig.canvas.draw_idle()
+    
+    def goster(self, durum):
+        """
+        Konsoldan (Shell Thread) çağrılır. 
+        Sadece istek bırakır, işlemi update() (Main Thread) yapar.
+        """
+        # String gelme ihtimaline karşı kontrol ("True" -> True)
+        if isinstance(durum, str):
+            durum = durum.lower() == "true"
+            
+        if durum:
+            self._ac_istegi = True
+            self._kapat_istegi = False
+        else:
+            self._kapat_istegi = True
+            self._ac_istegi = False
+
+    def update(self):
+        """Ursina tarafından her karede (Main Thread) çağrılır."""
+        
+        # 1. Kapatma İsteğini İşle
+        if self._kapat_istegi:
+            self._kapat_istegi = False
+            if self.fig is not None:
+                plt.close(self.fig)
+                self.fig = None
+                self.ax = None
+                self.gorunur = False
+                print("✅ Harita kapatıldı.")
+
+        # 2. Açma İsteğini İşle
+        if self._ac_istegi:
+            self._ac_istegi = False
+            if self.fig is None:
+                self._setup_figure()
+                self.gorunur = True
+                print("✅ Harita açıldı.")
+
+        # 3. Rutin Çizim Güncellemesi
+        if self.gorunur and self.fig is not None:
+            if not hasattr(self, '_up_cnt'):
+                self._up_cnt = 0
+            self._up_cnt += 1
+            
+            if self._up_cnt >= 30:  # 30 karede bir (Performans)
+                self._up_cnt = 0
+                try:
+                    # Havuz genişliğini güncelle (sim_olustur'da değişebilir)
+                    self.havuz_genisligi = getattr(self.ortam_ref, 'havuz_genisligi', 200)
+                    self._ciz()
+                    self.fig.canvas.flush_events()
+                except Exception:
+                    # Pencere harici bir sebeple kapandıysa
+                    self.fig = None
+                    self.ax = None
+                    self.gorunur = False
+    
+    def ekle(self, x_2d, y_2d, tip='engel'):
+        """
+        Haritaya elle engel/nesne ekler.
+        
+        Args:
+            x_2d, y_2d: 2D düzlem koordinatları
+            tip: Nesne tipi ('engel', 'hedef', vb.)
+        
+        Returns:
+            bool: Başarılı ise True
+        """
+        if tip == 'engel':
+            # Engel listesine ekle
+            self.manuel_engeller.append((x_2d, y_2d))
+            
+            # Ortam'a engel entity'si ekle
+            if hasattr(self.ortam_ref, 'engeller'):
+                # Engel entity'si oluştur (görünmez hitbox)
+                engel = Entity(
+                    model='icosphere',
+                    position=sim_to_ursina(x_2d, y_2d, self.ortam_ref.SEA_FLOOR_Y),
+                    scale=(20, 20, 20),
+                    visible=False,
+                    collider='sphere',
+                    color=color.red,
+                    unlit=True
+                )
+                self.ortam_ref.engeller.append(engel)
+            
+            # Haritayı güncelle (sadece görünürse ve pencere varsa)
+            if self.gorunur and self.fig is not None:
+                self._ciz()
+            print(f"✅ Engel eklendi: ({x_2d:.1f}, {y_2d:.1f})")
+            return True
+        
+        return False
+    
+    def temizle(self):
+        """Haritayı temizler (elle eklenen engelleri siler)"""
+        self.manuel_engeller = []
+        if self.gorunur and self.fig is not None:
+            self._ciz()
+        print("Harita temizlendi (elle eklenen engeller silindi)")
+    
+    def kapat(self):
+        """Harita penceresini tamamen kapatır"""
+        self.goster(False)
+
+
 class Ortam:
     def __init__(self):
         # --- Ursina Ayarları ---
@@ -841,94 +1168,134 @@ class Ortam:
 
         
         # Ada modeli (su yüzeyinin üstünde, deniz tabanına değen)
+        # 1-5 arasında random ada oluştur
         island_model_path = "./Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
         island_texture_path = "./Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
         
+        # Referans ölçekler (orijinal ada)
+        ref_visual_scale = (0.3, 0.8, 0.3)
+        ref_hitbox_scales = [
+            (55, 15, 55),   # Katman 1 (en geniş)
+            (40, 20, 40),   # Katman 2
+            (30, 20, 30),   # Katman 3
+            (10, 20, 10)    # Katman 4
+        ]
+        ref_hitbox_positions = [
+            (0, -5, 0),     # Katman 1
+            (0, -25, 0),    # Katman 2
+            (0, -45, 0),    # Katman 3
+            (0, -65, 0)     # Katman 4
+        ]
+        
+        # Ada pozisyonlarını sakla (ROV yerleştirme için)
+        self.island_positions = []
+        self.island_hitboxes = []
+        
+        # Havuz genişliği (varsayılan 200, sim_olustur'da güncellenebilir)
+        self.havuz_genisligi = 200
+        
         if os.path.exists(island_model_path):
-            # 1. GÖRSEL ADA (Sadece görüntü için, ROV'lar bunu görmez)
-            max_wave_height = self.WATER_SURFACE_Y_BASE + 1.5
-            island_y_position = max_wave_height + 5 
-            
-            self.island = Entity(
-                model=island_model_path,
-                position=(0, island_y_position, 0),
-                scale=(0.3, 0.8, 0.3),
-                texture=island_texture_path if os.path.exists(island_texture_path) else None,
-                collider='mesh',
-                unlit=False,
-                double_sided=True, 
-                color=color.white,
-                alpha=1.0,
-                transparent=True,
-                render_queue=0
-            )
-            
-            # --- ÇOK KATMANLI HİTBOX SİSTEMİ ---
-            # Adanın şekline (Ters Koni) uygun olarak yukarıdan aşağıya küçülen küreler
-            # visible=False yaparak gizli tutuyoruz (debug için True yapabilirsin)
-            
-            hitbox_katmanlari = []
-            
-            # KATMAN 1: Su Yüzeyi (En Geniş)
-            # Yüzeyin hemen altında, adanın en geniş kısmı
-            # ROV'lar genellikle y=-2 ile y=-10 arasında olduğu için bu derinlikte
-            hitbox_katmanlari.append(Entity(
-                model='icosphere',
-                position=(0, -5, 0),    # Su yüzeyinin hemen altı (ROV'ların bulunduğu derinlik)
-                scale=(55, 15, 55),     # Geniş ve yassı (ters koni üst kısmı)
-                visible=False,          # Debug için görünür (production'da False yap)
-                collider='sphere',
-                color=color.rgba(255, 0, 0, 0.3),  # Debug için kırmızı
-                unlit=True  # Hitbox'lar için lighting gerekmez
-            ))
-            
-            # KATMAN 2: Orta Derinlik (Orta Genişlik)
-            hitbox_katmanlari.append(Entity(
-                model='icosphere',
-                position=(0, -25, 0),   # Orta derinlik
-                scale=(40, 20, 40),     # Biraz daha dar
-                visible=False,
-                collider='sphere',
-                color=color.rgba(0, 255, 0, 0.3),  # Debug için yeşil
-                unlit=True
-            ))
-            
-            # KATMAN 3: Derin Kısım (En Dar - Adanın ucu)
-            hitbox_katmanlari.append(Entity(
-                model='icosphere',
-                position=(0, -45, 0),   # Derin kısım
-                scale=(30, 20, 30),     # Daha dar
-                visible=False,
-                collider='sphere',
-                color=color.rgba(0, 0, 255, 0.3),  # Debug için mavi
-                unlit=True
-            ))
-
-            # KATMAN 4: Zemin/Kök (Opsiyonel - Adanın zemine değdiği yer çok inceyse)
-            hitbox_katmanlari.append(Entity(
-                model='icosphere',
-                position=(0, -65, 0),   # En derin kısım
-                scale=(10, 20, 10),     # En dar
-                visible=False,
-                collider='sphere',
-                color=color.rgba(255, 255, 0, 0.3),  # Debug için sarı
-                unlit=True
-            ))
+            # ============================================================
+            # ADA OLUŞTURMA AYARLARI
+            # ============================================================
+            n_islands = random.randint(1, 7)  # 1-7 arası random ada sayısı
             
             # Engel listesini hazırla (eğer yoksa oluştur)
             if not hasattr(self, 'engeller'):
                 self.engeller = []
             
-            # Görsel adayı DEĞİL, oluşturduğumuz bu parçaları listeye ekliyoruz
-            # ROV'un sensörü hangisine yakınsa onu algılayacak.
-            for parca in hitbox_katmanlari:
-                self.engeller.append(parca)
+            # Ada Y pozisyonu (su yüzeyinin üstünde sabit)
+            max_wave_height = self.WATER_SURFACE_Y_BASE + 1.5
+            island_y_position = max_wave_height + 5
             
-            # Hitbox katmanlarını sakla (ileride güncelleme için)
-            self.island_hitboxes = hitbox_katmanlari
+            # Havuz sınırları (havuz_genisligi'ne göre)
+            # X ve Z eksenleri random, Y ekseni su yüzeyinin üstünde sabit
+            havuz_yari_genislik = self.havuz_genisligi / 2
+            min_x = -havuz_yari_genislik
+            max_x = havuz_yari_genislik
+            min_z = -havuz_yari_genislik
+            max_z = havuz_yari_genislik
+            
+            # Mevcut ada pozisyonları (çakışma kontrolü için)
+            placed_island_positions = []
+            
+            # ============================================================
+            # HER ADA İÇİN OLUŞTURMA DÖNGÜSÜ
+            # ============================================================
+            for island_idx in range(n_islands):
+                # --- 1. ÖLÇEK HESAPLAMA ---
+                scale_multiplier = random.uniform(0.5, 1.5)
+                
+                # Ada yarıçapı hesaplama (en geniş hitbox katmanına göre)
+                # En geniş katman: scale=(55, 15, 55), yarıçap = max(55, 55) / 2 = 27.5
+                max_hitbox_radius = max(ref_hitbox_scales[0][0], ref_hitbox_scales[0][2]) / 2
+                island_radius = max_hitbox_radius * scale_multiplier
+                
+                # Minimum mesafe (2.5 kat güvenlik payı ile)
+                min_distance_between_islands = island_radius * 2.5
+                
+                # --- 2. GÜVENLİ POZİSYON BULMA (X ve Z random, Y sabit) ---
+                island_x, island_z = self._find_safe_island_position(
+                    placed_island_positions=placed_island_positions,
+                    min_x=min_x,
+                    max_x=max_x,
+                    min_z=min_z,
+                    max_z=max_z,
+                    min_distance=min_distance_between_islands,
+                    max_attempts=100
+                )
+                
+                # --- 3. GÖRSEL ADA OLUŞTURMA ---
+                visual_scale = (
+                    ref_visual_scale[0] * scale_multiplier,
+                    ref_visual_scale[1] * scale_multiplier,
+                    ref_visual_scale[2] * scale_multiplier
+                )
+                
+                island = Entity(
+                    model=island_model_path,
+                    position=(island_x, island_y_position, island_z),  # X ve Z random
+                    scale=visual_scale,
+                    texture=island_texture_path if os.path.exists(island_texture_path) else None,
+                    collider='mesh',
+                    unlit=False,
+                    double_sided=True, 
+                    color=color.white,
+                    alpha=1.0,
+                    transparent=True,
+                    render_queue=0
+                )
+                
+                # İlk adayı self.island olarak sakla (geriye uyumluluk için)
+                if island_idx == 0:
+                    self.island = island
+                
+                # --- 4. ÇOK KATMANLI HİTBOX SİSTEMİ OLUŞTURMA ---
+                hitbox_katmanlari = self._create_island_hitboxes(
+                    island_x=island_x,
+                    island_z=island_z,
+                    scale_multiplier=scale_multiplier,
+                    ref_hitbox_scales=ref_hitbox_scales,
+                    ref_hitbox_positions=ref_hitbox_positions,
+                    island_idx=island_idx
+                )
+                
+                # Hitbox'ları engel listesine ekle
+                for parca in hitbox_katmanlari:
+                    self.engeller.append(parca)
+                
+                # Ada pozisyonunu, yarıçapını ve hitbox'larını sakla
+                # Koordinat sistemi: (x_2d, y_2d, radius) - z_depth her zaman aynı (su yüzeyinin üstünde)
+                # radius: Ada yarıçapı (harita çizimi için)
+                self.island_positions.append((island_x, island_z, island_radius))  # (x_2d, y_2d, radius)
+                self.island_hitboxes.extend(hitbox_katmanlari)
+                
+                # Yerleştirilen ada pozisyonunu kaydet (sonraki adalar için çakışma kontrolü)
+                placed_island_positions.append((island_x, island_z))
         else:
             # Fallback: Ada yoksa None
             self.island = None
+            self.island_positions = []
         
         self.water_volume = Entity(
             model='cube',
@@ -960,7 +1327,7 @@ class Ortam:
         )
         
         # Çimen katmanı kalınlığı: Su hacmi yüksekliğinin 0.25'i
-        cimen_kalinligi = su_hacmi_yuksekligi * 0.3
+        cimen_kalinligi = su_hacmi_yuksekligi * 0.4
         # Çimen katmanı alt yüzeyi: Deniz tabanının altı
         cimen_alt_yuzey = seabed_merkez_y - (seabed_kalinligi / 2)
         # Çimen katmanı merkez y
@@ -987,13 +1354,150 @@ class Ortam:
 
         # Konsol verileri
         self.konsol_verileri = {}
+        
+        # Harita sistemi (Matplotlib - ayrı pencere)
+        try:
+            self.harita = Harita(ortam_ref=self, pencere_boyutu=(800, 800))
+            print("✅ Harita sistemi başarıyla oluşturuldu (Matplotlib penceresi)")
+        except Exception as e:
+            print(f"❌ Harita oluşturulurken hata: {e}")
+            import traceback
+            traceback.print_exc()
+            self.harita = None
+    
+    # ============================================================
+    # YARDIMCI FONKSİYONLAR: ADA OLUŞTURMA
+    # ============================================================
+    
+    def _find_safe_island_position(self, placed_island_positions, min_x, max_x, min_z, max_z, min_distance, max_attempts=100):
+        """
+        Adaların birbirine çakışmaması için güvenli (X, Z) pozisyonu bulur.
+        Y ekseni su yüzeyinin üstünde sabit (island_y_position).
+        
+        Args:
+            placed_island_positions: Mevcut ada pozisyonları listesi [(x, z), ...]
+            min_x, max_x: Havuz X sınırları
+            min_z, max_z: Havuz Z sınırları
+            min_distance: Minimum mesafe (ada yarıçapı * güvenlik payı)
+            max_attempts: Maksimum deneme sayısı
+            
+        Returns:
+            (island_x, island_z): Güvenli ada pozisyonu (X ve Z random)
+        """
+        # İlk ada ise, merkezden uzak bir yere yerleştir
+        if not placed_island_positions:
+            return (
+                random.choice([min_x + 20, max_x - 20]),
+                random.choice([min_z + 20, max_z - 20])
+            )
+        
+        # Güvenli pozisyon bul (maksimum deneme sayısı kadar)
+        for attempt in range(max_attempts):
+            # Random X ve Z pozisyonları (havuz sınırları içinde)
+            candidate_x = random.uniform(min_x, max_x)
+            candidate_z = random.uniform(min_z, max_z)
+            
+            # Mevcut adalardan yeterince uzak mı kontrol et (2D mesafe: X-Z düzlemi)
+            too_close = False
+            for existing_x, existing_z in placed_island_positions:
+                # 2D yatay mesafe hesabı (X-Z düzlemi)
+                dx = candidate_x - existing_x
+                dz = candidate_z - existing_z
+                distance = (dx**2 + dz**2)**0.5  # 2D Öklid mesafesi
+                
+                if distance < min_distance:
+                    too_close = True
+                    break
+            
+            if not too_close:
+                return (candidate_x, candidate_z)
+        
+        # Eğer güvenli pozisyon bulunamadıysa, mevcut adalardan en uzak noktayı seç
+        if placed_island_positions:
+            # Mevcut adaların X ve Z ortalaması
+            avg_x = sum(x for x, z in placed_island_positions) / len(placed_island_positions)
+            avg_z = sum(z for x, z in placed_island_positions) / len(placed_island_positions)
+            
+            # Ortalamadan uzak bir nokta bul
+            if avg_x > 0:
+                fallback_x = max(min_x + 20, avg_x - min_distance)
+            else:
+                fallback_x = min(max_x - 20, avg_x + min_distance)
+            
+            if avg_z > 0:
+                fallback_z = max(min_z + 20, avg_z - min_distance)
+            else:
+                fallback_z = min(max_z - 20, avg_z + min_distance)
+            
+            return (fallback_x, fallback_z)
+        
+        # Son çare: Merkezden uzak bir yere yerleştir
+        return (
+            random.choice([min_x + 20, max_x - 20]),
+            random.choice([min_z + 20, max_z - 20])
+        )
+    
+    def _create_island_hitboxes(self, island_x, island_z, scale_multiplier, ref_hitbox_scales, ref_hitbox_positions, island_idx):
+        """
+        Ada için çok katmanlı hitbox sistemi oluşturur.
+        
+        Args:
+            island_x, island_z: Ada pozisyonu
+            scale_multiplier: Ölçek çarpanı
+            ref_hitbox_scales: Referans hitbox ölçekleri listesi
+            ref_hitbox_positions: Referans hitbox pozisyonları listesi
+            island_idx: Ada indeksi (renk farklılaştırması için)
+            
+        Returns:
+            hitbox_katmanlari: Hitbox entity'leri listesi
+        """
+        hitbox_katmanlari = []
+        
+        # Renkleri farklılaştır (her ada için farklı ton)
+        color_offset = island_idx * 50
+        colors = [
+            color.rgba(255 - color_offset, 0, 0, 0.3),      # Kırmızı
+            color.rgba(0, 255 - color_offset, 0, 0.3),      # Yeşil
+            color.rgba(0, 0, 255 - color_offset, 0.3),       # Mavi
+            color.rgba(255 - color_offset, 255 - color_offset, 0, 0.3)  # Sarı
+        ]
+        
+        # Her katman için hitbox oluştur
+        for layer_idx, (ref_scale, ref_pos) in enumerate(zip(ref_hitbox_scales, ref_hitbox_positions)):
+            # Ölçeği çarpanla çarp
+            scaled_size = (
+                ref_scale[0] * scale_multiplier,
+                ref_scale[1] * scale_multiplier,
+                ref_scale[2] * scale_multiplier
+            )
+            
+            # Pozisyonu ada pozisyonuna göre ayarla (Y aynı kalacak)
+            hitbox_pos = (island_x, ref_pos[1], island_z)
+            
+            hitbox_katmanlari.append(Entity(
+                model='icosphere',
+                position=hitbox_pos,
+                scale=scaled_size,
+                visible=False,
+                collider='sphere',
+                color=colors[layer_idx],
+                unlit=True
+            ))
+        
+        return hitbox_katmanlari
 
     # --- Simülasyon Nesnelerini Oluştur ---
     def sim_olustur(self, n_rovs=3, n_engels=15, havuz_genisligi=200):
-        # Ada hitbox'larını koru (eğer varsa)
+        # Havuz genişliğini güncelle (ada oluşturma için)
+        self.havuz_genisligi = havuz_genisligi
+        
+        # Ada hitbox'larını ve pozisyonlarını koru (eğer varsa)
         ada_hitbox_backup = []
+        ada_positions_backup = []
         if hasattr(self, 'island_hitboxes') and self.island_hitboxes:
             ada_hitbox_backup = self.island_hitboxes.copy()
+        if hasattr(self, 'island_positions') and self.island_positions:
+            ada_positions_backup = self.island_positions.copy()
         
         # Engeller (Kayalar) - Listeyi sıfırla ama ada hitbox'larını koruyacağız
         self.engeller = []
@@ -1002,6 +1506,10 @@ class Ortam:
         if ada_hitbox_backup:
             for hitbox in ada_hitbox_backup:
                 self.engeller.append(hitbox)
+        
+        # Ada pozisyonlarını geri yükle (eğer varsa)
+        if ada_positions_backup:
+            self.island_positions = ada_positions_backup
         
         # Engeller (Kayalar)
         # Kayalar su altında oluşmalı ve tabanları deniz tabanına değmeli
@@ -1040,16 +1548,79 @@ class Ortam:
             )
             self.engeller.append(engel)
 
-        # ROV'lar
+        # ============================================================
+        # ROV YERLEŞTİRME (Adaların dışına)
+        # ============================================================
+        # Havuz sınırları
+        havuz_yari_genislik = self.havuz_genisligi / 2
+        min_x = -havuz_yari_genislik
+        max_x = havuz_yari_genislik
+        min_z = -havuz_yari_genislik
+        max_z = havuz_yari_genislik
+        
+        # Minimum güvenli mesafe (ada hitbox yarıçapı + güvenlik payı)
+        # En geniş katman: scale=(55, 15, 55), maksimum yarıçap = 55/2 = 27.5
+        # Maksimum scale_multiplier = 1.5, yani maksimum yarıçap = 27.5 * 1.5 = 41.25
+        # Güvenlik payı ekleyerek 60 birim mesafe bırak
+        min_safe_distance_from_island = 60.0
+        
         for i in range(n_rovs):
-            x = random.uniform(-10,10)
-            z = random.uniform(-10,10)
-            new_rov = ROV(rov_id=i, position=(x,-2,z))  # ROV sınıfın kendi tanımlı olmalı
-            new_rov.environment_ref = self
-            # Filo referansını ekle (eğer varsa)
-            if hasattr(self, 'filo'):
-                new_rov.filo_ref = self.filo
-            self.rovs.append(new_rov)
+            max_attempts = 50
+            placed = False
+            
+            # Güvenli pozisyon bul (maksimum deneme sayısı kadar)
+            for attempt in range(max_attempts):
+                # Random pozisyon (havuz sınırları içinde)
+                # Koordinat sistemi: (x_2d, y_2d, z_depth)
+                x_2d = random.uniform(min_x, max_x)
+                y_2d = random.uniform(min_z, max_z)  # Not: min_z/max_z aslında y_2d sınırları
+                z_depth = random.uniform(-20, -5)  # Su altında (derinlik negatif)
+                
+                # Ursina'ya dönüştür: (x_2d, z_depth, y_2d)
+                x, y, z = sim_to_ursina(x_2d, y_2d, z_depth)
+                
+                # Ada kontrolü: ROV'un adaların içinde olup olmadığını kontrol et
+                too_close_to_island = False
+                
+                if hasattr(self, 'island_positions') and self.island_positions:
+                    for island_data in self.island_positions:
+                        # Ada verisi: (x_2d, y_2d, radius) veya (x_2d, y_2d) (geriye uyumluluk)
+                        if len(island_data) == 3:
+                            island_x_2d, island_y_2d, island_radius = island_data
+                        else:
+                            island_x_2d, island_y_2d = island_data
+                        
+                        # 2D yatay mesafe hesabı (X_2D - Y_2D düzlemi)
+                        # Z_DEPTH (derinlik) farklı olduğu için sadece yatay mesafe kontrol edilir
+                        dx_2d = x_2d - island_x_2d
+                        dy_2d = y_2d - island_y_2d
+                        horizontal_distance = (dx_2d**2 + dy_2d**2)**0.5
+                        
+                        if horizontal_distance < min_safe_distance_from_island:
+                            too_close_to_island = True
+                            break
+                
+                # Güvenli pozisyon bulundu
+                if not too_close_to_island:
+                    new_rov = ROV(rov_id=i, position=(x, y, z))
+                    new_rov.environment_ref = self
+                    if hasattr(self, 'filo'):
+                        new_rov.filo_ref = self.filo
+                    self.rovs.append(new_rov)
+                    placed = True
+                    break
+            
+            # Eğer yerleştirilemediyse, zorla yerleştir (ada kontrolü olmadan)
+            if not placed:
+                # Simülasyon koordinat sistemi: (x_2d, y_2d, z_depth)
+                x_2d = random.uniform(min_x, max_x)
+                y_2d = random.uniform(min_z, max_z)
+                z_depth = random.uniform(-20, -5)
+                new_rov = ROV(rov_id=i, position=(x_2d, y_2d, z_depth))
+                new_rov.environment_ref = self
+                if hasattr(self, 'filo'):
+                    new_rov.filo_ref = self.filo
+                self.rovs.append(new_rov)
 
         print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {n_engels} Gri Kaya.")
     

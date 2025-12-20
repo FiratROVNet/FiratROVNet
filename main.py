@@ -9,7 +9,7 @@ import os
 # 1. KURULUM
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
-app.sim_olustur(n_rovs=4, n_engels=15)
+app.sim_olustur(n_rovs=6, n_engels=35)
 
 try: 
     beyin = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
@@ -17,17 +17,13 @@ except:
     print("⚠️ Model yüklenemedi, AI devre dışı."); 
     beyin = None
 
-# ROV rollerini manuel olarak ayarla (otomatik_kurulum'dan önce)
-app.rovs[0].set("rol", 1)  # ROV-0 lider
-for i in range(1, len(app.rovs)):
-    app.rovs[i].set("rol", 0)  # Diğerleri takipçi
-
 # Filo sistemini otomatik kurulum ile oluştur
+# (otomatik_kurulum içinde rol ataması yapılıyor, manuel atama gerekmez)
 filo = Filo()
 tum_modemler = filo.otomatik_kurulum(
     rovs=app.rovs,
     baslangic_hedefleri={
-        0: (50, 0, 60)    # Lider: (x, y, z)
+        0: (150, 10, 0)    # Lider: (x, y, z)
         # Takipçiler için hedef belirtilmezse hedef atanmaz
     }
     # İsteğe bağlı parametreler (yukarıdaki satıra virgül ekleyerek kullanın):
@@ -120,7 +116,9 @@ app.konsola_ekle("gnc", filo.sistemler)
 app.konsola_ekle("filo", filo)  # Filo nesnesini konsola ekle
 app.konsola_ekle("rovs", app.rovs)
 app.konsola_ekle("cfg", cfg)
+app.konsola_ekle("harita", app.harita)  # Harita nesnesini konsola ekle
 print("✅ Sistem aktif.")
+print("🗺️  Harita aktif! Kullanım: harita.ekle(x_2d, y_2d)")
 
 
 # 2. ANA DÖNGÜ
@@ -165,9 +163,24 @@ def update():
             
             ek = "" if ai_aktif else "\n[AI OFF]"
             # GAT kodunu label'da büyük ve görünür şekilde göster
-            app.rovs[i].label.text = durum_txts[app.rovs[i].gat_kodu]
+            # gat_kodu bir integer, liste indexi olarak kullanılmalı
+            gat_kodu = app.rovs[i].gat_kodu
+            if 0 <= gat_kodu < len(durum_txts):
+                app.rovs[i].label.text = durum_txts[gat_kodu]
+            else:
+                app.rovs[i].label.text = f"GAT:{gat_kodu}"
         
         filo.guncelle_hepsi(tahminler)
+        
+        # Harita güncelle (Matplotlib penceresi) - Throttled içeride yapılıyor
+        if hasattr(app, 'harita') and app.harita is not None:
+            try:
+                # Matplotlib penceresini güncelle (throttled, non-blocking)
+                app.harita.update()
+                # plt.pause() kaldırıldı - harita.update() içinde throttle var
+            except Exception as e:
+                # Harita güncelleme hatası (sessizce geç, simülasyon devam etsin)
+                pass
         
     except Exception as e: 
         pass
