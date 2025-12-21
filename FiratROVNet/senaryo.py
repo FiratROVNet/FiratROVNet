@@ -30,6 +30,7 @@ from FiratROVNet.simulasyon import Ortam, ROV
 from FiratROVNet.gnc import Filo
 import numpy as np
 import random
+import networkx as nx
 
 # Global senaryo instance
 _senaryo_instance = None
@@ -159,7 +160,7 @@ class Senaryo:
             # Headless mod için minimal engel objesi (Ursina Entity yerine)
             try:
                 # Ursina Entity oluşturmayı dene
-                if self.app is not None and URSINA_AVAILABLE:
+                if self.app is not None:
                     try:
                         engel = Entity(
                             model='icosphere',
@@ -208,7 +209,7 @@ class Senaryo:
             # ROV oluştur (headless mod için)
             try:
                 # Ursina ROV oluşturmayı dene
-                if self.app is not None and ROV_AVAILABLE:
+                if self.app is not None:
                     try:
                         rov = ROV(rov_id=i, position=pozisyon)
                         rov.environment_ref = self.ortam
@@ -629,3 +630,204 @@ def __getattr__(name):
         instance = _get_instance()
         return instance.filo if instance.aktif else None
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+# ============================================================
+# GAT EĞİTİMİ İÇİN VERİ ÜRETİMİ
+# ============================================================
+def veri_uret_gat(n_rovs=None, n_engels=None, havuz_genisligi=200):
+    """
+    Senaryo ortamından GAT eğitimi için PyTorch Geometric Data formatında veri üretir.
+    
+    Args:
+        n_rovs (int, optional): ROV sayısı (None ise rastgele 4-10 arası)
+        n_engels (int, optional): Engel sayısı (None ise rastgele 10-30 arası)
+        havuz_genisligi (float): Havuz genişliği
+    
+    Returns:
+        torch_geometric.data.Data: GAT modeli için hazırlanmış veri
+    """
+    from torch_geometric.data import Data
+    import torch
+    import networkx as nx
+    
+    # Senaryo oluştur
+    if n_rovs is None:
+        n_rovs = np.random.randint(4, 10)
+    if n_engels is None:
+        n_engels = np.random.randint(10, 30)
+    
+    senaryo = uret(n_rovs=n_rovs, n_engels=n_engels, havuz_genisligi=havuz_genisligi)
+    
+    # Birkaç adım simülasyon çalıştır (dinamik veri için)
+    for _ in range(np.random.randint(5, 20)):
+        guncelle(delta_time=0.016)
+    
+    # Veri toplama
+    rovs = senaryo.ortam.rovs
+    engeller = senaryo.ortam.engeller
+    n = len(rovs)
+    
+    if n == 0:
+        # Fallback: Eğer ROV yoksa minimal veri döndür
+        return veri_uret_gat(n_rovs=4, n_engels=10, havuz_genisligi=havuz_genisligi)
+    
+    x = torch.zeros((n, 7), dtype=torch.float)
+    sources, targets = [], []
+    danger_map = {}
+    
+    # Limitler
+    L = {'LEADER': 60.0, 'DISCONNECT': 35.0, 'OBSTACLE': 20.0, 'COLLISION': 8.0}
+    
+    # Pozisyonları topla
+    positions = []
+    for rov in rovs:
+        if hasattr(rov, 'position'):
+            pos = rov.position
+            if hasattr(pos, 'x'):
+                positions.append([pos.x, pos.y, pos.z])
+            elif isinstance(pos, (list, tuple)) and len(pos) >= 3:
+                positions.append([pos[0], pos[1], pos[2]])
+            else:
+                positions.append([getattr(rov, 'x', 0), getattr(rov, 'y', -2), getattr(rov, 'z', 0)])
+        else:
+            positions.append([getattr(rov, 'x', 0), getattr(rov, 'y', -2), getattr(rov, 'z', 0)])
+    
+    # GAT girdilerini oluştur
+    for i in range(n):
+        code = 0
+        pos_i = np.array(positions[i][:2])  # X, Z (2D düzlem)
+        
+        # Liderden uzak mı?
+        if i != 0 and len(positions) > 0:
+            pos_0 = np.array(positions[0][:2])
+            if np.linalg.norm(pos_i - pos_0) > L['LEADER']:
+                code = 5
+        
+        # Diğer ROV'lardan uzak mı? (Kopma)
+        dists = []
+        for j in range(n):
+            if i != j:
+                pos_j = np.array(positions[j][:2])
+                dist = np.linalg.norm(pos_i - pos_j)
+                dists.append(dist)
+                if dist < L['DISCONNECT']:
+                    sources.append(i)
+                    targets.append(j)
+        
+        if dists and min(dists) > L['DISCONNECT']:
+            code = 3
+        
+        # Engel kontrolü
+        min_engel_dist = 999.0
+        for engel in engeller:
+            if hasattr(engel, 'position'):
+                engel_pos = engel.position
+                if hasattr(engel_pos, 'x'):
+                    engel_x, engel_z = engel_pos.x, engel_pos.z
+                elif isinstance(engel_pos, (list, tuple)) and len(engel_pos) >= 2:
+                    engel_x, engel_z = engel_pos[0], engel_pos[2] if len(engel_pos) > 2 else engel_pos[1]
+                else:
+                    continue
+                
+                dist = np.linalg.norm(pos_i - np.array([engel_x, engel_z]))
+                
+                # Engel boyutunu hesaba kat
+                if hasattr(engel, 'scale_x'):
+                    scale_avg = (engel.scale_x + (engel.scale_z if hasattr(engel, 'scale_z') else engel.scale_x)) / 2
+                    dist = max(0, dist - scale_avg / 2)
+                
+                if dist < min_engel_dist:
+                    min_engel_dist = dist
+        
+        if min_engel_dist < L['OBSTACLE']:
+            code = 1
+        
+        # Çarpışma kontrolü
+        for j in range(n):
+            if i != j:
+                pos_j = np.array(positions[j][:2])
+                if np.linalg.norm(pos_i - pos_j) < L['COLLISION']:
+                    code = 2
+                    break
+        
+        # GAT özellik vektörü
+        x[i][0] = code / 5.0  # GAT kodu (normalize)
+        
+        # Batarya
+        if hasattr(rovs[i], 'battery'):
+            x[i][1] = float(rovs[i].battery) if rovs[i].battery <= 1.0 else rovs[i].battery / 100.0
+        elif hasattr(rovs[i], 'get'):
+            bat = rovs[i].get('batarya')
+            x[i][1] = float(bat) if bat is not None else 0.8
+        else:
+            x[i][1] = np.random.uniform(0.5, 1.0)
+        
+        # SNR (İletişim kalitesi)
+        x[i][2] = 0.9  # Varsayılan
+        
+        # Derinlik
+        if len(positions[i]) > 1:
+            x[i][3] = abs(float(positions[i][1])) / 100.0
+        else:
+            x[i][3] = np.random.uniform(0.0, 1.0)
+        
+        # Hız (velocity)
+        if hasattr(rovs[i], 'velocity'):
+            vel = rovs[i].velocity
+            if hasattr(vel, 'x'):
+                x[i][4] = float(vel.x)
+                x[i][5] = float(vel.z) if hasattr(vel, 'z') else 0.0
+            else:
+                x[i][4] = np.random.uniform(-1, 1)
+                x[i][5] = np.random.uniform(-1, 1)
+        elif hasattr(rovs[i], 'get'):
+            hiz = rovs[i].get('hiz')
+            if hiz is not None and len(hiz) >= 2:
+                x[i][4] = float(hiz[0])
+                x[i][5] = float(hiz[2]) if len(hiz) > 2 else float(hiz[1])
+            else:
+                x[i][4] = np.random.uniform(-1, 1)
+                x[i][5] = np.random.uniform(-1, 1)
+        else:
+            x[i][4] = np.random.uniform(-1, 1)
+            x[i][5] = np.random.uniform(-1, 1)
+        
+        # Rol (0=takipçi, 1=lider)
+        if hasattr(rovs[i], 'role'):
+            x[i][6] = float(rovs[i].role)
+        elif hasattr(rovs[i], 'get'):
+            rol = rovs[i].get('rol')
+            x[i][6] = float(rol) if rol is not None else (1.0 if i == 0 else 0.0)
+        else:
+            x[i][6] = 1.0 if i == 0 else 0.0
+        
+        if code > 0:
+            danger_map[i] = code
+    
+    # Edge index
+    edge_index = torch.tensor([sources, targets], dtype=torch.long) if sources else torch.zeros((2, 0), dtype=torch.long)
+    
+    # Hedef etiketler (y)
+    y = torch.zeros(n, dtype=torch.long)
+    G = nx.Graph()
+    G.add_nodes_from(range(n))
+    if len(sources) > 0:
+        G.add_edges_from(zip(sources, targets))
+    
+    for i in range(n):
+        if i in danger_map:
+            y[i] = danger_map[i]
+        elif i in G and len(danger_map) > 0:
+            # Graf üzerinden en yüksek öncelikli tehlikeli duruma bağlan
+            priority = {2: 0, 1: 1, 3: 2, 5: 3, 0: 4}
+            sorted_dangers = sorted(danger_map.items(), key=lambda k: priority.get(k[1], 10))
+            for d_node, d_code in sorted_dangers:
+                if nx.has_path(G, i, d_node):
+                    y[i] = d_code
+                    break
+    
+    # Senaryoyu temizle (bellek için)
+    temizle()
+    
+    return Data(x=x, edge_index=edge_index, y=y)
