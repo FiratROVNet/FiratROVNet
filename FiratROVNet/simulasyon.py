@@ -1267,7 +1267,7 @@ class Ortam:
         window.fullscreen = False
         window.exit_button.visible = False
         window.fps_counter.enabled = True
-        window.size = (1024, 768)
+        window.size = (1280, 720)  # Daha geniş pencere boyutu (16:9 aspect ratio)
         window.center_on_screen()
         application.run_in_background = True
         window.color = color.rgb(10, 30, 50)  # Arka plan
@@ -1513,7 +1513,7 @@ class Ortam:
         )
         
         # Deniz tabanı kalınlığı: Su hacmi yüksekliğinin 0.1'i
-        seabed_kalinligi = su_hacmi_yuksekligi * 0.15
+        seabed_kalinligi = su_hacmi_yuksekligi * 0.25
         # Deniz tabanı alt yüzeyi: Su hacminin altı
         seabed_alt_yuzey = su_hacmi_merkez_y - (su_hacmi_yuksekligi / 2)
         # Deniz tabanı merkez y: Alt yüzeyin üstünde kalınlığın yarısı kadar
@@ -1531,7 +1531,7 @@ class Ortam:
         )
         
         # Çimen katmanı kalınlığı: Su hacmi yüksekliğinin 0.25'i
-        cimen_kalinligi = su_hacmi_yuksekligi * 0.4
+        cimen_kalinligi = su_hacmi_yuksekligi * 0.5
         # Çimen katmanı alt yüzeyi: Deniz tabanının altı
         cimen_alt_yuzey = seabed_merkez_y - (seabed_kalinligi / 2)
         # Çimen katmanı merkez y
@@ -1745,13 +1745,13 @@ class Ortam:
             z = random.uniform(-200, 200)
             
             # Kaya boyutları
-            s_x = random.uniform(15, 30)
-            s_y = random.uniform(15, 30)
-            s_z = random.uniform(15, 30)  # Z ekseni de pozitif olmalı (küre için)
+            s_x = random.uniform(15, 40)
+            s_y = random.uniform(15, 40)
+            s_z = random.uniform(15, 60)  # Z ekseni de pozitif olmalı (küre için)
 
             # Kaya pozisyonu: Tabanı deniz tabanına değmeli, üstü su yüzeyinin altında olmalı
             # Kaya merkez pozisyonu = deniz tabanı + (kaya yüksekliği / 2) ile su yüzeyi - (kaya yüksekliği / 2) arasında
-            kaya_alt_sinir = self.SEA_FLOOR_Y-8  # Kayanın alt kısmı deniz tabanında
+            kaya_alt_sinir = self.SEA_FLOOR_Y  # Kayanın alt kısmı deniz tabanında
             kaya_ust_sinir = self.WATER_SURFACE_Y_BASE - (s_y / 2) - 2  # Kayanın üst kısmı su yüzeyinin 2 birim altında
             
             # Eğer kaya çok büyükse ve su yüzeyine sığmıyorsa, deniz tabanına yerleştir
