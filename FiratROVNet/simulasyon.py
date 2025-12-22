@@ -7,6 +7,16 @@ import sys
 import torch
 from math import sin, cos, atan2, degrees, pi
 import os
+import matplotlib
+# Windows'ta thread-safe matplotlib için backend ayarı (modül yüklenmeden önce)
+import sys
+if sys.platform == 'win32':
+    try:
+        # TkAgg backend'i Windows'ta daha güvenilir ve thread-safe
+        matplotlib.use('TkAgg', force=False)
+    except Exception:
+        pass  # Backend zaten ayarlanmışsa devam et
+
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation
@@ -1023,6 +1033,9 @@ class Harita:
     def _setup_figure(self):
         """Bu fonksiyon mutlaka ANA THREAD içinde çağrılmalıdır."""
         try:
+            import sys
+            import time
+            
             plt.ion()
             # Yeni pencere oluştur
             self.fig, self.ax = plt.subplots(figsize=(self.pencere_boyutu[0]/100, self.pencere_boyutu[1]/100))
@@ -1033,10 +1046,25 @@ class Harita:
             
             # İlk çizimi yap
             self._ciz()
-            plt.show(block=False)
-            plt.pause(0.1)
+            
+            # Windows'ta thread-safe show (GIL sorunlarını önlemek için)
+            if sys.platform == 'win32':
+                try:
+                    # Windows'ta plt.show() ve plt.pause() GIL sorunlarına yol açabilir
+                    # Bu yüzden draw_idle ve time.sleep kullan
+                    self.fig.canvas.draw_idle()
+                    plt.show(block=False)
+                    # plt.pause yerine time.sleep kullan (daha güvenli)
+                    time.sleep(0.05)
+                except Exception as e:
+                    print(f"⚠️ Harita penceresi açılırken uyarı: {e}")
+            else:
+                plt.show(block=False)
+                plt.pause(0.1)
         except Exception as e:
             print(f"❌ Harita penceresi başlatılamadı: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _on_close(self, event):
         """Pencere çarpıdan kapatıldığında."""
@@ -1197,7 +1225,19 @@ class Harita:
                     # Havuz genişliğini güncelle (sim_olustur'da değişebilir)
                     self.havuz_genisligi = getattr(self.ortam_ref, 'havuz_genisligi', 200)
                     self._ciz()
-                    self.fig.canvas.flush_events()
+                    
+                    # Windows'ta thread-safe flush_events
+                    import sys
+                    if sys.platform == 'win32':
+                        # Windows'ta canvas.draw() kullan (flush_events yerine)
+                        try:
+                            self.fig.canvas.draw()
+                            self.fig.canvas.flush_events()
+                        except Exception:
+                            # Pencere kapatılmış olabilir
+                            pass
+                    else:
+                        self.fig.canvas.flush_events()
                 except Exception:
                     # Pencere harici bir sebeple kapandıysa
                     self.fig = None
