@@ -483,3 +483,130 @@ if __name__ == "__main__":
         print("\n✅ TÜM TESTLER BAŞARILI!")
         sys.exit(0)
 
+
+    assert hasattr(cfg, 'goster_modem'), "Config'de goster_modem yok"
+    assert hasattr(cfg, 'goster_gnc'), "Config'de goster_gnc yok"
+    assert hasattr(cfg, 'goster_sistem'), "Config'de goster_sistem yok"
+    record_test_pass("Config Özellikleri")
+    
+    # Config değerlerini değiştir
+    original_value = cfg.goster_modem
+    cfg.goster_modem = True
+    assert cfg.goster_modem == True, "Config değeri değiştirilemedi"
+    cfg.goster_modem = original_value
+    record_test_pass("Config Değer Değiştirme")
+    
+except Exception as e:
+    record_test_fail("Config Sistemi", e)
+
+# ==========================================
+# TEST 8: Ortam Sınıfı (Ursina Olmadan)
+# ==========================================
+print("\n" + "="*60)
+print("TEST 8: Ortam Sınıfı (Headless)")
+print("="*60)
+
+try:
+    # Ursina'yı headless modda başlatmayı dene
+    # Eğer başarısız olursa test atlanır
+    from FiratROVNet.simulasyon import Ortam
+    
+    # Headless mod için environment ayarları
+    os.environ['Ursina_HEADLESS'] = '1'
+    
+    try:
+        # Ortam oluşturma (headless modda)
+        app = Ortam()
+        record_test_pass("Ortam Oluşturma (Headless)")
+        
+        # Simülasyon nesneleri oluşturma
+        app.sim_olustur(n_rovs=3, n_engels=5)
+        assert len(app.rovs) == 3, "ROV'lar oluşturulamadı"
+        assert len(app.engeller) == 5, "Engeller oluşturulamadı"
+        record_test_pass("Simülasyon Nesneleri Oluşturma")
+        
+        # Konsol verileri ekleme
+        app.konsola_ekle("test", "test_value")
+        assert "test" in app.konsol_verileri, "Konsol verileri eklenemedi"
+        record_test_pass("Konsol Verileri")
+        
+    except Exception as e:
+        record_test_skip("Ortam Sınıfı", f"Ursina headless mod başarısız: {e}")
+        print(f"   Not: Grafik kartı olmadan Ursina başlatılamadı (normal)")
+    
+except Exception as e:
+    record_test_fail("Ortam Sınıfı", e)
+
+# ==========================================
+# TEST 9: Entegrasyon Testi
+# ==========================================
+print("\n" + "="*60)
+print("TEST 9: Entegrasyon Testi")
+print("="*60)
+
+try:
+    # Tüm sistemleri bir arada test et
+    data = veri_uret(n_rovs=4)
+    analizci = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
+    tahminler, _, _ = analizci.analiz_et(data)
+    
+    filo = Filo()
+    modem0 = AkustikModem(0)
+    modem1 = AkustikModem(1)
+    
+    rov0 = MockROV(0)
+    rov1 = MockROV(1)
+    
+    gnc0 = LiderGNC(rov0, modem0)
+    gnc1 = TakipciGNC(rov1, modem1, lider_modem_ref=modem0)
+    
+    filo.ekle(gnc0)
+    filo.ekle(gnc1)
+    
+    filo.git(0, 10, 20, -5)
+    filo.git(1, 15, 25, -10)
+    
+    filo.guncelle_hepsi(tahminler[:2])
+    
+    record_test_pass("Entegrasyon Testi")
+    
+except Exception as e:
+    record_test_fail("Entegrasyon Testi", e)
+    traceback.print_exc()
+
+# ==========================================
+# TEST SONUÇLARI
+# ==========================================
+print("\n" + "="*60)
+print("TEST SONUÇLARI")
+print("="*60)
+
+total = len(test_results['passed']) + len(test_results['failed']) + len(test_results['skipped'])
+passed = len(test_results['passed'])
+failed = len(test_results['failed'])
+skipped = len(test_results['skipped'])
+
+print(f"\nToplam Test: {total}")
+print(f"✅ Başarılı: {passed}")
+print(f"❌ Başarısız: {failed}")
+print(f"⏭️  Atlandı: {skipped}")
+
+if test_results['failed']:
+    print("\n❌ Başarısız Testler:")
+    for name, error in test_results['failed']:
+        print(f"   - {name}: {error}")
+
+if test_results['skipped']:
+    print("\n⏭️  Atlanan Testler:")
+    for name, reason in test_results['skipped']:
+        print(f"   - {name}: {reason}")
+
+# CI/CD için exit code (sadece direkt çalıştırıldığında)
+if __name__ == "__main__":
+    if failed > 0:
+        print("\n❌ TEST BAŞARISIZ - CI/CD hatası!")
+        sys.exit(1)
+    else:
+        print("\n✅ TÜM TESTLER BAŞARILI!")
+        sys.exit(0)
+

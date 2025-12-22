@@ -1,6 +1,6 @@
 import numpy as np
 from ursina import Vec3, time, distance
-from .config import cfg
+from .config import cfg, GATLimitleri, SensorAyarlari, ModemAyarlari
 from .iletisim import AkustikModem
 import math
 import random
@@ -20,8 +20,8 @@ class Filo:
     def rehber_dagit(self, modem_rehberi):
         if self.sistemler:
             for sistem in self.sistemler:
-                if isinstance(sistem, LiderGNC):
-                    sistem.rehber_guncelle(modem_rehberi)
+                # Tüm GNC sistemlerine rehber dağıt
+                sistem.rehber_guncelle(modem_rehberi)
 
     def otomatik_kurulum(self, rovs, lider_id=0, modem_ayarlari=None, baslangic_hedefleri=None, sensor_ayarlari=None):
         """
@@ -112,27 +112,22 @@ class Filo:
                 }
             )
         """
-        # Varsayılan modem ayarları
+        # Varsayılan modem ayarları (config.py'den alınır)
         if modem_ayarlari is None:
             modem_ayarlari = {
-                'lider': {'gurultu_orani': 0.05, 'kayip_orani': 0.1, 'gecikme': 0.5},
-                'takipci': {'gurultu_orani': 0.1, 'kayip_orani': 0.1, 'gecikme': 0.5}
+                'lider': ModemAyarlari.LIDER.copy(),
+                'takipci': ModemAyarlari.TAKIPCI.copy()
             }
         
-        # Varsayılan sensör ayarları (sensor_ayarlari None ise otomatik uygulanır)
+        # Varsayılan sensör ayarları (config.py'den alınır - GAT limitleri ile tutarlı)
         if sensor_ayarlari is None:
             sensor_ayarlari = {
-                'lider': {'engel_mesafesi': 40.0, 'iletisim_menzili': 50.0, 'min_pil_uyarisi': 20.0, 'kacinma_mesafesi': 4.0},
-                'takipci': {'engel_mesafesi': 30.0, 'iletisim_menzili': 40.0, 'min_pil_uyarisi': 15.0, 'kacinma_mesafesi': 4.0}
+                'lider': SensorAyarlari.LIDER.copy(),
+                'takipci': SensorAyarlari.TAKIPCI.copy()
             }
         
-        # Sensör ayarları için kontrol listesi
-        varsayilan_sensor_ayarlari = {
-            'engel_mesafesi': 30.0,
-            'iletisim_menzili': 40.0,
-            'min_pil_uyarisi': 10.0,
-            'kacinma_mesafesi': 10.0
-        }
+        # Sensör ayarları için kontrol listesi (config.py'den alınır)
+        varsayilan_sensor_ayarlari = SensorAyarlari.VARSAYILAN.copy()
         
         tum_modemler = {}
         lider_modem = None
@@ -174,8 +169,8 @@ class Filo:
                 rov.modem = lider_modem
                 tum_modemler[i] = lider_modem
                 
-                # LiderGNC oluştur ve ekle (Filo referansı ile)
-                gnc = LiderGNC(rov, lider_modem, filo_ref=self)
+                # TemelGNC oluştur ve ekle (Lider için)
+                gnc = TemelGNC(rov, lider_modem)
                 self.ekle(gnc)
                 
                 # Başlangıç hedefi varsa ata (hedef_atama ile)
@@ -202,8 +197,8 @@ class Filo:
                 rov.modem = modem
                 tum_modemler[i] = modem
                 
-                # TakipciGNC oluştur ve ekle (lider_modem referansı ile)
-                gnc = TakipciGNC(rov, modem, lider_modem_ref=lider_modem)
+                # TemelGNC oluştur ve ekle (Takipçi için)
+                gnc = TemelGNC(rov, modem)
                 self.ekle(gnc)
                 
                 # Başlangıç hedefi varsa ata (hedef_atama ile)
@@ -237,9 +232,9 @@ class Filo:
         
         # Asıl hedefi belirle (orijinal liderin hedefi)
         if lider_id < len(self.sistemler):
-            orijinal_lider_gnc = self.sistemler[lider_id]
-            if orijinal_lider_gnc.hedef:
-                self.asil_hedef = orijinal_lider_gnc.hedef
+            lider_gnc = self.sistemler[lider_id]
+            if lider_gnc.hedef:
+                self.asil_hedef = lider_gnc.hedef
             elif baslangic_hedefleri and lider_id in baslangic_hedefleri:
                 hedef = baslangic_hedefleri[lider_id]
                 if len(hedef) >= 3:
@@ -298,7 +293,7 @@ class Filo:
             lider_z: Lider hedef Z koordinatı
             lider_rov_id: Lider ROV'un ID'si
         """
-        formasyon_mesafesi = 10.0  # +-10 metre
+        formasyon_mesafesi = 15.0  # +-10 metre
         
         # Formasyon offset'leri (her takipçi için farklı pozisyon)
         # Basit formasyon: Lider merkezde, takipçiler çevresinde
@@ -590,13 +585,14 @@ class Filo:
                 return
             
             # Havuz sınır kontrolü (hareket öncesi)
+            # Sınırlar: +-havuz_genisligi (yani +-200 birim)
             if hasattr(rov, 'environment_ref') and rov.environment_ref:
                 havuz_genisligi = getattr(rov.environment_ref, 'havuz_genisligi', 200)
-                havuz_yari_genislik = havuz_genisligi / 2
+                havuz_sinir = havuz_genisligi  # +-havuz_genisligi
                 
                 # Sınırda mı kontrol et
-                sinirda_x = abs(rov.x) >= havuz_yari_genislik * 0.95
-                sinirda_z = abs(rov.z) >= havuz_yari_genislik * 0.95
+                sinirda_x = abs(rov.x) >= havuz_sinir * 0.95
+                sinirda_z = abs(rov.z) >= havuz_sinir * 0.95
                 sinirda_y_ust = rov.y >= 0.3
                 sinirda_y_alt = rov.y <= -95
                 
@@ -687,6 +683,111 @@ class TemelGNC:
 
     def rehber_guncelle(self, rehber):
         if self.modem: self.modem.rehber_guncelle(rehber)
+    
+    def guncelle(self, gat_kodu):
+        """
+        GNC güncelleme metodu - ROV'u hedefe yönlendirir ve GAT kodlarına göre tepki verir.
+        Lider ve takipçi ROV'lar için ortak kullanılır.
+        """
+        # Erken çıkış kontrolleri
+        if self.manuel_kontrol and self.hedef is None:
+            return
+        if self.hedef is None:
+            return
+        
+        # AI kapalıysa uyarıları görmezden gel
+        if not self.ai_aktif:
+            gat_kodu = 0
+        
+        # Hedefe mesafe kontrolü
+        fark = self.hedef - self.rov.position
+        yatay_fark = Vec3(fark.x, 0, fark.z) if hasattr(fark, 'x') else Vec3(0, 0, 0)
+        if yatay_fark.length() < 0.5:
+            return  # Hedefe ulaşıldı
+        
+        # Lider için su yüzeyi kontrolü
+        if self.rov.role == 1 and self.hedef.y < 0:
+            self.hedef.y = 0
+        
+        # Hedef vektörü hesapla
+        hedef_vektoru = fark.normalized() if hasattr(fark, 'normalized') else Vec3(0, 0, 0)
+        
+        # Kaçınma vektörü hesapla
+        kacinma_vektoru = self._yaklasma_onleme_vektoru(gat_kodu, hedef_vektoru)
+        
+        # GAT koduna göre kaçınma vektörünü ayarla
+        kacinma_vektoru = self._gat_kod_tepkisi(gat_kodu, kacinma_vektoru, hedef_vektoru)
+        
+        # Nihai hareket vektörünü hesapla
+        nihai_vektor = self._vektor_birlestir(gat_kodu, hedef_vektoru, kacinma_vektoru)
+        
+        # Güç ayarı
+        guc = self._guc_hesapla(gat_kodu)
+        
+        # Motorlara uygula
+        self.vektor_to_motor(nihai_vektor, guc_carpani=guc)
+    
+    def _gat_kod_tepkisi(self, gat_kodu, kacinma_vektoru, hedef_vektoru):
+        """GAT koduna göre kaçınma vektörünü ayarlar."""
+        is_lider = (self.rov.role == 1)
+        
+        if gat_kodu == 1:  # ENGEL
+            if kacinma_vektoru.length() > 0:
+                kacinma_vektoru.y += 0.3
+                return kacinma_vektoru.normalized()
+            else:
+                # Kaçınma vektörü yoksa varsayılan yön
+                return Vec3(1, 0, 0) if is_lider else Vec3(0, 1.0, 0) + (hedef_vektoru * -0.5)
+        
+        elif gat_kodu == 2:  # CARPISMA
+            # En uygun rota zaten hesaplandı, değişiklik yok
+            return kacinma_vektoru
+        
+        elif gat_kodu == 3:  # KOPUK
+            if kacinma_vektoru.length() > 0:
+                kacinma_vektoru.y += 0.2
+                return kacinma_vektoru.normalized()
+            else:
+                return Vec3(0, 0.2, 0)
+        
+        elif gat_kodu == 5:  # UZAK
+            # Normal hareket, kaçınma yok
+            return kacinma_vektoru
+        
+        else:  # gat_kodu == 0 (OK)
+            return kacinma_vektoru
+    
+    def _vektor_birlestir(self, gat_kodu, hedef_vektoru, kacinma_vektoru):
+        """Hedef ve kaçınma vektörlerini birleştirir."""
+        if gat_kodu == 2:  # ÇARPISMA: Kaçınma öncelikli
+            return kacinma_vektoru if kacinma_vektoru.length() > 0 else Vec3(0, 0, 0)
+        
+        elif gat_kodu != 0:  # Diğer tehlikeler: Kaçınma + hedef
+            if kacinma_vektoru.length() > 0:
+                return (kacinma_vektoru * 0.8 + hedef_vektoru * 0.2).normalized()
+            else:
+                return hedef_vektoru
+        
+        else:  # Normal durum: Hedef + kaçınma (varsa)
+            if kacinma_vektoru.length() > 0:
+                return (hedef_vektoru + kacinma_vektoru * 0.5).normalized()
+            else:
+                return hedef_vektoru
+    
+    def _guc_hesapla(self, gat_kodu):
+        """GAT koduna göre motor gücünü hesaplar."""
+        is_lider = (self.rov.role == 1)
+        
+        if is_lider:
+            return 1.0  # Lider için sabit güç
+        
+        # Takipçi için özel güç ayarları
+        if gat_kodu == 5:  # UZAK: Daha hızlı git
+            return 1.5
+        elif gat_kodu == 1:  # ENGEL: Yavaşla
+            return 0.5
+        else:
+            return 1.0
 
     def vektor_to_motor(self, vektor, guc_carpani=1.0):
         if vektor.length() == 0: return
@@ -903,177 +1004,3 @@ class TemelGNC:
         
         return en_iyi_yon
 
-# ==========================================
-# 3. LİDER VE TAKİPÇİ (AI KONTROLLÜ)
-# ==========================================
-class LiderGNC(TemelGNC):
-    def __init__(self, rov_entity, modem, filo_ref=None):
-        super().__init__(rov_entity, modem)
-        self.filo_ref = filo_ref  # Filo referansı (asıl hedef kontrolü için)
-    
-    def guncelle(self, gat_kodu):
-        # Manuel kontrol aktifse ama hedef varsa, hedefe gitmeye devam et
-        # Sadece hedef yoksa ve manuel kontrol aktifse, dur
-        if self.manuel_kontrol and self.hedef is None:
-            return 
-        
-        # Normal hedef takibi
-        if self.hedef is None: return
-        
-        # --- AI KONTROLÜ ---
-        # Eğer AI kapalıysa, gelen uyarıyı görmezden gel (0 kabul et)
-        if not self.ai_aktif:
-            gat_kodu = 0
-        
-        mevcut = self.rov.position
-        fark = self.hedef - mevcut
-        
-        # Hedefe ulaşma kontrolü: Yatay düzlemde (x, z) mesafesi kontrol et
-        # Dikey (y) mesafesi farklı olabilir, bu yüzden sadece yatay mesafeye bak
-        # Güvenlik: fark MockVec3 olabilir, Vec3'e dönüştür
-        if hasattr(fark, 'x') and hasattr(fark, 'y') and hasattr(fark, 'z'):
-            yatay_fark = Vec3(fark.x, 0, fark.z)
-        else:
-            yatay_fark = Vec3(0, 0, 0)
-        if yatay_fark.length() < 0.5:  # Yatay düzlemde 0.5 birim yakınsa hedefe ulaşıldı
-            return
-
-        if self.hedef.y < 0: self.hedef.y = 0
-        # Güvenlik: fark'ı normalize et (MockVec3 veya Vec3 olabilir)
-        if hasattr(fark, 'normalized'):
-            hedef_vektoru = fark.normalized()
-        else:
-            hedef_vektoru = Vec3(0, 0, 0)
-        
-        # BİRLEŞTİRİLMİŞ YAKINLAŞMA ÖNLEME VE GAT KODLARI
-        kacinma_vektoru = self._yaklasma_onleme_vektoru(gat_kodu, hedef_vektoru)
-        
-        # GAT Tepkileri
-        if gat_kodu == 1:  # ENGEL
-            if kacinma_vektoru.length() > 0:
-                kacinma_vektoru.y += 0.3
-                kacinma_vektoru = kacinma_vektoru.normalized()
-            else:
-                kacinma_vektoru = Vec3(1, 0, 0)  # Sağa
-        elif gat_kodu == 2:  # CARPISMA
-            # En uygun rota zaten hesaplandı
-            pass
-        elif gat_kodu == 3:  # KOPUK
-            if kacinma_vektoru.length() > 0:
-                kacinma_vektoru.y += 0.2
-                kacinma_vektoru = kacinma_vektoru.normalized()
-            else:
-                kacinma_vektoru = Vec3(0, 0.2, 0)
-        
-        # Vektör birleştirme
-        if gat_kodu == 2:  # ÇARPISMA: En uygun rota direkt kullan
-            yon = kacinma_vektoru if kacinma_vektoru.length() > 0 else Vec3(0, 0, 0)
-        elif gat_kodu != 0:
-            if kacinma_vektoru.length() > 0:
-                yon = kacinma_vektoru * 0.8 + hedef_vektoru * 0.2
-            else:
-                yon = hedef_vektoru
-        else:
-            # Normal durum
-            if kacinma_vektoru.length() > 0:
-                yon = hedef_vektoru + kacinma_vektoru * 0.5
-            else:
-                yon = hedef_vektoru
-        
-        if yon.length() > 0:
-            yon = yon.normalized()
-
-        self.vektor_to_motor(yon)
-    
-
-class TakipciGNC(TemelGNC):
-    def __init__(self, rov_entity, modem, lider_modem_ref=None):
-        super().__init__(rov_entity, modem)
-        self.lider_ref = lider_modem_ref
-        self.iletisim_kopma_sayaci = 0  # İletişim kopma sayacı (gecikme için)
-
-    def guncelle(self, gat_kodu):
-        # Manuel kontrol aktifse ama hedef varsa, hedefe gitmeye devam et
-        # Sadece hedef yoksa ve manuel kontrol aktifse, dur
-        if self.manuel_kontrol and self.hedef is None:
-            return
-        
-        
-        if self.hedef is None: return
-
-        # --- AI KONTROLÜ ---
-        # Eğer AI kapalıysa, tehlike yokmuş gibi (0) davran
-        if not self.ai_aktif:
-            gat_kodu = 0
-
-        fark = self.hedef - self.rov.position
-        
-        # Hedefe ulaşma kontrolü: Yatay düzlemde (x, z) mesafesi kontrol et
-        # Dikey (y) mesafesi farklı olabilir, bu yüzden sadece yatay mesafeye bak
-        # Güvenlik: fark MockVec3 olabilir, Vec3'e dönüştür
-        if hasattr(fark, 'x') and hasattr(fark, 'y') and hasattr(fark, 'z'):
-            yatay_fark = Vec3(fark.x, 0, fark.z)
-        else:
-            yatay_fark = Vec3(0, 0, 0)
-        if yatay_fark.length() < 0.5:  # Yatay düzlemde 0.5 birim yakınsa hedefe ulaşıldı
-            return
-        
-        # Güvenlik: fark'ı normalize et (MockVec3 veya Vec3 olabilir)
-        if hasattr(fark, 'normalized'):
-            hedef_vektoru = fark.normalized()
-        else:
-            hedef_vektoru = Vec3(0, 0, 0)
-        
-        # BİRLEŞTİRİLMİŞ YAKINLAŞMA ÖNLEME VE GAT KODLARI
-        # GAT kodlarına göre en uygun kaçınma vektörünü hesapla
-        kacinma_vektoru = self._yaklasma_onleme_vektoru(gat_kodu, hedef_vektoru)
-        
-        # GAT Tepkileri (yakınlaşma önleme ile birleştirilmiş)
-        if gat_kodu == 1:  # ENGEL
-            # Yakınlaşma önleme zaten hesaplandı, sadece yukarı bileşen ekle
-            if kacinma_vektoru.length() > 0:
-                kacinma_vektoru.y += 0.3  # Biraz yukarı
-                kacinma_vektoru = kacinma_vektoru.normalized()
-            else:
-                kacinma_vektoru = Vec3(0, 1.0, 0) + (hedef_vektoru * -0.5)
-        elif gat_kodu == 2:  # CARPISMA
-            # En uygun rota zaten hesaplandı (_en_uygun_rota_bul)
-            # Ek işlem gerekmez
-            pass
-        elif gat_kodu == 3:  # KOPUK
-            # Biraz yukarı çık
-            if kacinma_vektoru.length() > 0:
-                kacinma_vektoru.y += 0.2
-                kacinma_vektoru = kacinma_vektoru.normalized()
-            else:
-                kacinma_vektoru = Vec3(0, 0.2, 0)
-        elif gat_kodu == 5:  # UZAK
-            # Normal hareket, kaçınma yok
-            pass
-
-        # Vektör Birleştirme
-        if gat_kodu == 2:  # ÇARPISMA: En uygun rota direkt kullan
-            nihai_vektor = kacinma_vektoru
-        elif gat_kodu != 0 and gat_kodu != 5:
-            # Kaçınma vektörü + hedef vektörü (kaçınma öncelikli)
-            if kacinma_vektoru.length() > 0:
-                nihai_vektor = kacinma_vektoru * 0.8 + hedef_vektoru * 0.2
-            else:
-                nihai_vektor = kacinma_vektoru + (hedef_vektoru * 0.1)
-        else:
-            # Normal durum: Kaçınma varsa ekle, yoksa sadece hedef
-            if kacinma_vektoru.length() > 0:
-                nihai_vektor = hedef_vektoru + kacinma_vektoru * 0.5
-            else:
-                nihai_vektor = hedef_vektoru
-        
-        # Normalize et
-        if nihai_vektor.length() > 0:
-            nihai_vektor = nihai_vektor.normalized()
-
-        guc = 1.0
-        if gat_kodu == 5: guc = 1.5 
-        if gat_kodu == 1: guc = 0.5 
-        
-        self.vektor_to_motor(nihai_vektor, guc_carpani=guc)
-    

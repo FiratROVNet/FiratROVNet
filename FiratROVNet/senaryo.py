@@ -159,7 +159,7 @@ class Senaryo:
             # Headless mod için minimal engel objesi (Ursina Entity yerine)
             try:
                 # Ursina Entity oluşturmayı dene
-                if self.app is not None and URSINA_AVAILABLE:
+                if self.app is not None:
                     try:
                         engel = Entity(
                             model='icosphere',
@@ -208,7 +208,7 @@ class Senaryo:
             # ROV oluştur (headless mod için)
             try:
                 # Ursina ROV oluşturmayı dene
-                if self.app is not None and ROV_AVAILABLE:
+                if self.app is not None:
                     try:
                         rov = ROV(rov_id=i, position=pozisyon)
                         rov.environment_ref = self.ortam
