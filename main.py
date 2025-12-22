@@ -22,6 +22,7 @@ except:
 filo = Filo()
 tum_modemler = filo.otomatik_kurulum(
     rovs=app.rovs,
+    ortam_ref=app,  # Ortam referansını ekle (hedef görselleştirme için)
     baslangic_hedefleri={
         0: (150, 10, 0)    # Lider: (x, y, z)
         # Takipçiler için hedef belirtilmezse hedef atanmaz

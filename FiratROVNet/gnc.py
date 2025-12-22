@@ -13,6 +13,14 @@ class Filo:
         self.sistemler = [] 
         self.asil_hedef = None  # Asıl hedef (orijinal liderin hedefi)
         self.orijinal_lider_id = 0  # Orijinal lider ID
+        self.ortam_ref = None  # Ortam referansı (hedef görselleştirme için)
+        self.hedef_gorsel = None  # Hedef görsel Entity (Ursina'da X işareti)
+        self.hedef_pozisyon = None  # Mevcut hedef pozisyonu (x, y, z)
+    
+    @property
+    def rovs(self):
+        """ROV entity listesini döndürür (sistemler üzerinden)."""
+        return [s.rov for s in self.sistemler if hasattr(s, 'rov')]
 
     def ekle(self, gnc_objesi):
         self.sistemler.append(gnc_objesi)
@@ -23,7 +31,7 @@ class Filo:
                 # Tüm GNC sistemlerine rehber dağıt
                 sistem.rehber_guncelle(modem_rehberi)
 
-    def otomatik_kurulum(self, rovs, lider_id=0, modem_ayarlari=None, baslangic_hedefleri=None, sensor_ayarlari=None):
+    def otomatik_kurulum(self, rovs, lider_id=0, modem_ayarlari=None, baslangic_hedefleri=None, sensor_ayarlari=None, ortam_ref=None):
         """
         ROV filo sistemini otomatik olarak kurar ve yapılandırır.
         
@@ -125,6 +133,13 @@ class Filo:
                 'lider': SensorAyarlari.LIDER.copy(),
                 'takipci': SensorAyarlari.TAKIPCI.copy()
             }
+        
+        # Ortam referansını kaydet
+        if ortam_ref is not None:
+            self.ortam_ref = ortam_ref
+        elif rovs and len(rovs) > 0 and hasattr(rovs[0], 'environment_ref'):
+            # ROV'lardan ortam referansını al
+            self.ortam_ref = rovs[0].environment_ref
         
         # Sensör ayarları için kontrol listesi (config.py'den alınır)
         varsayilan_sensor_ayarlari = SensorAyarlari.VARSAYILAN.copy()
@@ -275,6 +290,39 @@ class Filo:
             print(f"🤖 [FİLO] Tüm ROV'lar otomatik moda döndürüldü.")
 
     def guncelle_hepsi(self, tahminler):
+        # Lider ROV'u bul
+        lider_rov_id = None
+        lider_gnc = None
+        for i, gnc in enumerate(self.sistemler):
+            if hasattr(gnc, 'rov') and gnc.rov.role == 1:
+                lider_rov_id = i
+                lider_gnc = gnc
+                break
+        
+        # Eğer lider varsa ve hedefi varsa, takipçilerin hedeflerini liderin hedefine göre güncelle
+        if lider_rov_id is not None and lider_gnc and hasattr(lider_gnc, 'hedef') and lider_gnc.hedef:
+            # Liderin hedefi (simülasyon koordinat sistemi)
+            # Ursina koordinat sisteminden simülasyon koordinat sistemine dönüştür
+            lider_hedef_ursina = lider_gnc.hedef
+            # Ursina: (x, y, z) -> Simülasyon: (x, z, y)
+            lider_hedef_x = lider_hedef_ursina.x
+            lider_hedef_y = lider_hedef_ursina.y  # Derinlik (Ursina Y)
+            lider_hedef_z = lider_hedef_ursina.z  # Simülasyon Y (Ursina Z)
+            
+            # Takipçilerin hedeflerini liderin hedefine göre güncelle (her frame'de)
+            # Bu sayede takipçiler lideri sürekli takip eder
+            for i, gnc in enumerate(self.sistemler):
+                if i == lider_rov_id:
+                    continue  # Lideri atla
+                
+                if hasattr(gnc, 'rov') and gnc.rov.role == 0:  # Takipçi ise
+                    # Takipçinin hedefini liderin hedefine göre formasyon pozisyonu olarak güncelle
+                    self._takipci_hedefi_belirle(
+                        gnc, i,
+                        lider_hedef_x, lider_hedef_y, lider_hedef_z,
+                        lider_rov_id
+                    )
+        
         # Tüm GNC sistemlerini güncelle
         for i, gnc in enumerate(self.sistemler):
             if i < len(tahminler):
@@ -445,6 +493,284 @@ class Filo:
             import traceback
             traceback.print_exc()
             return None
+
+    def formasyon(self, tip="KAMA", aralik=15):
+        """
+        Filoyu belirtilen formasyona sokar.
+        
+        Önce liderleri denetler, fazlalıkları "takipçi" yapar ve ardından formasyonu kurar.
+        
+        Args:
+            tip (str): Formasyon tipi - "KAMA", "SAF", "DAIRE" (varsayılan: "KAMA")
+            aralik (float): ROV'lar arası mesafe (varsayılan: 15)
+        
+        Örnekler:
+            filo.formasyon()  # Varsayılan KAMA formasyonu
+            filo.formasyon("SAF", aralik=20)  # Yan yana formasyon, 20 birim aralık
+            filo.formasyon("DAIRE", aralik=25)  # Çember formasyonu, 25 birim aralık
+        """
+        # 1. ADIM: Otorite Denetimi (Lowest-ID Authority)
+        liderler = [r for r in self.rovs if r.role == 1]
+        
+        if not liderler:
+            print("❌ [FORMASYON] Kritik Hata: Filoda hiç lider yok!")
+            return
+        
+        # En düşük ID'li olanı asıl lider seç
+        asil_lider = min(liderler, key=lambda r: r.id)
+        
+        # DİĞER LİDERLERİ AZLET: Asıl lider dışındaki herkesi takipçi yap
+        for r in liderler:
+            if r.id != asil_lider.id:
+                print(f"⚠️ [FORMASYON] Sistem Uyarısı: Otorite Çatışması! ROV-{r.id} takipçi yapıldı. Asıl Lider: ROV-{asil_lider.id}")
+                # filo.set kullanarak rolü 0 (Takipçi) olarak güncelliyoruz
+                self.set(r.id, "rol", 0)
+        
+        # 2. ADIM: Takipçileri Hazırla
+        # Artık sistemde tek lider olduğundan emin olduğumuz için geri kalanları ID sırasına diziyoruz
+        takipciler = sorted([r for r in self.rovs if r.id != asil_lider.id], key=lambda r: r.id)
+        toplam_n = len(self.rovs)
+        
+        # 3. ADIM: Liderin Mevcut Konum ve Yön Verileri
+        # Ursina koordinatlarını simülasyon mantığına alalım: (x, z, y_depth)
+        lider_pos = (asil_lider.x, asil_lider.z, asil_lider.y)
+        lider_hiz = (asil_lider.velocity.x, asil_lider.velocity.z)
+        
+        # 4. ADIM: Slot Atamaları
+        for i, rov in enumerate(takipciler):
+            # i = 0, 1, 2... (Lider hariç takipçi indeksi)
+            
+            # Dinamik ofset hesabı (Formasyon Motoru üzerinden)
+            if tip.upper() == "KAMA":
+                offset = FormasyonMotoru.kama_hesapla(i + 1, aralik)
+            elif tip.upper() == "SAF":
+                offset = FormasyonMotoru.saf_hesapla(i + 1, aralik)
+            elif tip.upper() == "DAIRE":
+                offset = FormasyonMotoru.daire_hesapla(i, toplam_n, aralik)
+            else:
+                offset = (0, -10 * (i+1), 0)  # Varsayılan: Arka arkaya sıra
+                print(f"⚠️ [FORMASYON] Bilinmeyen formasyon tipi: {tip}, varsayılan formasyon kullanılıyor")
+            
+            # Ofseti Liderin baktığı yöne göre Dünya Koordinatlarına çevir
+            hedef_dunya = lokal_to_global(lider_pos, lider_hiz, offset)
+            
+            # ROV'un GNC sistemine hedefi ver
+            # formasyon_hedefi özelliğini kontrol et ve ayarla
+            if not hasattr(rov, 'formasyon_hedefi'):
+                rov.formasyon_hedefi = None
+            
+            rov.formasyon_hedefi = hedef_dunya
+            
+            # Eğer GNC sistemi varsa, hedefi git() ile ayarla
+            try:
+                # ROV'un hangi GNC sistemine ait olduğunu bul
+                for gnc_idx, gnc_sistem in enumerate(self.sistemler):
+                    if hasattr(gnc_sistem, 'rov') and gnc_sistem.rov.id == rov.id:
+                        # GNC sistemine hedefi ver
+                        hedef_x, hedef_y, hedef_z = hedef_dunya
+                        # Ursina koordinat sistemine dönüştür: (x, z, y) -> (x, y, z)
+                        self.git(gnc_idx, hedef_x, hedef_z, y=hedef_y, ai=True)
+                        break
+            except Exception as e:
+                print(f"⚠️ [FORMASYON] ROV-{rov.id} için hedef ayarlanırken hata: {e}")
+        
+        print(f"✅ [FORMASYON] Formasyon kuruldu: Tip={tip}, Aralık={aralik}, Lider=ROV-{asil_lider.id}, Takipçi Sayısı={len(takipciler)}")
+    
+    def hedef(self, x=None, y=None, z=None):
+        """
+        Liderin hedefini ayarlar ve takipçilerin formasyon pozisyonlarını otomatik hesaplar.
+        Lider hedefe gider, takipçiler formasyonlarını koruyarak lideri takip eder.
+        Hedef görsel olarak (büyük X işareti) gösterilir ve haritaya eklenir.
+        Derinlik her zaman 0 (su üstünde) olarak ayarlanır.
+        
+        Parametre verilmezse mevcut hedef koordinatlarını döndürür.
+        Parametre verilirse hedefi günceller ve yeni koordinatları döndürür.
+        
+        Args:
+            x (float, optional): X koordinatı (yatay düzlem). None ise mevcut hedef döndürülür.
+            y (float, optional): Y koordinatı (yatay düzlem). None ise mevcut hedef döndürülür.
+            z (float, optional): İGNORED - Her zaman 0 (su üstünde) kullanılır
+        
+        Returns:
+            tuple: (x, y, z) - Hedef koordinatları (z her zaman 0)
+        
+        Örnekler:
+            filo.hedef(50, 60)  # Lider (50, 60, 0) hedefine gider, takipçiler formasyonla takip eder
+            filo.hedef(40, 50)  # Lider (40, 50, 0) hedefine gider, takipçiler formasyonla takip eder
+            filo.hedef()  # Mevcut hedef koordinatlarını döndürür: (x, y, 0) veya None
+        """
+        # Parametre verilmediyse mevcut hedefi döndür
+        if x is None or y is None:
+            if self.hedef_pozisyon:
+                return self.hedef_pozisyon
+            else:
+                return None
+        
+        # Derinlik her zaman 0 (su üstünde)
+        z = 0
+        
+        # Hedef pozisyonunu kaydet (z her zaman 0 - su üstünde)
+        self.hedef_pozisyon = (x, y, 0)
+        
+        # Lider ROV'u bul
+        lider_rov_id = None
+        for i, sistem in enumerate(self.sistemler):
+            if hasattr(sistem, 'rov') and sistem.rov.role == 1:
+                lider_rov_id = i
+                break
+        
+        if lider_rov_id is None:
+            print("❌ [HEDEF] Lider ROV bulunamadı!")
+            return None
+        
+        # Sadece liderin hedefini güncelle
+        ursina_x, ursina_z, ursina_y = x, 0, y
+        self.git(lider_rov_id, ursina_x, ursina_z, y=ursina_y, ai=True)
+        
+        # Takipçilerin hedeflerini liderin hedefine göre formasyon pozisyonları olarak güncelle
+        # Liderin hedefi: (x, y, 0) - simülasyon koordinat sistemi
+        # Ursina koordinat sistemi: (x, 0, y)
+        lider_x = x  # Simülasyon X
+        lider_y = 0  # Derinlik (su üstünde)
+        lider_z = y  # Simülasyon Y (Ursina Z)
+        
+        # Tüm takipçiler için formasyon hedeflerini hesapla
+        for i, sistem in enumerate(self.sistemler):
+            if i == lider_rov_id:
+                continue  # Lideri atla
+            
+            if hasattr(sistem, 'rov') and sistem.rov.role == 0:  # Takipçi ise
+                # Liderin hedefine göre takipçi hedefini belirle
+                self._takipci_hedefi_belirle(
+                    sistem, i, 
+                    lider_x, lider_y, lider_z,  # Lider hedefi (simülasyon koordinat sistemi)
+                    lider_rov_id
+                )
+        
+        # Hedef görselini oluştur/güncelle (z her zaman 0 - su üstünde)
+        self._hedef_gorsel_olustur(x, y, 0)
+        
+        # Haritaya hedefi ekle
+        if self.ortam_ref and hasattr(self.ortam_ref, 'harita'):
+            self.ortam_ref.harita.hedef_pozisyon = (x, y)
+        
+        print(f"✅ [HEDEF] Lider hedefi güncellendi: ({x:.2f}, {y:.2f}, 0) - Su üstünde. Takipçiler formasyonla takip ediyor.")
+        
+        # Hedef koordinatlarını döndür
+        return (x, y, 0)
+    
+    def _hedef_gorsel_olustur(self, x, y, z):
+        """
+        Hedef pozisyonunu Ursina'da büyük X işareti olarak gösterir.
+        """
+        if not self.ortam_ref:
+            return
+        
+        # Eski görseli kaldır
+        if self.hedef_gorsel:
+            try:
+                from ursina import destroy
+                destroy(self.hedef_gorsel)
+            except:
+                pass
+        
+        # Ursina koordinat sistemine dönüştür: (x_2d, y_2d, z_depth) -> (x, z, y)
+        ursina_pos = (x, z, y)
+        
+        # Büyük X işareti oluştur (iki çapraz çizgi)
+        from ursina import Entity, destroy, color
+        
+        # X işareti için parent entity
+        self.hedef_gorsel = Entity()
+        self.hedef_gorsel.position = ursina_pos
+        
+        # X işareti boyutu
+        x_boyutu = 10.0
+        kalinlik = 1.0
+        
+        # İlk çapraz çizgi (sol üst -> sağ alt)
+        Entity(
+            model='cube',
+            position=(0, 0, 0),
+            rotation=(0, 0, 45),  # 45 derece döndür
+            scale=(x_boyutu, kalinlik, kalinlik),
+            color=color.red,
+            parent=self.hedef_gorsel,
+            unlit=True,
+            billboard=False
+        )
+        
+        # İkinci çapraz çizgi (sağ üst -> sol alt)
+        Entity(
+            model='cube',
+            position=(0, 0, 0),
+            rotation=(0, 0, -45),  # -45 derece döndür
+            scale=(x_boyutu, kalinlik, kalinlik),
+            color=color.red,
+            parent=self.hedef_gorsel,
+            unlit=True,
+            billboard=False
+        )
+        
+        # Merkez nokta (daha belirgin olsun)
+        Entity(
+            model='sphere',
+            position=(0, 0, 0),
+            scale=(2, 2, 2),
+            color=color.red,
+            parent=self.hedef_gorsel,
+            unlit=True
+        )
+    
+    def _random_hedef_olustur(self, ortam_ref):
+        """
+        Başlangıçta random hedef oluşturur (adalara denk gelmeyecek şekilde).
+        
+        Args:
+            ortam_ref: Ortam referansı (adaları kontrol etmek için)
+        
+        Returns:
+            (x, y, z): Random hedef pozisyonu
+        """
+        if not ortam_ref:
+            # Ortam yoksa, havuz merkezine yakın random pozisyon
+            havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200) if ortam_ref else 200
+            x = random.uniform(-havuz_genisligi * 0.7, havuz_genisligi * 0.7)
+            y = random.uniform(-havuz_genisligi * 0.7, havuz_genisligi * 0.7)
+            return (x, y, 0)
+        
+        havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
+        min_mesafe_ada = 30.0  # Adalardan minimum mesafe
+        
+        # Ada pozisyonlarını al
+        ada_positions = []
+        if hasattr(ortam_ref, 'island_positions') and ortam_ref.island_positions:
+            for ada_pos in ortam_ref.island_positions:
+                ada_x = ada_pos[0]
+                ada_y = ada_pos[1]
+                ada_radius = ada_pos[2] if len(ada_pos) > 2 else 30.0
+                ada_positions.append((ada_x, ada_y, ada_radius))
+        
+        # Random pozisyon bul (adalardan uzak)
+        max_deneme = 100
+        for _ in range(max_deneme):
+            x = random.uniform(-havuz_genisligi * 0.7, havuz_genisligi * 0.7)
+            y = random.uniform(-havuz_genisligi * 0.7, havuz_genisligi * 0.7)
+            
+            # Ada kontrolü
+            guvenli = True
+            for ada_x, ada_y, ada_radius in ada_positions:
+                mesafe = math.sqrt((x - ada_x)**2 + (y - ada_y)**2)
+                if mesafe < (ada_radius + min_mesafe_ada):
+                    guvenli = False
+                    break
+            
+            if guvenli:
+                return (x, y, 0)  # z her zaman 0 (su üstünde)
+        
+        # Eğer güvenli pozisyon bulunamazsa, havuz merkezine yakın bir yer
+        print("⚠️ [HEDEF] Güvenli random pozisyon bulunamadı, havuz merkezine yakın pozisyon kullanılıyor")
+        return (random.uniform(-50, 50), random.uniform(-50, 50), 0)  # z her zaman 0 (su üstünde)
 
     def git(self, rov_id, x, z, y=None, ai=True):
         """
@@ -702,8 +1028,15 @@ class TemelGNC:
         # Hedefe mesafe kontrolü
         fark = self.hedef - self.rov.position
         yatay_fark = Vec3(fark.x, 0, fark.z) if hasattr(fark, 'x') else Vec3(0, 0, 0)
-        if yatay_fark.length() < 0.5:
-            return  # Hedefe ulaşıldı
+        # Takipçiler için daha esnek tolerans (formasyon korunması için)
+        tolerans = 0.5 if self.rov.role == 1 else 2.0  # Lider: 0.5m, Takipçi: 2.0m
+        if yatay_fark.length() < tolerans:
+            # Takipçiler için: Hedefe ulaşıldıysa bile lideri takip etmeye devam et
+            if self.rov.role == 0:  # Takipçi ise
+                # Lideri takip etmeye devam et (hedef güncellenecek)
+                pass
+            else:
+                return  # Lider için: Hedefe ulaşıldı
         
         # Lider için su yüzeyi kontrolü
         if self.rov.role == 1 and self.hedef.y < 0:
@@ -865,16 +1198,19 @@ class TemelGNC:
         tehlikeli_nesneler = []
         
         # Diğer ROV'lar
-        for diger_rov in self.rov.environment_ref.rovs:
-            if diger_rov.id == self.rov.id:
-                continue
-            mesafe = distance(self.rov.position, diger_rov.position)
-            if mesafe <= kacinma_mesafesi and mesafe > 0:
-                tehlikeli_nesneler.append({
-                    'pozisyon': diger_rov.position,
-                    'mesafe': mesafe,
-                    'tip': 'rov'
-                })
+        # ÖNEMLİ: Lider takipçilerden uzaklaşmaz - hedefe gitmek için sürüden ayrılabilir
+        is_lider = (self.rov.role == 1)
+        if not is_lider:  # Sadece takipçiler diğer ROV'lardan uzaklaşır
+            for diger_rov in self.rov.environment_ref.rovs:
+                if diger_rov.id == self.rov.id:
+                    continue
+                mesafe = distance(self.rov.position, diger_rov.position)
+                if mesafe <= kacinma_mesafesi and mesafe > 0:
+                    tehlikeli_nesneler.append({
+                        'pozisyon': diger_rov.position,
+                        'mesafe': mesafe,
+                        'tip': 'rov'
+                    })
         
         # Engeller
         for engel in self.rov.environment_ref.engeller:
@@ -1003,4 +1339,94 @@ class TemelGNC:
             return Vec3(0, 1, 0)  # Son çare: yukarı
         
         return en_iyi_yon
+
+
+# ==========================================
+# FORMASYON MOTORU (Matematiksel Ofsetler)
+# ==========================================
+class FormasyonMotoru:
+    """Formasyon tipleri için matematiksel ofset hesaplamaları."""
+    
+    @staticmethod
+    def kama_hesapla(idx, aralik):
+        """
+        Dinamik Kama (V) formasyonu: idx 1->Sol, 2->Sağ, 3->Uzak Sol...
+        
+        Args:
+            idx: Takipçi indeksi (1'den başlar, lider hariç)
+            aralik: ROV'lar arası mesafe
+        
+        Returns:
+            (x_offset, y_offset, z_offset): Formasyon ofseti
+        """
+        taraf = -1 if idx % 2 != 0 else 1
+        derinlik_sirasi = (idx + 1) // 2
+        return (taraf * derinlik_sirasi * aralik, -derinlik_sirasi * aralik, 0)
+    
+    @staticmethod
+    def saf_hesapla(idx, aralik):
+        """
+        Dinamik Yan Yana formasyonu: idx 1->Sol, 2->Sağ...
+        
+        Args:
+            idx: Takipçi indeksi (1'den başlar, lider hariç)
+            aralik: ROV'lar arası mesafe
+        
+        Returns:
+            (x_offset, y_offset, z_offset): Formasyon ofseti
+        """
+        taraf = -1 if idx % 2 != 0 else 1
+        yan_sira = (idx + 1) // 2
+        return (taraf * yan_sira * aralik, 0, 0)
+    
+    @staticmethod
+    def daire_hesapla(i, n, aralik):
+        """
+        Lider etrafında çember formasyonu.
+        
+        Args:
+            i: Takipçi indeksi (0'dan başlar, lider hariç)
+            n: Toplam ROV sayısı
+            aralik: ROV'lar arası mesafe
+        
+        Returns:
+            (x_offset, y_offset, z_offset): Formasyon ofseti
+        """
+        radius = aralik * (n / 4)  # Araç sayısı arttıkça çemberi genişlet
+        aci = (2 * math.pi * i) / (n - 1) if n > 1 else 0
+        return (math.cos(aci) * radius, math.sin(aci) * radius, 0)
+
+
+# ==========================================
+# ROTASYON MANTIĞI (Liderle Birlikte Dönme)
+# ==========================================
+def lokal_to_global(lider_pos, lider_hiz, offset):
+    """
+    Liderin baktığı yöne göre formasyon ofsetini dünya koordinatlarına çevirir.
+    
+    Args:
+        lider_pos: Lider pozisyonu (x_2d, y_2d, z_depth) formatında
+        lider_hiz: Lider hızı (velocity_x, velocity_z) formatında
+        offset: Formasyon ofseti (x_offset, y_offset, z_offset)
+    
+    Returns:
+        (x, y, z): Dünya koordinatlarındaki hedef pozisyon
+    """
+    lx, lz, ly = lider_pos  # x_2d, y_2d, z_depth
+    dx, dz, dy = offset      # Formasyon ofsetleri
+    
+    # Liderin hareket açısı (atan2: velocity x ve z kullanır)
+    # Eğer lider duruyorsa (hız yoksa), varsayılan olarak ileriye (Z+) baksın
+    if math.sqrt(lider_hiz[0]**2 + lider_hiz[1]**2) < 0.1:
+        aci = 0
+    else:
+        aci = math.atan2(lider_hiz[0], lider_hiz[1])
+    
+    # Rotasyon Matrisi (Z ekseni etrafında döndürme mantığı)
+    # Liderin baktığı yönü 'İleri' kabul eder
+    rotated_x = dx * math.cos(aci) + dz * math.sin(aci)
+    rotated_z = -dx * math.sin(aci) + dz * math.cos(aci)
+    
+    # Dünya koordinatlarına ekle
+    return (lx + rotated_x, ly + dy, lz + rotated_z)
 

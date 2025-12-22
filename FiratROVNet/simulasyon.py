@@ -740,27 +740,29 @@ class ROV(Entity):
         uzaklasma_vektoru = Vec3(0, 0, 0)
         
         # Diğer ROV'lardan uzaklaşma
-        for diger_rov in self.environment_ref.rovs:
-            if diger_rov.id == self.id:
-                continue
-            
-            mesafe = distance(self.position, diger_rov.position)
-            
-            # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (2m içinde) kaçınma mekanizmasını devre dışı bırak
-            # Bu, ROV'ların birbirini sürekli itmesini önler
-            minimum_mesafe = 2.0  # 2 metre - çok yakınsa kaçınma yok
-            if mesafe < minimum_mesafe:
-                continue  # Çok yakınsa kaçınma yapma
-            
-            # Kaçınma mesafesi veya daha küçük mesafede uzaklaş
-            if mesafe <= kacinma_mesafesi and mesafe > 0:
-                # Uzaklaşma yönü (bu ROV'dan diğer ROV'a)
-                uzaklasma_yonu = (self.position - diger_rov.position).normalized()
-                # Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
-                # Ancak gücü daha da yumuşat (çok agresif olmasın)
-                uzaklasma_gucu = (kacinma_mesafesi - mesafe) / kacinma_mesafesi
-                uzaklasma_gucu *= 0.3  # Gücü %30'a indir (daha yumuşak)
-                uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
+        # ÖNEMLİ: Lider takipçilerden uzaklaşmaz - hedefe gitmek için sürüden ayrılabilir
+        if self.role != 1:  # Sadece takipçiler diğer ROV'lardan uzaklaşır
+            for diger_rov in self.environment_ref.rovs:
+                if diger_rov.id == self.id:
+                    continue
+                
+                mesafe = distance(self.position, diger_rov.position)
+                
+                # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (2m içinde) kaçınma mekanizmasını devre dışı bırak
+                # Bu, ROV'ların birbirini sürekli itmesini önler
+                minimum_mesafe = 2.0  # 2 metre - çok yakınsa kaçınma yok
+                if mesafe < minimum_mesafe:
+                    continue  # Çok yakınsa kaçınma yapma
+                
+                # Kaçınma mesafesi veya daha küçük mesafede uzaklaş
+                if mesafe <= kacinma_mesafesi and mesafe > 0:
+                    # Uzaklaşma yönü (bu ROV'dan diğer ROV'a)
+                    uzaklasma_yonu = (self.position - diger_rov.position).normalized()
+                    # Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
+                    # Ancak gücü daha da yumuşat (çok agresif olmasın)
+                    uzaklasma_gucu = (kacinma_mesafesi - mesafe) / kacinma_mesafesi
+                    uzaklasma_gucu *= 0.3  # Gücü %30'a indir (daha yumuşak)
+                    uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
         
         # Engellerden uzaklaşma
         for engel in self.environment_ref.engeller:
@@ -1012,6 +1014,7 @@ class Harita:
             ortam_ref: Ortam sınıfı referansı
             pencere_boyutu: Harita penceresi boyutu (genişlik, yükseklik)
         """
+        self.hedef_pozisyon = None  # Hedef pozisyonu (x, y) formatında
         self.ortam_ref = ortam_ref
         self.pencere_boyutu = pencere_boyutu
         self.manuel_engeller = []  # Elle eklenen engeller [(x_2d, y_2d), ...]
@@ -1151,6 +1154,28 @@ class Harita:
                 
                 self._ciz_gps_pin(x_2d, y_2d, renk, yon)
 
+        # Hedef pozisyonunu çiz (büyük X işareti)
+        if self.hedef_pozisyon:
+            x_hedef, y_hedef = self.hedef_pozisyon
+            # Büyük X işareti çiz
+            x_boyutu = 8.0
+            # İlk çapraz çizgi (sol üst -> sağ alt)
+            self.ax.plot([x_hedef - x_boyutu, x_hedef + x_boyutu], 
+                        [y_hedef - x_boyutu, y_hedef + x_boyutu], 
+                        'r-', linewidth=3, zorder=10, label='Hedef' if not hasattr(self, '_hedef_label_cizildi') else '')
+            # İkinci çapraz çizgi (sağ üst -> sol alt)
+            self.ax.plot([x_hedef + x_boyutu, x_hedef - x_boyutu], 
+                        [y_hedef - x_boyutu, y_hedef + x_boyutu], 
+                        'r-', linewidth=3, zorder=10)
+            # Merkez nokta
+            self.ax.plot(x_hedef, y_hedef, 'ro', markersize=8, zorder=11)
+            # Çember (hedef alanı)
+            from matplotlib.patches import Circle
+            circle = Circle((x_hedef, y_hedef), radius=5, fill=False, 
+                          edgecolor='red', linestyle='--', linewidth=2, zorder=9)
+            self.ax.add_patch(circle)
+            self._hedef_label_cizildi = True
+        
         # Adaları Çiz
         if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
             from matplotlib import patches
