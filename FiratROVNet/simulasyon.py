@@ -926,10 +926,16 @@ class ROV(Entity):
                         carpan2 = (2 * rov_kutlesi / (rov_kutlesi + diger_rov_kutlesi)) * (-nokta_carpim)
                         diger_rov.velocity = diger_rov.velocity - (-carpisma_yonu) * carpan2
                         
-                        # Çarpışma sonrası pozisyonları ayır
-                        ayirma_mesafesi = (min_mesafe - mesafe) / 2
+                        # Çarpışma sonrası pozisyonları ayır (daha aktif)
+                        ayirma_mesafesi = (min_mesafe - mesafe) + 2.0  # Ekstra mesafe ekle
                         self.position += carpisma_yonu * ayirma_mesafesi
                         diger_rov.position -= carpisma_yonu * ayirma_mesafesi
+                        
+                        # Aktif kaçınma: Hızı da artır (çarpışmadan kurtulmak için)
+                        if self.velocity.length() < 5.0:
+                            self.velocity += carpisma_yonu * 3.0  # Kaçınma hızı ekle
+                        if diger_rov.velocity.length() < 5.0:
+                            diger_rov.velocity -= carpisma_yonu * 3.0  # Kaçınma hızı ekle
         
         # Kayalarla ve ada sınırlarıyla çarpışma
         for engel in self.environment_ref.engeller:

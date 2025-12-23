@@ -41,6 +41,7 @@ class VeriOnbellek:
         self.senaryo_instance = None  # Senaryo instance referansı
         self.senaryo_module = None  # Senaryo modül referansı
         self._ilk_ortam_olusturuldu = False  # İlk ortam oluşturuldu mu?
+        self._yeni_ortam_olusturuldu = False  # Bu epoch'ta yeni ortam oluşturuldu mu? (500 epoch kontrolü için)
         
         # Config'den ayarları al
         self.gat_limits = {
@@ -136,16 +137,22 @@ class VeriOnbellek:
             else:
                 # Normal mod: 500 epoch'ta bir yeni ortam oluştur
                 if self.epoch_sayaci % 500 == 0:
-                    # Yeni ortam oluştur (sayıları değiştir)
-                    n_rovs = np.random.randint(4, 7)  # 4-6 ROV
-                    n_engels = np.random.randint(8, 15)  # 8-14 engel
-                    self.senaryo_module.uret(
-                        n_rovs=n_rovs,
-                        n_engels=n_engels,
-                        havuz_genisligi=self.havuz_genisligi,
-                        verbose=False  # Log mesajlarını gizle
-                    )
-                    self.senaryo_instance = self.senaryo_module._senaryo_instance
+                    # 500. epoch'ta yeni ortam oluştur (sadece flag False ise)
+                    if not self._yeni_ortam_olusturuldu:
+                        # Yeni ortam oluştur (sayıları değiştir) - Sadece bir kez!
+                        n_rovs = np.random.randint(4, 7)  # 4-6 ROV
+                        n_engels = np.random.randint(8, 15)  # 8-14 engel
+                        self.senaryo_module.uret(
+                            n_rovs=n_rovs,
+                            n_engels=n_engels,
+                            havuz_genisligi=self.havuz_genisligi,
+                            verbose=False  # Log mesajlarını gizle
+                        )
+                        self.senaryo_instance = self.senaryo_module._senaryo_instance
+                        self._yeni_ortam_olusturuldu = True  # Flag'i set et
+                    else:
+                        # Yeni ortam zaten oluşturuldu, sadece pozisyonları güncelle
+                        self.senaryo_instance.uret()  # Parametresiz çağrı = hızlı pozisyon güncelleme
                 else:
                     # Mevcut ortamı kullan, sadece pozisyonları güncelle (ÇOK HIZLI!)
                     self.senaryo_instance.uret()  # Parametresiz çağrı = hızlı pozisyon güncelleme
@@ -323,6 +330,7 @@ class VeriOnbellek:
         # Epoch başında önbelleği yenile
         if self.cache_index == 0:
             self.epoch_sayaci += 1
+            self._yeni_ortam_olusturuldu = False  # Her epoch başında flag'i sıfırla
             
             if self.epoch_sayaci > 1:  # İlk epoch'ta önbellek zaten dolu
                 if self.use_senaryo:
@@ -330,16 +338,23 @@ class VeriOnbellek:
                     if self.epoch_sayaci % 500 == 0:
                         print(f"   🔄 Epoch {self.epoch_sayaci}: Yeni ortam oluşturuluyor...")
                         # Yeni ortam oluşturulacak, önbelleği yeniden doldur
+                        # İlk veri üretiminde yeni ortam oluştur, sonraki verilerde mevcut ortamı kullan
                         self.cache = []
                         for i in range(min(10, self.cache_size)):  # Her 500 epoch'ta 10 yeni veri
-                            data = self._veri_uret_senaryo(cache_doldurma_modu=False)  # Normal mod (500 epoch kontrolü yapılacak)
+                            if i == 0:
+                                # İlk veri: Yeni ortam oluştur
+                                self._yeni_ortam_olusturuldu = True  # Flag'i set et
+                                data = self._veri_uret_senaryo(cache_doldurma_modu=False)  # Normal mod (500 epoch kontrolü yapılacak)
+                            else:
+                                # Sonraki veriler: Mevcut ortamı kullan, sadece pozisyonları güncelle
+                                data = self._veri_uret_senaryo(cache_doldurma_modu=True, ilk_veri=False)  # Cache modu (sadece pozisyon güncelleme)
                             self.cache.append(data)
                     else:
                         # Mevcut ortamı kullan, sadece pozisyonları güncelle (ÇOK HIZLI!)
                         # Önbelleği yeniden doldur (mevcut ortamla)
                         self.cache = []
                         for i in range(min(10, self.cache_size)):  # Her epoch'ta 10 yeni veri
-                            data = self._veri_uret_senaryo(cache_doldurma_modu=False)  # Normal mod (sadece pozisyon güncelleme)
+                            data = self._veri_uret_senaryo(cache_doldurma_modu=True, ilk_veri=False)  # Cache modu (sadece pozisyon güncelleme)
                             self.cache.append(data)
                 else:
                     # Sentetik veri için de önbelleği yenile
