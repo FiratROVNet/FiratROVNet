@@ -116,7 +116,7 @@ print(f"✅ RL Sistemi Hazır. Batarya Simülasyonu Aktif.")
 
 
 def update():
-    global adim_sayaci, lider_hedef_z, lider_hedef_x, rov_bataryalar
+    global adim_sayaci, lider_hedef_z
 
     try:
         dt = time.dt # Geçen süre (saniye)

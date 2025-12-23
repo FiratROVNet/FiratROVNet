@@ -483,22 +483,6 @@ if __name__ == "__main__":
         print("\n✅ TÜM TESTLER BAŞARILI!")
         sys.exit(0)
 
-
-    assert hasattr(cfg, 'goster_modem'), "Config'de goster_modem yok"
-    assert hasattr(cfg, 'goster_gnc'), "Config'de goster_gnc yok"
-    assert hasattr(cfg, 'goster_sistem'), "Config'de goster_sistem yok"
-    record_test_pass("Config Özellikleri")
-    
-    # Config değerlerini değiştir
-    original_value = cfg.goster_modem
-    cfg.goster_modem = True
-    assert cfg.goster_modem == True, "Config değeri değiştirilemedi"
-    cfg.goster_modem = original_value
-    record_test_pass("Config Değer Değiştirme")
-    
-except Exception as e:
-    record_test_fail("Config Sistemi", e)
-
 # ==========================================
 # TEST 8: Ortam Sınıfı (Ursina Olmadan)
 # ==========================================

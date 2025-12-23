@@ -7,6 +7,7 @@ Veri önbellekleme ile performans optimize edilmiştir.
 
 from FiratROVNet.gat import Train
 from FiratROVNet.ortam import veri_uret
+from FiratROVNet.config import GATLimitleri
 import torch
 from torch_geometric.data import Data
 
@@ -15,8 +16,8 @@ from torch_geometric.data import Data
 # ============================================================
 class VeriOnbellek:
     """
-    Veri önbellekleme sınıfı - Her epoch'ta yeni senaryo açmak yerine
-    önceden üretilmiş verileri kullanır.
+    Veri önbellekleme sınıfı - Senaryo modülü ile dinamik veri üretimi.
+    Her 500 adımda yeni senaryo oluşturur, her epoch'ta ortamı yeniler.
     """
     def __init__(self, cache_size=100, use_senaryo=False):
         """
@@ -28,6 +29,18 @@ class VeriOnbellek:
         self.use_senaryo = use_senaryo
         self.cache = []
         self.cache_index = 0
+        self.adim_sayaci = 0  # Toplam adım sayacı (500'de bir yeni senaryo için)
+        self.epoch_sayaci = 0  # Epoch sayacı
+        
+        # Senaryo modülü için global instance
+        self.senaryo_instance = None
+        if self.use_senaryo:
+            try:
+                from FiratROVNet import senaryo
+                self.senaryo_module = senaryo
+            except Exception as e:
+                print(f"   ⚠️ Senaryo modülü yüklenemedi: {e}")
+                self.use_senaryo = False
         
         # Önbelleği doldur
         print(f"📦 Veri önbelleği oluşturuluyor ({cache_size} örnek)...")
@@ -38,8 +51,7 @@ class VeriOnbellek:
         """Önbelleği doldurur."""
         if self.use_senaryo:
             try:
-                from FiratROVNet import senaryo
-                # Senaryo verileri için özel üretim (daha az simülasyon adımı)
+                # Senaryo verileri için özel üretim
                 for i in range(self.cache_size):
                     if i % 10 == 0:
                         print(f"   Veri üretiliyor: {i+1}/{self.cache_size}")
@@ -71,18 +83,25 @@ class VeriOnbellek:
         n_engels = np.random.randint(8, 15)  # 8-14 engel
         
         try:
-            senaryo_instance = senaryo.uret(n_rovs=n_rovs, n_engels=n_engels, havuz_genisligi=200)
+            # Senaryo instance'ı yoksa veya yenilenmesi gerekiyorsa oluştur
+            if self.senaryo_instance is None or not hasattr(self.senaryo_instance, 'aktif') or not self.senaryo_instance.aktif:
+                # Yeni senaryo oluştur
+                self.senaryo_instance = self.senaryo_module.uret(n_rovs=n_rovs, n_engels=n_engels, havuz_genisligi=200)
+            else:
+                # Mevcut senaryoyu kullan, sadece pozisyonları güncelle (parametresiz çağrı)
+                self.senaryo_module.uret()
             
             # Sadece 1 adım simülasyon (hız için - fizik hesaplamaları minimal)
-            senaryo.guncelle(delta_time=0.016)
+            self.senaryo_module.guncelle(delta_time=0.016)
             
             # Veri toplama
-            rovs = senaryo_instance.ortam.rovs
-            engeller = senaryo_instance.ortam.engeller
+            rovs = self.senaryo_instance.ortam.rovs
+            engeller = self.senaryo_instance.ortam.engeller
             n = len(rovs)
             
             if n == 0:
-                senaryo.temizle()
+                self.senaryo_module.temizle()
+                self.senaryo_instance = None
                 return veri_uret()  # Fallback
             
             x = torch.zeros((n, 7), dtype=torch.float)
@@ -208,23 +227,67 @@ class VeriOnbellek:
                             y[i] = d_code
                             break
             
-            # Senaryoyu temizle
-            senaryo.temizle()
+            # Senaryoyu temizleme (her 500 adımda veya epoch başında)
+            # Senaryo instance'ı korunur, sadece pozisyonlar güncellenir
             
             return Data(x=x, edge_index=edge_index, y=y)
             
         except Exception as e:
             # Hata durumunda fallback
             try:
-                senaryo.temizle()
+                if hasattr(self, 'senaryo_module'):
+                    self.senaryo_module.temizle()
+                    self.senaryo_instance = None
             except:
                 pass
             return veri_uret()
     
     def __call__(self):
-        """Önbellekten veri döndürür (round-robin)."""
+        """
+        Önbellekten veri döndürür (round-robin).
+        Her 500 adımda yeni senaryo oluşturur, her epoch'ta ortamı yeniler.
+        """
+        # Epoch başında (cache_index == 0) veya her 500 adımda yeni senaryo oluştur
+        if self.use_senaryo and (self.cache_index == 0 or self.adim_sayaci % 500 == 0):
+            if self.adim_sayaci % 500 == 0 and self.adim_sayaci > 0:
+                print(f"   🔄 Yeni senaryo oluşturuluyor (Adım: {self.adim_sayaci})...")
+            
+            # Senaryo instance'ını yenile
+            try:
+                if self.senaryo_instance is not None:
+                    self.senaryo_module.temizle()
+                self.senaryo_instance = None
+                
+                # Yeni senaryo oluştur
+                import numpy as np
+                n_rovs = np.random.randint(4, 7)  # 4-6 ROV
+                n_engels = np.random.randint(8, 15)  # 8-14 engel
+                self.senaryo_instance = self.senaryo_module.uret(n_rovs=n_rovs, n_engels=n_engels, havuz_genisligi=200)
+            except Exception as e:
+                print(f"   ⚠️ Senaryo yenilenemedi: {e}")
+        
+        # Epoch başında önbelleği yenile
+        if self.cache_index == 0:
+            self.epoch_sayaci += 1
+            if self.epoch_sayaci > 1:  # İlk epoch'ta önbellek zaten dolu
+                if self.use_senaryo:
+                    print(f"   🔄 Epoch {self.epoch_sayaci}: Senaryo önbelleği yenileniyor...")
+                    # Önbelleği yeniden doldur (yeni senaryolarla)
+                    self.cache = []
+                    for i in range(min(10, self.cache_size)):  # Her epoch'ta 10 yeni veri
+                        data = self._veri_uret_senaryo_hizli()
+                        self.cache.append(data)
+                else:
+                    # Sentetik veri için de önbelleği yenile
+                    self.cache = []
+                    for i in range(self.cache_size):
+                        self.cache.append(veri_uret())
+        
+        # Veriyi önbellekten al
         data = self.cache[self.cache_index]
         self.cache_index = (self.cache_index + 1) % len(self.cache)
+        self.adim_sayaci += 1
+        
         return data
 
 
@@ -235,27 +298,22 @@ if __name__ == "__main__":
     print("🚀 GAT Model Eğitimi Başlıyor...")
     print("=" * 60)
     
-    # Veri önbelleği oluştur (hızlı mod - sentetik veri)
-    print("\n📦 Mod 1: Hızlı Eğitim (Sentetik Veri)")
-    veri_kaynagi_hizli = VeriOnbellek(cache_size=50, use_senaryo=False)
+    # Senaryo verileriyle eğitim (yeni sistem)
+    print("\n📦 Senaryo Modülü ile Eğitim")
+    print("   - Her 500 adımda yeni senaryo oluşturulacak")
+    print("   - Her epoch'ta ortam yenilenecek")
     
-    # İlk eğitim (hızlı)
-    print("\n🎯 Eğitim 1: Hızlı mod (1000 epoch)")
-    Train(veri_kaynagi=veri_kaynagi_hizli, epochs=30000, lr=0.002)
+    veri_kaynagi_senaryo = VeriOnbellek(cache_size=50, use_senaryo=True)
     
-    # Senaryo verileriyle eğitim (isteğe bağlı - yavaş ama gerçekçi)
-    print("\n" + "=" * 60)
-    print("📦 Mod 2: Gerçekçi Eğitim (Senaryo Verileri)")
-    print("⚠️  Bu mod yavaş olabilir. Devam etmek istiyor musunuz? (y/n)")
+    print("\n🎯 Eğitim Başlıyor...")
+    Train(veri_kaynagi=veri_kaynagi_senaryo, epochs=10000, lr=0.002)
     
-    # Otomatik devam et (yorum satırını kaldırarak manuel yapabilirsiniz)
-    # cevap = input().strip().lower()
-    # if cevap == 'y':
-    #     veri_kaynagi_senaryo = VeriOnbellek(cache_size=20, use_senaryo=True)
-    #     print("\n🎯 Eğitim 2: Senaryo modu (2000 epoch)")
-    #     Train(veri_kaynagi=veri_kaynagi_senaryo, epochs=2000, lr=0.001)
-    # else:
-    #     print("⏭️  Senaryo modu atlandı.")
+    # Senaryoyu temizle
+    if hasattr(veri_kaynagi_senaryo, 'senaryo_instance') and veri_kaynagi_senaryo.senaryo_instance:
+        try:
+            veri_kaynagi_senaryo.senaryo_module.temizle()
+        except:
+            pass
     
     print("\n✅ Eğitim tamamlandı!")
     print(f"📁 Model kaydedildi: rov_modeli_multi.pth")

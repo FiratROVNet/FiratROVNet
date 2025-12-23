@@ -110,7 +110,7 @@ print(f"✅ PPO Aktif Edildi. {rov_sayisi} ROV Kontrol Ediliyor. Batarya Simüla
 
 
 def update():
-    global rl_sayac, lider_hedef_z, lider_hedef_x, rov_bataryalar
+    global rl_sayac, lider_hedef_z
 
     try:
         dt = time.dt # Geçen süre (saniye)
