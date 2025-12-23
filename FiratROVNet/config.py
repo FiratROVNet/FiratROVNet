@@ -89,7 +89,7 @@ class HareketAyarlari:
     # Kaçınma ayarları
     KACINMA_MESAFESI_FALLBACK_KATSAYISI = 0.2  # Engel mesafesinin %20'si (fallback)
     MINIMUM_MESAFE_KACINMA = 2.0       # Minimum mesafe (çok yakınsa kaçınma yok)
-    YAKIN_MESAFE_ESIGI = 10.0          # Yakın mesafe eşiği (iletişim kopmasını önleme)
+    YAKIN_MESAFE_ESIGI = 15.0          # Yakın mesafe eşiği (iletişim kopmasını önleme)
     
     # Dikey toleranslar (metre)
     DIKEY_TOLERANS_ENGEL = 10.0         # Engel algılama için dikey tolerans

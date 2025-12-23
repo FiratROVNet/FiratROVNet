@@ -249,11 +249,13 @@ class ROV(Entity):
             if self.role == 1:
                 self.color = color.red
                 self.label.text = f"LIDER-{self.id}"
-                print(f"✅ ROV-{self.id} artık LİDER.")
+                if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose') and self.ortam.verbose:
+                    print(f"✅ ROV-{self.id} artık LİDER.")
             else:
                 self.color = color.orange
                 self.label.text = f"ROV-{self.id}"
-                print(f"✅ ROV-{self.id} artık TAKİPÇİ.")
+                if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose') and self.ortam.verbose:
+                    print(f"✅ ROV-{self.id} artık TAKİPÇİ.")
         elif ayar_adi in self.sensor_config: 
             self.sensor_config[ayar_adi] = deger
 
@@ -1318,7 +1320,8 @@ class Harita:
 
 
 class Ortam:
-    def __init__(self):
+    def __init__(self, verbose=False):
+        self.verbose = verbose  # Log mesajlarını kontrol eder
         # --- Ursina Ayarları ---
         self.app = Ursina(
             vsync=False,
@@ -2032,7 +2035,15 @@ class Ortam:
                             if mesafe < radius * 2:
                                 engel.position = (x, engel.position.y, y)
             
-            print(f"✅ Ada-{ada_id} pozisyonu güncellendi: ({x}, {y})")
+            # Verbose kontrolü için ortam referansı gerekli
+            verbose = False
+            if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose'):
+                verbose = self.ortam.verbose
+            elif hasattr(self, 'verbose'):
+                verbose = self.verbose
+            
+            if verbose:
+                print(f"✅ Ada-{ada_id} pozisyonu güncellendi: ({x}, {y})")
             return (x, y)
         else:
             # Mevcut konumu döndür
