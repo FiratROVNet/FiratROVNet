@@ -96,10 +96,7 @@ class HareketAyarlari:
     DIKEY_TOLERANS_ADA = 5.0            # Ada algılama için dikey tolerans
     
     # Vektör birleştirme katsayıları (0.0-1.0)
-    VEKTOR_BIRLESTIRME_CARPISMA_HEDEF = 0.2      # Çarpışma durumunda hedef ağırlığı
     VEKTOR_BIRLESTIRME_NORMAL_KACINMA = 0.5      # Normal durumda kaçınma ağırlığı
-    VEKTOR_BIRLESTIRME_LIDER_HEDEF = 0.9         # Lider için hedef ağırlığı
-    VEKTOR_BIRLESTIRME_LIDER_KACINMA = 0.1       # Lider için kaçınma ağırlığı
     VEKTOR_BIRLESTIRME_TAKIPCI_KACINMA = 0.8      # Takipçi için kaçınma ağırlığı
     VEKTOR_BIRLESTIRME_TAKIPCI_HEDEF = 0.2        # Takipçi için hedef ağırlığı
     

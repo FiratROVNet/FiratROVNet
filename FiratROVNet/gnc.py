@@ -586,12 +586,23 @@ class Filo:
             # i = 0, 1, 2... (Lider hariç takipçi indeksi)
             
             # Dinamik ofset hesabı (Formasyon Motoru üzerinden)
-            if tip.upper() == "KAMA":
+            tip_upper = tip.upper()
+            if tip_upper == "KAMA":
                 offset = FormasyonMotoru.kama_hesapla(i + 1, aralik)
-            elif tip.upper() == "SAF":
+            elif tip_upper == "SAF":
                 offset = FormasyonMotoru.saf_hesapla(i + 1, aralik)
-            elif tip.upper() == "DAIRE":
+            elif tip_upper == "DAIRE":
                 offset = FormasyonMotoru.daire_hesapla(i, toplam_n, aralik)
+            elif tip_upper == "CIZGI" or tip_upper == "LINE":
+                offset = FormasyonMotoru.cizgi_hesapla(i + 1, aralik)
+            elif tip_upper == "V" or tip_upper == "V_SEKLI":
+                offset = FormasyonMotoru.v_hesapla(i + 1, aralik)
+            elif tip_upper == "KARE" or tip_upper == "SQUARE":
+                offset = FormasyonMotoru.kare_hesapla(i, toplam_n, aralik)
+            elif tip_upper == "OK" or tip_upper == "ARROW":
+                offset = FormasyonMotoru.ok_hesapla(i + 1, aralik)
+            elif tip_upper == "ELMAS" or tip_upper == "DIAMOND":
+                offset = FormasyonMotoru.elmas_hesapla(i, toplam_n, aralik)
             else:
                 offset = (0, -10 * (i+1), 0)  # Varsayılan: Arka arkaya sıra
                 print(f"⚠️ [FORMASYON] Bilinmeyen formasyon tipi: {tip}, varsayılan formasyon kullanılıyor")
@@ -734,9 +745,9 @@ class Filo:
         self.hedef_gorsel = Entity()
         self.hedef_gorsel.position = ursina_pos
         
-        # X işareti boyutu
-        x_boyutu = 10.0
-        kalinlik = 1.0
+        # X işareti boyutu (Config'den alınan değerler)
+        x_boyutu = HareketAyarlari.HEDEF_X_BOYUTU
+        kalinlik = HareketAyarlari.HEDEF_KALINLIK
         
         # İlk çapraz çizgi (sol üst -> sağ alt)
         Entity(
@@ -772,55 +783,6 @@ class Filo:
             unlit=True
         )
     
-    def _random_hedef_olustur(self, ortam_ref):
-        """
-        Başlangıçta random hedef oluşturur (adalara denk gelmeyecek şekilde).
-        
-        Args:
-            ortam_ref: Ortam referansı (adaları kontrol etmek için)
-        
-        Returns:
-            (x, y, z): Random hedef pozisyonu
-        """
-        if not ortam_ref:
-            # Ortam yoksa, havuz merkezine yakın random pozisyon
-            havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200) if ortam_ref else 200
-            x = random.uniform(-havuz_genisligi * 0.7, havuz_genisligi * 0.7)
-            y = random.uniform(-havuz_genisligi * 0.7, havuz_genisligi * 0.7)
-            return (x, y, 0)
-        
-        havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
-        min_mesafe_ada = HareketAyarlari.RANDOM_HEDEF_MIN_MESAFE_ADA  # Config'den alınan minimum mesafe
-        
-        # Ada pozisyonlarını al
-        ada_positions = []
-        if hasattr(ortam_ref, 'island_positions') and ortam_ref.island_positions:
-            for ada_pos in ortam_ref.island_positions:
-                ada_x = ada_pos[0]
-                ada_y = ada_pos[1]
-                ada_radius = ada_pos[2] if len(ada_pos) > 2 else 30.0
-                ada_positions.append((ada_x, ada_y, ada_radius))
-        
-        # Random pozisyon bul (adalardan uzak)
-        max_deneme = 100
-        for _ in range(max_deneme):
-            x = random.uniform(-havuz_genisligi * 0.7, havuz_genisligi * 0.7)
-            y = random.uniform(-havuz_genisligi * 0.7, havuz_genisligi * 0.7)
-            
-            # Ada kontrolü
-            guvenli = True
-            for ada_x, ada_y, ada_radius in ada_positions:
-                mesafe = math.sqrt((x - ada_x)**2 + (y - ada_y)**2)
-                if mesafe < (ada_radius + min_mesafe_ada):
-                    guvenli = False
-                    break
-            
-            if guvenli:
-                return (x, y, 0)  # z her zaman 0 (su üstünde)
-        
-        # Eğer güvenli pozisyon bulunamazsa, havuz merkezine yakın bir yer
-        print("⚠️ [HEDEF] Güvenli random pozisyon bulunamadı, havuz merkezine yakın pozisyon kullanılıyor")
-        return (random.uniform(-50, 50), random.uniform(-50, 50), 0)  # z her zaman 0 (su üstünde)
 
     def git(self, rov_id, x, z, y=None, ai=True):
         """
