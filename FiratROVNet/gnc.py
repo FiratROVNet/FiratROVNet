@@ -1,6 +1,6 @@
 import numpy as np
 from ursina import Vec3, time, distance
-from .config import cfg, GATLimitleri, SensorAyarlari, ModemAyarlari
+from .config import cfg, GATLimitleri, SensorAyarlari, ModemAyarlari, HareketAyarlari
 from .iletisim import AkustikModem
 import math
 import random
@@ -293,35 +293,68 @@ class Filo:
         # Lider ROV'u bul
         lider_rov_id = None
         lider_gnc = None
+        lider_rov = None
         for i, gnc in enumerate(self.sistemler):
             if hasattr(gnc, 'rov') and gnc.rov.role == 1:
                 lider_rov_id = i
                 lider_gnc = gnc
+                lider_rov = gnc.rov
                 break
         
-        # Eğer lider varsa ve hedefi varsa, takipçilerin hedeflerini liderin hedefine göre güncelle
+        # Lider her zaman hedefe gitmeli (hedef varsa)
+        # Takipçiler sadece lider yeteri kadar uzaklaştığında hareket etmeli
+        
+        # Eğer lider varsa ve hedefi varsa
         if lider_rov_id is not None and lider_gnc and hasattr(lider_gnc, 'hedef') and lider_gnc.hedef:
-            # Liderin hedefi (simülasyon koordinat sistemi)
-            # Ursina koordinat sisteminden simülasyon koordinat sistemine dönüştür
+            # Liderin hedefi (Ursina koordinat sistemi)
             lider_hedef_ursina = lider_gnc.hedef
-            # Ursina: (x, y, z) -> Simülasyon: (x, z, y)
-            lider_hedef_x = lider_hedef_ursina.x
-            lider_hedef_y = lider_hedef_ursina.y  # Derinlik (Ursina Y)
-            lider_hedef_z = lider_hedef_ursina.z  # Simülasyon Y (Ursina Z)
+            # Ursina koordinatları direkt kullan (takipçi hedefi belirleme fonksiyonu Ursina formatında çalışıyor)
+            lider_hedef_x = lider_hedef_ursina.x      # Ursina X
+            lider_hedef_y = lider_hedef_ursina.y      # Ursina Y (derinlik)
+            lider_hedef_z = lider_hedef_ursina.z      # Ursina Z
             
-            # Takipçilerin hedeflerini liderin hedefine göre güncelle (her frame'de)
-            # Bu sayede takipçiler lideri sürekli takip eder
+            # Takipçilerin hedeflerini kontrol et (sadece lider yeteri kadar uzaklaştığında)
             for i, gnc in enumerate(self.sistemler):
                 if i == lider_rov_id:
                     continue  # Lideri atla
                 
                 if hasattr(gnc, 'rov') and gnc.rov.role == 0:  # Takipçi ise
-                    # Takipçinin hedefini liderin hedefine göre formasyon pozisyonu olarak güncelle
-                    self._takipci_hedefi_belirle(
-                        gnc, i,
-                        lider_hedef_x, lider_hedef_y, lider_hedef_z,
-                        lider_rov_id
-                    )
+                    takipci_rov = gnc.rov
+                    
+                    # Lider ile takipçi arasındaki mesafeyi hesapla
+                    lider_pos = lider_rov.position
+                    takipci_pos = takipci_rov.position
+                    mesafe = distance(lider_pos, takipci_pos)
+                    
+                    # İletişim menzilini al (takipçinin sensor_config'inden)
+                    iletisim_menzili = takipci_rov.sensor_config.get("iletisim_menzili", SensorAyarlari.VARSAYILAN["iletisim_menzili"])
+                    
+                    # Hareket eşiği: Config'den alınan katsayı ile hesapla
+                    hareket_esigi = iletisim_menzili * HareketAyarlari.HAREKET_ESIGI_KATSAYISI
+                    
+                    # Histerezis (gecikme) mekanizması: Pasif moddan aktif moda geçiş için
+                    # Eğer zaten aktif moddaysa ve lider yaklaştıysa, biraz daha tolerans göster
+                    if not gnc.pasif_mod and mesafe > hareket_esigi * HareketAyarlari.HISTERESIS_KATSAYISI:
+                        # Aktif modda, lider hala uzakta, formasyon pozisyonuna git
+                        self._takipci_hedefi_belirle(
+                            gnc, i,
+                            lider_hedef_x, lider_hedef_y, lider_hedef_z,
+                            lider_rov_id
+                        )
+                    elif mesafe > hareket_esigi:
+                        # Lider yeteri kadar uzaklaştı: Takipçi aktif modda, formasyon pozisyonuna gitmeli
+                        gnc.pasif_mod = False
+                        self._takipci_hedefi_belirle(
+                            gnc, i,
+                            lider_hedef_x, lider_hedef_y, lider_hedef_z,
+                            lider_rov_id
+                        )
+                    else:
+                        # Lider yakında: Takipçi pasif modda (hareket etmez)
+                        # Hedefi None yap ki hareket etmesin (daha temiz)
+                        if not gnc.pasif_mod:
+                            gnc.pasif_mod = True
+                            gnc.hedef = None
         
         # Tüm GNC sistemlerini güncelle
         for i, gnc in enumerate(self.sistemler):
@@ -331,29 +364,29 @@ class Filo:
     
     def _takipci_hedefi_belirle(self, takipci_gnc, takipci_rov_id, lider_x, lider_y, lider_z, lider_rov_id):
         """
-        Tek bir takipçi ROV için hedef belirler (liderin hedefine göre +-10 metre mesafede).
+        Tek bir takipçi ROV için hedef belirler (liderin hedefine göre formasyon pozisyonu).
         
         Args:
             takipci_gnc: Takipçi GNC objesi
             takipci_rov_id: Takipçi ROV'un ID'si
-            lider_x: Lider hedef X koordinatı
-            lider_y: Lider hedef Y koordinatı (derinlik)
-            lider_z: Lider hedef Z koordinatı
+            lider_x: Lider hedef X koordinatı (Ursina formatında)
+            lider_y: Lider hedef Y koordinatı (Ursina formatında - derinlik)
+            lider_z: Lider hedef Z koordinatı (Ursina formatında)
             lider_rov_id: Lider ROV'un ID'si
         """
-        formasyon_mesafesi = 15.0  # +-10 metre
+        formasyon_mesafesi = 15.0  # Formasyon mesafesi (metre)
         
-        # Formasyon offset'leri (her takipçi için farklı pozisyon)
+        # Formasyon offset'leri (Ursina koordinat sisteminde: X ve Z'ye offset)
         # Basit formasyon: Lider merkezde, takipçiler çevresinde
         formasyon_offsetleri = [
-            (-formasyon_mesafesi, -formasyon_mesafesi),  # Takipçi 1: Sol-Alt
-            (formasyon_mesafesi, -formasyon_mesafesi),   # Takipçi 2: Sağ-Alt
-            (-formasyon_mesafesi, formasyon_mesafesi),   # Takipçi 3: Sol-Üst
-            (formasyon_mesafesi, formasyon_mesafesi),   # Takipçi 4: Sağ-Üst
-            (0, -formasyon_mesafesi),                    # Takipçi 5: Alt
-            (0, formasyon_mesafesi),                     # Takipçi 6: Üst
-            (-formasyon_mesafesi, 0),                    # Takipçi 7: Sol
-            (formasyon_mesafesi, 0),                     # Takipçi 8: Sağ
+            (-formasyon_mesafesi, -formasyon_mesafesi),  # Takipçi 1: Sol-Alt (X-, Z-)
+            (formasyon_mesafesi, -formasyon_mesafesi),   # Takipçi 2: Sağ-Alt (X+, Z-)
+            (-formasyon_mesafesi, formasyon_mesafesi),   # Takipçi 3: Sol-Üst (X-, Z+)
+            (formasyon_mesafesi, formasyon_mesafesi),   # Takipçi 4: Sağ-Üst (X+, Z+)
+            (0, -formasyon_mesafesi),                    # Takipçi 5: Alt (Z-)
+            (0, formasyon_mesafesi),                     # Takipçi 6: Üst (Z+)
+            (-formasyon_mesafesi, 0),                    # Takipçi 7: Sol (X-)
+            (formasyon_mesafesi, 0),                     # Takipçi 8: Sağ (X+)
         ]
         
         # Takipçi index'i: Lider hariç, takipçilerin sırası
@@ -369,18 +402,18 @@ class Filo:
         # Formasyon offset'ini al (eğer takipçi sayısı offset sayısından fazlaysa, tekrar kullan)
         offset_x, offset_z = formasyon_offsetleri[takipci_index % len(formasyon_offsetleri)]
         
-        # Takipçi hedefi: Lider hedefi + offset
-        takipci_x = lider_x + offset_x
-        takipci_z = lider_z + offset_z
-        takipci_y = lider_y  # Aynı derinlik (veya -10 gibi sabit bir değer)
+        # Takipçi hedefi: Lider hedefi + offset (Ursina koordinat sisteminde)
+        takipci_x_ursina = lider_x + offset_x  # Ursina X + offset X
+        takipci_z_ursina = lider_z + offset_z  # Ursina Z + offset Z
+        takipci_y_ursina = lider_y  # Derinlik aynı kalır
         
         # Eğer lider yüzeydeyse (y >= 0), takipçiler su altında olmalı
         if lider_y >= 0:
-            takipci_y = -10.0  # Su altı derinliği
+            takipci_y_ursina = -10.0  # Su altı derinliği
         
-        # Hedef atama
+        # Hedef atama (Ursina koordinat sisteminde)
         try:
-            takipci_gnc.hedef_atama(takipci_x, takipci_y, takipci_z)
+            takipci_gnc.hedef_atama(takipci_x_ursina, takipci_y_ursina, takipci_z_ursina)
         except Exception as e:
             print(f"⚠️ [UYARI] ROV-{takipci_rov_id} hedefi belirlenirken hata: {e}")
     
@@ -501,13 +534,25 @@ class Filo:
         Önce liderleri denetler, fazlalıkları "takipçi" yapar ve ardından formasyonu kurar.
         
         Args:
-            tip (str): Formasyon tipi - "KAMA", "SAF", "DAIRE" (varsayılan: "KAMA")
+            tip (str): Formasyon tipi (varsayılan: "KAMA")
+                - "KAMA": V şekli formasyon (kanatlı)
+                - "SAF": Yan yana formasyon
+                - "DAIRE": Çember formasyonu
+                - "CIZGI" veya "LINE": Arka arkaya çizgi formasyonu
+                - "V" veya "V_SEKLI": V şekli formasyon
+                - "KARE" veya "SQUARE": Kare formasyonu
+                - "OK" veya "ARROW": Ok şekli formasyon
+                - "ELMAS" veya "DIAMOND": Elmas formasyonu
             aralik (float): ROV'lar arası mesafe (varsayılan: 15)
         
         Örnekler:
             filo.formasyon()  # Varsayılan KAMA formasyonu
             filo.formasyon("SAF", aralik=20)  # Yan yana formasyon, 20 birim aralık
             filo.formasyon("DAIRE", aralik=25)  # Çember formasyonu, 25 birim aralık
+            filo.formasyon("CIZGI", aralik=15)  # Çizgi formasyonu
+            filo.formasyon("KARE", aralik=20)  # Kare formasyonu
+            filo.formasyon("OK", aralik=18)  # Ok formasyonu
+            filo.formasyon("ELMAS", aralik=22)  # Elmas formasyonu
         """
         # 1. ADIM: Otorite Denetimi (Lowest-ID Authority)
         liderler = [r for r in self.rovs if r.role == 1]
@@ -624,7 +669,12 @@ class Filo:
             return None
         
         # Sadece liderin hedefini güncelle
-        ursina_x, ursina_z, ursina_y = x, 0, y
+        # filo.hedef() simülasyon koordinat sisteminde (x, y, 0) alıyor
+        # filo.git() Ursina koordinat sisteminde (x, z, y) alıyor
+        # Dönüşüm: Simülasyon (x, y, 0) -> Ursina (x, 0, y)
+        ursina_x = x      # X aynı kalır
+        ursina_z = y      # Simülasyon Y -> Ursina Z
+        ursina_y = 0      # Derinlik her zaman 0 (su üstünde)
         self.git(lider_rov_id, ursina_x, ursina_z, y=ursina_y, ai=True)
         
         # Takipçilerin hedeflerini liderin hedefine göre formasyon pozisyonları olarak güncelle
@@ -740,7 +790,7 @@ class Filo:
             return (x, y, 0)
         
         havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
-        min_mesafe_ada = 30.0  # Adalardan minimum mesafe
+        min_mesafe_ada = HareketAyarlari.RANDOM_HEDEF_MIN_MESAFE_ADA  # Config'den alınan minimum mesafe
         
         # Ada pozisyonlarını al
         ada_positions = []
@@ -970,7 +1020,8 @@ class Filo:
             # Hız uygula
             max_guc = 100.0 * guc
             if hareket_vektoru.length() > 0:
-                rov.velocity += hareket_vektoru.normalized() * max_guc * time.dt * 0.5
+                # Manuel hareket güç katsayısı (Config'den)
+                rov.velocity += hareket_vektoru.normalized() * max_guc * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
                 
                 # Hız limiti
                 if rov.velocity.length() > max_guc:
@@ -1000,6 +1051,7 @@ class TemelGNC:
         self.hedef = None 
         self.hiz_limiti = 100.0 
         self.manuel_kontrol = False
+        self.pasif_mod = False  # Takipçiler için: Lider yakındayken pasif mod (hareket etmez)
         
         # YENİ: Bireysel AI Anahtarı
         self.ai_aktif = True 
@@ -1021,6 +1073,17 @@ class TemelGNC:
         if self.hedef is None:
             return
         
+        # Takipçiler için pasif mod kontrolü: Lider yakındayken hareket etme
+        if self.rov.role == 0 and self.pasif_mod:
+            # Pasif modda hareket etme, ama hedef varsa ve çok uzaktaysa minimal hareket yap
+            if self.hedef is not None:
+                fark = self.hedef - self.rov.position
+                if fark.length() > 5.0:  # 5 metreden fazla uzaktaysa minimal hareket
+                    # Minimal hareket (çok yavaş)
+                    hedef_vektoru = fark.normalized() if hasattr(fark, 'normalized') else Vec3(0, 0, 0)
+                    self.vektor_to_motor(hedef_vektoru, guc_carpani=0.1)  # %10 güç
+            return  # Pasif modda normal hareket yok
+        
         # AI kapalıysa uyarıları görmezden gel
         if not self.ai_aktif:
             gat_kodu = 0
@@ -1029,7 +1092,8 @@ class TemelGNC:
         fark = self.hedef - self.rov.position
         yatay_fark = Vec3(fark.x, 0, fark.z) if hasattr(fark, 'x') else Vec3(0, 0, 0)
         # Takipçiler için daha esnek tolerans (formasyon korunması için)
-        tolerans = 0.5 if self.rov.role == 1 else 2.0  # Lider: 0.5m, Takipçi: 2.0m
+        # Config'den alınan tolerans değerleri
+        tolerans = HareketAyarlari.HEDEF_TOLERANS_LIDER if self.rov.role == 1 else HareketAyarlari.HEDEF_TOLERANS_TAKIPCI
         if yatay_fark.length() < tolerans:
             # Takipçiler için: Hedefe ulaşıldıysa bile lideri takip etmeye devam et
             if self.rov.role == 0:  # Takipçi ise
@@ -1097,13 +1161,17 @@ class TemelGNC:
         
         elif gat_kodu != 0:  # Diğer tehlikeler: Kaçınma + hedef
             if kacinma_vektoru.length() > 0:
-                return (kacinma_vektoru * 0.8 + hedef_vektoru * 0.2).normalized()
+                # Config'den alınan katsayılar
+                kacinma_agirlik = HareketAyarlari.VEKTOR_BIRLESTIRME_TAKIPCI_KACINMA
+                hedef_agirlik = HareketAyarlari.VEKTOR_BIRLESTIRME_TAKIPCI_HEDEF
+                return (kacinma_vektoru * kacinma_agirlik + hedef_vektoru * hedef_agirlik).normalized()
             else:
                 return hedef_vektoru
         
         else:  # Normal durum: Hedef + kaçınma (varsa)
             if kacinma_vektoru.length() > 0:
-                return (hedef_vektoru + kacinma_vektoru * 0.5).normalized()
+                # Config'den alınan katsayı
+                return (hedef_vektoru + kacinma_vektoru * HareketAyarlari.VEKTOR_BIRLESTIRME_NORMAL_KACINMA).normalized()
             else:
                 return hedef_vektoru
     
@@ -1179,9 +1247,9 @@ class TemelGNC:
         # Kaçınma mesafesini sensör ayarlarından al (veya engel_mesafesi kullan)
         kacinma_mesafesi = self.rov.sensor_config.get("kacinma_mesafesi", None)
         if kacinma_mesafesi is None:
-            # Eğer kacinma_mesafesi yoksa, engel_mesafesi'nin bir kısmını kullan
-            engel_mesafesi = self.rov.sensor_config.get("engel_mesafesi", 20.0)
-            kacinma_mesafesi = engel_mesafesi * 0.2  # Engel mesafesinin %20'si
+            # Eğer kacinma_mesafesi yoksa, engel_mesafesi'nin bir kısmını kullan (Config'den katsayı)
+            engel_mesafesi = self.rov.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
+            kacinma_mesafesi = engel_mesafesi * HareketAyarlari.KACINMA_MESAFESI_FALLBACK_KATSAYISI
         
         # Hedef vektörü hesapla
         if hedef_vektoru is None:
@@ -1395,6 +1463,154 @@ class FormasyonMotoru:
         radius = aralik * (n / 4)  # Araç sayısı arttıkça çemberi genişlet
         aci = (2 * math.pi * i) / (n - 1) if n > 1 else 0
         return (math.cos(aci) * radius, math.sin(aci) * radius, 0)
+    
+    @staticmethod
+    def cizgi_hesapla(idx, aralik):
+        """
+        Çizgi (LINE) formasyonu: Arka arkaya tek sıra.
+        
+        Args:
+            idx: Takipçi indeksi (1'den başlar, lider hariç)
+            aralik: ROV'lar arası mesafe
+        
+        Returns:
+            (x_offset, y_offset, z_offset): Formasyon ofseti
+        """
+        # Arka arkaya sıralama: Her takipçi bir öncekinin arkasında
+        return (0, -idx * aralik, 0)
+    
+    @staticmethod
+    def v_hesapla(idx, aralik):
+        """
+        V şekli formasyonu: Lider önde, takipçiler V şeklinde dağılır.
+        
+        Args:
+            idx: Takipçi indeksi (1'den başlar, lider hariç)
+            aralik: ROV'lar arası mesafe
+        
+        Returns:
+            (x_offset, y_offset, z_offset): Formasyon ofseti
+        """
+        # V şekli: Sol ve sağ kanatlar - Config'den katsayılar
+        taraf = -1 if idx % 2 != 0 else 1  # Tek sayılar sol, çift sayılar sağ
+        kanat_sirasi = (idx + 1) // 2  # Kanat içindeki sıra
+        x_offset = taraf * kanat_sirasi * aralik * HareketAyarlari.V_FORMASYON_X_KATSAYISI
+        z_offset = -kanat_sirasi * aralik * HareketAyarlari.V_FORMASYON_Z_KATSAYISI
+        return (x_offset, z_offset, 0)
+    
+    @staticmethod
+    def kare_hesapla(i, n, aralik):
+        """
+        Kare formasyonu: Lider merkezde, takipçiler kare köşelerinde.
+        
+        Args:
+            i: Takipçi indeksi (0'dan başlar, lider hariç)
+            n: Toplam ROV sayısı
+            aralik: ROV'lar arası mesafe
+        
+        Returns:
+            (x_offset, y_offset, z_offset): Formasyon ofseti
+        """
+        # Kare köşeleri: 4 köşe + kenarlar
+        kare_boyutu = aralik * 2  # Kare kenar uzunluğu
+        
+        # Köşeler ve kenarlar için pozisyonlar
+        if i < 4:
+            # 4 köşe
+            if i == 0:  # Sol-Alt
+                return (-kare_boyutu, -kare_boyutu, 0)
+            elif i == 1:  # Sağ-Alt
+                return (kare_boyutu, -kare_boyutu, 0)
+            elif i == 2:  # Sol-Üst
+                return (-kare_boyutu, kare_boyutu, 0)
+            elif i == 3:  # Sağ-Üst
+                return (kare_boyutu, kare_boyutu, 0)
+        else:
+            # Kenarlarda: Fazla takipçiler kenarlara yerleşir
+            kenar_index = (i - 4) % 4
+            kenar_pozisyon = (i - 4) // 4 + 1  # Hangi kenar pozisyonu
+            
+            if kenar_index == 0:  # Alt kenar
+                return (-kare_boyutu + kenar_pozisyon * aralik, -kare_boyutu, 0)
+            elif kenar_index == 1:  # Sağ kenar
+                return (kare_boyutu, -kare_boyutu + kenar_pozisyon * aralik, 0)
+            elif kenar_index == 2:  # Üst kenar
+                return (kare_boyutu - kenar_pozisyon * aralik, kare_boyutu, 0)
+            else:  # Sol kenar
+                return (-kare_boyutu, kare_boyutu - kenar_pozisyon * aralik, 0)
+        
+        return (0, 0, 0)
+    
+    @staticmethod
+    def ok_hesapla(idx, aralik):
+        """
+        Ok (ARROW) formasyonu: Lider önde, takipçiler ok şeklinde.
+        
+        Args:
+            idx: Takipçi indeksi (1'den başlar, lider hariç)
+            aralik: ROV'lar arası mesafe
+        
+        Returns:
+            (x_offset, y_offset, z_offset): Formasyon ofseti
+        """
+        # Ok şekli: Merkez çizgi + kanatlar
+        if idx == 1:
+            # İlk takipçi: Merkez çizgide
+            return (0, -aralik, 0)
+        elif idx == 2:
+            # İkinci takipçi: Sol kanat - Config'den katsayılar
+            return (-aralik * HareketAyarlari.OK_FORMASYON_X_KATSAYISI, 
+                   -aralik * HareketAyarlari.OK_FORMASYON_Z_KATSAYISI, 0)
+        elif idx == 3:
+            # Üçüncü takipçi: Sağ kanat - Config'den katsayılar
+            return (aralik * HareketAyarlari.OK_FORMASYON_X_KATSAYISI, 
+                   -aralik * HareketAyarlari.OK_FORMASYON_Z_KATSAYISI, 0)
+        else:
+            # Diğer takipçiler: Merkez çizgide devam eder
+            merkez_sira = (idx - 1) // 3 + 1
+            return (0, -aralik * (merkez_sira + 1), 0)
+    
+    @staticmethod
+    def elmas_hesapla(i, n, aralik):
+        """
+        Elmas (DIAMOND) formasyonu: Lider merkezde, takipçiler elmas şeklinde.
+        
+        Args:
+            i: Takipçi indeksi (0'dan başlar, lider hariç)
+            n: Toplam ROV sayısı
+            aralik: ROV'lar arası mesafe
+        
+        Returns:
+            (x_offset, y_offset, z_offset): Formasyon ofseti
+        """
+        # Elmas şekli: 4 köşe + kenarlar
+        elmas_boyutu = aralik * 1.5
+        
+        if i == 0:
+            # Üst köşe
+            return (0, elmas_boyutu, 0)
+        elif i == 1:
+            # Sağ köşe
+            return (elmas_boyutu, 0, 0)
+        elif i == 2:
+            # Alt köşe
+            return (0, -elmas_boyutu, 0)
+        elif i == 3:
+            # Sol köşe
+            return (-elmas_boyutu, 0, 0)
+        else:
+            # Fazla takipçiler: Köşeler arası kenarlara yerleşir
+            kenar_index = (i - 4) % 4
+            kenar_pozisyon = (i - 4) // 4 + 1
+            
+            if kenar_index == 0:  # Üst-Sağ kenar
+                return (elmas_boyutu * kenar_pozisyon / 2, elmas_boyutu * (1 - kenar_pozisyon / 2), 0)
+            elif kenar_index == 1:  # Sağ-Alt kenar
+                return (elmas_boyutu * (1 - kenar_pozisyon / 2), -elmas_boyutu * kenar_pozisyon / 2, 0)
+            elif kenar_index == 2:  # Alt-Sol kenar
+                return (-elmas_boyutu * kenar_pozisyon / 2, -elmas_boyutu * (1 - kenar_pozisyon / 2), 0)
+            else:  # Sol-Üst kenar
+                return (-elmas_boyutu * (1 - kenar_pozisyon / 2), elmas_boyutu * kenar_pozisyon / 2, 0)
 
 
 # ==========================================

@@ -22,7 +22,7 @@ import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation
 import queue
     
-from .config import cfg, SensorAyarlari, GATLimitleri
+from .config import cfg, SensorAyarlari, GATLimitleri, HareketAyarlari
 
 # ============================================================
 # KOORDİNAT SİSTEMİ TANIMI
@@ -417,7 +417,7 @@ class ROV(Entity):
                 dy = abs(fark_vektoru.y)
                 
                 # 3. Kapsama Alanı Kontrolü
-                dikey_tolerans = 10.0 
+                dikey_tolerans = HareketAyarlari.DIKEY_TOLERANS_ENGEL  # Config'den alınan dikey tolerans 
                 
                 if dy <= (dikey_yaricap + dikey_tolerans):
                     duvara_mesafe = yatay_uzaklik - yatay_yaricap
@@ -713,9 +713,9 @@ class ROV(Entity):
         else:
             iletisim_menzili = self.sensor_config.get("iletisim_menzili", 35.0)
             
-            # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (10m içinde) iletişim kopmasını görmezden gel
-            # Bu, çarpışma önleme mekanizmasının neden olduğu geçici iletişim kopmalarını önler
-            yakin_mesafe_esigi = 10.0  # 10 metre
+            # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda iletişim kopmasını görmezden gel
+            # Bu, çarpışma önleme mekanizmasının neden olduğu geçici iletişim kopmalarını önler (Config'den)
+            yakin_mesafe_esigi = HareketAyarlari.YAKIN_MESAFE_ESIGI
             if mesafe < yakin_mesafe_esigi:
                 # Çok yakınsa, iletişim var say (geçici kopmaları önle)
                 self.lider_ile_iletisim = True
@@ -733,9 +733,9 @@ class ROV(Entity):
         # Kaçınma mesafesini sensör ayarlarından al
         kacinma_mesafesi = self.sensor_config.get("kacinma_mesafesi", None)
         if kacinma_mesafesi is None:
-            # Eğer kacinma_mesafesi yoksa, engel_mesafesi'nin bir kısmını kullan
+            # Eğer kacinma_mesafesi yoksa, engel_mesafesi'nin bir kısmını kullan (Config'den katsayı)
             engel_mesafesi = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
-            kacinma_mesafesi = engel_mesafesi * 0.2  # Engel mesafesinin %20'si
+            kacinma_mesafesi = engel_mesafesi * HareketAyarlari.KACINMA_MESAFESI_FALLBACK_KATSAYISI
         
         uzaklasma_vektoru = Vec3(0, 0, 0)
         
@@ -816,9 +816,9 @@ class ROV(Entity):
                     uzaklasma_yonu = (self.position - engel.position).normalized()
                 
                 # Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
-                # Ancak gücü daha da yumuşat (çok agresif olmasın)
+                # Config'den alınan uzaklaşma gücü katsayısı
                 uzaklasma_gucu = (kacinma_mesafesi - gercek_mesafe) / kacinma_mesafesi
-                uzaklasma_gucu *= 0.3  # Gücü %30'a indir (daha yumuşak)
+                uzaklasma_gucu *= HareketAyarlari.UZAKLASMA_GUC_KATSAYISI
                 uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
         
         # Havuz sınırlarından uzaklaşma (sanal engeller)
@@ -865,9 +865,8 @@ class ROV(Entity):
             uzaklasma_vektoru = uzaklasma_vektoru.normalized()
             uzaklasma_gucu = min(uzaklasma_vektoru.length(), 1.0)  # Maksimum %100 güç
             
-            # Daha yumuşak uzaklaşma için gücü azalt (çarpışma önleme daha yumuşak olsun)
-            yumusaklik_carpani = 0.2  # Uzaklaşma gücünü %20'ye indir (daha yumuşak)
-            uzaklasma_gucu *= yumusaklik_carpani
+            # Daha yumuşak uzaklaşma için gücü azalt (Config'den yumuşaklık çarpanı)
+            uzaklasma_gucu *= HareketAyarlari.YUMUSAKLIK_CARPANI
             
             # Hız vektörüne ekle (momentum korunumu için)
             uzaklasma_hizi = uzaklasma_vektoru * uzaklasma_gucu * HIZLANMA_CARPANI * time.dt
@@ -952,7 +951,7 @@ class ROV(Entity):
                 dikey_fark = abs(fark_vektoru.y)
                 
                 # Silindirik çarpışma: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
-                if dikey_fark <= (engel_yukseklik + 2.0):  # Dikey tolerans
+                if dikey_fark <= (engel_yukseklik + HareketAyarlari.DIKEY_TOLERANS_ENGEL):  # Config'den dikey tolerans
                     min_mesafe = engel_yari_cap + 1.0
                     
                     if yatay_mesafe < min_mesafe:
