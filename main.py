@@ -118,8 +118,35 @@ app.konsola_ekle("filo", filo)  # Filo nesnesini konsola ekle
 app.konsola_ekle("rovs", app.rovs)
 app.konsola_ekle("cfg", cfg)
 app.konsola_ekle("harita", app.harita)  # Harita nesnesini konsola ekle
+
+# Ada ve ROV konum yönetimi için wrapper'lar
+def Ada_wrapper(ada_id, x=None, y=None):
+    """
+    Konsol için Ada fonksiyonu wrapper'ı.
+    Kullanım: Ada(0, 50, 60) veya Ada(0)  # Konum almak için
+    """
+    if app is None:
+        print("❌ [HATA] Ortam henüz oluşturulmamış!")
+        return None
+    return app.Ada(ada_id, x, y)
+
+def ROV_wrapper(rov_id, x=None, y=None, z=None):
+    """
+    Konsol için ROV fonksiyonu wrapper'ı.
+    Kullanım: ROV(0, 10, -5, 20) veya ROV(0)  # Konum almak için
+    """
+    if app is None:
+        print("❌ [HATA] Ortam henüz oluşturulmamış!")
+        return None
+    return app.ROV(rov_id, x, y, z)
+
+app.konsola_ekle("Ada", Ada_wrapper)
+app.konsola_ekle("ROV", ROV_wrapper)
+
 print("✅ Sistem aktif.")
 print("🗺️  Harita aktif! Kullanım: harita.ekle(x_2d, y_2d)")
+print("🏝️  Ada yönetimi aktif! Kullanım: Ada(0, 50, 60) - Ada 0'ı (50, 60) pozisyonuna taşı")
+print("🤖 ROV yönetimi aktif! Kullanım: ROV(0, 10, -5, 20) - ROV 0'ı (10, -5, 20) pozisyonuna taşı")
 
 
 # 2. ANA DÖNGÜ

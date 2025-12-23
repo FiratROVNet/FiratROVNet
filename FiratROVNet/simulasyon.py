@@ -1962,6 +1962,140 @@ class Ortam:
 
         print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {n_engels} Gri Kaya.")
     
+    # --- Ada ve ROV Konum Yönetimi (Senaryo Modülü İçin) ---
+    def Ada(self, ada_id, x=None, y=None):
+        """
+        Ada pozisyonunu değiştirir veya konumunu döndürür.
+        
+        Args:
+            ada_id: Ada ID'si
+            x: Yeni X koordinatı (None ise mevcut konumu döndürür)
+            y: Yeni Y koordinatı (Z ekseni, None ise mevcut konumu döndürür)
+        
+        Returns:
+            tuple: (x, y) koordinatları veya None
+        
+        Örnek:
+            # Ada konumunu değiştir
+            app.Ada(0, 50, 60)
+            
+            # Ada konumunu al
+            konum = app.Ada(0)  # (x, y) tuple döner
+        """
+        # Ada pozisyonları kontrolü
+        if not hasattr(self, 'island_positions') or not self.island_positions:
+            # Ada yoksa oluştur
+            if not hasattr(self, 'island_positions'):
+                self.island_positions = []
+            # Ada ID'si için yeterli kapasite yoksa genişlet
+            while len(self.island_positions) <= ada_id:
+                self.island_positions.append((0, 0, 50.0))  # Varsayılan pozisyon ve radius
+        
+        # Konum değiştirme
+        if x is not None and y is not None:
+            # Ada pozisyonunu güncelle
+            radius = self.island_positions[ada_id][2] if len(self.island_positions[ada_id]) > 2 else 50.0
+            old_pos = self.island_positions[ada_id]
+            self.island_positions[ada_id] = (x, y, radius)
+            
+            # Ada hitbox'larını güncelle (eğer varsa)
+            if hasattr(self, 'island_hitboxes') and self.island_hitboxes:
+                # Ada hitbox'larını bul ve güncelle
+                # Her ada için birden fazla hitbox olabilir (katmanlı sistem)
+                # Ada ID'sine göre hitbox'ları bulmak için pozisyon karşılaştırması yapılır
+                for hitbox in self.island_hitboxes:
+                    if hasattr(hitbox, 'position'):
+                        # Eski pozisyona yakın hitbox'ları bul
+                        old_x, old_y = old_pos[0], old_pos[1]
+                        hitbox_x = hitbox.position.x
+                        hitbox_z = hitbox.position.z
+                        mesafe = ((hitbox_x - old_x)**2 + (hitbox_z - old_y)**2)**0.5
+                        
+                        # Eğer hitbox bu ada'ya aitse (yakın mesafede)
+                        if mesafe < radius * 2:
+                            # Hitbox pozisyonunu güncelle
+                            hitbox.position = (x, hitbox.position.y, y)
+            
+            # Engeller listesindeki ada hitbox'larını da güncelle
+            if hasattr(self, 'engeller') and self.engeller:
+                old_x, old_y = old_pos[0], old_pos[1]
+                for engel in self.engeller:
+                    if hasattr(engel, 'position') and hasattr(engel, 'model'):
+                        # Ada sınır çizgisi kontrolü (sphere modeli ve görünür)
+                        is_island_boundary = (engel.model == 'sphere' and 
+                                             hasattr(engel, 'visible') and 
+                                             engel.visible == True)
+                        if is_island_boundary:
+                            engel_x = engel.position.x
+                            engel_z = engel.position.z
+                            mesafe = ((engel_x - old_x)**2 + (engel_z - old_y)**2)**0.5
+                            if mesafe < radius * 2:
+                                engel.position = (x, engel.position.y, y)
+            
+            print(f"✅ Ada-{ada_id} pozisyonu güncellendi: ({x}, {y})")
+            return (x, y)
+        else:
+            # Mevcut konumu döndür
+            if ada_id < len(self.island_positions):
+                ada_pos = self.island_positions[ada_id]
+                return (ada_pos[0], ada_pos[1])
+            else:
+                return None
+    
+    def ROV(self, rov_id, x=None, y=None, z=None):
+        """
+        ROV pozisyonunu değiştirir veya konumunu döndürür.
+        
+        Args:
+            rov_id: ROV ID'si
+            x: Yeni X koordinatı (None ise mevcut konumu döndürür)
+            y: Yeni Y koordinatı (derinlik, None ise mevcut konumu döndürür)
+            z: Yeni Z koordinatı (None ise mevcut konumu döndürür)
+        
+        Returns:
+            tuple: (x, y, z) koordinatları veya None
+        
+        Örnek:
+            # ROV konumunu değiştir
+            app.ROV(0, 10, -5, 20)
+            
+            # ROV konumunu al
+            konum = app.ROV(0)  # (x, y, z) tuple döner
+        """
+        if rov_id >= len(self.rovs):
+            print(f"⚠️ ROV ID {rov_id} bulunamadı.")
+            return None
+        
+        rov = self.rovs[rov_id]
+        
+        # Konum değiştirme
+        if x is not None and y is not None and z is not None:
+            # Ursina koordinat sistemine dönüştür: (x_2d, z_depth, y_2d)
+            ursina_x, ursina_y, ursina_z = sim_to_ursina(x, z, y)
+            
+            # ROV pozisyonunu güncelle
+            if hasattr(rov, 'position'):
+                rov.position = Vec3(ursina_x, ursina_y, ursina_z)
+            if hasattr(rov, 'x'):
+                rov.x = ursina_x
+                rov.y = ursina_y
+                rov.z = ursina_z
+            
+            print(f"✅ ROV-{rov_id} pozisyonu güncellendi: ({x}, {y}, {z})")
+            return (x, y, z)
+        else:
+            # Mevcut konumu döndür (simülasyon koordinat sistemine dönüştür)
+            if hasattr(rov, 'position') and hasattr(rov.position, 'x'):
+                ursina_x, ursina_y, ursina_z = rov.position.x, rov.position.y, rov.position.z
+                x_2d, y_2d, z_depth = ursina_to_sim(ursina_x, ursina_y, ursina_z)
+                return (x_2d, z_depth, y_2d)
+            elif hasattr(rov, 'x'):
+                ursina_x, ursina_y, ursina_z = rov.x, rov.y, rov.z
+                x_2d, y_2d, z_depth = ursina_to_sim(ursina_x, ursina_y, ursina_z)
+                return (x_2d, z_depth, y_2d)
+            else:
+                return None
+    
     # --- İnteraktif Shell ---
     def _start_shell(self):
         import time
