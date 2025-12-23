@@ -10,23 +10,20 @@ import torch.optim as optim
 from torch.distributions import Categorical
 import os
 import math
+import random
 
-
-# 1. RL (PEKİŞTİRMELİ ÖĞRENME) 
-
-
+# 1. RL (PEKİŞTİRMELİ ÖĞRENME) BÖLÜMÜ (Aynı kalıyor)
 class ActorCritic(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(ActorCritic, self).__init__()
-        # Aktör (Karar Verici) ve Kritik (Durum Değerlendirici) Ağları
         self.ortak_katman = nn.Sequential(
             nn.Linear(input_dim, 128),
             nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU()
         )
-        self.actor = nn.Linear(64, output_dim) # Hangi formasyonu seçecek? (Olasılıklar)
-        self.critic = nn.Linear(64, 1)         # Bu durum ne kadar iyi? (Puan)
+        self.actor = nn.Linear(64, output_dim)
+        self.critic = nn.Linear(64, 1)
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x):
@@ -37,58 +34,46 @@ class RLAjan:
     def __init__(self, input_dim, output_dim):
         self.policy = ActorCritic(input_dim, output_dim)
         self.optimizer = optim.Adam(self.policy.parameters(), lr=0.0005)
-        self.gamma = 0.99      # Gelecek ödüllerin önemi
-        self.eps_clip = 0.2    # Modelin çok ani değişmesini engelleme
-        self.K_epochs = 3      # Her veriyle kaç kere eğitileceği
-        self.hafiza = []       # Deneyim havuzu
+        self.gamma = 0.99
+        self.eps_clip = 0.2
+        self.K_epochs = 3
+        self.hafiza = []
 
     def hafizaya_at(self, veri):
         self.hafiza.append(veri)
 
     def ogren(self):
-        if len(self.hafiza) < 32: return # Yeterince veri yoksa öğrenme
-        
+        if len(self.hafiza) < 32: return
         s_list, a_list, r_list, prob_list = [], [], [], []
         for veri in self.hafiza:
             s, a, r, next_s, prob, done = veri
             s_list.append(s); a_list.append([a]); r_list.append([r]); prob_list.append([prob])
-
         s = torch.tensor(np.array(s_list), dtype=torch.float)
         a = torch.tensor(np.array(a_list))
         r = torch.tensor(np.array(r_list), dtype=torch.float)
-
-        # PPO Güncelleme Döngüsü
         for _ in range(self.K_epochs):
             probs, state_val = self.policy(s)
-            advantage = r - state_val.detach() # Beklenenden ne kadar iyi ödül aldık?
-            
+            advantage = r - state_val.detach()
             pi_a = probs.gather(1, a)
             ratio = torch.exp(torch.log(pi_a) - torch.tensor(prob_list))
-            
             surr1 = ratio * advantage
             surr2 = torch.clamp(ratio, 1-self.eps_clip, 1+self.eps_clip) * advantage
             loss = -torch.min(surr1, surr2) + 0.5 * nn.MSELoss()(state_val, r)
-            
             self.optimizer.zero_grad()
             loss.mean().backward()
             self.optimizer.step()
-        
-        self.hafiza = [] # Hafızayı temizle
-
+        self.hafiza = []
 
 # 2. SİMÜLASYON VE ORTAM KURULUMU
-
-
 app = Ortam()
-app.sim_olustur(6, 20) # 6 ROV ile ortamı kur
+app.sim_olustur(6, 20) 
 
 try: 
     beyin = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
 except: 
-    print("⚠️ GAT Modeli yüklenemedi, AI devre dışı."); beyin = None
+    beyin = None
 
 filo = Filo()
-# ROV Rollerini Ayarla: 0 numara Lider, diğerleri Takipçi
 app.rovs[0].set("rol", 1) 
 for i in range(1, len(app.rovs)): app.rovs[i].set("rol", 0)
 
@@ -96,168 +81,145 @@ modem = filo.otomatik_kurulum(app.rovs)
 filo.manuel_kontrol_all(True) 
 app.filo = filo
 
-# --- BATARYA SİMÜLASYONU DEĞİŞKENLERİ ---
-# Her ROV için %100 batarya ile başlatıyoruz
 rov_bataryalar = [100.0] * len(app.rovs)
-
-# --- RL KURULUMU ---
-state_boyutu = len(app.rovs) * 4  # Her ROV için: Batarya, Sonar, Hız, Mesafe
-action_boyutu = 4                 # Formasyonlar: V, Sıra, Kutu, Çember
+state_boyutu = len(app.rovs) * 4
+action_boyutu = 4
 ajan = RLAjan(state_boyutu, action_boyutu)
 
 adim_sayaci = 0
-lider_hedef_z = 50.0 
+
+# --- YENİ HEDEF MANTIĞI ---
 lider_hedef_x = 0.0
+lider_hedef_z = 0.0
 
-print(f"✅ RL Sistemi Hazır. Batarya Simülasyonu Aktif.")
+def yeni_guvenli_hedef_sec():
+    global lider_hedef_x, lider_hedef_z
+    while True:
+        # Havuz sınırları içinde random bir nokta (-180, 180 arası)
+        deneme_x = random.uniform(-180, 180)
+        deneme_z = random.uniform(-180, 180)
+        
+        guvenli = True
+        # Ortamdaki adaları kontrol et
+        if hasattr(app, 'island_positions'):
+            for ada_pos in app.island_positions:
+                # ada_pos -> (x, z, radius)
+                d = math.sqrt((deneme_x - ada_pos[0])**2 + (deneme_z - ada_pos[1])**2)
+                if d < ada_pos[2] + 25: # Ada yarıçapı + 25 birim güvenlik payı
+                    guvenli = False
+                    break
+        
+        if guvenli:
+            lider_hedef_x = deneme_x
+            lider_hedef_z = deneme_z
+            print(f"🎯 Yeni Hedef Belirlendi: X:{lider_hedef_x:.1f}, Z:{lider_hedef_z:.1f}")
+            break
 
+# İlk hedefi belirle
+yeni_guvenli_hedef_sec()
 
-# 3. ANA DÖNGÜ (RL MANTIĞI VE VERİ ENTEGRASYONU)
-
-
+# 3. ANA DÖNGÜ
 def update():
-    global adim_sayaci, lider_hedef_z
+    global adim_sayaci, lider_hedef_x, lider_hedef_z
 
     try:
-        dt = time.dt # Geçen süre (saniye)
-
-      
-        # A) VERİ TOPLAMA VE BATARYA SİMÜLASYONU
-       
-        
-        # RL Modelini besleyecek olan anlık veriler listesi
+        dt = time.dt
         anlık_veriler = [] 
-        
         lider_pos = app.rovs[0].position
 
+        # HEDEFE ULAŞILDI MI KONTROLÜ
+        mesafe_to_target = math.sqrt((lider_pos.x - lider_hedef_x)**2 + (lider_pos.z - lider_hedef_z)**2)
+        if mesafe_to_target < 10.0: # 10 birim kala yeni hedefe geç
+            yeni_guvenli_hedef_sec()
+
         for k in range(len(app.rovs)):
-            # 1. HIZ HESAPLA (Vektör büyüklüğü)
             hiz_vec = filo.get(k, "hiz")
-            if hasattr(hiz_vec, 'length'): hiz = hiz_vec.length()
-            else: hiz = np.linalg.norm(hiz_vec)
+            hiz = hiz_vec.length() if hasattr(hiz_vec, 'length') else np.linalg.norm(hiz_vec)
             
-            # 2. BATARYA TÜKETİMİ
-            # Formül: Baz Tüketim + (Hız * Efor) * Zaman
-            # Hızlı gidenin şarjı daha çabuk biter.
-            tuketim = (0.005 + (hiz * 0.02)) * dt * 5.0 # 5.0 katsayısı testi hızlandırmak için
+            tuketim = (0.005 + (hiz * 0.02)) * dt * 5.0 
             rov_bataryalar[k] -= tuketim
             if rov_bataryalar[k] < 0: rov_bataryalar[k] = 0.0
             
-            # 3. SONAR VE KONUM
             sonar = filo.get(k, "sonar")
             pos = app.rovs[k].position
-            
-            # 4. LİDERE UZAKLIK (GPS Mantığı)
             dist = np.linalg.norm(np.array([pos.x, pos.z]) - np.array([lider_pos.x, lider_pos.z]))
             
-            # Verileri RL için kaydet (Normalize ederek)
             anlık_veriler.extend([
-                rov_bataryalar[k] / 100.0, # Batarya (0-1 arası)
-                min(sonar, 50.0) / 50.0,   # Sonar (0-1 arası)
-                hiz,                       # Hız
-                dist                       # Mesafe
+                rov_bataryalar[k] / 100.0,
+                min(sonar, 50.0) / 50.0,
+                hiz,
+                dist
             ])
 
-       
-        # B) GAT VE GÖRSELLEŞTİRME
-     
+        # B) GAT (Analiz)
         veri = app.simden_veriye()
-        
-        if getattr(cfg, 'ai_aktif', True) and beyin:
+        if beyin:
             try: tahminler, _, _ = beyin.analiz_et(veri)
             except: tahminler = np.zeros(len(app.rovs), dtype=int)
-        else:
-            tahminler = np.zeros(len(app.rovs), dtype=int)
+        else: tahminler = np.zeros(len(app.rovs), dtype=int)
 
         kod_renkleri = {0:color.orange, 1:color.red, 2:color.black, 3:color.yellow, 5:color.magenta}
         for i, gat_kodu in enumerate(tahminler):
             if app.rovs[i].role == 1: app.rovs[i].color = color.red
             else: app.rovs[i].color = kod_renkleri.get(gat_kodu, color.white)
-            
-            # Ekranda Batarya Durumunu Göster
             app.rovs[i].label.text = f"R{i}\nBat: %{rov_bataryalar[i]:.0f}"
 
-       
         # C) RL KARAR DÖNGÜSÜ
-        
         adim_sayaci += 1
-        
-        # Lider Hedef İlerlemesi
-        if lider_pos.z > lider_hedef_z - 20: lider_hedef_z += 40.0
-
         if adim_sayaci % 5 == 0:
-            
-            # 1. GÖZLEM: Topladığımız 'anlık_veriler' listesini kullanıyoruz
             state_np = np.array(anlık_veriler, dtype=np.float32)
             state_tensor = torch.from_numpy(state_np).float()
 
-            # 2. KARAR
             probs, _ = ajan.policy(state_tensor)
-            m = Categorical(probs)
-            action = m.sample()
+            action = Categorical(probs).sample()
             aksiyon_id = action.item()
 
             # Formasyon Hesapla
-            offsets = []
             N = len(app.rovs)
+            # Liderin bakış açısına (heading) göre formasyon döndürme (basitleştirilmiş)
+            # Hedefe doğru olan açı
+            angle_to_target = math.atan2(lider_hedef_x - lider_pos.x, lider_hedef_z - lider_pos.z)
+
             if aksiyon_id == 0:   # V-Şekli
                 offsets = [(0,0)] + [(pow(-1, i)*((i+1)//2)*12, -((i+1)//2)*12) for i in range(1, N)]
             elif aksiyon_id == 1: # Sıra
                 offsets = [(0, -i*15) for i in range(N)]
             elif aksiyon_id == 2: # Kutu
                 offsets = [((i%2)*15, -(i//2)*15) for i in range(N)]
-            elif aksiyon_id == 3: # Çember
+            else:                # Çember
                 offsets = [(math.sin(math.radians(i*(360/N)))*20, math.cos(math.radians(i*(360/N)))*20) for i in range(N)]
 
-            # Uygula
+            # Lideri yeni hedefe gönder
             filo.git(0, lider_hedef_x, lider_hedef_z, -10)
+            
+            # Takipçileri formasyona göre gönder
             for r_id in range(1, N):
                 if r_id < len(offsets):
                     ox, oz = offsets[r_id]
-                    # Batarya varsa hareket etsin
+                    # Basit rotasyon matrisi (formasyonun hedefe bakması için)
+                    rx = ox * math.cos(angle_to_target) - oz * math.sin(angle_to_target)
+                    rz = ox * math.sin(angle_to_target) + oz * math.cos(angle_to_target)
+                    
                     if rov_bataryalar[r_id] > 0:
-                        filo.git(r_id, lider_pos.x + ox, lider_pos.z + oz, -10)
+                        filo.git(r_id, lider_pos.x + rx, lider_pos.z + rz, -10)
 
-            # 3. ÖDÜL MEKANİZMASI
+            # Ödül
             avg_sonar = np.mean([filo.get(k, "sonar") for k in range(N)])
-            avg_bat = np.mean(rov_bataryalar)
+            odul = 1.0
+            if avg_sonar < 12.0: odul -= 15.0
+            if rov_bataryalar[0] < 10: odul -= 20.0
             
-            odul = 0
-            if avg_sonar < 10.0: odul -= 10.0 # Çarpışma riski
-            if avg_bat < 15.0: odul -= 2.0    # Kritik batarya cezası
-            else: odul += 1.0                 # Stabil durum ödülü
-            
-            # Hafızaya At
-            prob_val = probs[aksiyon_id].item()
-            ajan.hafizaya_at((state_np, aksiyon_id, odul, state_np, prob_val, False))
+            ajan.hafizaya_at((state_np, aksiyon_id, odul, state_np, probs[aksiyon_id].item(), False))
 
-            # 4. EĞİTİM
             if adim_sayaci % 100 == 0:
                 ajan.ogren()
-
-  
-        # D) DETAYLI KONSOL RAPORU (50 adımda bir)
-      
-        if adim_sayaci % 50 == 0:
-            print(f"\n--- DURUM RAPORU (Adım: {adim_sayaci}) ---")
-            print(f"{'ID':<4} | {'BATARYA':<10} | {'HIZ':<8} | {'SONAR':<8} | {'GPS (X,Z)':<15}")
-            print("-" * 60)
-            for k in range(len(app.rovs)):
-                h = np.linalg.norm(filo.get(k, "hiz"))
-                s = filo.get(k, "sonar")
-                p = app.rovs[k].position
-                print(f"R{k:<3} | %{rov_bataryalar[k]:>6.2f}   | {h:>6.2f}   | {s:>6.1f}   | ({p.x:.0f}, {p.z:.0f})")
-            print("-" * 60)
 
         filo.guncelle_hepsi(tahminler)
         
     except Exception as e: 
-        print(f"Hata: {e}")
         pass
 
 app.set_update_function(update)
 
 if __name__ == "__main__":
-    try: app.run(interaktif=True)
-    except KeyboardInterrupt: pass
-    finally: os.system('stty sane'); os._exit(0)
+    app.run(interaktif=True)

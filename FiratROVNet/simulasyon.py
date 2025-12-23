@@ -279,14 +279,101 @@ class ROV(Entity):
         elif veri_tipi == "kacinma_mesafesi":
             return self.sensor_config.get("kacinma_mesafesi")
         elif veri_tipi == "sonar":
+            """
+            Sonar sensörü: En yakın engel veya havuz sınırının mesafesini döndürür.
+            Eğer engel sonar mesafesindeyse (engel_mesafesi limiti içindeyse) mesafeyi döndürür,
+            değilse -1 döndürür (engel yok veya menzil dışında).
+            """
             min_dist = 999.0
-            if self.environment_ref:
+            engel_mesafesi_limit = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
+            
+            if not self.environment_ref:
+                return -1
+            
+            # 1. Havuz sınırlarını kontrol et (sanal engeller)
+            if hasattr(self.environment_ref, 'havuz_genisligi'):
+                havuz_genisligi = self.environment_ref.havuz_genisligi
+                havuz_sinir = havuz_genisligi  # +-havuz_genisligi
+                
+                # X ve Z sınırlarına mesafe kontrolü
+                x_mesafe_sag = havuz_sinir - self.position.x  # Sağ duvara mesafe
+                x_mesafe_sol = self.position.x - (-havuz_sinir)  # Sol duvara mesafe
+                z_mesafe_on = havuz_sinir - self.position.z  # Ön duvara mesafe
+                z_mesafe_arka = self.position.z - (-havuz_sinir)  # Arka duvara mesafe
+                
+                # En yakın havuz sınırını bul
+                en_yakin_sinir_mesafe = min(x_mesafe_sag, x_mesafe_sol, z_mesafe_on, z_mesafe_arka)
+                
+                if en_yakin_sinir_mesafe < min_dist:
+                    min_dist = en_yakin_sinir_mesafe
+            
+            # 2. Fiziksel engelleri kontrol et
+            if hasattr(self.environment_ref, 'engeller'):
                 for engel in self.environment_ref.engeller:
-                    avg_scale = (engel.scale_x + engel.scale_z) / 2
-                    d = distance(self, engel) - (avg_scale / 2)
-                    if d < min_dist: min_dist = d
-            menzil = self.sensor_config["engel_mesafesi"]
-            return min_dist if min_dist < menzil else -1
+                    if not engel or not hasattr(engel, 'position') or engel.position is None:
+                        continue
+                    
+                    # Scale alma (Güvenli yöntem)
+                    if hasattr(engel, 'scale'):
+                        if hasattr(engel.scale, 'x'):
+                            s_x, s_y, s_z = engel.scale.x, engel.scale.y, engel.scale.z
+                        else:
+                            s_x = engel.scale[0] if len(engel.scale) > 0 else 1.0
+                            s_y = engel.scale[1] if len(engel.scale) > 1 else 1.0
+                            s_z = engel.scale[2] if len(engel.scale) > 2 else 1.0
+                    else:
+                        s_x, s_y, s_z = 1.0, 1.0, 1.0
+                    
+                    # Ada hitbox'ları için özel işleme (silindirik algılama)
+                    is_island_boundary = (hasattr(engel, 'model') and 
+                                         engel.model == 'cylinder' and
+                                         hasattr(engel, 'visible') and 
+                                         engel.visible == True)
+                    
+                    if is_island_boundary:
+                        # Ada sınır çizgisi için silindirik algılama
+                        yatay_yaricap = max(s_x, s_z) / 2
+                        dikey_yaricap = s_y / 2
+                        
+                        # Vektör hesaplamaları
+                        fark_vektoru = self.position - engel.position
+                        
+                        # Yatay uzaklık (X-Z düzlemi)
+                        yatay_uzaklik = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
+                        
+                        # Dikey uzaklık (Y ekseni)
+                        dy = abs(fark_vektoru.y)
+                        
+                        # Silindirik algılama: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
+                        dikey_tolerans = 5.0
+                        
+                        if dy <= (dikey_yaricap + dikey_tolerans):
+                            duvara_mesafe = yatay_uzaklik - yatay_yaricap
+                            
+                            # İçindeyse mesafe 0
+                            if duvara_mesafe < 0:
+                                duvara_mesafe = 0
+                            
+                            if duvara_mesafe < min_dist:
+                                min_dist = duvara_mesafe
+                    else:
+                        # Normal engel (küp, vb.) için basit mesafe hesaplama
+                        # Merkezden merkeze mesafe - engelin yarıçapı
+                        avg_scale = (s_x + s_z) / 2
+                        d = distance(self.position, engel.position) - (avg_scale / 2)
+                        
+                        # Negatif mesafe olamaz (içindeyse 0)
+                        if d < 0:
+                            d = 0
+                        
+                        if d < min_dist:
+                            min_dist = d
+            
+            # 3. Sonuç: Eğer engel sonar mesafesindeyse mesafeyi döndür, değilse -1
+            if min_dist < engel_mesafesi_limit:
+                return min_dist
+            else:
+                return -1
         return None
     
     def _engel_tespiti(self):
