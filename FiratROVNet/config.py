@@ -183,7 +183,7 @@ class Formasyon:
     ]
     
     
-    def pozisyonlar(self, tip, n_rovs, aralik=15.0):
+    def pozisyonlar(self, tip, aralik=15.0):
         """
         Belirtilen formasyon tipi ve ROV sayısına göre pozisyon ofsetlerini döndürür.
         
@@ -214,6 +214,7 @@ class Formasyon:
         # Lider her zaman (0, 0, 0) pozisyonunda
         pozisyonlar = [(0.0, 0.0, 0.0)]
         
+        n_rovs=len(self.Filo.sistemler)
         if n_rovs <= 1:
             return pozisyonlar
         

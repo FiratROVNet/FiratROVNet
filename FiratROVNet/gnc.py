@@ -391,78 +391,61 @@ class Filo:
             traceback.print_exc()
             return None
 
-    def formasyon(self, tip="LINE", aralik=15):
+    def formasyon(self, formasyon_id="LINE", aralik=15):
         """
-        Filoyu belirtilen formasyona sokar (config.py'deki Formasyon sınıfını kullanır).
-        Formasyon sadece başlangıçta kurulur, sonra korumaya çalışmaz.
+        Filoyu belirtilen formasyona sokar.
+        Formasyon.pozisyonlar() ile pozisyonları alır ve filo.git() ile uygular.
         
         Args:
-            tip (str): Formasyon tipi (varsayılan: "LINE")
+            formasyon_id (str veya int): Formasyon tipi (varsayılan: "LINE")
                 - Config.py'deki Formasyon.TIPLER listesindeki tiplerden biri
+                - Veya 0-9 arası indeks
             aralik (float): ROV'lar arası mesafe (varsayılan: 15)
         
         Örnekler:
             filo.formasyon()  # Varsayılan LINE formasyonu
             filo.formasyon("V_SHAPE", aralik=20)  # V şekli formasyon, 20 birim aralık
             filo.formasyon("DIAMOND", aralik=25)  # Elmas formasyonu, 25 birim aralık
+            filo.formasyon(1, aralik=20)  # İndeks ile: V_SHAPE
         """
-        # 1. ADIM: Otorite Denetimi (Lowest-ID Authority)
-        liderler = [r for r in self.rovs if r.role == 1]
+        # 1. ADIM: Formasyon.pozisyonlar() ile pozisyonları al
+        formasyon_obj = Formasyon(self)
+        pozisyonlar = formasyon_obj.pozisyonlar(formasyon_id, aralik)
         
-        if not liderler:
-            print("❌ [FORMASYON] Kritik Hata: Filoda hiç lider yok!")
+        if not pozisyonlar or len(pozisyonlar) == 0:
+            print("❌ [FORMASYON] Pozisyonlar alınamadı!")
             return
         
-        # En düşük ID'li olanı asıl lider seç
-        asil_lider = min(liderler, key=lambda r: r.id)
+        if len(pozisyonlar) != len(self.sistemler):
+            print(f"⚠️ [FORMASYON] Uyarı: Pozisyon sayısı ({len(pozisyonlar)}) ROV sayısı ({len(self.sistemler)}) ile eşleşmiyor!")
         
-        # DİĞER LİDERLERİ AZLET: Asıl lider dışındaki herkesi takipçi yap
-        for r in liderler:
-            if r.id != asil_lider.id:
-                print(f"⚠️ [FORMASYON] Sistem Uyarısı: Otorite Çatışması! ROV-{r.id} takipçi yapıldı. Asıl Lider: ROV-{asil_lider.id}")
-                self.set(r.id, "rol", 0)
-        
-        # 2. ADIM: Takipçileri Hazırla
-        takipciler = sorted([r for r in self.rovs if r.id != asil_lider.id], key=lambda r: r.id)
-        toplam_n = len(self.rovs)
-        
-        # 3. ADIM: Config.py'deki Formasyon sınıfını kullan
-        formasyon_obj = Formasyon(self)
-        pozisyonlar = formasyon_obj.pozisyonlar(tip, toplam_n, aralik)
-        
-        # 4. ADIM: Liderin mevcut pozisyonunu al
-        lider_pos = (asil_lider.x, asil_lider.z, asil_lider.y)
-        
-        # 5. ADIM: Her ROV için hedef belirle
-        for i, rov in enumerate(self.rovs):
-            if rov.id == asil_lider.id:
-                continue  # Lideri atla
+        # 2. ADIM: Her ROV için pozisyonu filo.git() ile uygula
+        # Formasyon.pozisyonlar() zaten mutlak pozisyonları döndürüyor (lider pozisyonu + offset'ler)
+        # Format: (x, y, z) - x,y: 2D koordinatlar, z: derinlik (Config formatı)
+        # Ursina formatı: (x, y, z) - x: sağ-sol, y: derinlik, z: ileri-geri
+        # Dönüşüm: Config (x, y, z) -> Ursina (x, z, y)
+        for i, pozisyon in enumerate(pozisyonlar):
+            if i >= len(self.sistemler):
+                break
             
-            if i - 1 < len(pozisyonlar):
-                # Pozisyon offset'i (lider hariç, index 0 lider)
-                offset_x, offset_y, offset_z = pozisyonlar[i]
-                
-                # Ursina koordinat sistemine dönüştür: (x, y, z) -> (x, z, y)
-                # Config'den gelen: (x, y, z) - x,y: 2D, z: derinlik
-                # Ursina: (x, y, z) - x: sağ-sol, y: derinlik, z: ileri-geri
-                ursina_x = lider_pos[0] + offset_x
-                ursina_z = lider_pos[1] + offset_y  # Config'deki y -> Ursina'da z
-                ursina_y = lider_pos[2] + offset_z  # Config'deki z -> Ursina'da y
-                
-                # Eğer lider yüzeydeyse (y >= 0), takipçiler su altında olmalı
-                if ursina_y >= 0:
-                    ursina_y = -10.0
-                
-                # GNC sistemine hedefi ver
-                try:
-                    for gnc_idx, gnc_sistem in enumerate(self.sistemler):
-                        if hasattr(gnc_sistem, 'rov') and gnc_sistem.rov.id == rov.id:
-                            self.git(gnc_idx, ursina_x, ursina_z, y=ursina_y, ai=True)
-                            break
-                except Exception as e:
-                    print(f"⚠️ [FORMASYON] ROV-{rov.id} için hedef ayarlanırken hata: {e}")
+            # Config formatından Ursina formatına dönüştür
+            config_x, config_y, config_z = pozisyon
+            # Config (x, y, z) -> Ursina (x, z, y)
+            ursina_x = config_x  # x: sağ-sol (aynı)
+            ursina_z = config_y  # Config'deki y -> Ursina'da z (ileri-geri)
+            ursina_y = config_z  # Config'deki z -> Ursina'da y (derinlik)
+            
+            # Eğer yüzeydeyse (y >= 0), su altına gönder
+            if ursina_y >= 0:
+                ursina_y = -10.0
+            
+            # filo.git() ile hedefi uygula
+            try:
+                self.git(i, ursina_x, ursina_z, y=ursina_y, ai=True)
+            except Exception as e:
+                print(f"⚠️ [FORMASYON] ROV-{i} için hedef ayarlanırken hata: {e}")
         
-        print(f"✅ [FORMASYON] Formasyon kuruldu: Tip={tip}, Aralık={aralik}, Lider=ROV-{asil_lider.id}, Takipçi Sayısı={len(takipciler)}")
+        print(f"✅ [FORMASYON] Formasyon kuruldu: Tip={formasyon_id}, Aralık={aralik}, ROV Sayısı={len(pozisyonlar)}")
     
     def hedef(self, x=None, y=None, z=None):
         """
