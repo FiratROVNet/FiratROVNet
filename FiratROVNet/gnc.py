@@ -391,7 +391,7 @@ class Filo:
             traceback.print_exc()
             return None
 
-    def formasyon(self, formasyon_id="LINE", aralik=15):
+    def formasyon(self, formasyon_id="LINE", aralik=15, is_3d=False):
         """
         Filoyu belirtilen formasyona sokar.
         Formasyon.pozisyonlar() ile pozisyonları alır ve filo.git() ile uygular.
@@ -399,18 +399,21 @@ class Filo:
         Args:
             formasyon_id (str veya int): Formasyon tipi (varsayılan: "LINE")
                 - Config.py'deki Formasyon.TIPLER listesindeki tiplerden biri
-                - Veya 0-9 arası indeks
+                - Veya 0-14 arası indeks
             aralik (float): ROV'lar arası mesafe (varsayılan: 15)
+            is_3d (bool): 3D formasyon modu (varsayılan: False - 2D)
+                - True: ROV'lar 3D uzayda (farklı derinliklerde) dizilir
+                - False: ROV'lar 2D düzlemde (aynı derinlikte) dizilir
         
         Örnekler:
-            filo.formasyon()  # Varsayılan LINE formasyonu
-            filo.formasyon("V_SHAPE", aralik=20)  # V şekli formasyon, 20 birim aralık
-            filo.formasyon("DIAMOND", aralik=25)  # Elmas formasyonu, 25 birim aralık
-            filo.formasyon(1, aralik=20)  # İndeks ile: V_SHAPE
+            filo.formasyon()  # Varsayılan LINE formasyonu (2D)
+            filo.formasyon("V_SHAPE", aralik=20)  # V şekli formasyon, 20 birim aralık (2D)
+            filo.formasyon("DIAMOND", aralik=25, is_3d=True)  # Elmas formasyonu, 3D mod
+            filo.formasyon(1, aralik=20, is_3d=True)  # İndeks ile: V_SHAPE, 3D mod
         """
         # 1. ADIM: Formasyon.pozisyonlar() ile pozisyonları al
         formasyon_obj = Formasyon(self)
-        pozisyonlar = formasyon_obj.pozisyonlar(formasyon_id, aralik)
+        pozisyonlar = formasyon_obj.pozisyonlar(formasyon_id, aralik, is_3d=is_3d)
         
         if not pozisyonlar or len(pozisyonlar) == 0:
             print("❌ [FORMASYON] Pozisyonlar alınamadı!")
@@ -442,6 +445,7 @@ class Filo:
             # filo.git() ile hedefi uygula
             try:
                 self.git(i, ursina_x, ursina_z, y=ursina_y, ai=True)
+                print(f"✅ [FORMASYON] ROV-{i} hedefi ayarlandı: ({ursina_x:.2f}, {ursina_z:.2f}, {ursina_y:.2f})")
             except Exception as e:
                 print(f"⚠️ [FORMASYON] ROV-{i} için hedef ayarlanırken hata: {e}")
         
