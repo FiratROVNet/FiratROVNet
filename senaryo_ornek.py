@@ -2,6 +2,9 @@
 Senaryo Modülü Kullanım Örnekleri
 
 Bu dosya, FiratROVNet.senaryo modülünün nasıl kullanılacağını gösterir.
+Yeni optimize edilmiş özellikler:
+- Parametresiz uret() çağrısı: Mevcut sayıları koruyarak sadece pozisyonları güvenli şekilde günceller
+- Otomatik güvenli pozisyon bulma: Adalar ve ROV'lar birbirine binmeyecek şekilde yerleştirilir
 """
 
 from FiratROVNet import senaryo
@@ -192,6 +195,131 @@ print(f"   Her adımda {len(veri_seti[0])} ROV verisi")
 print("\nİlk adım verisi:")
 for rov_id, veri in veri_seti[0].items():
     print(f"  ROV-{rov_id}: {veri}")
+
+senaryo.temizle()
+
+# ==========================================
+# ÖRNEK 7: Parametresiz uret() - Optimize Edilmiş Pozisyon Güncelleme
+# ==========================================
+
+print("\n" + "=" * 60)
+print("ÖRNEK 7: Parametresiz uret() - Optimize Pozisyon Güncelleme")
+print("=" * 60)
+
+# İlk senaryo oluştur
+print("1. İlk senaryo oluşturuluyor (5 ROV, 10 Engel)...")
+senaryo.uret(n_rovs=5, n_engels=10, havuz_genisligi=200)
+
+# İlk pozisyonları göster
+print("\nİlk pozisyonlar:")
+for i in range(5):
+    gps = senaryo.get(i, "gps")
+    print(f"  ROV-{i}: {gps}")
+
+# Parametresiz çağrı - Aynı sayılarla farklı koordinatlarda
+print("\n2. Parametresiz uret() çağrılıyor (aynı sayılar, farklı koordinatlar)...")
+senaryo.uret()  # Mevcut sayıları korur, sadece pozisyonları güvenli şekilde günceller
+
+print("\nGüncellenmiş pozisyonlar:")
+for i in range(5):
+    gps = senaryo.get(i, "gps")
+    print(f"  ROV-{i}: {gps}")
+
+# Tekrar farklı koordinatlarda
+print("\n3. Tekrar parametresiz uret() çağrılıyor...")
+senaryo.uret()  # Yine farklı koordinatlarda
+
+print("\nYeni pozisyonlar:")
+for i in range(5):
+    gps = senaryo.get(i, "gps")
+    print(f"  ROV-{i}: {gps}")
+
+print("\n✅ Aynı sayılar korundu, sadece pozisyonlar güvenli şekilde güncellendi!")
+print("   - Adalar birbirine binmedi")
+print("   - ROV'lar birbirine çarpmadı")
+print("   - ROV'lar adalara binmedi")
+
+senaryo.temizle()
+
+# ==========================================
+# ÖRNEK 8: Hızlı Senaryo Üretimi (AI Eğitimi İçin)
+# ==========================================
+
+print("\n" + "=" * 60)
+print("ÖRNEK 8: Hızlı Senaryo Üretimi (AI Eğitimi)")
+print("=" * 60)
+
+# İlk senaryo oluştur
+print("İlk senaryo oluşturuluyor...")
+senaryo.uret(n_rovs=4, n_engels=12, havuz_genisligi=200)
+
+# Hızlı pozisyon güncelleme döngüsü (AI eğitimi için)
+print("\nHızlı pozisyon güncelleme döngüsü (10 iterasyon)...")
+for i in range(10):
+    # Parametresiz çağrı = çok hızlı (GNC kurulumu yok, sadece pozisyon güncelleme)
+    senaryo.uret()
+    
+    if i % 3 == 0:
+        # Her 3 iterasyonda bir pozisyonları göster
+        print(f"\nIterasyon {i}:")
+        for rov_id in range(4):
+            gps = senaryo.get(rov_id, "gps")
+            print(f"  ROV-{rov_id}: {gps}")
+
+print("\n✅ Hızlı pozisyon güncelleme tamamlandı!")
+print("   - Her iterasyonda aynı sayılar korundu")
+print("   - Pozisyonlar güvenli şekilde güncellendi")
+print("   - GNC kurulumu yapılmadı (çok hızlı)")
+
+senaryo.temizle()
+
+# ==========================================
+# ÖRNEK 9: Farklı Senaryo Boyutları ile Pozisyon Güncelleme
+# ==========================================
+
+print("\n" + "=" * 60)
+print("ÖRNEK 9: Farklı Senaryo Boyutları")
+print("=" * 60)
+
+# Küçük senaryo
+print("1. Küçük senaryo (3 ROV, 5 Engel)...")
+senaryo.uret(n_rovs=3, n_engels=5, havuz_genisligi=150)
+
+print("İlk pozisyonlar:")
+for i in range(3):
+    gps = senaryo.get(i, "gps")
+    print(f"  ROV-{i}: {gps}")
+
+# Parametresiz çağrı - küçük senaryo ile
+print("\n2. Parametresiz uret() - küçük senaryo...")
+senaryo.uret()
+
+print("Güncellenmiş pozisyonlar:")
+for i in range(3):
+    gps = senaryo.get(i, "gps")
+    print(f"  ROV-{i}: {gps}")
+
+senaryo.temizle()
+
+# Büyük senaryo
+print("\n3. Büyük senaryo (6 ROV, 15 Engel)...")
+senaryo.uret(n_rovs=6, n_engels=15, havuz_genisligi=250)
+
+print("İlk pozisyonlar:")
+for i in range(6):
+    gps = senaryo.get(i, "gps")
+    print(f"  ROV-{i}: {gps}")
+
+# Parametresiz çağrı - büyük senaryo ile
+print("\n4. Parametresiz uret() - büyük senaryo...")
+senaryo.uret()
+
+print("Güncellenmiş pozisyonlar:")
+for i in range(6):
+    gps = senaryo.get(i, "gps")
+    print(f"  ROV-{i}: {gps}")
+
+print("\n✅ Farklı boyutlarda senaryo testi tamamlandı!")
 
 senaryo.temizle()
 

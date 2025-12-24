@@ -249,11 +249,13 @@ class ROV(Entity):
             if self.role == 1:
                 self.color = color.red
                 self.label.text = f"LIDER-{self.id}"
-                print(f"✅ ROV-{self.id} artık LİDER.")
+                if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose') and self.ortam.verbose:
+                    print(f"✅ ROV-{self.id} artık LİDER.")
             else:
                 self.color = color.orange
                 self.label.text = f"ROV-{self.id}"
-                print(f"✅ ROV-{self.id} artık TAKİPÇİ.")
+                if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose') and self.ortam.verbose:
+                    print(f"✅ ROV-{self.id} artık TAKİPÇİ.")
         elif ayar_adi in self.sensor_config: 
             self.sensor_config[ayar_adi] = deger
 
@@ -1011,10 +1013,16 @@ class ROV(Entity):
                         carpan2 = (2 * rov_kutlesi / (rov_kutlesi + diger_rov_kutlesi)) * (-nokta_carpim)
                         diger_rov.velocity = diger_rov.velocity - (-carpisma_yonu) * carpan2
                         
-                        # Çarpışma sonrası pozisyonları ayır
-                        ayirma_mesafesi = (min_mesafe - mesafe) / 2
+                        # Çarpışma sonrası pozisyonları ayır (daha aktif)
+                        ayirma_mesafesi = (min_mesafe - mesafe) + 2.0  # Ekstra mesafe ekle
                         self.position += carpisma_yonu * ayirma_mesafesi
                         diger_rov.position -= carpisma_yonu * ayirma_mesafesi
+                        
+                        # Aktif kaçınma: Hızı da artır (çarpışmadan kurtulmak için)
+                        if self.velocity.length() < 5.0:
+                            self.velocity += carpisma_yonu * 3.0  # Kaçınma hızı ekle
+                        if diger_rov.velocity.length() < 5.0:
+                            diger_rov.velocity -= carpisma_yonu * 3.0  # Kaçınma hızı ekle
         
         # Kayalarla ve ada sınırlarıyla çarpışma
         for engel in self.environment_ref.engeller:
@@ -1405,7 +1413,8 @@ class Harita:
 
 
 class Ortam:
-    def __init__(self):
+    def __init__(self, verbose=False):
+        self.verbose = verbose  # Log mesajlarını kontrol eder
         # --- Ursina Ayarları ---
         self.app = Ursina(
             vsync=False,
@@ -2119,7 +2128,15 @@ class Ortam:
                             if mesafe < radius * 2:
                                 engel.position = (x, engel.position.y, y)
             
-            print(f"✅ Ada-{ada_id} pozisyonu güncellendi: ({x}, {y})")
+            # Verbose kontrolü için ortam referansı gerekli
+            verbose = False
+            if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose'):
+                verbose = self.ortam.verbose
+            elif hasattr(self, 'verbose'):
+                verbose = self.verbose
+            
+            if verbose:
+                print(f"✅ Ada-{ada_id} pozisyonu güncellendi: ({x}, {y})")
             return (x, y)
         else:
             # Mevcut konumu döndür

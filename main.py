@@ -2,6 +2,7 @@ from FiratROVNet.simulasyon import Ortam
 from FiratROVNet.gnc import Filo
 from FiratROVNet.gat import FiratAnalizci
 from FiratROVNet.config import cfg
+from FiratROVNet.config import Formasyon
 from ursina import *
 import numpy as np
 import os
@@ -20,6 +21,8 @@ except:
 # Filo sistemini otomatik kurulum ile oluştur
 # (otomatik_kurulum içinde rol ataması yapılıyor, manuel atama gerekmez)
 filo = Filo()
+formasyon = Formasyon(filo)
+
 tum_modemler = filo.otomatik_kurulum(
     rovs=app.rovs,
     ortam_ref=app,  # Ortam referansını ekle (hedef görselleştirme için)
@@ -140,8 +143,13 @@ def ROV_wrapper(rov_id, x=None, y=None, z=None):
         return None
     return app.ROV(rov_id, x, y, z)
 
+
+
+
 app.konsola_ekle("Ada", Ada_wrapper)
 app.konsola_ekle("ROV", ROV_wrapper)
+# Formasyon sınıfını konsola ekle (sınıf metodlarına erişim için)
+app.konsola_ekle("Formasyon", formasyon)
 
 print("✅ Sistem aktif.")
 print("🗺️  Harita aktif! Kullanım: harita.ekle(x_2d, y_2d)")
