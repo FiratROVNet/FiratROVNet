@@ -5,6 +5,61 @@ from .iletisim import AkustikModem
 import math
 import random
 
+# Convex Hull için scipy import
+try:
+    from scipy.spatial import ConvexHull
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    print("⚠️ [UYARI] scipy.spatial.ConvexHull bulunamadı. ConvexHull fonksiyonu çalışmayacak.")
+
+# ==========================================
+# 0. KOORDİNAT TERCÜMANI
+# ==========================================
+class Koordinator:
+    """
+    Simülasyon ve Ursina koordinat sistemleri arasında dönüşüm yapar.
+    
+    Simülasyon Sistemi:
+    - X: Sağ-Sol (horizontal)
+    - Y: İleri-Geri (forward-backward)
+    - Z: Derinlik (depth, pozitif = derin)
+    
+    Ursina Sistemi:
+    - X: Sağ-Sol (horizontal, aynı)
+    - Y: Yukarı-Aşağı (vertical, derinlik)
+    - Z: İleri-Geri (forward-backward)
+    """
+    @staticmethod
+    def sim_to_ursina(sim_x, sim_y, sim_z):
+        """
+        Sim (X:Sağ, Y:İleri, Z:Derinlik) -> Ursina (X, Y:Yukarı, Z:İleri)
+        
+        Args:
+            sim_x: Sağ-Sol koordinatı
+            sim_y: İleri-Geri koordinatı
+            sim_z: Derinlik koordinatı
+        
+        Returns:
+            tuple: (ursina_x, ursina_y, ursina_z)
+        """
+        return (sim_x, sim_z, sim_y)
+    
+    @staticmethod
+    def ursina_to_sim(u_x, u_y, u_z):
+        """
+        Ursina (X, Y:Yukarı, Z:İleri) -> Sim (X, Y:İleri, Z:Derinlik)
+        
+        Args:
+            u_x: Ursina X (sağ-sol)
+            u_y: Ursina Y (yukarı-aşağı, derinlik)
+            u_z: Ursina Z (ileri-geri)
+        
+        Returns:
+            tuple: (sim_x, sim_y, sim_z)
+        """
+        return (u_x, u_z, u_y)
+
 # ==========================================
 # 1. FİLO (ROV FİLO YÖNETİCİSİ)
 # ==========================================
@@ -309,13 +364,16 @@ class Filo:
         
         Args:
             rov_id: ROV ID (0, 1, 2, ...)
-            ayar_adi: Ayar adı ('rol', 'renk', 'engel_mesafesi', 'iletisim_menzili', 'min_pil_uyarisi', 'kacinma_mesafesi')
+            ayar_adi: Ayar adı ('rol', 'renk', 'engel_mesafesi', 'iletisim_menzili', 'min_pil_uyarisi', 'kacinma_mesafesi', 'yaw')
             deger: Ayar değeri
+                - 'yaw' için: Derece (0-360 arası, otomatik normalize edilir)
         
         Örnekler:
             filo.set(0, 'rol', 1)  # ROV-0'ı lider yap
             filo.set(1, 'renk', (255, 0, 0))  # ROV-1'i kırmızı yap
             filo.set(2, 'engel_mesafesi', 30.0)  # ROV-2'nin engel mesafesini ayarla
+            filo.set(0, 'yaw', 90.0)  # ROV-0'ı 90 dereceye döndür
+            filo.set(1, 'yaw', 180)  # ROV-1'i 180 dereceye döndür
         """
         # Sistemler listesi boş mu kontrol et
         if len(self.sistemler) == 0:
@@ -345,43 +403,87 @@ class Filo:
             traceback.print_exc()
             return False
 
-    def get(self, rov_id, veri_tipi):
+    def get(self, rov_id=None, veri_tipi=None, taraf=None):
         """
         ROV bilgilerini alır.
         
         Args:
-            rov_id: ROV ID (0, 1, 2, ...)
+            rov_id: ROV ID (0, 1, 2, ...) veya None (tüm ROV'lar için)
             veri_tipi: Veri tipi ('gps', 'hiz', 'batarya', 'rol', 'renk', 'sensör', 
-                                  'engel_mesafesi', 'iletisim_menzili', 'min_pil_uyarisi', 'kacinma_mesafesi', 'sonar')
+                                  'engel_mesafesi', 'iletisim_menzili', 'min_pil_uyarisi', 
+                                  'kacinma_mesafesi', 'sonar', 'lidar', 'yaw', 'engels')
+                                  veya None (tüm ROV'ların GPS koordinatları)
+            taraf: Lidar için yön parametresi (sadece 'lidar' için geçerli)
+                - 0: Ön (lidarx)
+                - 1: Sağ (lidary)
+                - 2: Sol (lidary1)
+                - None: Tüm yönlerden en yakın engel mesafesi
         
         Returns:
-            İstenen veri tipine göre değer
+            İstenen veri tipine göre değer veya tüm ROV'ların koordinatları
         
         Örnekler:
+            # Tüm ROV'ların koordinatlarını al
+            tum_rovlar = filo.get()  # {0: (x, y, z), 1: (x, y, z), ...}
+            
+            # Tek bir ROV için
             pozisyon = filo.get(0, 'gps')
             rol = filo.get(1, 'rol')
             sensörler = filo.get(2, 'sensör')
             batarya = filo.get(0, 'batarya')
+            yaw_acisi = filo.get(0, 'yaw')  # Yaw açısı (derece)
+            on_lidar = filo.get(0, 'lidar', 0)  # Ön lidar
+            sag_lidar = filo.get(0, 'lidar', 1)  # Sağ lidar
+            sol_lidar = filo.get(0, 'lidar', 2)  # Sol lidar
+            en_yakin = filo.get(0, 'lidar')  # Tüm yönlerden en yakın
+            engeller = filo.get(0, 'engels')  # Tüm tespit edilen engellerin koordinatları [(x,y,z), ...]
         """
+        # Parametre verilmediyse tüm ROV'ların koordinatlarını döndür
+        if rov_id is None and veri_tipi is None:
+            return self._get_all_rovs_positions()
+        
         # Sistemler listesi boş mu kontrol et
         if len(self.sistemler) == 0:
             print(f"❌ [HATA] GNC sistemleri henüz kurulmamış!")
             return None
         
         # ROV ID geçerliliği kontrolü
-        if not isinstance(rov_id, int) or rov_id < 0:
+        if rov_id is not None and (not isinstance(rov_id, int) or rov_id < 0):
             print(f"❌ [HATA] Geçersiz ROV ID: {rov_id} (pozitif tam sayı olmalı)")
             print(f"   Mevcut ROV sayısı: {len(self.sistemler)} (0-{len(self.sistemler)-1} arası)")
             return None
         
-        if rov_id >= len(self.sistemler):
+        if rov_id is not None and rov_id >= len(self.sistemler):
             print(f"❌ [HATA] ROV ID {rov_id} mevcut değil!")
             print(f"   Mevcut ROV sayısı: {len(self.sistemler)} (0-{len(self.sistemler)-1} arası)")
             return None
         
         try:
+            # rov_id None kontrolü
+            if rov_id is None:
+                print(f"❌ [HATA] ROV ID belirtilmedi!")
+                return None
+            
             rov = self.sistemler[rov_id].rov
-            deger = rov.get(veri_tipi)
+            # Lidar için özel işleme
+            if veri_tipi == "lidar":
+                deger = rov.get(veri_tipi, taraf=taraf)
+            elif veri_tipi == "gps":
+                # GPS'i Simülasyon formatına dönüştür
+                ursina_gps = rov.get("gps")
+                if ursina_gps is not None:
+                    if isinstance(ursina_gps, np.ndarray):
+                        ursina_gps = tuple(ursina_gps.tolist())
+                    elif isinstance(ursina_gps, (tuple, list)):
+                        ursina_gps = tuple(ursina_gps)
+                    deger = Koordinator.ursina_to_sim(*ursina_gps)
+                else:
+                    deger = None
+            elif veri_tipi == "engels":
+                # Tüm lidar sensörlerinden engel koordinatlarını hesapla
+                deger = self._compute_obstacle_positions(rov_id)
+            else:
+                deger = rov.get(veri_tipi)
             if deger is None:
                 print(f"⚠️ [UYARI] ROV-{rov_id} için '{veri_tipi}' veri tipi bulunamadı")
             return deger
@@ -390,8 +492,136 @@ class Filo:
             import traceback
             traceback.print_exc()
             return None
+    
+    def _get_all_rovs_positions(self):
+        """
+        Tüm ROV'ların 3D koordinatlarını Simülasyon formatında döndürür.
+        
+        Returns:
+            dict: {rov_id: (x, y, z), ...} - Tüm ROV'ların GPS koordinatları (Sim formatı)
+                x: Sağ-Sol, y: İleri-Geri, z: Derinlik
+        """
+        all_positions = {}
+        
+        try:
+            for i in range(len(self.sistemler)):
+                if i < len(self.sistemler):
+                    rov = self.sistemler[i].rov
+                    # Ursina koordinatlarını al
+                    ursina_pos = (rov.x, rov.y, rov.z)
+                    # Simülasyon formatına dönüştür
+                    sim_pos = Koordinator.ursina_to_sim(*ursina_pos)
+                    all_positions[i] = sim_pos
+        except Exception as e:
+            print(f"❌ [HATA] Tüm ROV koordinatları alınırken hata: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        return all_positions
+    
+    def points(self):
+        """
+        Tüm ROV koordinatlarını ve tüm engel koordinatlarını birleştirip döndürür.
+        
+        Returns:
+            list: [(x, y, z), ...] - Tüm ROV koordinatları + tüm engel koordinatları birleşik liste
+        
+        Örnekler:
+            tum_noktalar = filo.points()
+            # Çıktı: [(x1, y1, z1), (x2, y2, z2), ...]  # ROV'lar + engeller
+            
+            # Convex Hull için kullanım
+            points = filo.points()
+            result = filo.ConvexHull(points, test_point, margin=0.2)
+        """
+        all_points = []
+        
+        try:
+            # 1. Tüm ROV koordinatlarını al
+            rovs_positions = self._get_all_rovs_positions()
+            for rov_id, position in rovs_positions.items():
+                if position is not None:
+                    all_points.append(position)
+            
+            # 2. Her ROV için engel koordinatlarını al ve ekle
+            for rov_id in rovs_positions.keys():
+                engels = self._compute_obstacle_positions(rov_id)
+                if engels:
+                    all_points.extend(engels)
+        
+        except Exception as e:
+            print(f"❌ [HATA] Points hesaplanırken hata: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        return all_points
+    
+    def _compute_obstacle_positions(self, rov_id):
+        """
+        ROV'un tüm lidar sensörlerinden engel koordinatlarını hesaplar.
+        Simülasyon formatında (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik) çalışır.
+        
+        Args:
+            rov_id: ROV ID
+        
+        Returns:
+            list: [(x, y, z), ...] - Tespit edilen engellerin koordinatları (Sim formatı)
+        """
+        # Lidar açısal offset'ler
+        LIDAR_OFFSETS = {
+            0: 0,     # ön
+            1: -90,   # sağ
+            2: 90     # sol
+        }
+        
+        obstacles = []
+        
+        try:
+            # ROV pozisyonu (Sim formatında)
+            gps = self.get(rov_id, "gps")
+            if gps is None:
+                return []
+            
+            x0, y0, z0 = gps[0], gps[1], gps[2]  # Sim formatı: x=sağ, y=ileri, z=derinlik
+            
+            # ROV yaw açısı (derece) - Ursina'da 0 derece = İleri (Sim Y+)
+            yaw_deg = self.get(rov_id, "yaw")
+            if yaw_deg is None:
+                yaw_deg = 0.0
+            
+            # Her lidar sensörü için kontrol et
+            for lidar_indis in [0, 1, 2]:
+                # Lidar mesafesi
+                distance = self.get(rov_id, "lidar", lidar_indis)
+                
+                # Eğer engel tespit edilmişse (mesafe -1 değilse)
+                if distance is not None and distance > 0 and distance != -1:
+                    # Lidar açısal offset
+                    offset = LIDAR_OFFSETS[lidar_indis]
+                    
+                    # Global açı
+                    theta_deg = yaw_deg + offset
+                    theta_rad = math.radians(theta_deg)
+                    
+                    # Engel koordinatı (Simülasyon formatında)
+                    # Simülasyon Y ekseni İLERİ ise:
+                    # x = merkez_x + mesafe * sin(theta)  (sağ-sol)
+                    # y = merkez_y + mesafe * cos(theta)  (ileri-geri)
+                    # z = merkez_z (derinlik aynı)
+                    ox = x0 + distance * math.sin(theta_rad)
+                    oy = y0 + distance * math.cos(theta_rad)
+                    oz = z0  # Derinlik aynı
+                    
+                    obstacles.append((ox, oy, oz))
+        
+        except Exception as e:
+            print(f"❌ [HATA] Engel koordinatları hesaplanırken hata: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        return obstacles
 
-    def formasyon(self, formasyon_id="LINE", aralik=15, is_3d=False):
+    def formasyon(self, formasyon_id="LINE", aralik=15, is_3d=False, lider_koordinat=None):
         """
         Filoyu belirtilen formasyona sokar.
         Formasyon.pozisyonlar() ile pozisyonları alır ve filo.git() ile uygular.
@@ -404,25 +634,55 @@ class Filo:
             is_3d (bool): 3D formasyon modu (varsayılan: False - 2D)
                 - True: ROV'lar 3D uzayda (farklı derinliklerde) dizilir
                 - False: ROV'lar 2D düzlemde (aynı derinlikte) dizilir
+            lider_koordinat (tuple, optional): (x, y, z) - Lider koordinatı (varsayılan: None)
+                - Verilirse, lider bu koordinattaymış gibi pozisyonlar hesaplanır
+                - Format: (x, y, z) - x,y: 2D koordinatlar, z: derinlik
+                - None ise liderin gerçek pozisyonu kullanılır ve ROV'lar hareket eder
+                - Verilirse, sadece pozisyonlar hesaplanır ve döndürülür (ROV'lar hareket etmez)
+        
+        Returns:
+            None: lider_koordinat verilmediğinde (ROV'lar hareket eder)
+            list: lider_koordinat verildiğinde - [(x, z, y), ...] Ursina formatında pozisyonlar
         
         Örnekler:
-            filo.formasyon()  # Varsayılan LINE formasyonu (2D)
+            filo.formasyon()  # Varsayılan LINE formasyonu (2D), ROV'lar hareket eder
             filo.formasyon("V_SHAPE", aralik=20)  # V şekli formasyon, 20 birim aralık (2D)
             filo.formasyon("DIAMOND", aralik=25, is_3d=True)  # Elmas formasyonu, 3D mod
             filo.formasyon(1, aralik=20, is_3d=True)  # İndeks ile: V_SHAPE, 3D mod
+            
+            # Sadece pozisyonları hesapla (ROV'ları hareket ettirme)
+            pozisyonlar = filo.formasyon("V_SHAPE", aralik=20, lider_koordinat=(10, 20, -5))
+            # Çıktı: [(x1, z1, y1), (x2, z2, y2), ...] - Ursina formatında
         """
         # 1. ADIM: Formasyon.pozisyonlar() ile pozisyonları al
         formasyon_obj = Formasyon(self)
-        pozisyonlar = formasyon_obj.pozisyonlar(formasyon_id, aralik, is_3d=is_3d)
+        pozisyonlar = formasyon_obj.pozisyonlar(formasyon_id, aralik, is_3d=is_3d, lider_koordinat=lider_koordinat)
         
         if not pozisyonlar or len(pozisyonlar) == 0:
             print("❌ [FORMASYON] Pozisyonlar alınamadı!")
-            return
+            return None if lider_koordinat is not None else None
         
         if len(pozisyonlar) != len(self.sistemler):
             print(f"⚠️ [FORMASYON] Uyarı: Pozisyon sayısı ({len(pozisyonlar)}) ROV sayısı ({len(self.sistemler)}) ile eşleşmiyor!")
         
-        # 2. ADIM: Her ROV için pozisyonu filo.git() ile uygula
+        # Eğer lider_koordinat verilmişse, sadece pozisyonları döndür (ROV'ları hareket ettirme)
+        if lider_koordinat is not None:
+            # Pozisyonları Ursina formatına dönüştür ve döndür
+            ursina_positions = []
+            for pozisyon in pozisyonlar:
+                config_x, config_y, config_z = pozisyon
+                # Config (x, y, z) -> Ursina (x, z, y)
+                ursina_x = config_x  # x: sağ-sol (aynı)
+                ursina_z = config_y  # Config'deki y -> Ursina'da z (ileri-geri)
+                ursina_y = config_z  # Config'deki z -> Ursina'da y (derinlik)
+                
+                # lider_koordinat verildiğinde yüzey kontrolü yapma, koordinatı olduğu gibi kullan
+                ursina_positions.append((ursina_x, ursina_z, ursina_y))
+            
+            print(f"✅ [FORMASYON] Pozisyonlar hesaplandı: Tip={formasyon_id}, Aralık={aralik}, ROV Sayısı={len(pozisyonlar)}")
+            return ursina_positions
+        
+        # 2. ADIM: Her ROV için pozisyonu filo.git() ile uygula (lider_koordinat verilmemişse)
         # Formasyon.pozisyonlar() zaten mutlak pozisyonları döndürüyor (lider pozisyonu + offset'ler)
         # Format: (x, y, z) - x,y: 2D koordinatlar, z: derinlik (Config formatı)
         # Ursina formatı: (x, y, z) - x: sağ-sol, y: derinlik, z: ileri-geri
@@ -450,6 +710,142 @@ class Filo:
                 print(f"⚠️ [FORMASYON] ROV-{i} için hedef ayarlanırken hata: {e}")
         
         print(f"✅ [FORMASYON] Formasyon kuruldu: Tip={formasyon_id}, Aralık={aralik}, ROV Sayısı={len(pozisyonlar)}")
+    
+    def formasyon_sec(self, margin=30, is_3d=False, offset=20.0):
+        """
+        Convex hull kullanarak en uygun formasyonu seçer.
+        
+        KESİN KURALLAR:
+        - Önce ROV'lar çember oluşturur (5m'den başlar, engel tespit edene kadar veya 30m'ye kadar büyür)
+        - Güvenlik hull (sanal + gerçek engeller) SADECE 1 KEZ hesaplanır (sabit hull)
+        - Margin ikiye ayrılır: guvenlik_margin ve formasyon_aralik
+        - İlk geçerli formasyon bulunduğunda DERHAL döner
+        
+        Args:
+            margin (float): Tek margin değeri (varsayılan: 30)
+                - guvenlik_margin = margin (hull sınırından minimum mesafe)
+                - formasyon_aralik = margin * 0.6 (ROV'lar arası mesafe)
+            is_3d (bool): 3D formasyon modu (varsayılan: False)
+            offset (float): ROV hull genişletme mesafesi (varsayılan: 20.0)
+        
+        Returns:
+            int veya None: Seçilen formasyon ID'si veya None (uygun formasyon bulunamazsa)
+        """
+        try:
+            # 0. ÖN ADIM: ROV'ları çember oluştur (eğer fonksiyon varsa)
+            try:
+                cember_yaricap, cember_hedefleri = self._rovlari_cember_olustur()
+                if cember_yaricap is not None and cember_hedefleri is not None:
+                    # ROV'ların çember pozisyonlarına ulaşmasını bekle
+                    print("⏳ [FORMASYON_SEC] ROV'ların çember pozisyonlarına ulaşması bekleniyor...")
+                    try:
+                        self._rovlar_hedefe_ulasana_kadar_bekle(cember_hedefleri, tolerans=0.1, maksimum_bekleme=30.0)
+                        print("✅ [FORMASYON_SEC] Tüm ROV'lar çember pozisyonlarına ulaştı!")
+                    except AttributeError:
+                        print("⚠️ [FORMASYON_SEC] Çember bekleme fonksiyonu bulunamadı, devam ediliyor...")
+            except AttributeError:
+                print("⚠️ [FORMASYON_SEC] Çember oluşturma fonksiyonu bulunamadı, devam ediliyor...")
+            
+            # 1. Güvenlik hull'u oluştur (sanal + gerçek engeller, TEK KEZ)
+            guvenlik_hull_dict = self.guvenlik_hull_olustur(offset=offset)
+            hull = guvenlik_hull_dict['hull']
+            merkez = guvenlik_hull_dict['center']
+            
+            if hull is None:
+                print("❌ [FORMASYON_SEC] Güvenlik hull oluşturulamadı!")
+                return None
+            
+            if merkez is None:
+                print("❌ [FORMASYON_SEC] Hull merkezi hesaplanamadı!")
+                return None
+            
+            # 2. Margin parametrelerini ayır
+            guvenlik_margin = margin
+            
+            # 3. Formasyon tiplerini ve aralıkları dene
+            min_aralik = margin * 0.2
+            baslangic_aralik = margin * 0.6
+            adim = 1.0  # metre
+            
+            for i, formasyon_tipi in enumerate(Formasyon.TIPLER):
+                aralik = baslangic_aralik
+                
+                while aralik >= min_aralik:
+                    test_points = self.formasyon(
+                        i,
+                        aralik=aralik,
+                        is_3d=is_3d,
+                        lider_koordinat=merkez
+                    )
+                    
+                    if test_points and self._formasyon_gecerli_mi(
+                        test_points,
+                        hull,
+                        guvenlik_margin,
+                        aralik
+                    ):
+                        print(
+                            f"✅ [FORMASYON_SEC] Formasyon seçildi: {formasyon_tipi} "
+                            f"(ID={i}, aralık={aralik:.1f}m)"
+                        )
+                        return i
+                    
+                    aralik -= adim
+            
+            # Hiçbir formasyon geçerli değil
+            print("⚠️ [FORMASYON_SEC] Uygun formasyon bulunamadı!")
+            return None
+            
+        except Exception as e:
+            print(f"❌ [HATA] Formasyon seçimi sırasında hata: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def _formasyon_gecerli_mi(self, test_points, hull, guvenlik_margin, formasyon_aralik):
+        """
+        Formasyon pozisyonlarının geçerli olup olmadığını kontrol eder.
+        
+        Args:
+            test_points: list - [(x, z, y), ...] Ursina formatında formasyon pozisyonları
+            hull: ConvexHull - Güvenlik hull
+            guvenlik_margin: float - Hull sınırından minimum mesafe
+            formasyon_aralik: float - ROV'lar arası minimum mesafe
+        
+        Returns:
+            bool: True if formasyon geçerli, False otherwise
+        """
+        if hull is None or test_points is None or len(test_points) == 0:
+            return False
+        
+        try:
+            # 1. Tüm pozisyonlar hull içinde mi? (guvenlik_margin ile)
+            for test_point in test_points:
+                # Ursina formatından (x, z, y) -> numpy array (x, y, z)
+                x, z, y = test_point
+                point_3d = np.array([x, y, z])
+                
+                # _point_inside_hull_with_margin hem 2D hem 3D hull'u destekler
+                if not self._point_inside_hull_with_margin(point_3d, hull, guvenlik_margin):
+                    return False
+            
+            # 2. ROV'lar arası mesafe kontrolü
+            for i in range(len(test_points)):
+                for j in range(i + 1, len(test_points)):
+                    p1 = np.array([test_points[i][0], test_points[i][2], test_points[i][1]])
+                    p2 = np.array([test_points[j][0], test_points[j][2], test_points[j][1]])
+                    mesafe = np.linalg.norm(p1 - p2)
+                    
+                    if mesafe < formasyon_aralik:
+                        return False
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ [HATA] Formasyon geçerliliği kontrolü sırasında hata: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
     
     def hedef(self, x=None, y=None, z=None):
         """
@@ -497,17 +893,14 @@ class Filo:
             print("❌ [HEDEF] Lider ROV bulunamadı!")
             return None
         
-        # Sadece liderin hedefini güncelle
-        # filo.hedef() simülasyon koordinat sisteminde (x, y, 0) alıyor
-        # filo.git() Ursina koordinat sisteminde (x, z, y) alıyor
-        # Dönüşüm: Simülasyon (x, y, 0) -> Ursina (x, 0, y)
-        ursina_x = x      # X aynı kalır
-        ursina_z = y      # Simülasyon Y -> Ursina Z
-        ursina_y = 0      # Derinlik her zaman 0 (su üstünde)
-        self.git(lider_rov_id, ursina_x, ursina_z, y=ursina_y, ai=True)
+        # Sadece liderin hedefini güncelle (Sim formatında)
+        # Sadece liderin hedefini güncelle (Sim formatında)
+        # filo.git() artık Sim formatında çalışıyor: (x, y, z)
+        self.git(lider_rov_id, x, y, z, ai=True)
         
-        # Hedef görselini oluştur/güncelle (z her zaman 0 - su üstünde)
-        self._hedef_gorsel_olustur(x, y, 0)
+        # Hedef görselini oluştur/güncelle (Ursina formatına dönüştür)
+        ursina_pos = Koordinator.sim_to_ursina(x, y, z)
+        self._hedef_gorsel_olustur(*ursina_pos)
         
         # Haritaya hedefi ekle
         if self.ortam_ref and hasattr(self.ortam_ref, 'harita'):
@@ -517,6 +910,420 @@ class Filo:
         
         # Hedef koordinatlarını döndür
         return (x, y, 0)
+    
+    def ConvexHull(self, points, test_point, margin=0.0):
+        """
+        3D Convex Hull oluşturur ve test noktasının hull içinde olup olmadığını kontrol eder.
+        
+        Args:
+            points: Nx3 numpy array veya liste - Convex hull oluşturmak için kullanılacak noktalar
+            test_point: (x, y, z) tuple veya liste - Test edilecek nokta
+            margin: float - Minimum mesafe (hull yüzeyinden ne kadar uzakta olmalı)
+        
+        Returns:
+            dict: {
+                'inside': bool - Test noktası hull içinde mi? (margin ile)
+                'center': (x, y, z) - Convex hull'un merkezi (3D koordinat)
+                'hull': ConvexHull objesi (None if scipy not available)
+            }
+        
+        Örnekler:
+            points = np.array([[0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0], [0, 0, 2], [2, 2, 2]])
+            test_point = [1, 1, 1]
+            result = filo.ConvexHull(points, test_point, margin=0.2)
+            print(f"İçinde mi: {result['inside']}, Merkez: {result['center']}")
+        """
+        if not SCIPY_AVAILABLE:
+            print("❌ [HATA] scipy.spatial.ConvexHull bulunamadı!")
+            return {
+                'inside': False,
+                'center': None,
+                'hull': None
+            }
+        
+        try:
+            # Points'i numpy array'e çevir
+            points = np.asarray(points)
+            if points.ndim != 2 or points.shape[1] != 3:
+                print(f"❌ [HATA] Points Nx3 formatında olmalı! Alınan shape: {points.shape}")
+                return {
+                    'inside': False,
+                    'center': None,
+                    'hull': None
+                }
+            
+            # Test point'i numpy array'e çevir
+            test_point = np.asarray(test_point)
+            if test_point.shape != (3,):
+                print(f"❌ [HATA] Test point (x, y, z) formatında olmalı! Alınan shape: {test_point.shape}")
+                return {
+                    'inside': False,
+                    'center': None,
+                    'hull': None
+                }
+            
+            # En az 4 nokta gerekli (3D convex hull için)
+            if len(points) < 4:
+                print(f"⚠️ [UYARI] 3D Convex Hull için en az 4 nokta gerekli! Alınan: {len(points)}")
+                # Yeterli nokta yoksa, merkezi hesapla ve inside=False döndür
+                center = np.mean(points, axis=0)
+                return {
+                    'inside': False,
+                    'center': tuple(center),
+                    'hull': None
+                }
+            
+            # Convex Hull oluştur
+            hull = ConvexHull(points)
+            
+            # Hull merkezini hesapla (tüm noktaların ortalaması)
+            center = np.mean(points, axis=0)
+            
+            # Test noktasının hull içinde olup olmadığını kontrol et (margin ile)
+            inside = self._point_inside_hull_with_margin(test_point, hull, margin)
+            
+            return {
+                'inside': inside,
+                'center': tuple(center),
+                'hull': hull
+            }
+            
+        except Exception as e:
+            print(f"❌ [HATA] ConvexHull hesaplama sırasında hata: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'inside': False,
+                'center': None,
+                'hull': None
+            }
+    
+    def _point_inside_hull_with_margin(self, point, hull, margin):
+        """
+        Noktanın convex hull içinde olup olmadığını kontrol eder (margin ile).
+        2D veya 3D hull destekler.
+        
+        Args:
+            point: (x, y, z) numpy array veya (x, z) numpy array (2D için)
+            hull: scipy.spatial.ConvexHull (2D veya 3D)
+            margin: minimum distance to hull surface
+        
+        Returns:
+            bool: True if point is inside hull (with margin), False otherwise
+        """
+        point = np.asarray(point)
+        
+        # Hull'un boyutunu kontrol et (2D veya 3D)
+        hull_dim = hull.points.shape[1]
+        point_dim = point.shape[0]
+        
+        # Eğer hull 2D ise, point'i de 2D'ye çevir
+        if hull_dim == 2:
+            if point_dim == 3:
+                # 3D point'ten 2D'ye çevir (x, y, z) -> (x, y)
+                point_2d = np.array([point[0], point[1]])
+            else:
+                point_2d = point
+        else:
+            # 3D hull
+            point_2d = point
+        
+        # Hull equations'ları kullanarak kontrol et
+        for eq in hull.equations:
+            normal = eq[:-1]
+            d = eq[-1]
+            
+            # Signed distance
+            distance = (np.dot(normal, point_2d) + d) / np.linalg.norm(normal)
+            
+            # Hull dışında veya sınırdan çok yakın
+            if distance > -margin:
+                return False
+        
+        return True
+    
+    def genisletilmis_rov_hull_olustur(self, offset=20.0):
+        """
+        ROV'ların convex hull'unu alır ve kenarlarına dik yönde offset uygular.
+        Sistem 2D (x-z düzlemi) çalışır, derinlik sabit kabul edilir.
+        
+        Args:
+            offset (float): Hull kenarlarından dışarı offset mesafesi (metre, varsayılan: 20.0)
+        
+        Returns:
+            list: [(x, y, z), ...] - Genişletilmiş sanal engel noktaları
+        """
+        if not SCIPY_AVAILABLE:
+            print("❌ [HATA] scipy.spatial.ConvexHull bulunamadı!")
+            return []
+        
+        try:
+            # 1. Tüm ROV koordinatlarını al (2D: x-z düzlemi)
+            rovs_positions = self._get_all_rovs_positions()
+            if len(rovs_positions) < 3:
+                # En az 3 ROV gerekli (2D convex hull için)
+                print(f"⚠️ [UYARI] 2D Convex Hull için en az 3 ROV gerekli! Mevcut: {len(rovs_positions)}")
+                return []
+            
+            # 2. ROV pozisyonlarını 2D (x, y) formatına çevir (z derinlik sabit)
+            # x, y: 2D düzlem koordinatları
+            # z: derinlik
+            rov_2d_points = []
+            ortalama_z = 0.0
+            for rov_id, position in rovs_positions.items():
+                if position is not None:
+                    x, y, z = position
+                    rov_2d_points.append([x, y])  # 2D: x-y düzlemi
+                    ortalama_z += z
+            
+            ortalama_z /= len(rovs_positions) if len(rovs_positions) > 0 else 1
+            rov_2d_points = np.array(rov_2d_points)
+            
+            # 3. ROV'ların 2D convex hull'unu hesapla
+            if len(rov_2d_points) < 3:
+                return []
+            
+            rov_hull_2d = ConvexHull(rov_2d_points)
+            
+            # 4. Hull kenarlarına dik yönde offset uygula
+            genisletilmis_noktalar = []
+            
+            # Her hull kenarı için
+            for i in range(len(rov_hull_2d.vertices)):
+                # Kenar başlangıç ve bitiş noktaları
+                v1_idx = rov_hull_2d.vertices[i]
+                v2_idx = rov_hull_2d.vertices[(i + 1) % len(rov_hull_2d.vertices)]
+                
+                p1 = rov_2d_points[v1_idx]  # [x, z]
+                p2 = rov_2d_points[v2_idx]  # [x, z]
+                
+                # Kenar vektörü
+                edge_vec = p2 - p1
+                edge_length = np.linalg.norm(edge_vec)
+                
+                if edge_length < 1e-6:
+                    continue
+                
+                # Kenar vektörünü normalize et
+                edge_vec_normalized = edge_vec / edge_length
+                
+                # Dik vektör (saat yönünün tersine 90 derece döndür)
+                # 2D'de: (x, z) -> (-z, x) saat yönünün tersine
+                normal_vec = np.array([-edge_vec_normalized[1], edge_vec_normalized[0]])
+                
+                # Offset uygula: her iki noktayı da normal yönde offset kadar kaydır
+                p1_offset = p1 + normal_vec * offset
+                p2_offset = p2 + normal_vec * offset
+                
+                # 3D formatına çevir (z derinlik sabit)
+                genisletilmis_noktalar.append((p1_offset[0], p1_offset[1], ortalama_z))  # (x, y, z)
+                genisletilmis_noktalar.append((p2_offset[0], p2_offset[1], ortalama_z))  # (x, y, z)
+            
+            return genisletilmis_noktalar
+            
+        except Exception as e:
+            print(f"❌ [HATA] Genişletilmiş ROV hull oluşturulurken hata: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def lidar_engel_noktalari(self):
+        """
+        Tüm ROV'lardan lidar ile tespit edilen gerçek engel koordinatlarını toplar.
+        
+        Returns:
+            list: [(x, y, z), ...] - Tüm tespit edilen engellerin koordinatları
+        """
+        tum_engeller = []
+        
+        try:
+            # Tüm ROV'lar için
+            for rov_id in range(len(self.sistemler)):
+                engels = self._compute_obstacle_positions(rov_id)
+                if engels:
+                    tum_engeller.extend(engels)
+        
+        except Exception as e:
+            print(f"❌ [HATA] Lidar engel noktaları toplanırken hata: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        return tum_engeller
+    
+    def guvenlik_hull_olustur(self, offset=20.0):
+        """
+        Sanal engel noktaları (genişletilmiş ROV hull) + gerçek engel noktalarını birleştirir
+        ve Convex Hull hesaplar.
+        
+        Args:
+            offset (float): ROV hull genişletme mesafesi (varsayılan: 20.0)
+        
+        Returns:
+            dict: {
+                'hull': ConvexHull objesi veya None,
+                'points': numpy array - Hull hesaplamasında kullanılan noktalar,
+                'center': (x, y, z) - Hull merkezi veya None
+            }
+        """
+        if not SCIPY_AVAILABLE:
+            print("❌ [HATA] scipy.spatial.ConvexHull bulunamadı!")
+            hull_data = {
+                'hull': None,
+                'points': None,
+                'center': None
+            }
+            
+            # Hull bilgisini haritaya aktar (eğer harita varsa)
+            if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
+                self.ortam_ref.harita.convex_hull_data = hull_data
+            
+            return hull_data
+        
+        try:
+            # 1. Genişletilmiş ROV hull noktalarını al (sanal engeller)
+            sanal_engeller = self.genisletilmis_rov_hull_olustur(offset=offset)
+            
+            # 2. Gerçek engel noktalarını al (lidar)
+            gercek_engeller = self.lidar_engel_noktalari()
+            
+            # 3. ROV pozisyonlarını da ekle (tüm ROV'ların hull içinde kalması için)
+            rovs_positions = self._get_all_rovs_positions()
+            rov_pozisyonlari = []
+            for rov_id, position in rovs_positions.items():
+                if position is not None:
+                    rov_pozisyonlari.append(position)
+            
+            # 4. Birleştir: Genişletilmiş ROV hull + Gerçek engeller + ROV pozisyonları
+            tum_noktalar = sanal_engeller + gercek_engeller + rov_pozisyonlari
+            
+            if len(tum_noktalar) == 0:
+                print("⚠️ [UYARI] Güvenlik hull için nokta bulunamadı!")
+                hull_data = {
+                    'hull': None,
+                    'points': None,
+                    'center': None
+                }
+                
+                # Hull bilgisini haritaya aktar (eğer harita varsa)
+                if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
+                    self.ortam_ref.harita.convex_hull_data = hull_data
+                
+                return hull_data
+            
+            # 4. Noktaları 2D (x-y düzlemi) formatına çevir ve derinlik bilgisini sakla
+            # x, y: 2D düzlem koordinatları
+            # z: derinlik
+            points_2d = []
+            z_degerleri = []
+            
+            for nokta in tum_noktalar:
+                x, y, z = nokta
+                points_2d.append([x, y])  # 2D: x-y düzlemi
+                z_degerleri.append(z)
+            
+            points_2d = np.array(points_2d)
+            ortalama_z = np.mean(z_degerleri) if z_degerleri else 0.0
+            
+            # 5. En az 3 nokta gerekli (2D convex hull için)
+            if len(points_2d) < 3:
+                print(f"⚠️ [UYARI] 2D Convex Hull için en az 3 nokta gerekli! Mevcut: {len(points_2d)}")
+                # Yeterli nokta yoksa, merkezi hesapla
+                if len(points_2d) > 0:
+                    center_2d = np.mean(points_2d, axis=0)
+                    center = (center_2d[0], center_2d[1], ortalama_z)  # (x, y, z)
+                else:
+                    center = (0.0, 0.0, ortalama_z)
+                hull_data = {
+                    'hull': None,
+                    'points': np.array(tum_noktalar) if tum_noktalar else None,
+                    'center': center
+                }
+                
+                # Hull bilgisini haritaya aktar (eğer harita varsa)
+                if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
+                    self.ortam_ref.harita.convex_hull_data = hull_data
+                
+                return hull_data
+            
+            # 6. 2D Convex Hull hesapla (TEK KEZ)
+            try:
+                hull_2d = ConvexHull(points_2d)
+            except Exception as e:
+                print(f"⚠️ [UYARI] 2D Convex Hull hesaplanamadı: {e}")
+                # QJ (joggle) seçeneği ile tekrar dene
+                try:
+                    hull_2d = ConvexHull(points_2d, qhull_options='QJ')
+                except Exception as e2:
+                    print(f"❌ [HATA] 2D Convex Hull (QJ ile) hesaplanamadı: {e2}")
+                    center_2d = np.mean(points_2d, axis=0)
+                    center = (center_2d[0], center_2d[1], ortalama_z)  # (x, y, z)
+                    hull_data = {
+                        'hull': None,
+                        'points': np.array(tum_noktalar),
+                        'center': center
+                    }
+                    
+                    # Hull bilgisini haritaya aktar (eğer harita varsa)
+                    if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
+                        self.ortam_ref.harita.convex_hull_data = hull_data
+                    
+                    return hull_data
+            
+            # 7. 2D hull'u 3D'ye çevir (derinlik bilgisini ekle)
+            # Hull'u 3D noktalara çevir (z derinlik sabit)
+            hull_3d_points = []
+            for vertex_idx in hull_2d.vertices:
+                x, y = points_2d[vertex_idx]
+                hull_3d_points.append([x, y, ortalama_z])  # (x, y, z)
+            
+            hull_3d_points = np.array(hull_3d_points)
+            
+            # 8. 3D hull oluştur (eğer yeterli nokta varsa)
+            hull = None
+            if len(hull_3d_points) >= 4:
+                try:
+                    hull = ConvexHull(hull_3d_points, qhull_options='QJ')
+                except Exception:
+                    # 3D hull oluşturulamazsa, 2D hull'u kullan
+                    # Bu durumda _point_inside_hull_with_margin fonksiyonunu 2D için uyarlamalıyız
+                    # Şimdilik 2D hull'u saklayalım
+                    pass
+            
+            # 9. Hull merkezini hesapla
+            center_2d = np.mean(points_2d, axis=0)
+            center = (center_2d[0], center_2d[1], ortalama_z)  # (x, y, z)
+            
+            # Eğer 3D hull oluşturulamadıysa, 2D hull'u kullan
+            if hull is None:
+                # 2D hull'u kullan (zaten _point_inside_hull_with_margin 2D'yi destekliyor)
+                hull = hull_2d
+                # 2D hull için points_2d'yi sakla
+                points_for_hull = points_2d
+            else:
+                # 3D hull için points_3d'yi sakla
+                points_for_hull = np.array(tum_noktalar)
+            
+            hull_data = {
+                'hull': hull,
+                'points': points_for_hull,
+                'center': tuple(center)
+            }
+            
+            # Hull bilgisini haritaya aktar (eğer harita varsa)
+            if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
+                self.ortam_ref.harita.convex_hull_data = hull_data
+            
+            return hull_data
+            
+        except Exception as e:
+            print(f"❌ [HATA] Güvenlik hull oluşturulurken hata: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'hull': None,
+                'points': None,
+                'center': None
+            }
     
     def _hedef_gorsel_olustur(self, x, y, z):
         """
@@ -582,24 +1389,25 @@ class Filo:
         )
     
 
-    def git(self, rov_id, x, z, y=None, ai=True):
+    def git(self, rov_id, x, y, z=None, ai=True):
         """
         ROV'a hedef koordinatı atar ve otomatik moda geçirir.
+        Tüm girişler Simülasyon formatındadır: (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
 
         Args:
             rov_id: ROV ID (0, 1, 2, ...)
-            x: X koordinatı (yatay düzlem)
-            z: Z koordinatı (yatay düzlem)
-            y: Y koordinatı (derinlik, negatif = su altı, opsiyonel)
+            x: X koordinatı (Sağ-Sol)
+            y: Y koordinatı (İleri-Geri)
+            z: Z koordinatı (Derinlik, opsiyonel)
                 - None ise mevcut derinlik korunur
             ai: AI aktif/pasif (varsayılan: True)
                 - True: Zeki Mod (GAT tahminleri kullanılır)
                 - False: Kör Mod (GAT tahminleri görmezden gelinir)
 
         Örnekler:
-            filo.git(0, 40, 60, 0)           # ROV-0: (40, 0, 60), AI açık
-            filo.git(1, 50, 50, -10, ai=False)  # ROV-1: (50, -10, 50), AI kapalı
-            filo.git(2, 30, 40)               # ROV-2: (30, mevcut_y, 40), AI açık
+            filo.git(0, 40, 60, 20)           # ROV-0: X=40 (sağ), Y=60 (ileri), Z=20 (derinlik), AI açık
+            filo.git(1, 50, 50, -10, ai=False)  # ROV-1: X=50, Y=50, Z=-10, AI kapalı
+            filo.git(2, 30, 40)               # ROV-2: X=30, Y=40, mevcut derinlik, AI açık
         """
         # Sistemler listesi boş mu kontrol et
         if len(self.sistemler) == 0:
@@ -625,21 +1433,20 @@ class Filo:
         # AI Durumunu Ayarla
         self.sistemler[rov_id].ai_aktif = ai
         
-        # Hedef Ata
-        # Eğer y belirtilmemişse, mevcut derinliği koru
-        if y is None:
-            hedef_y = self.sistemler[rov_id].rov.y
-        else:
-            hedef_y = y
+        # Eğer Z (derinlik) verilmemişse mevcut derinliği koru
+        if z is None:
+            current_sim_pos = Koordinator.ursina_to_sim(
+                self.sistemler[rov_id].rov.x,
+                self.sistemler[rov_id].rov.y,
+                self.sistemler[rov_id].rov.z
+            )
+            z = current_sim_pos[2]
         
-        # Bilgilendirme mesajı
-        ai_durum = "AÇIK" if ai else "KAPALI (Kör Mod)"
-        print(f"🔵 [FİLO] ROV-{rov_id} Rota: ({x}, {hedef_y}, {z}) | AI: {ai_durum}")
-        
-        # Hedef atama (x, y, z formatında)
+        # GNC'ye hedefi SİMÜLASYON formatında veriyoruz
         try:
-            self.sistemler[rov_id].hedef_atama(x, hedef_y, z)
-            print(f"✅ [FİLO] ROV-{rov_id} hedefi başarıyla atandı")
+            self.sistemler[rov_id].hedef_atama(x, y, z)
+            ai_durum = "AÇIK" if ai else "KAPALI (Kör Mod)"
+            print(f"✅ [FİLO] ROV-{rov_id} Hedef: X:{x}, Y:{y}, Z:{z} (Sim Formatı) | AI: {ai_durum}")
         except Exception as e:
             print(f"❌ [HATA] Hedef atama sırasında hata: {e}")
             import traceback
@@ -651,11 +1458,12 @@ class Filo:
         
         Args:
             rov_id: ROV ID
-            yon: Hareket yönü ('ileri', 'geri', 'sag', 'sol', 'cik', 'bat', 'dur')
+            yon: Hareket yönü ('ileri', 'geri', 'sag', 'sol', 'cik', 'bat', 'dur', 'yaw')
             guc: Motor gücü (0.0 - 1.0 arası, varsayılan: 1.0)
-                - 1.0 = %100 güç (maksimum hız)
-                - 0.5 = %50 güç (yarı hız)
-                - 0.0 = %0 güç (dur)
+                - Normal hareket için: 0.0 - 1.0 arası
+                - Yaw rotasyonu için: -1.0 ile 1.0 arası
+                    - 1.0 = Saat yönünün tersine döndürme (pozitif yaw)
+                    - -1.0 = Saat yönünde döndürme (negatif yaw)
         
         Örnekler:
             filo.move(0, 'ileri', 1.0)   # ROV-0 %100 güçle ileri
@@ -663,6 +1471,8 @@ class Filo:
             filo.move(2, 'cik', 0.3)      # ROV-2 %30 güçle yukarı
             filo.move(3, 'dur', 0.0)      # ROV-3 dur (güç=0)
             filo.move(0, 'ileri')         # ROV-0 %100 güçle ileri (varsayılan)
+            filo.move(0, 'yaw', 1.0)     # ROV-0 saat yönünün tersine döndürme
+            filo.move(0, 'yaw', -1.0)    # ROV-0 saat yönünde döndürme
         """
         # Sistemler listesi boş mu kontrol et
         if len(self.sistemler) == 0:
@@ -683,24 +1493,82 @@ class Filo:
             return
         
         # Yön geçerliliği kontrolü
-        gecerli_yonler = ['ileri', 'geri', 'sag', 'sol', 'cik', 'bat', 'dur']
+        gecerli_yonler = ['ileri', 'geri', 'sag', 'sol', 'cik', 'bat', 'dur', 'yaw']
         if yon not in gecerli_yonler:
             print(f"❌ [HATA] Geçersiz hareket yönü: '{yon}'")
             print(f"   Geçerli yönler: {', '.join(gecerli_yonler)}")
             return
         
-        # Güç değerini kontrol et (0.0 - 1.0 arası)
+        # Güç değerini kontrol et
         if not isinstance(guc, (int, float)):
             print(f"❌ [HATA] Güç değeri sayı olmalı: {guc}")
             return
         
-        guc = max(0.0, min(1.0, float(guc)))
+        # Yaw rotasyonu için özel güç kontrolü (-1.0 ile 1.0 arası)
+        if yon == 'yaw':
+            guc = max(-1.0, min(1.0, float(guc)))
+        else:
+            # Normal hareket için güç kontrolü (0.0 - 1.0 arası)
+            guc = max(0.0, min(1.0, float(guc)))
         
         try:
             # Manuel kontrolü aç
             self.sistemler[rov_id].manuel_kontrol = True
             gnc = self.sistemler[rov_id]
             rov = gnc.rov
+            
+            # Yaw rotasyonu özel durum
+            if yon == 'yaw':
+                # Yaw rotasyonu için rotation.y güncelle
+                # Güç değeri: 1.0 = saat yönünün tersine, -1.0 = saat yönünde
+                # Maksimum dönüş hızı: 90 derece/saniye (config'den alınabilir)
+                from .config import HareketAyarlari
+                yaw_hizi = abs(guc) * 90.0  # Derece/saniye (maksimum 90 derece/saniye)
+                yaw_delta = yaw_hizi * time.dt  # Bu frame'de döndürülecek açı (küçük adım)
+                
+                # Mevcut rotation değerini al ve Vec3 olarak ayarla
+                if not hasattr(rov, 'rotation') or rov.rotation is None:
+                    rov.rotation = Vec3(0, 0, 0)
+                elif not isinstance(rov.rotation, Vec3):
+                    # Tuple veya list ise Vec3'e dönüştür
+                    if isinstance(rov.rotation, (tuple, list)) and len(rov.rotation) >= 3:
+                        rov.rotation = Vec3(rov.rotation[0], rov.rotation[1], rov.rotation[2])
+                    else:
+                        rov.rotation = Vec3(0, 0, 0)
+                
+                # Mevcut rotation değerlerini al
+                current_x = rov.rotation.x if isinstance(rov.rotation, Vec3) else 0
+                current_y = rov.rotation.y if isinstance(rov.rotation, Vec3) else 0
+                current_z = rov.rotation.z if isinstance(rov.rotation, Vec3) else 0
+                
+                # Y ekseni etrafında döndür (yaw) - küçük adımlarla
+                if guc > 0:
+                    # Pozitif güç: saat yönünün tersine (pozitif yaw)
+                    new_y = current_y + yaw_delta
+                elif guc < 0:
+                    # Negatif güç: saat yönünde (negatif yaw)
+                    new_y = current_y - yaw_delta
+                else:
+                    new_y = current_y
+                
+                # Rotation'ı normalize et (0-360 arası tutmak için)
+                while new_y >= 360:
+                    new_y -= 360
+                while new_y < 0:
+                    new_y += 360
+                
+                # Rotation'ı yeni Vec3 olarak atama (küçük adımlarla güncelleme)
+                rov.rotation = Vec3(current_x, new_y, current_z)
+                
+                # Manuel hareket modunu ayarla (sürekli yaw için)
+                if hasattr(rov, 'manuel_hareket'):
+                    rov.manuel_hareket['yon'] = 'yaw'
+                    rov.manuel_hareket['guc'] = guc
+                
+                guc_yuzdesi = int(abs(guc) * 100)
+                yon_metni = "saat yönünün tersine" if guc > 0 else "saat yönünde"
+                print(f"🔄 [FİLO] ROV-{rov_id} {yon_metni} %{guc_yuzdesi} güçle döndürülüyor (yaw)")
+                return
             
             # 'dur' komutu özel durum
             if yon == 'dur' or guc == 0.0:
@@ -765,13 +1633,39 @@ class Filo:
                     pass
             
             # Son alternatif: Direkt velocity kullan
+            # ROV'un yaw rotasyonunu al (Y ekseni etrafında dönme açısı - derece)
+            yaw_acisi = 0.0
+            if hasattr(rov, 'rotation') and rov.rotation is not None:
+                if isinstance(rov.rotation, Vec3):
+                    yaw_acisi = rov.rotation.y
+                elif isinstance(rov.rotation, (tuple, list)) and len(rov.rotation) >= 2:
+                    yaw_acisi = rov.rotation[1]
+            
+            # Yaw açısını radyana çevir
+            from math import sin, cos, radians
+            yaw_radyan = radians(yaw_acisi)
+            
             hareket_vektoru = Vec3(0, 0, 0)
-            if yon == 'ileri': hareket_vektoru.z = 1.0
-            elif yon == 'geri': hareket_vektoru.z = -1.0
-            elif yon == 'sag': hareket_vektoru.x = 1.0
-            elif yon == 'sol': hareket_vektoru.x = -1.0
-            elif yon == 'cik': hareket_vektoru.y = 1.0
-            elif yon == 'bat' and rov.role != 1: hareket_vektoru.y = -1.0
+            if yon == 'ileri':
+                # İleri: ROV'un baktığı yön (Z ekseni pozitif yönü, yaw açısına göre döndürülmüş)
+                hareket_vektoru.x = sin(yaw_radyan)
+                hareket_vektoru.z = cos(yaw_radyan)
+            elif yon == 'geri':
+                # Geri: ROV'un arkası (Z ekseni negatif yönü, yaw açısına göre döndürülmüş)
+                hareket_vektoru.x = -sin(yaw_radyan)
+                hareket_vektoru.z = -cos(yaw_radyan)
+            elif yon == 'sag':
+                # Sağ: ROV'un sağ tarafı (X ekseni pozitif yönü, yaw açısına göre döndürülmüş)
+                hareket_vektoru.x = cos(yaw_radyan)
+                hareket_vektoru.z = -sin(yaw_radyan)
+            elif yon == 'sol':
+                # Sol: ROV'un sol tarafı (X ekseni negatif yönü, yaw açısına göre döndürülmüş)
+                hareket_vektoru.x = -cos(yaw_radyan)
+                hareket_vektoru.z = sin(yaw_radyan)
+            elif yon == 'cik': 
+                hareket_vektoru.y = 1.0
+            elif yon == 'bat' and rov.role != 1: 
+                hareket_vektoru.y = -1.0
             
             # Hız uygula
             max_guc = 100.0 * guc
@@ -835,8 +1729,11 @@ class TemelGNC:
                 self.rov.velocity *= 0.8  # Momentumu yumuşatarak durdur
             return
         
-        # Mesafe hesapla (3 Boyutlu)
-        fark = self.hedef - self.rov.position
+        # 1. Mevcut pozisyonu Ursina'dan alıp Simülasyona çevir
+        current_sim_pos = Vec3(*Koordinator.ursina_to_sim(self.rov.x, self.rov.y, self.rov.z))
+        
+        # 2. Farkı Simülasyon dünyasında hesapla
+        fark = self.hedef - current_sim_pos
         mevcut_mesafe = fark.length()
 
         # HEDEF KONTROLÜ: Hedefe ulaşıldıysa dur
@@ -846,42 +1743,62 @@ class TemelGNC:
                 self.rov.velocity *= 0.8  # Momentumu yumuşatarak durdur
             return
 
-        # HAREKET PLANLAMA
-        hedef_nokta = self.hedef
-
-        # Yön vektörü oluştur
-        hareket_vektoru = (hedef_nokta - self.rov.position).normalized()
+        # 3. Hareket vektörünü normalize et
+        if mevcut_mesafe > 0.01:
+            hareket_vektoru = fark / mevcut_mesafe
+        else:
+            hareket_vektoru = Vec3(0, 0, 0)
         
-        # Güç Ayarı
-        guc = 1.0
-        
-        # Motorlara komut gönder
-        self.vektor_to_motor(hareket_vektoru, guc_carpani=guc)
+        # 4. Hareket vektörünü motor komutlarına haritala
+        # hareket_vektoru.x -> Sağ/Sol
+        # hareket_vektoru.y -> İleri/Geri (Simülasyonda Y ileridir)
+        # hareket_vektoru.z -> Çık/Bat (Simülasyonda Z derinliktir)
+        # Hızı 0.5 ile çarp (yarı hız)
+        self.vektor_to_motor_sim(hareket_vektoru, guc=0.5)
 
-    def vektor_to_motor(self, vektor, guc_carpani=1.0):
+    def vektor_to_motor_sim(self, v_sim, guc=1.0):
         """
-        Vektörü doğrudan motor komutlarına çevirir.
+        Vektörü Simülasyon eksenlerinden Ursina motor komutlarına çevirir.
+        Global koordinatlara göre direkt hareket eder (yaw açısından bağımsız).
+        
+        Args:
+            v_sim: Simülasyon formatında vektör (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
+            guc: Güç çarpanı (varsayılan: 1.0)
         """
-        if vektor.length() < 0.01:
+        if v_sim.length() < 0.01:
             return
         
         # Güç çarpanını normalize et
-        guc_carpani = max(0.0, min(2.0, guc_carpani))
+        guc = max(0.0, min(2.0, guc))
         
         # Vektörü normalize et
-        v = vektor.normalized()
-        thrust = guc_carpani
-
-        # X Ekseni (Sağ-Sol)
-        if abs(v.x) > 0.01:
-            self.rov.move("sag" if v.x > 0 else "sol", abs(v.x) * thrust)
+        v = v_sim.normalized()
         
-        # Y Ekseni (Çıkış-Batış)
+        # Direkt global koordinatlara göre velocity ayarla (yaw açısından bağımsız)
+        # Sim formatından Ursina formatına dönüştür
+        from .config import HareketAyarlari
+        from ursina import time
+        
+        # Hız çarpanı
+        max_guc = 100.0 * guc
+        thrust = max_guc * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
+        
+        # X: Sağ-Sol (Sim ve Ursina'da aynı)
+        if abs(v.x) > 0.01:
+            self.rov.velocity.x += v.x * thrust
+        
+        # Y: İleri-Geri (Simülasyon Y = Ursina Z)
         if abs(v.y) > 0.01:
-            self.rov.move("cik" if v.y > 0 else "bat", abs(v.y) * thrust)
+            self.rov.velocity.z += v.y * thrust
             
-        # Z Ekseni (İleri-Geri)
+        # Z: Derinlik (Simülasyon Z = Ursina Y)
+        # Ursina'da Y yukarı (+), Simülasyonda Z derinlik (+) ise:
+        # v_sim.z > 0 (daha derine git) -> Ursina Y negatif
         if abs(v.z) > 0.01:
-            self.rov.move("ileri" if v.z > 0 else "geri", abs(v.z) * thrust)
+            self.rov.velocity.y -= v.z * thrust  # Sim Z+ (derinlik) -> Ursina Y- (aşağı)
+        
+        # Hız limiti
+        if self.rov.velocity.length() > max_guc:
+            self.rov.velocity = self.rov.velocity.normalized() * max_guc
 
 

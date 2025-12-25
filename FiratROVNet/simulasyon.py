@@ -1,11 +1,12 @@
 from ursina import *
+from ursina import Vec3  # Vec3'ü doğrudan import et
 import numpy as np
 import random
 import threading
 import code
 import sys
 import torch
-from math import sin, cos, atan2, degrees, pi
+from math import sin, cos, atan2, degrees, radians, pi
 import os
 import matplotlib
 # Windows'ta thread-safe matplotlib için backend ayarı (modül yüklenmeden önce)
@@ -120,7 +121,10 @@ class ROV(Entity):
         self.velocity = Vec3(0, 0, 0)
         self.battery = 1.0  # Batarya 0-1 arası (1.0 = %100 dolu)
         self.role = 0
-        self.calistirilan_guc = 0.0  # ROV'un çalıştırdığı güç (0.0-1.0 arası) 
+        self.calistirilan_guc = 0.0  # ROV'un çalıştırdığı güç (0.0-1.0 arası)
+        
+        # Rotation'ı başlangıçta ayarla (yaw rotasyonu için)
+        self.rotation = Vec3(0, 0, 0) 
         
         # Sensör ayarları config.py'den alınır (GAT limitleri ile tutarlı)
         from .config import SensorAyarlari
@@ -147,14 +151,56 @@ class ROV(Entity):
 
     def update(self):
         # Manuel hareket kontrolü (sürekli hareket için)
-        if self.manuel_hareket['yon'] is not None and self.manuel_hareket['guc'] > 0:
+        if self.manuel_hareket['yon'] is not None:
             if self.manuel_hareket['yon'] == 'dur':
-                self.velocity *= 0.8  # Yavaşça dur (momentum korunumu)
+                self.velocity *= 0.7  # Yavaşça dur (momentum korunumu)
                 if self.velocity.length() < 0.1:
                     self.velocity = Vec3(0, 0, 0)
                     self.manuel_hareket['yon'] = None
                     self.manuel_hareket['guc'] = 0.0
-            else:
+            elif self.manuel_hareket['yon'] == 'yaw':
+                # Yaw rotasyonu için sürekli dönme
+                guc = self.manuel_hareket['guc']
+                if abs(guc) > 0:
+                    # Yaw rotasyonu için rotation.y güncelle
+                    # Güç değeri: 1.0 = saat yönünün tersine, -1.0 = saat yönünde
+                    yaw_hizi = abs(guc) * 90.0  # Derece/saniye (maksimum 90 derece/saniye)
+                    yaw_delta = yaw_hizi * time.dt  # Bu frame'de döndürülecek açı (küçük adım)
+                    
+                    # Mevcut rotation değerini al ve Vec3 olarak ayarla
+                    if not hasattr(self, 'rotation') or self.rotation is None:
+                        self.rotation = Vec3(0, 0, 0)
+                    elif not isinstance(self.rotation, Vec3):
+                        # Tuple veya list ise Vec3'e dönüştür
+                        if isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 3:
+                            self.rotation = Vec3(self.rotation[0], self.rotation[1], self.rotation[2])
+                        else:
+                            self.rotation = Vec3(0, 0, 0)
+                    
+                    # Mevcut rotation değerlerini al
+                    current_x = self.rotation.x if isinstance(self.rotation, Vec3) else 0
+                    current_y = self.rotation.y if isinstance(self.rotation, Vec3) else 0
+                    current_z = self.rotation.z if isinstance(self.rotation, Vec3) else 0
+                    
+                    # Y ekseni etrafında döndür (yaw) - küçük adımlarla
+                    if guc > 0:
+                        # Pozitif güç: saat yönünün tersine (pozitif yaw)
+                        new_y = current_y + yaw_delta
+                    elif guc < 0:
+                        # Negatif güç: saat yönünde (negatif yaw)
+                        new_y = current_y - yaw_delta
+                    else:
+                        new_y = current_y
+                    
+                    # Rotation'ı normalize et (0-360 arası tutmak için)
+                    while new_y >= 360:
+                        new_y -= 360
+                    while new_y < 0:
+                        new_y += 360
+                    
+                    # Rotation'ı yeni Vec3 olarak atama (küçük adımlarla güncelleme)
+                    self.rotation = Vec3(current_x, new_y, current_z)
+            elif self.manuel_hareket['guc'] > 0:
                 # Sürekli hareket: move metodunu çağır
                 yon = self.manuel_hareket['yon']
                 guc = self.manuel_hareket['guc']
@@ -232,12 +278,48 @@ class ROV(Entity):
             return
         thrust = guc * HIZLANMA_CARPANI * time.dt
 
-        if komut == "ileri":  self.velocity.z += thrust
-        elif komut == "geri": self.velocity.z -= thrust
-        elif komut == "sag":  self.velocity.x += thrust
-        elif komut == "sol":  self.velocity.x -= thrust
-        elif komut == "cik":  self.velocity.y += thrust 
-        elif komut == "bat":  
+        # ROV'un yaw rotasyonunu al (Y ekseni etrafında dönme açısı - derece)
+        yaw_acisi = 0.0
+        if hasattr(self, 'rotation') and self.rotation is not None:
+            if isinstance(self.rotation, Vec3):
+                yaw_acisi = self.rotation.y
+            elif isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 2:
+                yaw_acisi = self.rotation[1]
+        
+        # Yaw açısını radyana çevir
+        yaw_radyan = radians(yaw_acisi)
+        
+        # Yatay hareket komutları için (ileri, geri, sağ, sol)
+        # ROV'un yönüne göre hareket vektörünü hesapla
+        if komut == "ileri":
+            # İleri: ROV'un baktığı yön (Z ekseni pozitif yönü, yaw açısına göre döndürülmüş)
+            hareket_x = sin(yaw_radyan) * thrust
+            hareket_z = cos(yaw_radyan) * thrust
+            self.velocity.x += hareket_x
+            self.velocity.z += hareket_z
+        elif komut == "geri":
+            # Geri: ROV'un arkası (Z ekseni negatif yönü, yaw açısına göre döndürülmüş)
+            hareket_x = -sin(yaw_radyan) * thrust
+            hareket_z = -cos(yaw_radyan) * thrust
+            self.velocity.x += hareket_x
+            self.velocity.z += hareket_z
+        elif komut == "sag":
+            # Sağ: ROV'un sağ tarafı (X ekseni pozitif yönü, yaw açısına göre döndürülmüş)
+            hareket_x = cos(yaw_radyan) * thrust
+            hareket_z = -sin(yaw_radyan) * thrust
+            self.velocity.x += hareket_x
+            self.velocity.z += hareket_z
+        elif komut == "sol":
+            # Sol: ROV'un sol tarafı (X ekseni negatif yönü, yaw açısına göre döndürülmüş)
+            hareket_x = -cos(yaw_radyan) * thrust
+            hareket_z = sin(yaw_radyan) * thrust
+            self.velocity.x += hareket_x
+            self.velocity.z += hareket_z
+        elif komut == "cik":
+            # Yukarı: Y ekseni pozitif (yaw'dan etkilenmez)
+            self.velocity.y += thrust 
+        elif komut == "bat":
+            # Aşağı: Y ekseni negatif (yaw'dan etkilenmez)
             if self.role == 1: pass
             else: self.velocity.y -= thrust 
         elif komut == "dur":
@@ -256,16 +338,50 @@ class ROV(Entity):
                 self.label.text = f"ROV-{self.id}"
                 if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose') and self.ortam.verbose:
                     print(f"✅ ROV-{self.id} artık TAKİPÇİ.")
+        elif ayar_adi == "yaw":
+            # Yaw açısını derece olarak ayarla (Y ekseni etrafında dönme)
+            yaw_derece = float(deger)
+            # 0-360 arası normalize et
+            while yaw_derece >= 360:
+                yaw_derece -= 360
+            while yaw_derece < 0:
+                yaw_derece += 360
+            
+            # Mevcut rotation değerini al
+            if not hasattr(self, 'rotation') or self.rotation is None:
+                self.rotation = Vec3(0, 0, 0)
+            elif not isinstance(self.rotation, Vec3):
+                # Tuple veya list ise Vec3'e dönüştür
+                if isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 3:
+                    self.rotation = Vec3(self.rotation[0], self.rotation[1], self.rotation[2])
+                else:
+                    self.rotation = Vec3(0, 0, 0)
+            
+            # Yaw açısını güncelle (sadece Y ekseni)
+            current_x = self.rotation.x if hasattr(self.rotation, 'x') else 0
+            current_z = self.rotation.z if hasattr(self.rotation, 'z') else 0
+            self.rotation = Vec3(current_x, yaw_derece, current_z)
         elif ayar_adi in self.sensor_config: 
             self.sensor_config[ayar_adi] = deger
 
-    def get(self, veri_tipi):
+    def get(self, veri_tipi, taraf=None):
         if veri_tipi == "gps": 
             return np.array([self.x, self.y, self.z])
         elif veri_tipi == "hiz": 
             return np.array([self.velocity.x, self.velocity.y, self.velocity.z])
         elif veri_tipi == "batarya": 
             return self.battery
+        elif veri_tipi == "yaw":
+            # Yaw açısını derece olarak döndür (Y ekseni etrafında dönme açısı)
+            if hasattr(self, 'rotation') and self.rotation is not None:
+                # Vec3 kontrolü için type() kullan (isinstance yerine)
+                rotation_type = type(self.rotation).__name__
+                if rotation_type == 'Vec3' or hasattr(self.rotation, 'y'):
+                    # Vec3 tipinde veya y özelliği varsa
+                    return float(self.rotation.y)
+                elif isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 2:
+                    return float(self.rotation[1])
+            return 0.0  # Varsayılan: 0 derece
         elif veri_tipi == "rol": 
             return self.role
         elif veri_tipi == "renk": 
@@ -373,6 +489,180 @@ class ROV(Entity):
             
             # 3. Sonuç: Eğer engel sonar mesafesindeyse mesafeyi döndür, değilse -1
             if min_dist < engel_mesafesi_limit:
+                return min_dist
+            else:
+                return -1
+        elif veri_tipi == "lidar":
+            """
+            Lidar sensörü: Belirtilen yönde (ön, sağ, sol) 30 derecelik açıyla engel tespiti yapar.
+            Sonar mantığına benzer şekilde çalışır ama yön kontrolü ekler.
+            
+            taraf parametresi:
+                - 0: Ön (lidarx) - 30 derece açıyla öne bakar
+                - 1: Sağ (lidary) - 30 derece açıyla sağa bakar
+                - 2: Sol (lidary1) - 30 derece açıyla sola bakar
+                - None: Tüm yönlerden en yakın engel mesafesi
+            
+            Eğer engel lidar menzilindeyse mesafeyi döndürür, değilse -1 döndürür.
+            """
+            import math
+            from ursina import Vec3
+            
+            # Lidar ayarları
+            lidar_menzil = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
+            lidar_acisi = math.radians(30)  # 30 derece görüş açısı
+            
+            if not self.environment_ref:
+                return -1
+            
+            # ROV'un yönünü al (forward vektörü)
+            if hasattr(self, 'forward') and self.forward:
+                forward_vec = Vec3(self.forward.x, 0, self.forward.z).normalized()
+            else:
+                # Varsayılan yön (z ekseni pozitif yönü - ileri)
+                forward_vec = Vec3(0, 0, 1)
+            
+            # Sağ ve sol vektörleri hesapla
+            right_vec = Vec3(forward_vec.z, 0, -forward_vec.x).normalized()  # Sağ
+            left_vec = Vec3(-forward_vec.z, 0, forward_vec.x).normalized()    # Sol
+            
+            def engel_yon_icinde_mi(engel_pos, yon_vektoru):
+                """Engelin belirtilen yönde lidar görüş açısı içinde olup olmadığını kontrol et"""
+                # ROV'dan engele vektör
+                fark_vektoru = engel_pos - self.position
+                fark_vektoru.y = 0  # Yatay düzlemde çalışıyoruz
+                
+                mesafe = fark_vektoru.length()
+                if mesafe == 0:
+                    return False
+                
+                fark_normalized = fark_vektoru.normalized()
+                
+                # Yön vektörü ile açı hesapla
+                dot_product = yon_vektoru.dot(fark_normalized)
+                dot_product = max(-1.0, min(1.0, dot_product))  # Clamp
+                acı = math.acos(dot_product)
+                
+                # Açı lidar görüş açısı içindeyse (30 derece = ±15 derece)
+                return acı <= lidar_acisi / 2
+            
+            # Yön seçimi
+            if taraf == 0:  # Ön (lidarx)
+                yon_vektoru = forward_vec
+            elif taraf == 1:  # Sağ (lidary)
+                yon_vektoru = right_vec
+            elif taraf == 2:  # Sol (lidary1)
+                yon_vektoru = left_vec
+            elif taraf is None:  # Tüm yönlerden en yakın
+                yon_vektoru = None
+            else:
+                return -1  # Geçersiz taraf parametresi
+            
+            min_dist = 999.0
+            
+            # 1. Havuz sınırlarını kontrol et (sonar mantığı gibi)
+            if hasattr(self.environment_ref, 'havuz_genisligi'):
+                havuz_genisligi = self.environment_ref.havuz_genisligi
+                havuz_sinir = havuz_genisligi
+                
+                # Havuz sınırlarına mesafe kontrolü
+                x_mesafe_sag = havuz_sinir - self.position.x  # Sağ duvara mesafe
+                x_mesafe_sol = self.position.x - (-havuz_sinir)  # Sol duvara mesafe
+                z_mesafe_on = havuz_sinir - self.position.z  # Ön duvara mesafe
+                z_mesafe_arka = self.position.z - (-havuz_sinir)  # Arka duvara mesafe
+                
+                # Havuz sınırları için pozisyonlar
+                sinirlar = [
+                    (x_mesafe_sag, Vec3(havuz_sinir, self.position.y, self.position.z), 1),  # Sağ duvar
+                    (x_mesafe_sol, Vec3(-havuz_sinir, self.position.y, self.position.z), 2),  # Sol duvar
+                    (z_mesafe_on, Vec3(self.position.x, self.position.y, havuz_sinir), 0),  # Ön duvar
+                ]
+                
+                for sinir_mesafe, sinir_pos, sinir_taraf in sinirlar:
+                    if sinir_mesafe < lidar_menzil and sinir_mesafe > 0:
+                        if taraf is not None:
+                            # Belirli yön için kontrol
+                            if taraf == sinir_taraf:
+                                if engel_yon_icinde_mi(sinir_pos, yon_vektoru):
+                                    if sinir_mesafe < min_dist:
+                                        min_dist = sinir_mesafe
+                        else:
+                            # Tüm yönler için kontrol
+                            for yon in [forward_vec, right_vec, left_vec]:
+                                if engel_yon_icinde_mi(sinir_pos, yon):
+                                    if sinir_mesafe < min_dist:
+                                        min_dist = sinir_mesafe
+            
+            # 2. Fiziksel engelleri kontrol et (sonar mantığı gibi)
+            if hasattr(self.environment_ref, 'engeller'):
+                for engel in self.environment_ref.engeller:
+                    if not engel or not hasattr(engel, 'position') or engel.position is None:
+                        continue
+                    
+                    # Scale alma (sonar ile aynı)
+                    if hasattr(engel, 'scale'):
+                        if hasattr(engel.scale, 'x'):
+                            s_x, s_y, s_z = engel.scale.x, engel.scale.y, engel.scale.z
+                        else:
+                            s_x = engel.scale[0] if len(engel.scale) > 0 else 1.0
+                            s_y = engel.scale[1] if len(engel.scale) > 1 else 1.0
+                            s_z = engel.scale[2] if len(engel.scale) > 2 else 1.0
+                    else:
+                        s_x, s_y, s_z = 1.0, 1.0, 1.0
+                    
+                    # Ada hitbox'ları için özel işleme (sonar ile aynı)
+                    is_island_boundary = (hasattr(engel, 'model') and 
+                                         engel.model == 'cylinder' and
+                                         hasattr(engel, 'visible') and 
+                                         engel.visible == True)
+                    
+                    if is_island_boundary:
+                        yatay_yaricap = max(s_x, s_z) / 2
+                        dikey_yaricap = s_y / 2
+                        fark_vektoru = self.position - engel.position
+                        yatay_uzaklik = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
+                        dy = abs(fark_vektoru.y)
+                        dikey_tolerans = 5.0
+                        
+                        if dy <= (dikey_yaricap + dikey_tolerans):
+                            duvara_mesafe = yatay_uzaklik - yatay_yaricap
+                            if duvara_mesafe < 0:
+                                duvara_mesafe = 0
+                            
+                            # Yön kontrolü
+                            if taraf is not None:
+                                if engel_yon_icinde_mi(engel.position, yon_vektoru):
+                                    if duvara_mesafe < min_dist:
+                                        min_dist = duvara_mesafe
+                            else:
+                                # Tüm yönler için kontrol
+                                for yon in [forward_vec, right_vec, left_vec]:
+                                    if engel_yon_icinde_mi(engel.position, yon):
+                                        if duvara_mesafe < min_dist:
+                                            min_dist = duvara_mesafe
+                    else:
+                        # Normal engel (küp, vb.) için basit mesafe hesaplama (sonar ile aynı)
+                        avg_scale = (s_x + s_z) / 2
+                        d = distance(self.position, engel.position) - (avg_scale / 2)
+                        
+                        # Negatif mesafe olamaz (içindeyse 0)
+                        if d < 0:
+                            d = 0
+                        
+                        # Yön kontrolü
+                        if taraf is not None:
+                            if engel_yon_icinde_mi(engel.position, yon_vektoru) and d < lidar_menzil:
+                                if d < min_dist:
+                                    min_dist = d
+                        else:
+                            # Tüm yönler için kontrol
+                            for yon in [forward_vec, right_vec, left_vec]:
+                                if engel_yon_icinde_mi(engel.position, yon) and d < lidar_menzil:
+                                    if d < min_dist:
+                                        min_dist = d
+            
+            # 3. Sonuç: Eğer engel lidar menzilindeyse mesafeyi döndür, değilse -1 (sonar mantığı gibi)
+            if min_dist < lidar_menzil:
                 return min_dist
             else:
                 return -1
@@ -1122,6 +1412,10 @@ class Harita:
         self._ac_istegi = False
         self._kapat_istegi = False
         
+        # Convex Hull görüntüleme
+        self.convex_hull_data = None  # {'hull': ConvexHull, 'points': array, 'center': tuple}
+        self.goster_convex = False  # Convex hull'u göster/gizle
+        
         # Havuz genişliği
         self.havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
         
@@ -1289,20 +1583,99 @@ class Harita:
             self.ax.scatter(ex, ey, c='red', marker='X', s=80, label="Engel", zorder=10,
                           edgecolors='darkred', linewidths=2)
         
-        # Legend (sadece engeller için)
+        # Convex Hull Çizimi
+        if self.goster_convex:
+            if self.convex_hull_data is None:
+                # Debug: convex_hull_data None ise
+                pass  # Henüz hull oluşturulmamış
+            elif self.convex_hull_data.get('hull') is None:
+                # Debug: hull None ise
+                pass  # Hull oluşturulamadı
+            else:
+                try:
+                    hull = self.convex_hull_data['hull']
+                    points = self.convex_hull_data['points']
+                    
+                    # Hull'un boyutunu kontrol et (2D veya 3D)
+                    if points is not None and len(points) > 0:
+                        hull_dim = points.shape[1] if len(points.shape) > 1 else 0
+                        
+                        if hull_dim == 2:
+                            # 2D hull - (x, y) formatında
+                            # Harita (x, y) kullanıyor, direkt çiz
+                            if hasattr(hull, 'vertices') and len(hull.vertices) > 0:
+                                hull_points_2d = points[hull.vertices]
+                                # Kapalı çokgen için ilk noktayı sona ekle
+                                if len(hull_points_2d) > 0:
+                                    hull_points_2d_closed = np.vstack([hull_points_2d, hull_points_2d[0]])
+                                    self.ax.plot(hull_points_2d_closed[:, 0], hull_points_2d_closed[:, 1], 
+                                               'b-', linewidth=2, alpha=0.7, label='Convex Hull', zorder=8)
+                        elif hull_dim == 3:
+                            # 3D hull - 2D projeksiyon (x-y düzlemi)
+                            # Points: (x, y, z) formatında
+                            # Harita (x, y) kullanıyor, bu yüzden (x, y) -> (x, y) çiziyoruz
+                            if hasattr(hull, 'vertices') and len(hull.vertices) > 0:
+                                hull_vertices_3d = points[hull.vertices]
+                                # x ve y koordinatlarını al (z derinlik, haritada gösterilmez)
+                                hull_points_2d = hull_vertices_3d[:, [0, 1]]  # x ve y koordinatları
+                                # Kapalı çokgen için ilk noktayı sona ekle
+                                if len(hull_points_2d) > 0:
+                                    hull_points_2d_closed = np.vstack([hull_points_2d, hull_points_2d[0]])
+                                    self.ax.plot(hull_points_2d_closed[:, 0], hull_points_2d_closed[:, 1], 
+                                               'b-', linewidth=2, alpha=0.7, label='Convex Hull', zorder=8)
+                        
+                        # Hull merkezini göster
+                        center = self.convex_hull_data.get('center')
+                        if center:
+                            if len(center) == 3:
+                                # 3D center -> 2D (x, y)
+                                self.ax.plot(center[0], center[1], 'bo', markersize=8, 
+                                           markeredgecolor='darkblue', markeredgewidth=2, 
+                                           label='Hull Merkezi', zorder=9)
+                            elif len(center) == 2:
+                                # 2D center (x, y) -> haritada (x, y)
+                                self.ax.plot(center[0], center[1], 'bo', markersize=8, 
+                                           markeredgecolor='darkblue', markeredgewidth=2, 
+                                           label='Hull Merkezi', zorder=9)
+                except Exception as e:
+                    print(f"⚠️ [HARITA] Convex hull çizilirken hata: {e}")
+                    import traceback
+                    traceback.print_exc()
+        
+        # Legend (engeller ve convex hull için)
+        legend_items = []
         if self.manuel_engeller:
+            legend_items.append('Engel')
+        if self.goster_convex and self.convex_hull_data and self.convex_hull_data.get('hull') is not None:
+            legend_items.append('Convex Hull')
+            legend_items.append('Hull Merkezi')
+        
+        if legend_items:
             self.ax.legend(loc='upper right', fontsize=9)
 
         self.fig.canvas.draw_idle()
     
-    def goster(self, durum):
+    def goster(self, durum=None, convex=False):
         """
         Konsoldan (Shell Thread) çağrılır. 
         Sadece istek bırakır, işlemi update() (Main Thread) yapar.
+        
+        Args:
+            durum: True/False - Haritayı aç/kapat
+            convex: True/False - Convex hull'u göster/gizle
         """
+        # Eğer sadece convex parametresi verilmişse
+        if durum is None:
+            self.goster_convex = convex if isinstance(convex, bool) else (str(convex).lower() == "true")
+            print(f"✅ [HARITA] Convex hull görüntüleme: {self.goster_convex}")
+            return
+        
         # String gelme ihtimaline karşı kontrol ("True" -> True)
         if isinstance(durum, str):
             durum = durum.lower() == "true"
+        
+        if isinstance(convex, str):
+            convex = convex.lower() == "true"
             
         if durum:
             self._ac_istegi = True
@@ -1310,6 +1683,15 @@ class Harita:
         else:
             self._kapat_istegi = True
             self._ac_istegi = False
+        
+        # Convex hull görüntüleme ayarı
+        self.goster_convex = convex
+        if convex:
+            print(f"✅ [HARITA] Convex hull görüntüleme aktif: {self.goster_convex}")
+            if self.convex_hull_data:
+                print(f"   Hull data mevcut: {self.convex_hull_data.get('hull') is not None}")
+            else:
+                print(f"   ⚠️ Hull data henüz oluşturulmamış. formasyon_sec() veya guvenlik_hull_olustur() çağırın.")
 
     def update(self):
         """Ursina tarafından her karede (Main Thread) çağrılır."""

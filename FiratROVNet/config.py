@@ -188,7 +188,7 @@ class Formasyon:
     ]
     
     
-    def pozisyonlar(self, tip, aralik=15.0, is_3d=False):
+    def pozisyonlar(self, tip, aralik=15.0, is_3d=False, lider_koordinat=None):
         """
         Belirtilen formasyon tipi ve ROV sayısına göre pozisyon ofsetlerini döndürür.
         
@@ -198,6 +198,8 @@ class Formasyon:
             is_3d (bool): 3D formasyon modu (varsayılan: False - 2D)
                 - True: ROV'lar 3D uzayda (x, y, z) dizilir
                 - False: ROV'lar 2D düzlemde (x, y, z=0) dizilir
+            lider_koordinat (tuple, optional): (x, y, z) - Lider koordinatı (varsayılan: None - gerçek pozisyon kullanılır)
+                - Verilirse, lider bu koordinattaymış gibi pozisyonlar hesaplanır
         
         Returns:
             list: [(x0, y0, z0), (x1, y1, z1), ...] formatında pozisyon listesi
@@ -211,6 +213,9 @@ class Formasyon:
             
             pozisyonlar = Formasyon.pozisyonlar("V_SHAPE", aralik=20.0, is_3d=True)
             # [(0, 0, 0), (-20, -20, -5), (20, -20, -5), ...]
+            
+            pozisyonlar = Formasyon.pozisyonlar("V_SHAPE", aralik=20.0, lider_koordinat=(10, 20, -5))
+            # Lider (10, 20, -5) koordinatındaymış gibi pozisyonlar hesaplanır
         """
         if isinstance(tip, str):
             tip = tip.upper()
@@ -233,7 +238,13 @@ class Formasyon:
         
         # Eğer Filo verilmişse, lider pozisyonunu Filo'dan al
         lider_id=0
-        if self.Filo is not None:
+        if lider_koordinat is not None:
+            # Lider koordinatı verilmişse, onu kullan
+            # Format: (x, y, z) - x,y: 2D koordinatlar, z: derinlik
+            lider_x, lider_y, lider_z = lider_koordinat
+            pozisyonlar[0] = (float(lider_x), float(lider_y), float(lider_z))
+            lider_id = 0
+        elif self.Filo is not None:
             try:
                 for rov_id in range(n_rovs):
                     rol = self.Filo.get(rov_id, 'rol')

@@ -202,9 +202,9 @@ def update():
             # gat_kodu bir integer, liste indexi olarak kullanılmalı
             gat_kodu = app.rovs[i].gat_kodu
             if 0 <= gat_kodu < len(durum_txts):
-                app.rovs[i].label.text = durum_txts[gat_kodu]
+                app.rovs[i].label.text = durum_txts[gat_kodu]+str(i)
             else:
-                app.rovs[i].label.text = f"GAT:{gat_kodu}"
+                app.rovs[i].label.text = f"GAT:{gat_kodu}+{str(i)}"
         
         filo.guncelle_hepsi(tahminler)
         
