@@ -684,92 +684,69 @@ class Filo:
         
         # 2. ADIM: Her ROV için pozisyonu filo.git() ile uygula (lider_koordinat verilmemişse)
         # Formasyon.pozisyonlar() zaten mutlak pozisyonları döndürüyor (lider pozisyonu + offset'ler)
-        # Format: (x, y, z) - x,y: 2D koordinatlar, z: derinlik (Config formatı)
-        # Ursina formatı: (x, y, z) - x: sağ-sol, y: derinlik, z: ileri-geri
-        # Dönüşüm: Config (x, y, z) -> Ursina (x, z, y)
+        # Format: (x, y, z) - x,y: 2D koordinatlar, z: derinlik (Config formatı = Sim formatı)
+        # filo.git() artık Sim formatında çalışıyor: (x, y, z) - x: sağ-sol, y: ileri-geri, z: derinlik
         for i, pozisyon in enumerate(pozisyonlar):
             if i >= len(self.sistemler):
                 break
             
-            # Config formatından Ursina formatına dönüştür
-            config_x, config_y, config_z = pozisyon
-            # Config (x, y, z) -> Ursina (x, z, y)
-            ursina_x = config_x  # x: sağ-sol (aynı)
-            ursina_z = config_y  # Config'deki y -> Ursina'da z (ileri-geri)
-            ursina_y = config_z  # Config'deki z -> Ursina'da y (derinlik)
+            # Config formatı = Sim formatı: (x, y, z)
+            sim_x, sim_y, sim_z = pozisyon
+            # x: sağ-sol (aynı)
+            # y: ileri-geri (aynı)
+            # z: derinlik (aynı)
             
-            # Eğer yüzeydeyse (y >= 0), su altına gönder
-            if ursina_y >= 0:
-                ursina_y = -10.0
+            # Eğer yüzeydeyse (z >= 0), su altına gönder
+            if sim_z >= 0:
+                sim_z = -10.0
             
-            # filo.git() ile hedefi uygula
+            # filo.git() ile hedefi uygula (Sim formatında)
             try:
-                self.git(i, ursina_x, ursina_z, y=ursina_y, ai=True)
-                print(f"✅ [FORMASYON] ROV-{i} hedefi ayarlandı: ({ursina_x:.2f}, {ursina_z:.2f}, {ursina_y:.2f})")
+                self.git(i, sim_x, sim_y, sim_z, ai=True)
+                print(f"✅ [FORMASYON] ROV-{i} hedefi ayarlandı: ({sim_x:.2f}, {sim_y:.2f}, {sim_z:.2f})")
             except Exception as e:
                 print(f"⚠️ [FORMASYON] ROV-{i} için hedef ayarlanırken hata: {e}")
         
         print(f"✅ [FORMASYON] Formasyon kuruldu: Tip={formasyon_id}, Aralık={aralik}, ROV Sayısı={len(pozisyonlar)}")
-    
+        return None
     def formasyon_sec(self, margin=30, is_3d=False, offset=20.0):
         """
         Convex hull kullanarak en uygun formasyonu seçer.
-        
+
         KESİN KURALLAR:
-        - Önce ROV'lar çember oluşturur (5m'den başlar, engel tespit edene kadar veya 30m'ye kadar büyür)
         - Güvenlik hull (sanal + gerçek engeller) SADECE 1 KEZ hesaplanır (sabit hull)
-        - Margin ikiye ayrılır: guvenlik_margin ve formasyon_aralik
+        - Margin sadece formasyon_aralik için kullanılır (ROV'lar arası mesafe)
+        - Hull içinde kalma kontrolü margin olmadan yapılır
         - İlk geçerli formasyon bulunduğunda DERHAL döner
-        
+
         Args:
-            margin (float): Tek margin değeri (varsayılan: 30)
-                - guvenlik_margin = margin (hull sınırından minimum mesafe)
+            margin (float): Formasyon aralığı için kullanılır (varsayılan: 30)
                 - formasyon_aralik = margin * 0.6 (ROV'lar arası mesafe)
             is_3d (bool): 3D formasyon modu (varsayılan: False)
             offset (float): ROV hull genişletme mesafesi (varsayılan: 20.0)
-        
+
         Returns:
-            int veya None: Seçilen formasyon ID'si veya None (uygun formasyon bulunamazsa)
+            int | None: Seçilen formasyon ID'si veya None (uygun formasyon bulunamazsa)
         """
         try:
-            # 0. ÖN ADIM: ROV'ları çember oluştur (eğer fonksiyon varsa)
-            try:
-                cember_yaricap, cember_hedefleri = self._rovlari_cember_olustur()
-                if cember_yaricap is not None and cember_hedefleri is not None:
-                    # ROV'ların çember pozisyonlarına ulaşmasını bekle
-                    print("⏳ [FORMASYON_SEC] ROV'ların çember pozisyonlarına ulaşması bekleniyor...")
-                    try:
-                        self._rovlar_hedefe_ulasana_kadar_bekle(cember_hedefleri, tolerans=0.1, maksimum_bekleme=30.0)
-                        print("✅ [FORMASYON_SEC] Tüm ROV'lar çember pozisyonlarına ulaştı!")
-                    except AttributeError:
-                        print("⚠️ [FORMASYON_SEC] Çember bekleme fonksiyonu bulunamadı, devam ediliyor...")
-            except AttributeError:
-                print("⚠️ [FORMASYON_SEC] Çember oluşturma fonksiyonu bulunamadı, devam ediliyor...")
-            
-            # 1. Güvenlik hull'u oluştur (sanal + gerçek engeller, TEK KEZ)
+            # 1. Güvenlik hull'u oluştur (sanal + gerçek engeller, SADECE 1 KEZ)
             guvenlik_hull_dict = self.guvenlik_hull_olustur(offset=offset)
-            hull = guvenlik_hull_dict['hull']
-            merkez = guvenlik_hull_dict['center']
-            
-            if hull is None:
-                print("❌ [FORMASYON_SEC] Güvenlik hull oluşturulamadı!")
+
+            hull = guvenlik_hull_dict.get("hull")
+            merkez = guvenlik_hull_dict.get("center")
+
+            if hull is None or merkez is None:
                 return None
-            
-            if merkez is None:
-                print("❌ [FORMASYON_SEC] Hull merkezi hesaplanamadı!")
-                return None
-            
-            # 2. Margin parametrelerini ayır
-            guvenlik_margin = margin
-            
-            # 3. Formasyon tiplerini ve aralıkları dene
+
+            # 2. Formasyon aralığı parametreleri
             min_aralik = margin * 0.2
             baslangic_aralik = margin * 0.6
             adim = 1.0  # metre
-            
+
+            # 3. Formasyon tiplerini sırayla dene
             for i, formasyon_tipi in enumerate(Formasyon.TIPLER):
                 aralik = baslangic_aralik
-                
+
                 while aralik >= min_aralik:
                     test_points = self.formasyon(
                         i,
@@ -777,39 +754,87 @@ class Filo:
                         is_3d=is_3d,
                         lider_koordinat=merkez
                     )
-                    
-                    if test_points and self._formasyon_gecerli_mi(
-                        test_points,
-                        hull,
-                        guvenlik_margin,
-                        aralik
+
+                    if (
+                        test_points
+                        and self._formasyon_gecerli_mi(
+                            test_points,
+                            hull,
+                            aralik
+                        )
                     ):
                         print(
                             f"✅ [FORMASYON_SEC] Formasyon seçildi: {formasyon_tipi} "
                             f"(ID={i}, aralık={aralik:.1f}m)"
                         )
+
+                        # Formasyon pozisyonlarını al (Ursina formatında)
+                        ursina_positions = self.formasyon(
+                            i,
+                            aralik=aralik,
+                            is_3d=is_3d,
+                            lider_koordinat=merkez
+                        )
+                        
+                        if not ursina_positions:
+                            print("⚠️ [FORMASYON_SEC] Formasyon pozisyonları alınamadı!")
+                            return None
+                        
+                        # Lider ROV'u merkeze gönder
+                        lider_rov_id = None
+                        for rov_id in range(len(self.sistemler)):
+                            if self.get(rov_id, "rol") == 1:
+                                lider_rov_id = rov_id
+                                self.git(
+                                    rov_id,
+                                    merkez[0],
+                                    merkez[1],
+                                    merkez[2]
+                                )
+                                break
+                        
+                        # Takipçi ROV'ları formasyon pozisyonlarına gönder
+                        for rov_id, ursina_pos in enumerate(ursina_positions):
+                            if rov_id >= len(self.sistemler):
+                                break
+                            
+                            # Lider'i atla (zaten merkeze gönderildi)
+                            if rov_id == lider_rov_id:
+                                continue
+                            
+                            # Ursina formatından (x, z, y) -> Sim formatına (x, y, z) dönüştür
+                            sim_pos = tuple(ursina_pos) # (x, z, y) -> (x, y, z)
+                            sim_x, sim_y, sim_z = sim_pos
+                            
+                            # Eğer yüzeydeyse (z >= 0), su altına gönder
+                            if sim_z >= 0:
+                                sim_z = -10.0
+                            
+                            # Takipçi ROV'u formasyon pozisyonuna gönder
+                            self.git(rov_id, sim_x, sim_y, sim_z, ai=True)
+                            print(f"✅ [FORMASYON_SEC] ROV-{rov_id} formasyon pozisyonuna gönderildi: ({sim_x:.2f}, {sim_y:.2f}, {sim_z:.2f})")
+
                         return i
-                    
+
                     aralik -= adim
-            
+
             # Hiçbir formasyon geçerli değil
-            print("⚠️ [FORMASYON_SEC] Uygun formasyon bulunamadı!")
             return None
-            
+
         except Exception as e:
             print(f"❌ [HATA] Formasyon seçimi sırasında hata: {e}")
             import traceback
             traceback.print_exc()
             return None
+
     
-    def _formasyon_gecerli_mi(self, test_points, hull, guvenlik_margin, formasyon_aralik):
+    def _formasyon_gecerli_mi(self, test_points, hull, formasyon_aralik):
         """
         Formasyon pozisyonlarının geçerli olup olmadığını kontrol eder.
         
         Args:
             test_points: list - [(x, z, y), ...] Ursina formatında formasyon pozisyonları
-            hull: ConvexHull - Güvenlik hull
-            guvenlik_margin: float - Hull sınırından minimum mesafe
+            hull: ConvexHull - Güvenlik hull (Simülasyon formatında)
             formasyon_aralik: float - ROV'lar arası minimum mesafe
         
         Returns:
@@ -819,21 +844,26 @@ class Filo:
             return False
         
         try:
-            # 1. Tüm pozisyonlar hull içinde mi? (guvenlik_margin ile)
+            # 1. Tüm pozisyonlar hull içinde mi?
             for test_point in test_points:
-                # Ursina formatından (x, z, y) -> numpy array (x, y, z)
-                x, z, y = test_point
-                point_3d = np.array([x, y, z])
+                # Ursina formatından (x, z, y) -> Simülasyon formatına (x, y, z) dönüştür
+                #sim_point = Koordinator.ursina_to_sim(*test_point)
+                #point_3d = np.array(sim_point)
+                point_3d = np.array(test_point)
                 
-                # _point_inside_hull_with_margin hem 2D hem 3D hull'u destekler
-                if not self._point_inside_hull_with_margin(point_3d, hull, guvenlik_margin):
+                # _is_point_inside_hull hem 2D hem 3D hull'u destekler
+                if not self._is_point_inside_hull(point_3d, hull):
+                    #print(f"❌ [FORMASYON_GECERLI_MI] Pozisyon hull dışında: {test_point}")
                     return False
             
-            # 2. ROV'lar arası mesafe kontrolü
+            # 2. ROV'lar arası mesafe kontrolü (Simülasyon formatında)
             for i in range(len(test_points)):
                 for j in range(i + 1, len(test_points)):
-                    p1 = np.array([test_points[i][0], test_points[i][2], test_points[i][1]])
-                    p2 = np.array([test_points[j][0], test_points[j][2], test_points[j][1]])
+                    # Ursina formatından Sim formatına dönüştür
+                    p1_sim = Koordinator.ursina_to_sim(*test_points[i])
+                    p2_sim = Koordinator.ursina_to_sim(*test_points[j])
+                    p1 = np.array(p1_sim)
+                    p2 = np.array(p2_sim)
                     mesafe = np.linalg.norm(p1 - p2)
                     
                     if mesafe < formasyon_aralik:
@@ -979,8 +1009,8 @@ class Filo:
             # Hull merkezini hesapla (tüm noktaların ortalaması)
             center = np.mean(points, axis=0)
             
-            # Test noktasının hull içinde olup olmadığını kontrol et (margin ile)
-            inside = self._point_inside_hull_with_margin(test_point, hull, margin)
+            # Test noktasının hull içinde olup olmadığını kontrol et
+            inside = self._is_point_inside_hull(test_point, hull)
             
             return {
                 'inside': inside,
@@ -998,18 +1028,21 @@ class Filo:
                 'hull': None
             }
     
-    def _point_inside_hull_with_margin(self, point, hull, margin):
+    def _is_point_inside_hull(self, point, hull):
         """
-        Noktanın convex hull içinde olup olmadığını kontrol eder (margin ile).
+        Noktanın convex hull içinde olup olmadığını kontrol eder.
         2D veya 3D hull destekler.
         
+        Mantık: Scipy hull.equations içindeki her bir denklem için 
+        np.dot(normal, point) + d <= 0 ise nokta içeridedir.
+        Tek bir denklem bile > 0 sonucunu verirse nokta dışarıdadır.
+        
         Args:
-            point: (x, y, z) numpy array veya (x, z) numpy array (2D için)
+            point: (x, y, z) numpy array veya (x, y) numpy array (2D için)
             hull: scipy.spatial.ConvexHull (2D veya 3D)
-            margin: minimum distance to hull surface
         
         Returns:
-            bool: True if point is inside hull (with margin), False otherwise
+            bool: True if point is inside hull, False otherwise
         """
         point = np.asarray(point)
         
@@ -1033,14 +1066,13 @@ class Filo:
             normal = eq[:-1]
             d = eq[-1]
             
-            # Signed distance
-            distance = (np.dot(normal, point_2d) + d) / np.linalg.norm(normal)
-            
-            # Hull dışında veya sınırdan çok yakın
-            if distance > -margin:
+            # np.dot(normal, point) + d <= 0 ise nokta içeridedir
+            # Tek bir denklem bile > 0 sonucunu verirse nokta dışarıdadır
+            if np.dot(normal, point_2d) + d > 0:
                 return False
         
         return True
+
     
     def genisletilmis_rov_hull_olustur(self, offset=20.0):
         """
@@ -1285,7 +1317,7 @@ class Filo:
                     hull = ConvexHull(hull_3d_points, qhull_options='QJ')
                 except Exception:
                     # 3D hull oluşturulamazsa, 2D hull'u kullan
-                    # Bu durumda _point_inside_hull_with_margin fonksiyonunu 2D için uyarlamalıyız
+                    # Bu durumda _is_point_inside_hull fonksiyonu 2D'yi destekliyor
                     # Şimdilik 2D hull'u saklayalım
                     pass
             
@@ -1295,7 +1327,7 @@ class Filo:
             
             # Eğer 3D hull oluşturulamadıysa, 2D hull'u kullan
             if hull is None:
-                # 2D hull'u kullan (zaten _point_inside_hull_with_margin 2D'yi destekliyor)
+                # 2D hull'u kullan (zaten _is_point_inside_hull 2D'yi destekliyor)
                 hull = hull_2d
                 # 2D hull için points_2d'yi sakla
                 points_for_hull = points_2d
@@ -1795,7 +1827,7 @@ class TemelGNC:
         # Ursina'da Y yukarı (+), Simülasyonda Z derinlik (+) ise:
         # v_sim.z > 0 (daha derine git) -> Ursina Y negatif
         if abs(v.z) > 0.01:
-            self.rov.velocity.y -= v.z * thrust  # Sim Z+ (derinlik) -> Ursina Y- (aşağı)
+            self.rov.velocity.y += v.z * thrust  # Sim Z+ (derinlik) -> Ursina Y+ (yukarı)
         
         # Hız limiti
         if self.rov.velocity.length() > max_guc:
