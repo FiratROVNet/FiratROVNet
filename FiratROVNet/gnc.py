@@ -785,103 +785,152 @@ class Filo:
         return self._formasyon_sec_impl(margin, is_3d, offset)
     
     def _formasyon_sec_impl(self, margin=30, is_3d=False, offset=20.0):
-        """formasyon_sec() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
+        """
+        formasyon_sec() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır).
+        
+        Hiyerarşik Arama Stratejisi:
+        - Adım A: Lider ROV'un GPS koordinatını merkez kabul et, tüm formasyon tiplerini ve aralıklarını dene
+        - Adım B: Eğer mevcut açıyla sığmıyorsa, liderin yaw açısını 90, 180, 270 derece döndürerek tekrar dene
+        - Adım C: Eğer liderin olduğu yerde hiçbir açıda uygun formasyon bulunamazsa, Hull Merkezi koordinatına geç
+        """
         try:
             # 1. Güvenlik hull'u oluştur (sanal + gerçek engeller, SADECE 1 KEZ)
             guvenlik_hull_dict = self.hull_manager.guvenlik_hull_olustur(offset=offset)
 
             hull = guvenlik_hull_dict.get("hull")
-            merkez = guvenlik_hull_dict.get("center")
+            hull_merkez = guvenlik_hull_dict.get("center")
 
-            merkez_liste = list(merkez)
-            merkez_liste[2] = 0
-            merkez = tuple(merkez_liste)
-            
-
-            if hull is None or merkez is None:
+            if hull is None or hull_merkez is None:
                 return None
 
-            # 2. Formasyon aralığı parametreleri
+            # Hull merkezini Sim formatına dönüştür (z=0 yap)
+            hull_merkez_liste = list(hull_merkez)
+            hull_merkez_liste[2] = 0
+            hull_merkez = tuple(hull_merkez_liste)
+
+            # 2. Lider ROV'u bul ve GPS koordinatını al
+            lider_rov_id = None
+            lider_gps = None
+            for rov_id in range(len(self.sistemler)):
+                if self.get(rov_id, "rol") == 1:
+                    lider_rov_id = rov_id
+                    gps = self.get(rov_id, "gps")
+                    if gps:
+                        # GPS koordinatını Sim formatında al (Config.py'deki değişikliğe uygun)
+                        lider_gps = (float(gps[0]), float(gps[1]), float(gps[2]))
+                    break
+
+            if lider_rov_id is None:
+                print("❌ [FORMASYON_SEC] Lider ROV bulunamadı!")
+                return None
+
+            if lider_gps is None:
+                print("⚠️ [FORMASYON_SEC] Lider GPS koordinatı alınamadı, hull merkezini kullanıyoruz.")
+                lider_gps = hull_merkez
+
+            # 3. Formasyon aralığı parametreleri
             min_aralik = margin * 0.2
             baslangic_aralik = margin * 0.6
             adim = 1.0  # metre
 
-            # 3. Formasyon tiplerini sırayla dene
-            for i, formasyon_tipi in enumerate(Formasyon.TIPLER):
-                aralik = baslangic_aralik
+            # 4. Yaw açıları (0, 90, 180, 270 derece)
+            yaw_acilari = [0, 90, 180, 270]
 
-                while aralik >= min_aralik:
-                    test_points = self.formasyon(
-                        i,
-                        aralik=aralik,
-                        is_3d=is_3d,
-                        lider_koordinat=merkez
-                    )
+            # 5. HİYERARŞİK ARAMA: Nokta Döngüsü -> Yaw Döngüsü -> Formasyon Tipi Döngüsü -> Aralık Döngüsü
+            # Adım A: Lider GPS koordinatı
+            # Adım C: Hull Merkezi (eğer lider GPS'te bulunamazsa)
+            arama_noktalari = [
+                ("Lider GPS", lider_gps),
+                ("Hull Merkezi", hull_merkez)
+            ]
 
-                    if (
-                        test_points
-                        and self._formasyon_gecerli_mi(
-                            test_points,
-                            hull,
-                            aralik
-                        )
-                    ):
-                        print(
-                            f"✅ [FORMASYON_SEC] Formasyon seçildi: {formasyon_tipi} "
-                            f"(ID={i}, aralık={aralik:.1f}m)"
-                        )
+            for nokta_adi, merkez_koordinat in arama_noktalari:
+                print(f"🔍 [FORMASYON_SEC] {nokta_adi} üzerinde arama başlatılıyor: {merkez_koordinat}")
 
-                        # Formasyon pozisyonlarını al (Ursina formatında)
-                        ursina_positions = self.formasyon(
-                            i,
-                            aralik=aralik,
-                            is_3d=is_3d,
-                            lider_koordinat=merkez
-                        )
-                        
-                        if not ursina_positions:
-                            print("⚠️ [FORMASYON_SEC] Formasyon pozisyonları alınamadı!")
-                            return None
-                        
-                        # Lider ROV'u merkeze gönder
-                        lider_rov_id = None
-                        for rov_id in range(len(self.sistemler)):
-                            if self.get(rov_id, "rol") == 1:
-                                lider_rov_id = rov_id
-                                self.git(
-                                    rov_id,
-                                    merkez[0],
-                                    merkez[1],
-                                    merkez[2]
-                                )
-                                break
-                        
-                        # Takipçi ROV'ları formasyon pozisyonlarına gönder
-                        for rov_id, ursina_pos in enumerate(ursina_positions):
-                            if rov_id >= len(self.sistemler):
-                                break
-                            
-                            # Lider'i atla (zaten merkeze gönderildi)
-                            if rov_id == lider_rov_id:
+                # Yaw Döngüsü: 0, 90, 180, 270 derece
+                for deneme_yaw in yaw_acilari:
+                    print(f"  🔄 [FORMASYON_SEC] Yaw açısı deneniyor: {deneme_yaw}°")
+
+                    # Formasyon Tipi Döngüsü
+                    for i, formasyon_tipi in enumerate(Formasyon.TIPLER):
+                        aralik = baslangic_aralik
+
+                        # Aralık Döngüsü
+                        while aralik >= min_aralik:
+                            # Formasyon pozisyonlarını hesapla (yaw açısı ile)
+                            formasyon_obj = Formasyon(self)
+                            pozisyonlar = formasyon_obj.pozisyonlar(
+                                i,
+                                aralik=aralik,
+                                is_3d=is_3d,
+                                lider_koordinat=merkez_koordinat,
+                                yaw=deneme_yaw
+                            )
+
+                            if not pozisyonlar:
+                                aralik -= adim
                                 continue
-                            
-                            # Ursina formatından (x, z, y) -> Sim formatına (x, y, z) dönüştür
-                            sim_pos = tuple(ursina_pos) # (x, z, y) -> (x, y, z)
-                            sim_x, sim_y, sim_z = sim_pos
-                            
-                            # Eğer yüzeydeyse (z >= 0), su altına gönder
-                            if sim_z >= 0:
-                                sim_z = -10.0
-                            
-                            # Takipçi ROV'u formasyon pozisyonuna gönder
-                            self.git(rov_id, sim_x, sim_y, sim_z, ai=True)
-                            print(f"✅ [FORMASYON_SEC] ROV-{rov_id} formasyon pozisyonuna gönderildi: ({sim_x:.2f}, {sim_y:.2f}, {sim_z:.2f})")
 
-                        return i
+                            # Pozisyonları Ursina formatına dönüştür (test için)
+                            ursina_positions = []
+                            for pozisyon in pozisyonlar:
+                                config_x, config_y, config_z = pozisyon
+                                # Config (x, y, z) -> Ursina (x, z, y)
+                                ursina_x = config_x
+                                ursina_z = config_y
+                                ursina_y = config_z
+                                ursina_positions.append((ursina_x, ursina_z, ursina_y))
 
-                    aralik -= adim
+                            # Formasyon geçerliliğini kontrol et
+                            if self._formasyon_gecerli_mi(ursina_positions, hull, aralik):
+                                print(
+                                    f"✅ [FORMASYON_SEC] Formasyon seçildi: {formasyon_tipi} "
+                                    f"(ID={i}, aralık={aralik:.1f}m, yaw={deneme_yaw}°, nokta={nokta_adi})"
+                                )
+
+                                # Başarılı formasyon bulundu! Uygula
+                                
+                                # Liderin yaw açısını set et
+                                self.set(lider_rov_id, 'yaw', float(deneme_yaw))
+                                print(f"✅ [FORMASYON_SEC] Lider ROV-{lider_rov_id} yaw açısı {deneme_yaw}° olarak ayarlandı.")
+
+                                # Eğer formasyon Hull Merkezi üzerinde bulunduysa, lideri oraya gönder
+                                if nokta_adi == "Hull Merkezi":
+                                    self.git(
+                                        lider_rov_id,
+                                        hull_merkez[0],
+                                        hull_merkez[1],
+                                        hull_merkez[2],
+                                        ai=True
+                                    )
+                                    print(f"✅ [FORMASYON_SEC] Lider ROV-{lider_rov_id} hull merkezine gönderildi: {hull_merkez}")
+
+                                # Takipçi ROV'ları formasyon pozisyonlarına gönder
+                                for rov_id, pozisyon in enumerate(pozisyonlar):
+                                    if rov_id >= len(self.sistemler):
+                                        break
+                                    
+                                    # Lider'i atla (zaten işlendi)
+                                    if rov_id == lider_rov_id:
+                                        continue
+                                    
+                                    # Config formatı = Sim formatı: (x, y, z)
+                                    sim_x, sim_y, sim_z = pozisyon
+                                    
+                                    # Eğer yüzeydeyse (z >= 0), su altına gönder
+                                    if sim_z >= 0:
+                                        sim_z = -10.0
+                                    
+                                    # Takipçi ROV'u formasyon pozisyonuna gönder
+                                    self.git(rov_id, sim_x, sim_y, sim_z, ai=True)
+                                    print(f"✅ [FORMASYON_SEC] ROV-{rov_id} formasyon pozisyonuna gönderildi: ({sim_x:.2f}, {sim_y:.2f}, {sim_z:.2f})")
+
+                                return i
+
+                            aralik -= adim
 
             # Hiçbir formasyon geçerli değil
+            print("❌ [FORMASYON_SEC] Hiçbir formasyon geçerli bulunamadı.")
             return None
 
         except Exception as e:
