@@ -25,6 +25,44 @@
 
 
 
+# Branch Protection Rules (GitHub Web Arayüzünden Ayarlanmalı)
+# Bu dosya sadece referans içindir
+
+# GitHub Web Arayüzünden Ayarlanacaklar:
+# 
+# 1. main branch protection:
+#    - Require pull request reviews before merging
+#    - Require status checks to pass before merging
+#    - Require branches to be up to date before merging
+#    - Do not allow force pushes
+#    - Do not allow deletions
+#
+# 2. develop branch protection (opsiyonel):
+#    - Require pull request reviews before merging (opsiyonel)
+#    - Do not allow force pushes
+#    - Do not allow deletions
+#
+# GitHub Settings → Branches → Add rule
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

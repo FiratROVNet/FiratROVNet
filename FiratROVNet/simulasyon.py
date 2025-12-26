@@ -1,18 +1,29 @@
 from ursina import *
+from ursina import Vec3  # Vec3'ü doğrudan import et
 import numpy as np
 import random
 import threading
 import code
 import sys
 import torch
-from math import sin, cos, atan2, degrees, pi
+from math import sin, cos, atan2, degrees, radians, pi
 import os
+import matplotlib
+# Windows'ta thread-safe matplotlib için backend ayarı (modül yüklenmeden önce)
+import sys
+if sys.platform == 'win32':
+    try:
+        # TkAgg backend'i Windows'ta daha güvenilir ve thread-safe
+        matplotlib.use('TkAgg', force=False)
+    except Exception:
+        pass  # Backend zaten ayarlanmışsa devam et
+
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation
 import queue
     
-from .config import cfg # <-- BU SATIRI EKLE
+from .config import cfg, SensorAyarlari, GATLimitleri, HareketAyarlari
 
 # ============================================================
 # KOORDİNAT SİSTEMİ TANIMI
@@ -110,14 +121,14 @@ class ROV(Entity):
         self.velocity = Vec3(0, 0, 0)
         self.battery = 1.0  # Batarya 0-1 arası (1.0 = %100 dolu)
         self.role = 0
-        self.calistirilan_guc = 0.0  # ROV'un çalıştırdığı güç (0.0-1.0 arası) 
+        self.calistirilan_guc = 0.0  # ROV'un çalıştırdığı güç (0.0-1.0 arası)
         
-        self.sensor_config = {
-            "engel_mesafesi": 20.0,
-            "iletisim_menzili": 35.0,
-            "min_pil_uyarisi": 10.0,
-            "kacinma_mesafesi": 8.0  # Kaçınma mesafesi (ROV'lar ve engeller için)
-        }
+        # Rotation'ı başlangıçta ayarla (yaw rotasyonu için)
+        self.rotation = Vec3(0, 0, 0) 
+        
+        # Sensör ayarları config.py'den alınır (GAT limitleri ile tutarlı)
+        from .config import SensorAyarlari
+        self.sensor_config = SensorAyarlari.VARSAYILAN.copy()
         self.environment_ref = None
         
         # Manuel hareket kontrolü (sürekli hareket için)
@@ -140,14 +151,56 @@ class ROV(Entity):
 
     def update(self):
         # Manuel hareket kontrolü (sürekli hareket için)
-        if self.manuel_hareket['yon'] is not None and self.manuel_hareket['guc'] > 0:
+        if self.manuel_hareket['yon'] is not None:
             if self.manuel_hareket['yon'] == 'dur':
-                self.velocity *= 0.8  # Yavaşça dur (momentum korunumu)
+                self.velocity *= 0.7  # Yavaşça dur (momentum korunumu)
                 if self.velocity.length() < 0.1:
                     self.velocity = Vec3(0, 0, 0)
                     self.manuel_hareket['yon'] = None
                     self.manuel_hareket['guc'] = 0.0
-            else:
+            elif self.manuel_hareket['yon'] == 'yaw':
+                # Yaw rotasyonu için sürekli dönme
+                guc = self.manuel_hareket['guc']
+                if abs(guc) > 0:
+                    # Yaw rotasyonu için rotation.y güncelle
+                    # Güç değeri: 1.0 = saat yönünün tersine, -1.0 = saat yönünde
+                    yaw_hizi = abs(guc) * 90.0  # Derece/saniye (maksimum 90 derece/saniye)
+                    yaw_delta = yaw_hizi * time.dt  # Bu frame'de döndürülecek açı (küçük adım)
+                    
+                    # Mevcut rotation değerini al ve Vec3 olarak ayarla
+                    if not hasattr(self, 'rotation') or self.rotation is None:
+                        self.rotation = Vec3(0, 0, 0)
+                    elif not isinstance(self.rotation, Vec3):
+                        # Tuple veya list ise Vec3'e dönüştür
+                        if isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 3:
+                            self.rotation = Vec3(self.rotation[0], self.rotation[1], self.rotation[2])
+                        else:
+                            self.rotation = Vec3(0, 0, 0)
+                    
+                    # Mevcut rotation değerlerini al
+                    current_x = self.rotation.x if isinstance(self.rotation, Vec3) else 0
+                    current_y = self.rotation.y if isinstance(self.rotation, Vec3) else 0
+                    current_z = self.rotation.z if isinstance(self.rotation, Vec3) else 0
+                    
+                    # Y ekseni etrafında döndür (yaw) - küçük adımlarla
+                    if guc > 0:
+                        # Pozitif güç: saat yönünün tersine (pozitif yaw)
+                        new_y = current_y + yaw_delta
+                    elif guc < 0:
+                        # Negatif güç: saat yönünde (negatif yaw)
+                        new_y = current_y - yaw_delta
+                    else:
+                        new_y = current_y
+                    
+                    # Rotation'ı normalize et (0-360 arası tutmak için)
+                    while new_y >= 360:
+                        new_y -= 360
+                    while new_y < 0:
+                        new_y += 360
+                    
+                    # Rotation'ı yeni Vec3 olarak atama (küçük adımlarla güncelleme)
+                    self.rotation = Vec3(current_x, new_y, current_z)
+            elif self.manuel_hareket['guc'] > 0:
                 # Sürekli hareket: move metodunu çağır
                 yon = self.manuel_hareket['yon']
                 guc = self.manuel_hareket['guc']
@@ -178,17 +231,18 @@ class ROV(Entity):
         self.velocity *= SURTUNME_KATSAYISI
         
         # Simülasyon sınır kontrolü (ROV'ların dışarı çıkmasını önle)
+        # Sınırlar: +-havuz_genisligi (yani +-200 birim)
         if self.environment_ref:
             havuz_genisligi = getattr(self.environment_ref, 'havuz_genisligi', 200)
-            havuz_yari_genislik = havuz_genisligi / 2
+            havuz_sinir = havuz_genisligi  # +-havuz_genisligi
             
             # X ve Z sınırları
-            if abs(self.x) > havuz_yari_genislik:
-                self.x = np.sign(self.x) * havuz_yari_genislik
+            if abs(self.x) > havuz_sinir:
+                self.x = np.sign(self.x) * havuz_sinir
                 self.velocity.x = 0  # Sınırda durdur
             
-            if abs(self.z) > havuz_yari_genislik:
-                self.z = np.sign(self.z) * havuz_yari_genislik
+            if abs(self.z) > havuz_sinir:
+                self.z = np.sign(self.z) * havuz_sinir
                 self.velocity.z = 0  # Sınırda durdur
         
         if self.role == 1: # Lider
@@ -224,12 +278,48 @@ class ROV(Entity):
             return
         thrust = guc * HIZLANMA_CARPANI * time.dt
 
-        if komut == "ileri":  self.velocity.z += thrust
-        elif komut == "geri": self.velocity.z -= thrust
-        elif komut == "sag":  self.velocity.x += thrust
-        elif komut == "sol":  self.velocity.x -= thrust
-        elif komut == "cik":  self.velocity.y += thrust 
-        elif komut == "bat":  
+        # ROV'un yaw rotasyonunu al (Y ekseni etrafında dönme açısı - derece)
+        yaw_acisi = 0.0
+        if hasattr(self, 'rotation') and self.rotation is not None:
+            if isinstance(self.rotation, Vec3):
+                yaw_acisi = self.rotation.y
+            elif isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 2:
+                yaw_acisi = self.rotation[1]
+        
+        # Yaw açısını radyana çevir
+        yaw_radyan = radians(yaw_acisi)
+        
+        # Yatay hareket komutları için (ileri, geri, sağ, sol)
+        # ROV'un yönüne göre hareket vektörünü hesapla
+        if komut == "ileri":
+            # İleri: ROV'un baktığı yön (Z ekseni pozitif yönü, yaw açısına göre döndürülmüş)
+            hareket_x = sin(yaw_radyan) * thrust
+            hareket_z = cos(yaw_radyan) * thrust
+            self.velocity.x += hareket_x
+            self.velocity.z += hareket_z
+        elif komut == "geri":
+            # Geri: ROV'un arkası (Z ekseni negatif yönü, yaw açısına göre döndürülmüş)
+            hareket_x = -sin(yaw_radyan) * thrust
+            hareket_z = -cos(yaw_radyan) * thrust
+            self.velocity.x += hareket_x
+            self.velocity.z += hareket_z
+        elif komut == "sag":
+            # Sağ: ROV'un sağ tarafı (X ekseni pozitif yönü, yaw açısına göre döndürülmüş)
+            hareket_x = cos(yaw_radyan) * thrust
+            hareket_z = -sin(yaw_radyan) * thrust
+            self.velocity.x += hareket_x
+            self.velocity.z += hareket_z
+        elif komut == "sol":
+            # Sol: ROV'un sol tarafı (X ekseni negatif yönü, yaw açısına göre döndürülmüş)
+            hareket_x = -cos(yaw_radyan) * thrust
+            hareket_z = sin(yaw_radyan) * thrust
+            self.velocity.x += hareket_x
+            self.velocity.z += hareket_z
+        elif komut == "cik":
+            # Yukarı: Y ekseni pozitif (yaw'dan etkilenmez)
+            self.velocity.y += thrust 
+        elif komut == "bat":
+            # Aşağı: Y ekseni negatif (yaw'dan etkilenmez)
             if self.role == 1: pass
             else: self.velocity.y -= thrust 
         elif komut == "dur":
@@ -241,21 +331,57 @@ class ROV(Entity):
             if self.role == 1:
                 self.color = color.red
                 self.label.text = f"LIDER-{self.id}"
-                print(f"✅ ROV-{self.id} artık LİDER.")
+                if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose') and self.ortam.verbose:
+                    print(f"✅ ROV-{self.id} artık LİDER.")
             else:
                 self.color = color.orange
                 self.label.text = f"ROV-{self.id}"
-                print(f"✅ ROV-{self.id} artık TAKİPÇİ.")
+                if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose') and self.ortam.verbose:
+                    print(f"✅ ROV-{self.id} artık TAKİPÇİ.")
+        elif ayar_adi == "yaw":
+            # Yaw açısını derece olarak ayarla (Y ekseni etrafında dönme)
+            yaw_derece = float(deger)
+            # 0-360 arası normalize et
+            while yaw_derece >= 360:
+                yaw_derece -= 360
+            while yaw_derece < 0:
+                yaw_derece += 360
+            
+            # Mevcut rotation değerini al
+            if not hasattr(self, 'rotation') or self.rotation is None:
+                self.rotation = Vec3(0, 0, 0)
+            elif not isinstance(self.rotation, Vec3):
+                # Tuple veya list ise Vec3'e dönüştür
+                if isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 3:
+                    self.rotation = Vec3(self.rotation[0], self.rotation[1], self.rotation[2])
+                else:
+                    self.rotation = Vec3(0, 0, 0)
+            
+            # Yaw açısını güncelle (sadece Y ekseni)
+            current_x = self.rotation.x if hasattr(self.rotation, 'x') else 0
+            current_z = self.rotation.z if hasattr(self.rotation, 'z') else 0
+            self.rotation = Vec3(current_x, yaw_derece, current_z)
         elif ayar_adi in self.sensor_config: 
             self.sensor_config[ayar_adi] = deger
 
-    def get(self, veri_tipi):
+    def get(self, veri_tipi, taraf=None):
         if veri_tipi == "gps": 
             return np.array([self.x, self.y, self.z])
         elif veri_tipi == "hiz": 
             return np.array([self.velocity.x, self.velocity.y, self.velocity.z])
         elif veri_tipi == "batarya": 
             return self.battery
+        elif veri_tipi == "yaw":
+            # Yaw açısını derece olarak döndür (Y ekseni etrafında dönme açısı)
+            if hasattr(self, 'rotation') and self.rotation is not None:
+                # Vec3 kontrolü için type() kullan (isinstance yerine)
+                rotation_type = type(self.rotation).__name__
+                if rotation_type == 'Vec3' or hasattr(self.rotation, 'y'):
+                    # Vec3 tipinde veya y özelliği varsa
+                    return float(self.rotation.y)
+                elif isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 2:
+                    return float(self.rotation[1])
+            return 0.0  # Varsayılan: 0 derece
         elif veri_tipi == "rol": 
             return self.role
         elif veri_tipi == "renk": 
@@ -271,20 +397,282 @@ class ROV(Entity):
         elif veri_tipi == "kacinma_mesafesi":
             return self.sensor_config.get("kacinma_mesafesi")
         elif veri_tipi == "sonar":
+            """
+            Sonar sensörü: En yakın engel veya havuz sınırının mesafesini döndürür.
+            Eğer engel sonar mesafesindeyse (engel_mesafesi limiti içindeyse) mesafeyi döndürür,
+            değilse -1 döndürür (engel yok veya menzil dışında).
+            """
             min_dist = 999.0
-            if self.environment_ref:
+            engel_mesafesi_limit = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
+            
+            if not self.environment_ref:
+                return -1
+            
+            # 1. Havuz sınırlarını kontrol et (sanal engeller)
+            if hasattr(self.environment_ref, 'havuz_genisligi'):
+                havuz_genisligi = self.environment_ref.havuz_genisligi
+                havuz_sinir = havuz_genisligi  # +-havuz_genisligi
+                
+                # X ve Z sınırlarına mesafe kontrolü
+                x_mesafe_sag = havuz_sinir - self.position.x  # Sağ duvara mesafe
+                x_mesafe_sol = self.position.x - (-havuz_sinir)  # Sol duvara mesafe
+                z_mesafe_on = havuz_sinir - self.position.z  # Ön duvara mesafe
+                z_mesafe_arka = self.position.z - (-havuz_sinir)  # Arka duvara mesafe
+                
+                # En yakın havuz sınırını bul
+                en_yakin_sinir_mesafe = min(x_mesafe_sag, x_mesafe_sol, z_mesafe_on, z_mesafe_arka)
+                
+                if en_yakin_sinir_mesafe < min_dist:
+                    min_dist = en_yakin_sinir_mesafe
+            
+            # 2. Fiziksel engelleri kontrol et
+            if hasattr(self.environment_ref, 'engeller'):
                 for engel in self.environment_ref.engeller:
-                    avg_scale = (engel.scale_x + engel.scale_z) / 2
-                    d = distance(self, engel) - (avg_scale / 2)
-                    if d < min_dist: min_dist = d
-            menzil = self.sensor_config["engel_mesafesi"]
-            return min_dist if min_dist < menzil else -1
+                    if not engel or not hasattr(engel, 'position') or engel.position is None:
+                        continue
+                    
+                    # Scale alma (Güvenli yöntem)
+                    if hasattr(engel, 'scale'):
+                        if hasattr(engel.scale, 'x'):
+                            s_x, s_y, s_z = engel.scale.x, engel.scale.y, engel.scale.z
+                        else:
+                            s_x = engel.scale[0] if len(engel.scale) > 0 else 1.0
+                            s_y = engel.scale[1] if len(engel.scale) > 1 else 1.0
+                            s_z = engel.scale[2] if len(engel.scale) > 2 else 1.0
+                    else:
+                        s_x, s_y, s_z = 1.0, 1.0, 1.0
+                    
+                    # Ada hitbox'ları için özel işleme (silindirik algılama)
+                    is_island_boundary = (hasattr(engel, 'model') and 
+                                         engel.model == 'cylinder' and
+                                         hasattr(engel, 'visible') and 
+                                         engel.visible == True)
+                    
+                    if is_island_boundary:
+                        # Ada sınır çizgisi için silindirik algılama
+                        yatay_yaricap = max(s_x, s_z) / 2
+                        dikey_yaricap = s_y / 2
+                        
+                        # Vektör hesaplamaları
+                        fark_vektoru = self.position - engel.position
+                        
+                        # Yatay uzaklık (X-Z düzlemi)
+                        yatay_uzaklik = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
+                        
+                        # Dikey uzaklık (Y ekseni)
+                        dy = abs(fark_vektoru.y)
+                        
+                        # Silindirik algılama: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
+                        dikey_tolerans = 5.0
+                        
+                        if dy <= (dikey_yaricap + dikey_tolerans):
+                            duvara_mesafe = yatay_uzaklik - yatay_yaricap
+                            
+                            # İçindeyse mesafe 0
+                            if duvara_mesafe < 0:
+                                duvara_mesafe = 0
+                            
+                            if duvara_mesafe < min_dist:
+                                min_dist = duvara_mesafe
+                    else:
+                        # Normal engel (küp, vb.) için basit mesafe hesaplama
+                        # Merkezden merkeze mesafe - engelin yarıçapı
+                        avg_scale = (s_x + s_z) / 2
+                        d = distance(self.position, engel.position) - (avg_scale / 2)
+                        
+                        # Negatif mesafe olamaz (içindeyse 0)
+                        if d < 0:
+                            d = 0
+                        
+                        if d < min_dist:
+                            min_dist = d
+            
+            # 3. Sonuç: Eğer engel sonar mesafesindeyse mesafeyi döndür, değilse -1
+            if min_dist < engel_mesafesi_limit:
+                return min_dist
+            else:
+                return -1
+        elif veri_tipi == "lidar":
+            """
+            Lidar sensörü: Belirtilen yönde (ön, sağ, sol) 30 derecelik açıyla engel tespiti yapar.
+            Sonar mantığına benzer şekilde çalışır ama yön kontrolü ekler.
+            
+            taraf parametresi:
+                - 0: Ön (lidarx) - 30 derece açıyla öne bakar
+                - 1: Sağ (lidary) - 30 derece açıyla sağa bakar
+                - 2: Sol (lidary1) - 30 derece açıyla sola bakar
+                - None: Tüm yönlerden en yakın engel mesafesi
+            
+            Eğer engel lidar menzilindeyse mesafeyi döndürür, değilse -1 döndürür.
+            """
+            import math
+            from ursina import Vec3
+            
+            # Lidar ayarları
+            lidar_menzil = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
+            lidar_acisi = math.radians(30)  # 30 derece görüş açısı
+            
+            if not self.environment_ref:
+                return -1
+            
+            # ROV'un yönünü al (forward vektörü)
+            if hasattr(self, 'forward') and self.forward:
+                forward_vec = Vec3(self.forward.x, 0, self.forward.z).normalized()
+            else:
+                # Varsayılan yön (z ekseni pozitif yönü - ileri)
+                forward_vec = Vec3(0, 0, 1)
+            
+            # Sağ ve sol vektörleri hesapla
+            right_vec = Vec3(forward_vec.z, 0, -forward_vec.x).normalized()  # Sağ
+            left_vec = Vec3(-forward_vec.z, 0, forward_vec.x).normalized()    # Sol
+            
+            def engel_yon_icinde_mi(engel_pos, yon_vektoru):
+                """Engelin belirtilen yönde lidar görüş açısı içinde olup olmadığını kontrol et"""
+                # ROV'dan engele vektör
+                fark_vektoru = engel_pos - self.position
+                fark_vektoru.y = 0  # Yatay düzlemde çalışıyoruz
+                
+                mesafe = fark_vektoru.length()
+                if mesafe == 0:
+                    return False
+                
+                fark_normalized = fark_vektoru.normalized()
+                
+                # Yön vektörü ile açı hesapla
+                dot_product = yon_vektoru.dot(fark_normalized)
+                dot_product = max(-1.0, min(1.0, dot_product))  # Clamp
+                acı = math.acos(dot_product)
+                
+                # Açı lidar görüş açısı içindeyse (30 derece = ±15 derece)
+                return acı <= lidar_acisi / 2
+            
+            # Yön seçimi
+            if taraf == 0:  # Ön (lidarx)
+                yon_vektoru = forward_vec
+            elif taraf == 1:  # Sağ (lidary)
+                yon_vektoru = right_vec
+            elif taraf == 2:  # Sol (lidary1)
+                yon_vektoru = left_vec
+            elif taraf is None:  # Tüm yönlerden en yakın
+                yon_vektoru = None
+            else:
+                return -1  # Geçersiz taraf parametresi
+            
+            min_dist = 999.0
+            
+            # 1. Havuz sınırlarını kontrol et (sonar mantığı gibi)
+            if hasattr(self.environment_ref, 'havuz_genisligi'):
+                havuz_genisligi = self.environment_ref.havuz_genisligi
+                havuz_sinir = havuz_genisligi
+                
+                # Havuz sınırlarına mesafe kontrolü
+                x_mesafe_sag = havuz_sinir - self.position.x  # Sağ duvara mesafe
+                x_mesafe_sol = self.position.x - (-havuz_sinir)  # Sol duvara mesafe
+                z_mesafe_on = havuz_sinir - self.position.z  # Ön duvara mesafe
+                z_mesafe_arka = self.position.z - (-havuz_sinir)  # Arka duvara mesafe
+                
+                # Havuz sınırları için pozisyonlar
+                sinirlar = [
+                    (x_mesafe_sag, Vec3(havuz_sinir, self.position.y, self.position.z), 1),  # Sağ duvar
+                    (x_mesafe_sol, Vec3(-havuz_sinir, self.position.y, self.position.z), 2),  # Sol duvar
+                    (z_mesafe_on, Vec3(self.position.x, self.position.y, havuz_sinir), 0),  # Ön duvar
+                ]
+                
+                for sinir_mesafe, sinir_pos, sinir_taraf in sinirlar:
+                    if sinir_mesafe < lidar_menzil and sinir_mesafe > 0:
+                        if taraf is not None:
+                            # Belirli yön için kontrol
+                            if taraf == sinir_taraf:
+                                if engel_yon_icinde_mi(sinir_pos, yon_vektoru):
+                                    if sinir_mesafe < min_dist:
+                                        min_dist = sinir_mesafe
+                        else:
+                            # Tüm yönler için kontrol
+                            for yon in [forward_vec, right_vec, left_vec]:
+                                if engel_yon_icinde_mi(sinir_pos, yon):
+                                    if sinir_mesafe < min_dist:
+                                        min_dist = sinir_mesafe
+            
+            # 2. Fiziksel engelleri kontrol et (sonar mantığı gibi)
+            if hasattr(self.environment_ref, 'engeller'):
+                for engel in self.environment_ref.engeller:
+                    if not engel or not hasattr(engel, 'position') or engel.position is None:
+                        continue
+                    
+                    # Scale alma (sonar ile aynı)
+                    if hasattr(engel, 'scale'):
+                        if hasattr(engel.scale, 'x'):
+                            s_x, s_y, s_z = engel.scale.x, engel.scale.y, engel.scale.z
+                        else:
+                            s_x = engel.scale[0] if len(engel.scale) > 0 else 1.0
+                            s_y = engel.scale[1] if len(engel.scale) > 1 else 1.0
+                            s_z = engel.scale[2] if len(engel.scale) > 2 else 1.0
+                    else:
+                        s_x, s_y, s_z = 1.0, 1.0, 1.0
+                    
+                    # Ada hitbox'ları için özel işleme (sonar ile aynı)
+                    is_island_boundary = (hasattr(engel, 'model') and 
+                                         engel.model == 'cylinder' and
+                                         hasattr(engel, 'visible') and 
+                                         engel.visible == True)
+                    
+                    if is_island_boundary:
+                        yatay_yaricap = max(s_x, s_z) / 2
+                        dikey_yaricap = s_y / 2
+                        fark_vektoru = self.position - engel.position
+                        yatay_uzaklik = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
+                        dy = abs(fark_vektoru.y)
+                        dikey_tolerans = 5.0
+                        
+                        if dy <= (dikey_yaricap + dikey_tolerans):
+                            duvara_mesafe = yatay_uzaklik - yatay_yaricap
+                            if duvara_mesafe < 0:
+                                duvara_mesafe = 0
+                            
+                            # Yön kontrolü
+                            if taraf is not None:
+                                if engel_yon_icinde_mi(engel.position, yon_vektoru):
+                                    if duvara_mesafe < min_dist:
+                                        min_dist = duvara_mesafe
+                            else:
+                                # Tüm yönler için kontrol
+                                for yon in [forward_vec, right_vec, left_vec]:
+                                    if engel_yon_icinde_mi(engel.position, yon):
+                                        if duvara_mesafe < min_dist:
+                                            min_dist = duvara_mesafe
+                    else:
+                        # Normal engel (küp, vb.) için basit mesafe hesaplama (sonar ile aynı)
+                        avg_scale = (s_x + s_z) / 2
+                        d = distance(self.position, engel.position) - (avg_scale / 2)
+                        
+                        # Negatif mesafe olamaz (içindeyse 0)
+                        if d < 0:
+                            d = 0
+                        
+                        # Yön kontrolü
+                        if taraf is not None:
+                            if engel_yon_icinde_mi(engel.position, yon_vektoru) and d < lidar_menzil:
+                                if d < min_dist:
+                                    min_dist = d
+                        else:
+                            # Tüm yönler için kontrol
+                            for yon in [forward_vec, right_vec, left_vec]:
+                                if engel_yon_icinde_mi(engel.position, yon) and d < lidar_menzil:
+                                    if d < min_dist:
+                                        min_dist = d
+            
+            # 3. Sonuç: Eğer engel lidar menzilindeyse mesafeyi döndür, değilse -1 (sonar mantığı gibi)
+            if min_dist < lidar_menzil:
+                return min_dist
+            else:
+                return -1
         return None
     
     def _engel_tespiti(self):
         """
         GÜNCELLENMİŞ: Hem algılama hem de çizim noktasını düzeltir.
         Çizgiyi merkeze değil, engelin yüzeyine çizer.
+        Havuz sınırları da engel olarak algılanır.
         """
         if not self.environment_ref or not hasattr(self.environment_ref, 'engeller'):
             return
@@ -293,7 +681,44 @@ class ROV(Entity):
         en_yakin_engel = None
         en_yakin_nokta = None  # Çizgi çekilecek nokta
         
-        engel_mesafesi_limit = self.sensor_config.get("engel_mesafesi", 20.0)
+        engel_mesafesi_limit = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
+        
+        # Havuz sınırlarını kontrol et (sanal engeller)
+        # Sınırlar: +-havuz_genisligi (yani +-200 birim)
+        if hasattr(self.environment_ref, 'havuz_genisligi'):
+            havuz_genisligi = self.environment_ref.havuz_genisligi
+            havuz_sinir = havuz_genisligi  # +-havuz_genisligi
+            
+            # X ve Z sınırlarına mesafe kontrolü
+            # X sınırları (sağ ve sol duvarlar)
+            x_mesafe_sag = havuz_sinir - self.position.x  # Sağ duvara mesafe
+            x_mesafe_sol = self.position.x - (-havuz_sinir)  # Sol duvara mesafe
+            
+            # Z sınırları (ön ve arka duvarlar)
+            z_mesafe_on = havuz_sinir - self.position.z  # Ön duvara mesafe
+            z_mesafe_arka = self.position.z - (-havuz_sinir)  # Arka duvara mesafe
+            
+            # En yakın havuz sınırını bul
+            en_yakin_sinir_mesafe = min(x_mesafe_sag, x_mesafe_sol, z_mesafe_on, z_mesafe_arka)
+            
+            if en_yakin_sinir_mesafe < engel_mesafesi_limit and en_yakin_sinir_mesafe < min_mesafe:
+                min_mesafe = en_yakin_sinir_mesafe
+                # Havuz sınırı için özel bir işaret objesi oluştur (Entity yerine)
+                en_yakin_engel = type('HavuzSiniri', (), {'position': None})()  # Minimal obje
+                
+                # Hangi sınıra yakın olduğunu belirle ve çizgi noktasını hesapla
+                if en_yakin_sinir_mesafe == x_mesafe_sag:
+                    # Sağ duvar
+                    en_yakin_nokta = Vec3(havuz_sinir, self.position.y, self.position.z)
+                elif en_yakin_sinir_mesafe == x_mesafe_sol:
+                    # Sol duvar
+                    en_yakin_nokta = Vec3(-havuz_sinir, self.position.y, self.position.z)
+                elif en_yakin_sinir_mesafe == z_mesafe_on:
+                    # Ön duvar
+                    en_yakin_nokta = Vec3(self.position.x, self.position.y, havuz_sinir)
+                else:
+                    # Arka duvar
+                    en_yakin_nokta = Vec3(self.position.x, self.position.y, -havuz_sinir)
         
         for engel in self.environment_ref.engeller:
             if not engel or not hasattr(engel, 'position') or engel.position is None:
@@ -310,47 +735,94 @@ class ROV(Entity):
             else:
                 s_x, s_y, s_z = 1.0, 1.0, 1.0
             
-            yatay_yaricap = max(s_x, s_z) / 2
-            dikey_yaricap = s_y / 2
+            # Ada hitbox'ları için özel işleme (daha hassas algılama)
+            # Eğer engel bir cylinder modeli ise (ada sınır çizgisi), daha hassas hesaplama yap
+            is_island_boundary = (hasattr(engel, 'model') and 
+                                 engel.model == 'cylinder' and
+                                 hasattr(engel, 'visible') and 
+                                 engel.visible == True)
             
-            # 2. Vektör Hesaplamaları
-            # Engelin merkezinden ROV'a doğru olan vektör
-            fark_vektoru = self.position - engel.position
-            
-            # Yatay uzaklık (Y eksenini yok sayarak)
-            yatay_uzaklik = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
-            
-            # Dikey uzaklık
-            dy = abs(fark_vektoru.y)
-            
-            # 3. Kapsama Alanı Kontrolü
-            dikey_tolerans = 10.0 
-            
-            if dy <= (dikey_yaricap + dikey_tolerans):
-                duvara_mesafe = yatay_uzaklik - yatay_yaricap
+            if is_island_boundary:
+                # Ada sınır çizgisi için silindirik algılama
+                yatay_yaricap = max(s_x, s_z) / 2
+                dikey_yaricap = s_y / 2
                 
-                # İçindeyse mesafe 0
-                if duvara_mesafe < 0:
-                    duvara_mesafe = 0
+                # Vektör hesaplamaları
+                fark_vektoru = self.position - engel.position
                 
-                if duvara_mesafe < min_mesafe:
-                    min_mesafe = duvara_mesafe
-                    en_yakin_engel = engel
+                # Yatay uzaklık (X-Z düzlemi)
+                yatay_uzaklik = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
+                
+                # Dikey uzaklık (Y ekseni)
+                dy = abs(fark_vektoru.y)
+                
+                # Silindirik algılama: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
+                dikey_tolerans = 5.0  # Daha hassas tolerans
+                
+                if dy <= (dikey_yaricap + dikey_tolerans):
+                    duvara_mesafe = yatay_uzaklik - yatay_yaricap
                     
-                    # --- KRİTİK DÜZELTME: YÜZEY NOKTASINI HESAPLA ---
-                    # Merkeze değil, yüzeye çizgi çekeceğiz.
-                    # Engelin merkezinden ROV'a doğru, yarıçap kadar git.
-                    if yatay_uzaklik > 0.001:  # Sıfıra bölme hatasını önle
-                        yon_x = fark_vektoru.x / yatay_uzaklik
-                        yon_z = fark_vektoru.z / yatay_uzaklik
-                    else:
-                        yon_x, yon_z = 1, 0
+                    # İçindeyse mesafe 0
+                    if duvara_mesafe < 0:
+                        duvara_mesafe = 0
+                    
+                    if duvara_mesafe < min_mesafe:
+                        min_mesafe = duvara_mesafe
+                        en_yakin_engel = engel
                         
-                    # Yüzeydeki nokta (X ve Z'de sınırda, Y'de ROV ile aynı hizada olsun ki çizgi düz dursun)
-                    hedef_x = engel.position.x + (yon_x * yatay_yaricap)
-                    hedef_z = engel.position.z + (yon_z * yatay_yaricap)
+                        # Yüzey noktasını hesapla
+                        if yatay_uzaklik > 0.001:
+                            yon_x = fark_vektoru.x / yatay_uzaklik
+                            yon_z = fark_vektoru.z / yatay_uzaklik
+                        else:
+                            yon_x, yon_z = 1, 0
+                        
+                        hedef_x = engel.position.x + (yon_x * yatay_yaricap)
+                        hedef_z = engel.position.z + (yon_z * yatay_yaricap)
+                        en_yakin_nokta = Vec3(hedef_x, self.position.y, hedef_z)
+            else:
+                # Normal engel algılama (kayalar vb.)
+                yatay_yaricap = max(s_x, s_z) / 2
+                dikey_yaricap = s_y / 2
+                
+                # 2. Vektör Hesaplamaları
+                # Engelin merkezinden ROV'a doğru olan vektör
+                fark_vektoru = self.position - engel.position
+                
+                # Yatay uzaklık (Y eksenini yok sayarak)
+                yatay_uzaklik = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
+                
+                # Dikey uzaklık
+                dy = abs(fark_vektoru.y)
+                
+                # 3. Kapsama Alanı Kontrolü
+                dikey_tolerans = HareketAyarlari.DIKEY_TOLERANS_ENGEL  # Config'den alınan dikey tolerans 
+                
+                if dy <= (dikey_yaricap + dikey_tolerans):
+                    duvara_mesafe = yatay_uzaklik - yatay_yaricap
                     
-                    en_yakin_nokta = Vec3(hedef_x, self.position.y, hedef_z)
+                    # İçindeyse mesafe 0
+                    if duvara_mesafe < 0:
+                        duvara_mesafe = 0
+                    
+                    if duvara_mesafe < min_mesafe:
+                        min_mesafe = duvara_mesafe
+                        en_yakin_engel = engel
+                        
+                        # --- KRİTİK DÜZELTME: YÜZEY NOKTASINI HESAPLA ---
+                        # Merkeze değil, yüzeye çizgi çekeceğiz.
+                        # Engelin merkezinden ROV'a doğru, yarıçap kadar git.
+                        if yatay_uzaklik > 0.001:  # Sıfıra bölme hatasını önle
+                            yon_x = fark_vektoru.x / yatay_uzaklik
+                            yon_z = fark_vektoru.z / yatay_uzaklik
+                        else:
+                            yon_x, yon_z = 1, 0
+                            
+                        # Yüzeydeki nokta (X ve Z'de sınırda, Y'de ROV ile aynı hizada olsun ki çizgi düz dursun)
+                        hedef_x = engel.position.x + (yon_x * yatay_yaricap)
+                        hedef_z = engel.position.z + (yon_z * yatay_yaricap)
+                        
+                        en_yakin_nokta = Vec3(hedef_x, self.position.y, hedef_z)
 
         # Tespit Sonucu
         if en_yakin_engel and min_mesafe < engel_mesafesi_limit:
@@ -358,7 +830,9 @@ class ROV(Entity):
             self.engel_mesafesi = min_mesafe
             
             # Çizgi fonksiyonuna artık hesapladığımız NOKTAYI gönderiyoruz
-            self._kesikli_cizgi_ciz(en_yakin_nokta, min_mesafe)
+            # Havuz sınırı için de çizgi çiz
+            if en_yakin_nokta:
+                self._kesikli_cizgi_ciz(en_yakin_nokta, min_mesafe)
         else:
             self.tespit_edilen_engel = None
             self.engel_mesafesi = 999.0
@@ -618,9 +1092,9 @@ class ROV(Entity):
         else:
             iletisim_menzili = self.sensor_config.get("iletisim_menzili", 35.0)
             
-            # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (10m içinde) iletişim kopmasını görmezden gel
-            # Bu, çarpışma önleme mekanizmasının neden olduğu geçici iletişim kopmalarını önler
-            yakin_mesafe_esigi = 10.0  # 10 metre
+            # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda iletişim kopmasını görmezden gel
+            # Bu, çarpışma önleme mekanizmasının neden olduğu geçici iletişim kopmalarını önler (Config'den)
+            yakin_mesafe_esigi = HareketAyarlari.YAKIN_MESAFE_ESIGI
             if mesafe < yakin_mesafe_esigi:
                 # Çok yakınsa, iletişim var say (geçici kopmaları önle)
                 self.lider_ile_iletisim = True
@@ -638,41 +1112,69 @@ class ROV(Entity):
         # Kaçınma mesafesini sensör ayarlarından al
         kacinma_mesafesi = self.sensor_config.get("kacinma_mesafesi", None)
         if kacinma_mesafesi is None:
-            # Eğer kacinma_mesafesi yoksa, engel_mesafesi'nin bir kısmını kullan
-            engel_mesafesi = self.sensor_config.get("engel_mesafesi", 20.0)
-            kacinma_mesafesi = engel_mesafesi * 0.2  # Engel mesafesinin %20'si
+            # Eğer kacinma_mesafesi yoksa, engel_mesafesi'nin bir kısmını kullan (Config'den katsayı)
+            engel_mesafesi = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
+            kacinma_mesafesi = engel_mesafesi * HareketAyarlari.KACINMA_MESAFESI_FALLBACK_KATSAYISI
         
         uzaklasma_vektoru = Vec3(0, 0, 0)
         
         # Diğer ROV'lardan uzaklaşma
-        for diger_rov in self.environment_ref.rovs:
-            if diger_rov.id == self.id:
-                continue
-            
-            mesafe = distance(self.position, diger_rov.position)
-            
-            # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (2m içinde) kaçınma mekanizmasını devre dışı bırak
-            # Bu, ROV'ların birbirini sürekli itmesini önler
-            minimum_mesafe = 2.0  # 2 metre - çok yakınsa kaçınma yok
-            if mesafe < minimum_mesafe:
-                continue  # Çok yakınsa kaçınma yapma
-            
-            # Kaçınma mesafesi veya daha küçük mesafede uzaklaş
-            if mesafe <= kacinma_mesafesi and mesafe > 0:
-                # Uzaklaşma yönü (bu ROV'dan diğer ROV'a)
-                uzaklasma_yonu = (self.position - diger_rov.position).normalized()
-                # Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
-                # Ancak gücü daha da yumuşat (çok agresif olmasın)
-                uzaklasma_gucu = (kacinma_mesafesi - mesafe) / kacinma_mesafesi
-                uzaklasma_gucu *= 0.3  # Gücü %30'a indir (daha yumuşak)
-                uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
+        # ÖNEMLİ: Lider takipçilerden uzaklaşmaz - hedefe gitmek için sürüden ayrılabilir
+        if self.role != 1:  # Sadece takipçiler diğer ROV'lardan uzaklaşır
+            for diger_rov in self.environment_ref.rovs:
+                if diger_rov.id == self.id:
+                    continue
+                
+                mesafe = distance(self.position, diger_rov.position)
+                
+                # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (2m içinde) kaçınma mekanizmasını devre dışı bırak
+                # Bu, ROV'ların birbirini sürekli itmesini önler
+                minimum_mesafe = 2.0  # 2 metre - çok yakınsa kaçınma yok
+                if mesafe < minimum_mesafe:
+                    continue  # Çok yakınsa kaçınma yapma
+                
+                # Kaçınma mesafesi veya daha küçük mesafede uzaklaş
+                if mesafe <= kacinma_mesafesi and mesafe > 0:
+                    # Uzaklaşma yönü (bu ROV'dan diğer ROV'a)
+                    uzaklasma_yonu = (self.position - diger_rov.position).normalized()
+                    # Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
+                    # Ancak gücü daha da yumuşat (çok agresif olmasın)
+                    uzaklasma_gucu = (kacinma_mesafesi - mesafe) / kacinma_mesafesi
+                    uzaklasma_gucu *= 0.3  # Gücü %30'a indir (daha yumuşak)
+                    uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
         
         # Engellerden uzaklaşma
         for engel in self.environment_ref.engeller:
             mesafe = distance(self.position, engel.position)
-            # Engel boyutunu dikkate al
-            engel_yari_cap = max(engel.scale_x, engel.scale_y, engel.scale_z) / 2
-            gercek_mesafe = mesafe - engel_yari_cap
+            
+            # Ada sınır çizgisi kontrolü (daha hassas algılama)
+            is_island_boundary = (hasattr(engel, 'model') and 
+                                 engel.model == 'sphere' and
+                                 hasattr(engel, 'visible') and 
+                                 engel.visible == True and
+                                 hasattr(engel, 'scale') and
+                                 # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri) kontrolü
+                                 abs(engel.scale.y - max(engel.scale.x, engel.scale.z)) > 5.0)
+            
+            if is_island_boundary:
+                # Ada sınır çizgisi için silindirik mesafe hesaplama
+                engel_yari_cap = max(engel.scale_x, engel.scale_z) / 2
+                engel_yukseklik = engel.scale_y / 2
+                
+                # Yatay mesafe (X-Z düzlemi)
+                fark_vektoru = self.position - engel.position
+                yatay_mesafe = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
+                dikey_fark = abs(fark_vektoru.y)
+                
+                # Silindirik algılama: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
+                if dikey_fark <= (engel_yukseklik + 5.0):  # Dikey tolerans
+                    gercek_mesafe = yatay_mesafe - engel_yari_cap
+                else:
+                    continue  # Dikey olarak çok uzaksa atla
+            else:
+                # Normal engel algılama (kayalar vb.)
+                engel_yari_cap = max(engel.scale_x, engel.scale_y, engel.scale_z) / 2
+                gercek_mesafe = mesafe - engel_yari_cap
             
             # ÖNEMLİ: Engel çok yakınsa (engel yarıçapı + 1m içinde) kaçınma mekanizmasını devre dışı bırak
             # Bu, ROV'ların engellere çok yaklaşmasını önler ama sürekli itmeyi engeller
@@ -683,10 +1185,56 @@ class ROV(Entity):
             # Kaçınma mesafesi veya daha küçük mesafede uzaklaş
             if gercek_mesafe <= kacinma_mesafesi and gercek_mesafe > 0:
                 # Uzaklaşma yönü (bu ROV'dan engele)
-                uzaklasma_yonu = (self.position - engel.position).normalized()
+                if is_island_boundary:
+                    # Ada sınırı için yatay uzaklaşma (sadece X-Z düzleminde)
+                    if yatay_mesafe > 0.001:
+                        uzaklasma_yonu = Vec3(fark_vektoru.x / yatay_mesafe, 0, fark_vektoru.z / yatay_mesafe)
+                    else:
+                        uzaklasma_yonu = Vec3(1, 0, 0)  # Varsayılan yön
+                else:
+                    uzaklasma_yonu = (self.position - engel.position).normalized()
+                
                 # Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
-                # Ancak gücü daha da yumuşat (çok agresif olmasın)
+                # Config'den alınan uzaklaşma gücü katsayısı
                 uzaklasma_gucu = (kacinma_mesafesi - gercek_mesafe) / kacinma_mesafesi
+                uzaklasma_gucu *= HareketAyarlari.UZAKLASMA_GUC_KATSAYISI
+                uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
+        
+        # Havuz sınırlarından uzaklaşma (sanal engeller)
+        # Sınırlar: +-havuz_genisligi (yani +-200 birim)
+        if hasattr(self.environment_ref, 'havuz_genisligi'):
+            havuz_genisligi = self.environment_ref.havuz_genisligi
+            havuz_sinir = havuz_genisligi  # +-havuz_genisligi
+            
+            # X sınırları (sağ ve sol duvarlar)
+            x_mesafe_sag = havuz_sinir - self.position.x
+            x_mesafe_sol = self.position.x - (-havuz_sinir)
+            
+            # Z sınırları (ön ve arka duvarlar)
+            z_mesafe_on = havuz_sinir - self.position.z
+            z_mesafe_arka = self.position.z - (-havuz_sinir)
+            
+            # En yakın sınıra mesafe
+            en_yakin_sinir_mesafe = min(x_mesafe_sag, x_mesafe_sol, z_mesafe_on, z_mesafe_arka)
+            
+            # Kaçınma mesafesi içindeyse uzaklaş
+            if en_yakin_sinir_mesafe <= kacinma_mesafesi and en_yakin_sinir_mesafe > 0:
+                # Hangi sınıra yakın olduğunu belirle ve uzaklaşma yönünü hesapla
+                if en_yakin_sinir_mesafe == x_mesafe_sag:
+                    # Sağ duvar - sola doğru uzaklaş
+                    uzaklasma_yonu = Vec3(-1, 0, 0)
+                elif en_yakin_sinir_mesafe == x_mesafe_sol:
+                    # Sol duvar - sağa doğru uzaklaş
+                    uzaklasma_yonu = Vec3(1, 0, 0)
+                elif en_yakin_sinir_mesafe == z_mesafe_on:
+                    # Ön duvar - geriye doğru uzaklaş
+                    uzaklasma_yonu = Vec3(0, 0, -1)
+                else:
+                    # Arka duvar - ileriye doğru uzaklaş
+                    uzaklasma_yonu = Vec3(0, 0, 1)
+                
+                # Uzaklaşma gücü
+                uzaklasma_gucu = (kacinma_mesafesi - en_yakin_sinir_mesafe) / kacinma_mesafesi
                 uzaklasma_gucu *= 0.3  # Gücü %30'a indir (daha yumuşak)
                 uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
         
@@ -696,9 +1244,8 @@ class ROV(Entity):
             uzaklasma_vektoru = uzaklasma_vektoru.normalized()
             uzaklasma_gucu = min(uzaklasma_vektoru.length(), 1.0)  # Maksimum %100 güç
             
-            # Daha yumuşak uzaklaşma için gücü azalt (çarpışma önleme daha yumuşak olsun)
-            yumusaklik_carpani = 0.2  # Uzaklaşma gücünü %20'ye indir (daha yumuşak)
-            uzaklasma_gucu *= yumusaklik_carpani
+            # Daha yumuşak uzaklaşma için gücü azalt (Config'den yumuşaklık çarpanı)
+            uzaklasma_gucu *= HareketAyarlari.YUMUSAKLIK_CARPANI
             
             # Hız vektörüne ekle (momentum korunumu için)
             uzaklasma_hizi = uzaklasma_vektoru * uzaklasma_gucu * HIZLANMA_CARPANI * time.dt
@@ -756,34 +1303,86 @@ class ROV(Entity):
                         carpan2 = (2 * rov_kutlesi / (rov_kutlesi + diger_rov_kutlesi)) * (-nokta_carpim)
                         diger_rov.velocity = diger_rov.velocity - (-carpisma_yonu) * carpan2
                         
-                        # Çarpışma sonrası pozisyonları ayır
-                        ayirma_mesafesi = (min_mesafe - mesafe) / 2
+                        # Çarpışma sonrası pozisyonları ayır (daha aktif)
+                        ayirma_mesafesi = (min_mesafe - mesafe) + 2.0  # Ekstra mesafe ekle
                         self.position += carpisma_yonu * ayirma_mesafesi
                         diger_rov.position -= carpisma_yonu * ayirma_mesafesi
-        
-        # Kayalarla çarpışma
-        for engel in self.environment_ref.engeller:
-            mesafe = distance(self.position, engel.position)
-            # Engel boyutuna göre minimum mesafe
-            engel_yari_cap = max(engel.scale_x, engel.scale_y, engel.scale_z) / 2
-            min_mesafe = engel_yari_cap + 1.0
-            
-            if mesafe < min_mesafe:
-                # Kaya ile çarpışma
-                carpisma_yonu = (self.position - engel.position).normalized()
-                
-                # Hızı yansıt (kaya sabit, ROV geri seker)
-                hiz_buyuklugu = self.velocity.length()
-                if hiz_buyuklugu > 0.1:
-                    # Yansıma (momentum korunumu - kaya çok ağır, ROV geri seker)
-                    nokta_carpim = self.velocity.dot(carpisma_yonu)
-                    if nokta_carpim < 0:  # Kayaya doğru gidiyor
-                        # Ursina'da Vec3 * float çalışır, float * Vec3 çalışmaz
-                        self.velocity = self.velocity - carpisma_yonu * (2 * nokta_carpim)
                         
-                        # Pozisyonu ayır
-                        ayirma_mesafesi = (min_mesafe - mesafe)
-                        self.position += carpisma_yonu * ayirma_mesafesi
+                        # Aktif kaçınma: Hızı da artır (çarpışmadan kurtulmak için)
+                        if self.velocity.length() < 5.0:
+                            self.velocity += carpisma_yonu * 3.0  # Kaçınma hızı ekle
+                        if diger_rov.velocity.length() < 5.0:
+                            diger_rov.velocity -= carpisma_yonu * 3.0  # Kaçınma hızı ekle
+        
+        # Kayalarla ve ada sınırlarıyla çarpışma
+        for engel in self.environment_ref.engeller:
+            # Ada sınır çizgisi kontrolü (daha hassas algılama)
+            is_island_boundary = (hasattr(engel, 'model') and 
+                                 engel.model == 'sphere' and
+                                 hasattr(engel, 'visible') and 
+                                 engel.visible == True and
+                                 hasattr(engel, 'scale') and
+                                 # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri) kontrolü
+                                 abs(engel.scale.y - max(engel.scale.x, engel.scale.z)) > 5.0)
+            
+            if is_island_boundary:
+                # Ada sınır çizgisi için silindirik çarpışma kontrolü
+                engel_yari_cap = max(engel.scale_x, engel.scale_z) / 2
+                engel_yukseklik = engel.scale_y / 2
+                
+                # Yatay mesafe (X-Z düzlemi)
+                fark_vektoru = self.position - engel.position
+                yatay_mesafe = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
+                dikey_fark = abs(fark_vektoru.y)
+                
+                # Silindirik çarpışma: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
+                if dikey_fark <= (engel_yukseklik + HareketAyarlari.DIKEY_TOLERANS_ENGEL):  # Config'den dikey tolerans
+                    min_mesafe = engel_yari_cap + 1.0
+                    
+                    if yatay_mesafe < min_mesafe:
+                        # Ada sınırı ile çarpışma
+                        if yatay_mesafe > 0.001:
+                            carpisma_yonu = Vec3(fark_vektoru.x / yatay_mesafe, 0, fark_vektoru.z / yatay_mesafe)
+                        else:
+                            carpisma_yonu = Vec3(1, 0, 0)  # Varsayılan yön
+                        
+                        # Hızı yansıt (sadece yatay düzlemde)
+                        hiz_buyuklugu = (self.velocity.x**2 + self.velocity.z**2)**0.5
+                        if hiz_buyuklugu > 0.1:
+                            # Yatay hız vektörü
+                            yatay_hiz = Vec3(self.velocity.x, 0, self.velocity.z)
+                            nokta_carpim = yatay_hiz.dot(carpisma_yonu)
+                            if nokta_carpim < 0:  # Ada sınırına doğru gidiyor
+                                # Yatay hızı yansıt
+                                self.velocity.x = self.velocity.x - carpisma_yonu.x * (2 * nokta_carpim)
+                                self.velocity.z = self.velocity.z - carpisma_yonu.z * (2 * nokta_carpim)
+                                
+                                # Pozisyonu ayır (yatay düzlemde)
+                                ayirma_mesafesi = (min_mesafe - yatay_mesafe)
+                                self.position += carpisma_yonu * ayirma_mesafesi
+            else:
+                # Normal engel çarpışma kontrolü (kayalar vb.)
+                mesafe = distance(self.position, engel.position)
+                # Engel boyutuna göre minimum mesafe
+                engel_yari_cap = max(engel.scale_x, engel.scale_y, engel.scale_z) / 2
+                min_mesafe = engel_yari_cap + 1.0
+                
+                if mesafe < min_mesafe:
+                    # Kaya ile çarpışma
+                    carpisma_yonu = (self.position - engel.position).normalized()
+                    
+                    # Hızı yansıt (kaya sabit, ROV geri seker)
+                    hiz_buyuklugu = self.velocity.length()
+                    if hiz_buyuklugu > 0.1:
+                        # Yansıma (momentum korunumu - kaya çok ağır, ROV geri seker)
+                        nokta_carpim = self.velocity.dot(carpisma_yonu)
+                        if nokta_carpim < 0:  # Kayaya doğru gidiyor
+                            # Ursina'da Vec3 * float çalışır, float * Vec3 çalışmaz
+                            self.velocity = self.velocity - carpisma_yonu * (2 * nokta_carpim)
+                            
+                            # Pozisyonu ayır
+                            ayirma_mesafesi = (min_mesafe - mesafe)
+                            self.position += carpisma_yonu * ayirma_mesafesi
 
 # ============================================================
 # HARİTA SİSTEMİ (Matplotlib - Ayrı Pencere)
@@ -799,6 +1398,7 @@ class Harita:
             ortam_ref: Ortam sınıfı referansı
             pencere_boyutu: Harita penceresi boyutu (genişlik, yükseklik)
         """
+        self.hedef_pozisyon = None  # Hedef pozisyonu (x, y) formatında
         self.ortam_ref = ortam_ref
         self.pencere_boyutu = pencere_boyutu
         self.manuel_engeller = []  # Elle eklenen engeller [(x_2d, y_2d), ...]
@@ -812,6 +1412,10 @@ class Harita:
         self._ac_istegi = False
         self._kapat_istegi = False
         
+        # Convex Hull görüntüleme
+        self.convex_hull_data = None  # {'hull': ConvexHull, 'points': array, 'center': tuple}
+        self.goster_convex = False  # Convex hull'u göster/gizle
+        
         # Havuz genişliği
         self.havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
         
@@ -820,6 +1424,9 @@ class Harita:
     def _setup_figure(self):
         """Bu fonksiyon mutlaka ANA THREAD içinde çağrılmalıdır."""
         try:
+            import sys
+            import time
+            
             plt.ion()
             # Yeni pencere oluştur
             self.fig, self.ax = plt.subplots(figsize=(self.pencere_boyutu[0]/100, self.pencere_boyutu[1]/100))
@@ -830,10 +1437,25 @@ class Harita:
             
             # İlk çizimi yap
             self._ciz()
-            plt.show(block=False)
-            plt.pause(0.1)
+            
+            # Windows'ta thread-safe show (GIL sorunlarını önlemek için)
+            if sys.platform == 'win32':
+                try:
+                    # Windows'ta plt.show() ve plt.pause() GIL sorunlarına yol açabilir
+                    # Bu yüzden draw_idle ve time.sleep kullan
+                    self.fig.canvas.draw_idle()
+                    plt.show(block=False)
+                    # plt.pause yerine time.sleep kullan (daha güvenli)
+                    time.sleep(0.05)
+                except Exception as e:
+                    print(f"⚠️ Harita penceresi açılırken uyarı: {e}")
+            else:
+                plt.show(block=False)
+                plt.pause(0.1)
         except Exception as e:
             print(f"❌ Harita penceresi başlatılamadı: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _on_close(self, event):
         """Pencere çarpıdan kapatıldığında."""
@@ -920,6 +1542,28 @@ class Harita:
                 
                 self._ciz_gps_pin(x_2d, y_2d, renk, yon)
 
+        # Hedef pozisyonunu çiz (büyük X işareti)
+        if self.hedef_pozisyon:
+            x_hedef, y_hedef = self.hedef_pozisyon
+            # Büyük X işareti çiz
+            x_boyutu = 8.0
+            # İlk çapraz çizgi (sol üst -> sağ alt)
+            self.ax.plot([x_hedef - x_boyutu, x_hedef + x_boyutu], 
+                        [y_hedef - x_boyutu, y_hedef + x_boyutu], 
+                        'r-', linewidth=3, zorder=10, label='Hedef' if not hasattr(self, '_hedef_label_cizildi') else '')
+            # İkinci çapraz çizgi (sağ üst -> sol alt)
+            self.ax.plot([x_hedef + x_boyutu, x_hedef - x_boyutu], 
+                        [y_hedef - x_boyutu, y_hedef + x_boyutu], 
+                        'r-', linewidth=3, zorder=10)
+            # Merkez nokta
+            self.ax.plot(x_hedef, y_hedef, 'ro', markersize=8, zorder=11)
+            # Çember (hedef alanı)
+            from matplotlib.patches import Circle
+            circle = Circle((x_hedef, y_hedef), radius=5, fill=False, 
+                          edgecolor='red', linestyle='--', linewidth=2, zorder=9)
+            self.ax.add_patch(circle)
+            self._hedef_label_cizildi = True
+        
         # Adaları Çiz
         if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
             from matplotlib import patches
@@ -939,20 +1583,99 @@ class Harita:
             self.ax.scatter(ex, ey, c='red', marker='X', s=80, label="Engel", zorder=10,
                           edgecolors='darkred', linewidths=2)
         
-        # Legend (sadece engeller için)
+        # Convex Hull Çizimi
+        if self.goster_convex:
+            if self.convex_hull_data is None:
+                # Debug: convex_hull_data None ise
+                pass  # Henüz hull oluşturulmamış
+            elif self.convex_hull_data.get('hull') is None:
+                # Debug: hull None ise
+                pass  # Hull oluşturulamadı
+            else:
+                try:
+                    hull = self.convex_hull_data['hull']
+                    points = self.convex_hull_data['points']
+                    
+                    # Hull'un boyutunu kontrol et (2D veya 3D)
+                    if points is not None and len(points) > 0:
+                        hull_dim = points.shape[1] if len(points.shape) > 1 else 0
+                        
+                        if hull_dim == 2:
+                            # 2D hull - (x, y) formatında
+                            # Harita (x, y) kullanıyor, direkt çiz
+                            if hasattr(hull, 'vertices') and len(hull.vertices) > 0:
+                                hull_points_2d = points[hull.vertices]
+                                # Kapalı çokgen için ilk noktayı sona ekle
+                                if len(hull_points_2d) > 0:
+                                    hull_points_2d_closed = np.vstack([hull_points_2d, hull_points_2d[0]])
+                                    self.ax.plot(hull_points_2d_closed[:, 0], hull_points_2d_closed[:, 1], 
+                                               'b-', linewidth=2, alpha=0.7, label='Convex Hull', zorder=8)
+                        elif hull_dim == 3:
+                            # 3D hull - 2D projeksiyon (x-y düzlemi)
+                            # Points: (x, y, z) formatında
+                            # Harita (x, y) kullanıyor, bu yüzden (x, y) -> (x, y) çiziyoruz
+                            if hasattr(hull, 'vertices') and len(hull.vertices) > 0:
+                                hull_vertices_3d = points[hull.vertices]
+                                # x ve y koordinatlarını al (z derinlik, haritada gösterilmez)
+                                hull_points_2d = hull_vertices_3d[:, [0, 1]]  # x ve y koordinatları
+                                # Kapalı çokgen için ilk noktayı sona ekle
+                                if len(hull_points_2d) > 0:
+                                    hull_points_2d_closed = np.vstack([hull_points_2d, hull_points_2d[0]])
+                                    self.ax.plot(hull_points_2d_closed[:, 0], hull_points_2d_closed[:, 1], 
+                                               'b-', linewidth=2, alpha=0.7, label='Convex Hull', zorder=8)
+                        
+                        # Hull merkezini göster
+                        center = self.convex_hull_data.get('center')
+                        if center:
+                            if len(center) == 3:
+                                # 3D center -> 2D (x, y)
+                                self.ax.plot(center[0], center[1], 'bo', markersize=8, 
+                                           markeredgecolor='darkblue', markeredgewidth=2, 
+                                           label='Hull Merkezi', zorder=9)
+                            elif len(center) == 2:
+                                # 2D center (x, y) -> haritada (x, y)
+                                self.ax.plot(center[0], center[1], 'bo', markersize=8, 
+                                           markeredgecolor='darkblue', markeredgewidth=2, 
+                                           label='Hull Merkezi', zorder=9)
+                except Exception as e:
+                    print(f"⚠️ [HARITA] Convex hull çizilirken hata: {e}")
+                    import traceback
+                    traceback.print_exc()
+        
+        # Legend (engeller ve convex hull için)
+        legend_items = []
         if self.manuel_engeller:
+            legend_items.append('Engel')
+        if self.goster_convex and self.convex_hull_data and self.convex_hull_data.get('hull') is not None:
+            legend_items.append('Convex Hull')
+            legend_items.append('Hull Merkezi')
+        
+        if legend_items:
             self.ax.legend(loc='upper right', fontsize=9)
 
         self.fig.canvas.draw_idle()
     
-    def goster(self, durum):
+    def goster(self, durum=None, convex=False):
         """
         Konsoldan (Shell Thread) çağrılır. 
         Sadece istek bırakır, işlemi update() (Main Thread) yapar.
+        
+        Args:
+            durum: True/False - Haritayı aç/kapat
+            convex: True/False - Convex hull'u göster/gizle
         """
+        # Eğer sadece convex parametresi verilmişse
+        if durum is None:
+            self.goster_convex = convex if isinstance(convex, bool) else (str(convex).lower() == "true")
+            print(f"✅ [HARITA] Convex hull görüntüleme: {self.goster_convex}")
+            return
+        
         # String gelme ihtimaline karşı kontrol ("True" -> True)
         if isinstance(durum, str):
             durum = durum.lower() == "true"
+        
+        if isinstance(convex, str):
+            convex = convex.lower() == "true"
             
         if durum:
             self._ac_istegi = True
@@ -960,6 +1683,15 @@ class Harita:
         else:
             self._kapat_istegi = True
             self._ac_istegi = False
+        
+        # Convex hull görüntüleme ayarı
+        self.goster_convex = convex
+        if convex:
+            print(f"✅ [HARITA] Convex hull görüntüleme aktif: {self.goster_convex}")
+            if self.convex_hull_data:
+                print(f"   Hull data mevcut: {self.convex_hull_data.get('hull') is not None}")
+            else:
+                print(f"   ⚠️ Hull data henüz oluşturulmamış. formasyon_sec() veya guvenlik_hull_olustur() çağırın.")
 
     def update(self):
         """Ursina tarafından her karede (Main Thread) çağrılır."""
@@ -994,7 +1726,19 @@ class Harita:
                     # Havuz genişliğini güncelle (sim_olustur'da değişebilir)
                     self.havuz_genisligi = getattr(self.ortam_ref, 'havuz_genisligi', 200)
                     self._ciz()
-                    self.fig.canvas.flush_events()
+                    
+                    # Windows'ta thread-safe flush_events
+                    import sys
+                    if sys.platform == 'win32':
+                        # Windows'ta canvas.draw() kullan (flush_events yerine)
+                        try:
+                            self.fig.canvas.draw()
+                            self.fig.canvas.flush_events()
+                        except Exception:
+                            # Pencere kapatılmış olabilir
+                            pass
+                    else:
+                        self.fig.canvas.flush_events()
                 except Exception:
                     # Pencere harici bir sebeple kapandıysa
                     self.fig = None
@@ -1051,7 +1795,8 @@ class Harita:
 
 
 class Ortam:
-    def __init__(self):
+    def __init__(self, verbose=False):
+        self.verbose = verbose  # Log mesajlarını kontrol eder
         # --- Ursina Ayarları ---
         self.app = Ursina(
             vsync=False,
@@ -1064,7 +1809,7 @@ class Ortam:
         window.fullscreen = False
         window.exit_button.visible = False
         window.fps_counter.enabled = True
-        window.size = (1024, 768)
+        window.size = (1280, 720)  # Daha geniş pencere boyutu (16:9 aspect ratio)
         window.center_on_screen()
         application.run_in_background = True
         window.color = color.rgb(10, 30, 50)  # Arka plan
@@ -1174,11 +1919,12 @@ class Ortam:
         
         # Referans ölçekler (orijinal ada)
         ref_visual_scale = (0.3, 0.8, 0.3)
+        # Hitbox boyutları artırıldı (ROV'ların daha erken algılaması için)
         ref_hitbox_scales = [
-            (55, 15, 55),   # Katman 1 (en geniş)
-            (40, 20, 40),   # Katman 2
-            (30, 20, 30),   # Katman 3
-            (10, 20, 10)    # Katman 4
+            (75, 20, 75),   # Katman 1 (en geniş) - 55'ten 75'e çıkarıldı
+            (55, 25, 55),   # Katman 2 - 40'tan 55'e çıkarıldı
+            (45, 25, 45),   # Katman 3 - 30'dan 45'e çıkarıldı
+            (20, 25, 20)    # Katman 4 - 10'dan 20'ye çıkarıldı
         ]
         ref_hitbox_positions = [
             (0, -5, 0),     # Katman 1
@@ -1208,13 +1954,13 @@ class Ortam:
             max_wave_height = self.WATER_SURFACE_Y_BASE + 1.5
             island_y_position = max_wave_height + 5
             
-            # Havuz sınırları (havuz_genisligi'ne göre)
+            # Havuz sınırları: +-havuz_genisligi (yani +-200 birim)
             # X ve Z eksenleri random, Y ekseni su yüzeyinin üstünde sabit
-            havuz_yari_genislik = self.havuz_genisligi / 2
-            min_x = -havuz_yari_genislik
-            max_x = havuz_yari_genislik
-            min_z = -havuz_yari_genislik
-            max_z = havuz_yari_genislik
+            havuz_sinir = self.havuz_genisligi  # +-havuz_genisligi
+            min_x = -havuz_sinir
+            max_x = havuz_sinir
+            min_z = -havuz_sinir
+            max_z = havuz_sinir
             
             # Mevcut ada pozisyonları (çakışma kontrolü için)
             placed_island_positions = []
@@ -1232,7 +1978,7 @@ class Ortam:
                 island_radius = max_hitbox_radius * scale_multiplier
                 
                 # Minimum mesafe (2.5 kat güvenlik payı ile)
-                min_distance_between_islands = island_radius * 2.5
+                min_distance_between_islands = island_radius * 3
                 
                 # --- 2. GÜVENLİ POZİSYON BULMA (X ve Z random, Y sabit) ---
                 island_x, island_z = self._find_safe_island_position(
@@ -1309,7 +2055,7 @@ class Ortam:
         )
         
         # Deniz tabanı kalınlığı: Su hacmi yüksekliğinin 0.1'i
-        seabed_kalinligi = su_hacmi_yuksekligi * 0.15
+        seabed_kalinligi = su_hacmi_yuksekligi * 0.25
         # Deniz tabanı alt yüzeyi: Su hacminin altı
         seabed_alt_yuzey = su_hacmi_merkez_y - (su_hacmi_yuksekligi / 2)
         # Deniz tabanı merkez y: Alt yüzeyin üstünde kalınlığın yarısı kadar
@@ -1327,7 +2073,7 @@ class Ortam:
         )
         
         # Çimen katmanı kalınlığı: Su hacmi yüksekliğinin 0.25'i
-        cimen_kalinligi = su_hacmi_yuksekligi * 0.4
+        cimen_kalinligi = su_hacmi_yuksekligi * 0.5
         # Çimen katmanı alt yüzeyi: Deniz tabanının altı
         cimen_alt_yuzey = seabed_merkez_y - (seabed_kalinligi / 2)
         # Çimen katmanı merkez y
@@ -1440,6 +2186,7 @@ class Ortam:
     def _create_island_hitboxes(self, island_x, island_z, scale_multiplier, ref_hitbox_scales, ref_hitbox_positions, island_idx):
         """
         Ada için çok katmanlı hitbox sistemi oluşturur.
+        Görsel sınır çizgisi ve hassas algılama için optimize edilmiştir.
         
         Args:
             island_x, island_z: Ada pozisyonu
@@ -1453,6 +2200,27 @@ class Ortam:
         """
         hitbox_katmanlari = []
         
+        # En geniş katmanın yarıçapını hesapla (görsel sınır çizgisi için)
+        max_radius = max(ref_hitbox_scales[0][0], ref_hitbox_scales[0][2]) / 2 * scale_multiplier
+        max_height = ref_hitbox_scales[0][1] * scale_multiplier
+        
+        # Ada çevresine görsel sınır çizgisi ekle (yarı saydam sphere - cylinder yerine)
+        # Bu, ROV'ların ada sınırlarını görmesini sağlar
+        # Ursina'da cylinder modeli yok, bu yüzden sphere kullanıyoruz
+        sinir_cizgisi = Entity(
+            model='sphere',
+            position=(island_x, -max_height/2, island_z),
+            scale=(max_radius * 2, max_height, max_radius * 2),  # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri)
+            color=color.rgba(255, 200, 0, 0.3),  # Turuncu-sarı, yarı saydam
+            visible=True,  # Görünür (sınır çizgisi)
+            double_sided=True,
+            unlit=True,
+            transparent=True,  # Şeffaflık için
+            texture=None
+        )
+        
+        hitbox_katmanlari.append(sinir_cizgisi)
+        
         # Renkleri farklılaştır (her ada için farklı ton)
         color_offset = island_idx * 50
         colors = [
@@ -1462,7 +2230,7 @@ class Ortam:
             color.rgba(255 - color_offset, 255 - color_offset, 0, 0.3)  # Sarı
         ]
         
-        # Her katman için hitbox oluştur
+        # Her katman için hitbox oluştur (daha hassas algılama için)
         for layer_idx, (ref_scale, ref_pos) in enumerate(zip(ref_hitbox_scales, ref_hitbox_positions)):
             # Ölçeği çarpanla çarp
             scaled_size = (
@@ -1474,11 +2242,12 @@ class Ortam:
             # Pozisyonu ada pozisyonuna göre ayarla (Y aynı kalacak)
             hitbox_pos = (island_x, ref_pos[1], island_z)
             
+            # Hitbox'lar görünmez ama algılama için aktif
             hitbox_katmanlari.append(Entity(
                 model='icosphere',
                 position=hitbox_pos,
                 scale=scaled_size,
-                visible=False,
+                visible=False,  # Görünmez (sadece algılama için)
                 collider='sphere',
                 color=colors[layer_idx],
                 unlit=True
@@ -1518,13 +2287,13 @@ class Ortam:
             z = random.uniform(-200, 200)
             
             # Kaya boyutları
-            s_x = random.uniform(15, 30)
-            s_y = random.uniform(15, 30)
-            s_z = random.uniform(15, 30)  # Z ekseni de pozitif olmalı (küre için)
+            s_x = random.uniform(15, 40)
+            s_y = random.uniform(15, 40)
+            s_z = random.uniform(15, 60)  # Z ekseni de pozitif olmalı (küre için)
 
             # Kaya pozisyonu: Tabanı deniz tabanına değmeli, üstü su yüzeyinin altında olmalı
             # Kaya merkez pozisyonu = deniz tabanı + (kaya yüksekliği / 2) ile su yüzeyi - (kaya yüksekliği / 2) arasında
-            kaya_alt_sinir = self.SEA_FLOOR_Y-8  # Kayanın alt kısmı deniz tabanında
+            kaya_alt_sinir = self.SEA_FLOOR_Y  # Kayanın alt kısmı deniz tabanında
             kaya_ust_sinir = self.WATER_SURFACE_Y_BASE - (s_y / 2) - 2  # Kayanın üst kısmı su yüzeyinin 2 birim altında
             
             # Eğer kaya çok büyükse ve su yüzeyine sığmıyorsa, deniz tabanına yerleştir
@@ -1549,23 +2318,43 @@ class Ortam:
             self.engeller.append(engel)
 
         # ============================================================
-        # ROV YERLEŞTİRME (Adaların dışına)
+        # ROV YERLEŞTİRME (Adaların dışına - Ada radyuslarına göre)
         # ============================================================
-        # Havuz sınırları
-        havuz_yari_genislik = self.havuz_genisligi / 2
-        min_x = -havuz_yari_genislik
-        max_x = havuz_yari_genislik
-        min_z = -havuz_yari_genislik
-        max_z = havuz_yari_genislik
+        # Havuz sınırları: +-havuz_genisligi (yani +-200 birim)
+        havuz_sinir = self.havuz_genisligi  # +-havuz_genisligi
+        min_x = -havuz_sinir
+        max_x = havuz_sinir
+        min_z = -havuz_sinir
+        max_z = havuz_sinir
         
-        # Minimum güvenli mesafe (ada hitbox yarıçapı + güvenlik payı)
-        # En geniş katman: scale=(55, 15, 55), maksimum yarıçap = 55/2 = 27.5
-        # Maksimum scale_multiplier = 1.5, yani maksimum yarıçap = 27.5 * 1.5 = 41.25
-        # Güvenlik payı ekleyerek 60 birim mesafe bırak
-        min_safe_distance_from_island = 60.0
+        # Güvenlik payı (ada radyusuna ek olarak bırakılacak minimum mesafe)
+        GUVENLIK_PAYI = 50.0  # birim
+        
+        # Ada pozisyonları ve radyusları kontrolü (eğer varsa)
+        ada_bilgileri = []
+        if hasattr(self, 'island_positions') and self.island_positions:
+            for island_data in self.island_positions:
+                if len(island_data) == 3:
+                    island_x_2d, island_y_2d, island_radius = island_data
+                    ada_bilgileri.append({
+                        'x': island_x_2d,
+                        'y': island_y_2d,
+                        'radius': island_radius,
+                        'min_safe_distance': island_radius + GUVENLIK_PAYI
+                    })
+                elif len(island_data) == 2:
+                    # Geriye uyumluluk: Radyus yoksa varsayılan değer kullan
+                    island_x_2d, island_y_2d = island_data
+                    varsayilan_radius = 50.0  # Güvenli varsayılan değer
+                    ada_bilgileri.append({
+                        'x': island_x_2d,
+                        'y': island_y_2d,
+                        'radius': varsayilan_radius,
+                        'min_safe_distance': varsayilan_radius + GUVENLIK_PAYI
+                    })
         
         for i in range(n_rovs):
-            max_attempts = 50
+            max_attempts = 100  # Daha fazla deneme hakkı
             placed = False
             
             # Güvenli pozisyon bul (maksimum deneme sayısı kadar)
@@ -1576,32 +2365,26 @@ class Ortam:
                 y_2d = random.uniform(min_z, max_z)  # Not: min_z/max_z aslında y_2d sınırları
                 z_depth = random.uniform(-20, -5)  # Su altında (derinlik negatif)
                 
-                # Ursina'ya dönüştür: (x_2d, z_depth, y_2d)
-                x, y, z = sim_to_ursina(x_2d, y_2d, z_depth)
-                
                 # Ada kontrolü: ROV'un adaların içinde olup olmadığını kontrol et
                 too_close_to_island = False
                 
-                if hasattr(self, 'island_positions') and self.island_positions:
-                    for island_data in self.island_positions:
-                        # Ada verisi: (x_2d, y_2d, radius) veya (x_2d, y_2d) (geriye uyumluluk)
-                        if len(island_data) == 3:
-                            island_x_2d, island_y_2d, island_radius = island_data
-                        else:
-                            island_x_2d, island_y_2d = island_data
-                        
+                if ada_bilgileri:
+                    for ada_info in ada_bilgileri:
                         # 2D yatay mesafe hesabı (X_2D - Y_2D düzlemi)
                         # Z_DEPTH (derinlik) farklı olduğu için sadece yatay mesafe kontrol edilir
-                        dx_2d = x_2d - island_x_2d
-                        dy_2d = y_2d - island_y_2d
+                        dx_2d = x_2d - ada_info['x']
+                        dy_2d = y_2d - ada_info['y']
                         horizontal_distance = (dx_2d**2 + dy_2d**2)**0.5
                         
-                        if horizontal_distance < min_safe_distance_from_island:
+                        # Ada radyusuna göre dinamik güvenli mesafe kontrolü
+                        if horizontal_distance < ada_info['min_safe_distance']:
                             too_close_to_island = True
                             break
                 
                 # Güvenli pozisyon bulundu
                 if not too_close_to_island:
+                    # Ursina'ya dönüştür: (x_2d, z_depth, y_2d)
+                    x, y, z = sim_to_ursina(x_2d, y_2d, z_depth)
                     new_rov = ROV(rov_id=i, position=(x, y, z))
                     new_rov.environment_ref = self
                     if hasattr(self, 'filo'):
@@ -1610,19 +2393,194 @@ class Ortam:
                     placed = True
                     break
             
-            # Eğer yerleştirilemediyse, zorla yerleştir (ada kontrolü olmadan)
+            # Eğer yerleştirilemediyse, ada olmayan bölgelere zorla yerleştir
             if not placed:
-                # Simülasyon koordinat sistemi: (x_2d, y_2d, z_depth)
-                x_2d = random.uniform(min_x, max_x)
-                y_2d = random.uniform(min_z, max_z)
+                # Ada olmayan bölgeleri bul (ada merkezlerinden uzak noktalar)
+                if ada_bilgileri:
+                    # Ada merkezlerinden uzak bir pozisyon bul
+                    best_x, best_y = None, None
+                    best_min_distance = 0
+                    
+                    for fallback_attempt in range(50):
+                        test_x = random.uniform(min_x, max_x)
+                        test_y = random.uniform(min_z, max_z)
+                        
+                        # En yakın ada mesafesini bul
+                        min_dist_to_any_island = float('inf')
+                        for ada_info in ada_bilgileri:
+                            dx = test_x - ada_info['x']
+                            dy = test_y - ada_info['y']
+                            dist = (dx**2 + dy**2)**0.5
+                            min_dist_to_any_island = min(min_dist_to_any_island, dist)
+                        
+                        # En uzak mesafeyi seç
+                        if min_dist_to_any_island > best_min_distance:
+                            best_min_distance = min_dist_to_any_island
+                            best_x, best_y = test_x, test_y
+                    
+                    if best_x is not None and best_y is not None:
+                        x_2d, y_2d = best_x, best_y
+                    else:
+                        # Son çare: Merkezden uzak bir nokta
+                        x_2d = random.uniform(min_x, max_x)
+                        y_2d = random.uniform(min_z, max_z)
+                else:
+                    # Ada yoksa normal rastgele yerleştir
+                    x_2d = random.uniform(min_x, max_x)
+                    y_2d = random.uniform(min_z, max_z)
+                
                 z_depth = random.uniform(-20, -5)
-                new_rov = ROV(rov_id=i, position=(x_2d, y_2d, z_depth))
+                x, y, z = sim_to_ursina(x_2d, y_2d, z_depth)
+                new_rov = ROV(rov_id=i, position=(x, y, z))
                 new_rov.environment_ref = self
                 if hasattr(self, 'filo'):
                     new_rov.filo_ref = self.filo
                 self.rovs.append(new_rov)
+                print(f"⚠️ ROV-{i} zorla yerleştirildi (ada kontrolü başarısız)")
 
         print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {n_engels} Gri Kaya.")
+    
+    # --- Ada ve ROV Konum Yönetimi (Senaryo Modülü İçin) ---
+    def Ada(self, ada_id, x=None, y=None):
+        """
+        Ada pozisyonunu değiştirir veya konumunu döndürür.
+        
+        Args:
+            ada_id: Ada ID'si
+            x: Yeni X koordinatı (None ise mevcut konumu döndürür)
+            y: Yeni Y koordinatı (Z ekseni, None ise mevcut konumu döndürür)
+        
+        Returns:
+            tuple: (x, y) koordinatları veya None
+        
+        Örnek:
+            # Ada konumunu değiştir
+            app.Ada(0, 50, 60)
+            
+            # Ada konumunu al
+            konum = app.Ada(0)  # (x, y) tuple döner
+        """
+        # Ada pozisyonları kontrolü
+        if not hasattr(self, 'island_positions') or not self.island_positions:
+            # Ada yoksa oluştur
+            if not hasattr(self, 'island_positions'):
+                self.island_positions = []
+            # Ada ID'si için yeterli kapasite yoksa genişlet
+            while len(self.island_positions) <= ada_id:
+                self.island_positions.append((0, 0, 50.0))  # Varsayılan pozisyon ve radius
+        
+        # Konum değiştirme
+        if x is not None and y is not None:
+            # Ada pozisyonunu güncelle
+            radius = self.island_positions[ada_id][2] if len(self.island_positions[ada_id]) > 2 else 50.0
+            old_pos = self.island_positions[ada_id]
+            self.island_positions[ada_id] = (x, y, radius)
+            
+            # Ada hitbox'larını güncelle (eğer varsa)
+            if hasattr(self, 'island_hitboxes') and self.island_hitboxes:
+                # Ada hitbox'larını bul ve güncelle
+                # Her ada için birden fazla hitbox olabilir (katmanlı sistem)
+                # Ada ID'sine göre hitbox'ları bulmak için pozisyon karşılaştırması yapılır
+                for hitbox in self.island_hitboxes:
+                    if hasattr(hitbox, 'position'):
+                        # Eski pozisyona yakın hitbox'ları bul
+                        old_x, old_y = old_pos[0], old_pos[1]
+                        hitbox_x = hitbox.position.x
+                        hitbox_z = hitbox.position.z
+                        mesafe = ((hitbox_x - old_x)**2 + (hitbox_z - old_y)**2)**0.5
+                        
+                        # Eğer hitbox bu ada'ya aitse (yakın mesafede)
+                        if mesafe < radius * 2:
+                            # Hitbox pozisyonunu güncelle
+                            hitbox.position = (x, hitbox.position.y, y)
+            
+            # Engeller listesindeki ada hitbox'larını da güncelle
+            if hasattr(self, 'engeller') and self.engeller:
+                old_x, old_y = old_pos[0], old_pos[1]
+                for engel in self.engeller:
+                    if hasattr(engel, 'position') and hasattr(engel, 'model'):
+                        # Ada sınır çizgisi kontrolü (sphere modeli ve görünür)
+                        is_island_boundary = (engel.model == 'sphere' and 
+                                             hasattr(engel, 'visible') and 
+                                             engel.visible == True)
+                        if is_island_boundary:
+                            engel_x = engel.position.x
+                            engel_z = engel.position.z
+                            mesafe = ((engel_x - old_x)**2 + (engel_z - old_y)**2)**0.5
+                            if mesafe < radius * 2:
+                                engel.position = (x, engel.position.y, y)
+            
+            # Verbose kontrolü için ortam referansı gerekli
+            verbose = False
+            if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose'):
+                verbose = self.ortam.verbose
+            elif hasattr(self, 'verbose'):
+                verbose = self.verbose
+            
+            if verbose:
+                print(f"✅ Ada-{ada_id} pozisyonu güncellendi: ({x}, {y})")
+            return (x, y)
+        else:
+            # Mevcut konumu döndür
+            if ada_id < len(self.island_positions):
+                ada_pos = self.island_positions[ada_id]
+                return (ada_pos[0], ada_pos[1])
+            else:
+                return None
+    
+    def ROV(self, rov_id, x=None, y=None, z=None):
+        """
+        ROV pozisyonunu değiştirir veya konumunu döndürür.
+        
+        Args:
+            rov_id: ROV ID'si
+            x: Yeni X koordinatı (None ise mevcut konumu döndürür)
+            y: Yeni Y koordinatı (derinlik, None ise mevcut konumu döndürür)
+            z: Yeni Z koordinatı (None ise mevcut konumu döndürür)
+        
+        Returns:
+            tuple: (x, y, z) koordinatları veya None
+        
+        Örnek:
+            # ROV konumunu değiştir
+            app.ROV(0, 10, -5, 20)
+            
+            # ROV konumunu al
+            konum = app.ROV(0)  # (x, y, z) tuple döner
+        """
+        if rov_id >= len(self.rovs):
+            print(f"⚠️ ROV ID {rov_id} bulunamadı.")
+            return None
+        
+        rov = self.rovs[rov_id]
+        
+        # Konum değiştirme
+        if x is not None and y is not None and z is not None:
+            # Ursina koordinat sistemine dönüştür: (x_2d, z_depth, y_2d)
+            ursina_x, ursina_y, ursina_z = sim_to_ursina(x, z, y)
+            
+            # ROV pozisyonunu güncelle
+            if hasattr(rov, 'position'):
+                rov.position = Vec3(ursina_x, ursina_y, ursina_z)
+            if hasattr(rov, 'x'):
+                rov.x = ursina_x
+                rov.y = ursina_y
+                rov.z = ursina_z
+            
+            print(f"✅ ROV-{rov_id} pozisyonu güncellendi: ({x}, {y}, {z})")
+            return (x, y, z)
+        else:
+            # Mevcut konumu döndür (simülasyon koordinat sistemine dönüştür)
+            if hasattr(rov, 'position') and hasattr(rov.position, 'x'):
+                ursina_x, ursina_y, ursina_z = rov.position.x, rov.position.y, rov.position.z
+                x_2d, y_2d, z_depth = ursina_to_sim(ursina_x, ursina_y, ursina_z)
+                return (x_2d, z_depth, y_2d)
+            elif hasattr(rov, 'x'):
+                ursina_x, ursina_y, ursina_z = rov.x, rov.y, rov.z
+                x_2d, y_2d, z_depth = ursina_to_sim(ursina_x, ursina_y, ursina_z)
+                return (x_2d, z_depth, y_2d)
+            else:
+                return None
     
     # --- İnteraktif Shell ---
     def _start_shell(self):

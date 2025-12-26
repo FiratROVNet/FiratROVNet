@@ -249,4 +249,3 @@ if __name__ == "__main__":
         except:
             pass
         os._exit(0) 
-        #Güncelleme 

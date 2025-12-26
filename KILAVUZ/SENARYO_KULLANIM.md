@@ -99,21 +99,74 @@ senaryo.uret(
 
 #### Sensör Ayarları
 
+Sensör ayarları `config.py`'deki `SensorAyarlari` sınıfından alınır ve GAT limitleri ile tutarlıdır:
+
 ```python
+from FiratROVNet.config import SensorAyarlari
+
+# Varsayılan ayarları kullan (GAT limitleri ile uyumlu)
+senaryo.uret(
+    n_rovs=3,
+    sensor_ayarlari=None  # Varsayılan: SensorAyarlari.LIDER ve TAKIPCI
+)
+
+# Özel sensör ayarları
 sensor_ayarlari = {
     'lider': {
-        'engel_mesafesi': 30.0,
-        'iletisim_menzili': 50.0
+        'engel_mesafesi': 20.0,      # GATLimitleri.ENGEL ile aynı
+        'iletisim_menzili': 35.0,     # GATLimitleri.KOPMA ile aynı
+        'min_pil_uyarisi': 0.2,       # Normalize edilmiş (0.0-1.0)
+        'kacinma_mesafesi': 8.0       # GATLimitleri.CARPISMA ile aynı
     },
     'takipci': {
-        'engel_mesafesi': 20.0,
-        'iletisim_menzili': 40.0
+        'engel_mesafesi': 20.0,       # GATLimitleri.ENGEL ile aynı
+        'iletisim_menzili': 35.0,     # GATLimitleri.KOPMA ile aynı
+        'min_pil_uyarisi': 0.15,      # Normalize edilmiş (0.0-1.0)
+        'kacinma_mesafesi': 8.0       # GATLimitleri.CARPISMA ile aynı
     }
 }
 
 senaryo.uret(
     n_rovs=3,
     sensor_ayarlari=sensor_ayarlari
+)
+```
+
+**Önemli**: Sensör ayarları GAT limitleri ile uyumlu olmalıdır:
+- `engel_mesafesi` >= `GATLimitleri.ENGEL` (20.0)
+- `iletisim_menzili` >= `GATLimitleri.KOPMA` (35.0)
+- `kacinma_mesafesi` <= `GATLimitleri.CARPISMA` (8.0)
+
+#### Modem Ayarları
+
+Modem ayarları `config.py`'deki `ModemAyarlari` sınıfından alınır:
+
+```python
+from FiratROVNet.config import ModemAyarlari
+
+# Varsayılan modem ayarlarını kullan
+senaryo.uret(
+    n_rovs=3,
+    modem_ayarlari=None  # Varsayılan: ModemAyarlari.LIDER ve TAKIPCI
+)
+
+# Özel modem ayarları
+modem_ayarlari = {
+    'lider': {
+        'gurultu_orani': 0.05,    # Gürültü oranı (0.0-1.0)
+        'kayip_orani': 0.1,       # Paket kayıp oranı (0.0-1.0)
+        'gecikme': 0.5            # Gecikme (saniye)
+    },
+    'takipci': {
+        'gurultu_orani': 0.1,     # Gürültü oranı (0.0-1.0)
+        'kayip_orani': 0.1,       # Paket kayıp oranı (0.0-1.0)
+        'gecikme': 0.5            # Gecikme (saniye)
+    }
+}
+
+senaryo.uret(
+    n_rovs=3,
+    modem_ayarlari=modem_ayarlari
 )
 ```
 
@@ -320,9 +373,13 @@ senaryo.temizle()
 
 ```python
 # ROV ayarını değiştir
-senaryo.set(0, "engel_mesafesi", 25.0)
-senaryo.set(0, "iletisim_menzili", 50.0)
+senaryo.set(0, "engel_mesafesi", 20.0)      # GATLimitleri.ENGEL ile uyumlu
+senaryo.set(0, "iletisim_menzili", 35.0)    # GATLimitleri.KOPMA ile uyumlu
+senaryo.set(0, "kacinma_mesafesi", 8.0)     # GATLimitleri.CARPISMA ile uyumlu
+senaryo.set(0, "min_pil_uyarisi", 0.2)      # Normalize edilmiş (0.0-1.0)
 ```
+
+**Not**: Ayarları değiştirirken GAT limitleri ile uyumlu olmasına dikkat edin. `config.py`'deki `SensorAyarlari` sınıfını referans alabilirsiniz.
 
 ### `git()` - Hedef Atama
 
@@ -346,6 +403,12 @@ senaryo.temizle()
 2. **Temizlik**: Kullanımdan sonra `senaryo.temizle()` çağırın
 3. **Filo Erişimi**: `senaryo.filo` sadece senaryo aktifken erişilebilir
 4. **Performans**: Headless mod GUI'den çok daha hızlıdır
+5. **Config Tutarlılığı**: Sensör ve modem ayarları `config.py`'deki `SensorAyarlari` ve `ModemAyarlari` sınıflarından alınır
+6. **GAT Limitleri**: Sensör ayarları GAT limitleri (`GATLimitleri`) ile uyumlu olmalıdır:
+   - `engel_mesafesi` >= 20.0 (GATLimitleri.ENGEL)
+   - `iletisim_menzili` >= 35.0 (GATLimitleri.KOPMA)
+   - `kacinma_mesafesi` <= 8.0 (GATLimitleri.CARPISMA)
+7. **Varsayılan Değerler**: Eğer `sensor_ayarlari=None` veya `modem_ayarlari=None` ise, `config.py`'deki varsayılan değerler kullanılır
 
 ---
 
@@ -354,11 +417,43 @@ senaryo.temizle()
 - [Filo Kullanım Rehberi](FILO_KULLANIM.md)
 - [GAT Kodları Rehberi](GAT_KODLARI_RENKLER.md)
 - [Simülasyon Modülü](../FiratROVNet/simulasyon.py)
+- [Config Modülü](../FiratROVNet/config.py) - GAT limitleri ve sensör ayarları
+
+---
+
+## 🔧 Config Modülü Kullanımı
+
+Senaryo modülü, `config.py`'deki ortak ayarları kullanır:
+
+```python
+from FiratROVNet.config import GATLimitleri, SensorAyarlari, ModemAyarlari
+
+# GAT limitlerini görüntüle
+print(f"Çarpışma limiti: {GATLimitleri.CARPISMA}")  # 8.0
+print(f"Engel limiti: {GATLimitleri.ENGEL}")        # 20.0
+print(f"Kopma limiti: {GATLimitleri.KOPMA}")        # 35.0
+print(f"Uzak limiti: {GATLimitleri.UZAK}")          # 60.0
+
+# Sensör ayarlarını kullan
+lider_ayarlari = SensorAyarlari.LIDER.copy()
+takipci_ayarlari = SensorAyarlari.TAKIPCI.copy()
+
+# Senaryo oluştururken kullan
+senaryo.uret(
+    n_rovs=3,
+    sensor_ayarlari={
+        'lider': lider_ayarlari,
+        'takipci': takipci_ayarlari
+    }
+)
+```
+
+Bu yaklaşım, eğitim ve kullanım arasında tutarlılık sağlar.
 
 ---
 
 **Son Güncelleme**: 2024  
-**Versiyon**: 1.0
+**Versiyon**: 2.0 (Config modülü entegrasyonu ile güncellendi)
 
 
 
