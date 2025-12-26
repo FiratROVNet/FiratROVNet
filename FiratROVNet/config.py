@@ -188,9 +188,9 @@ class Formasyon:
     ]
     
     
-    def pozisyonlar(self, tip, aralik=15.0, is_3d=False, lider_koordinat=None):
+    def pozisyonlar(self, tip, aralik=15.0, is_3d=False, lider_koordinat=None, yaw=None):
         """
-        Belirtilen formasyon tipi ve ROV sayısına göre pozisyon ofsetlerini döndürür.
+        Liderin Yaw açısını dikkate alarak formasyon pozisyonlarını hesaplar.
         
         Args:
             tip (int veya str): Formasyon tipi (0-14 arası indeks veya isim)
@@ -200,23 +200,25 @@ class Formasyon:
                 - False: ROV'lar 2D düzlemde (x, y, z=0) dizilir
             lider_koordinat (tuple, optional): (x, y, z) - Lider koordinatı (varsayılan: None - gerçek pozisyon kullanılır)
                 - Verilirse, lider bu koordinattaymış gibi pozisyonlar hesaplanır
+            yaw (float, optional): Liderin yaw açısı (derece, varsayılan: None - Filo'dan alınır)
+                - 0 derece = Kuzey (+Y yönü)
+                - Pozitif değerler saat yönünde dönüş
         
         Returns:
             list: [(x0, y0, z0), (x1, y1, z1), ...] formatında pozisyon listesi
-                  İlk eleman lider (0, 0, 0), diğerleri takipçiler için ofsetler
+                  İlk eleman lider, diğerleri takipçiler için global pozisyonlar
                   x, y: 2D koordinatlar (yatay düzlem)
                   z: derinlik (dikey) - 3D modda değişken, 2D modda 0
         
         Örnek:
             pozisyonlar = Formasyon.pozisyonlar("V_SHAPE", aralik=20.0)
-            # [(0, 0, 0), (-20, -20, 0), (20, -20, 0), ...]
+            # Liderin yaw açısına göre döndürülmüş pozisyonlar
             
-            pozisyonlar = Formasyon.pozisyonlar("V_SHAPE", aralik=20.0, is_3d=True)
-            # [(0, 0, 0), (-20, -20, -5), (20, -20, -5), ...]
-            
-            pozisyonlar = Formasyon.pozisyonlar("V_SHAPE", aralik=20.0, lider_koordinat=(10, 20, -5))
-            # Lider (10, 20, -5) koordinatındaymış gibi pozisyonlar hesaplanır
+            pozisyonlar = Formasyon.pozisyonlar("V_SHAPE", aralik=20.0, yaw=45)
+            # Lider 45 derece döndüğünde formasyon pozisyonları
         """
+        import math
+        
         if isinstance(tip, str):
             tip = tip.upper()
             if tip in Formasyon.TIPLER:
@@ -226,168 +228,153 @@ class Formasyon:
         else:
             tip_index = int(tip) % len(Formasyon.TIPLER)
 
-        # Lider her zaman (0, 0, 0) pozisyonunda
-        
-
-        
-        n_rovs=len(self.Filo.sistemler)
-        pozisyonlar = [(0.0,0.0,0.0)]*n_rovs
-
+        n_rovs = len(self.Filo.sistemler) if self.Filo else 1
         if n_rovs <= 1:
-            return pozisyonlar
+            return [(0.0, 0.0, 0.0)] * n_rovs
         
-        # Eğer Filo verilmişse, lider pozisyonunu Filo'dan al
-        lider_id=0
-        if lider_koordinat is not None:
-            # Lider koordinatı verilmişse, onu kullan
-            # Format: (x, y, z) - x,y: 2D koordinatlar, z: derinlik
-            lider_x, lider_y, lider_z = lider_koordinat
-            pozisyonlar[0] = (float(lider_x), float(lider_y), float(lider_z))
-            lider_id = 0
-        elif self.Filo is not None:
-            try:
-                for rov_id in range(n_rovs):
-                    rol = self.Filo.get(rov_id, 'rol')
-                    if rol == 1:  # Lider bulundu
-                        gps = self.Filo.get(rov_id, "gps")
-                        
-                        if gps is not None:
-                            # GPS koordinatlarını ofset olarak kullan
-                            # Ursina formatından (x, y, z) -> Bizim format (x, y, z) çevir
-                            # Ursina: (x, y, z) -> x: sağ-sol, y: derinlik, z: ileri-geri
-                            # Bizim: (x, y, z) -> x: sağ-sol, y: ileri-geri, z: derinlik
-                            # Yani: Ursina (x, y, z) -> Bizim (x, z, y)
-                            lider_id=rov_id
-                            pozisyonlar[rov_id] = (float(gps[0]), float(gps[2]), float(gps[1]))
-                        break
-            except:
-                pass  # Filo kullanılamazsa varsayılan (0,0,0) kullan
+        # Yerel ofsetleri tutacak liste (lider merkezli: 0,0,0)
+        yerel_ofsetler = [(0.0, 0.0, 0.0)] * n_rovs
         
-        # Lider her zaman (0, 0, 0) pozisyonunda
+        # 1. LİDER BİLGİLERİNİ AL (Global Pozisyon ve Yaw)
+        lider_global_pos = (0.0, 0.0, 0.0)
+        lider_id = 0
+        
+        if self.Filo is not None:
+            # Gerçek lideri bul
+            for i in range(n_rovs):
+                if self.Filo.get(i, 'rol') == 1:
+                    lider_id = i
+                    break
+            
+            # Liderin Global GPS'ini al
+            if lider_koordinat is not None:
+                lider_global_pos = (float(lider_koordinat[0]), float(lider_koordinat[1]), float(lider_koordinat[2]))
+            else:
+                gps = self.Filo.get(lider_id, "gps")  # Tercüman sayesinde (x, y, z) geliyor
+                if gps:
+                    # Ursina formatından (x, y, z) -> Bizim format (x, y, z) çevir
+                    # Ursina: (x, y, z) -> x: sağ-sol, y: derinlik, z: ileri-geri
+                    # Bizim: (x, y, z) -> x: sağ-sol, y: ileri-geri, z: derinlik
+                    lider_global_pos = (float(gps[0]), float(gps[1]), float(gps[2]))
+            
+            # Liderin Yaw açısını al
+            if yaw is None:
+                yaw = self.Filo.get(lider_id, "yaw")
+        
+        if yaw is None:
+            yaw = 0.0
+        
+        # 2. YEREL (LOCAL) OFSETLERİ HESAPLA 
+        # (Lider 0,0'daymış ve 0 dereceye bakıyormuş gibi)
 
         
   
         
-        # Takipçi sayısı
-        n_takipci = n_rovs
-        
-        # Formasyon tipine göre pozisyonları hesapla
-        # Format: (x, y, z) - x,y: 2D koordinatlar, z: derinlik
-        # 3D modda z koordinatı da hesaplanır (katmanlar veya spiral)
-        
         # 3D mod için derinlik hesaplama yardımcı fonksiyonu
-        def hesapla_z_3d(index, toplam, aralik_val):
+        def hesapla_z_3d(index):
             """3D modda z koordinatını hesapla (katmanlar halinde)"""
             if not is_3d:
                 return 0.0
             # Her 3-4 ROV bir katman oluşturur
             katman = index // 3
-            return -katman * aralik_val * 0.5  # Negatif = su altı
+            return -katman * aralik * 0.5  # Negatif = su altı
+        
+        # Takipçi sayısı (lider hariç)
+        takipci_listesi = [i for i in range(n_rovs) if i != lider_id]
+        
+        # Formasyon tipine göre yerel ofsetleri hesapla
+        # Format: (x, y, z) - x,y: 2D koordinatlar, z: derinlik
+        # Lider merkezli koordinat sistemi (lider 0,0,0'da ve kuzeye bakar)
         
         if tip_index == 0:  # LINE (Çizgi)
-            for i in range(n_takipci):
-                if i != lider_id:
-                    z_3d = hesapla_z_3d(i, n_rovs, aralik)
-                    pozisyonlar[i] = (0.0, -aralik * (i + 1), z_3d)  # (x, y, z)
+            for idx, i in enumerate(takipci_listesi):
+                z_3d = hesapla_z_3d(i)
+                yerel_ofsetler[i] = (0.0, -aralik * (idx + 1), z_3d)  # (x, y, z)
                 
         
         elif tip_index == 1:  # V_SHAPE (V şekli)
-            for i in range(n_takipci):
-                if i != lider_id:
-                    row = (i + 2) // 2  # Satır numarası (1, 1, 2, 2, 3, 3, ...)
-                    # İlk takipçi sağda, ikinci solda, üçüncü sağda, dördüncü solda...
-                    side = 1 if (i + 1) % 2 == 1 else -1  # Tek indeksler sağ, çift indeksler sol
-                    z_3d = hesapla_z_3d(i, n_rovs, aralik)
-                    pozisyonlar[i] = (side * aralik * row, -aralik * row, z_3d)  # (x, y, z)
+            for idx, i in enumerate(takipci_listesi):
+                row = (idx + 2) // 2  # Satır numarası (1, 1, 2, 2, 3, 3, ...)
+                # İlk takipçi sağda, ikinci solda, üçüncü sağda, dördüncü solda...
+                side = 1 if (idx + 1) % 2 == 1 else -1  # Tek indeksler sağ, çift indeksler sol
+                z_3d = hesapla_z_3d(i)
+                yerel_ofsetler[i] = (side * aralik * row, -aralik * row, z_3d)  # (x, y, z)
         
         elif tip_index == 2:  # DIAMOND (Elmas)
             # Elmas şekli: merkez lider, etrafında eşit dağılım
-            import math
-            for i in range(n_takipci):
-
-                if i != lider_id:
-                    angle = 2 * math.pi * i / n_takipci
-                    radius = aralik * (1 + (i // n_takipci))
-                    x = radius * math.cos(angle)
-                    y = radius * math.sin(angle)
-                    z_3d = hesapla_z_3d(i, n_rovs, aralik)
-                    pozisyonlar[i] = (x, y, z_3d)  # (x, y, z)
+            for idx, i in enumerate(takipci_listesi):
+                angle = 2 * math.pi * idx / len(takipci_listesi)
+                radius = aralik * (1 + (idx // len(takipci_listesi)))
+                x = radius * math.cos(angle)
+                y = radius * math.sin(angle)
+                z_3d = hesapla_z_3d(i)
+                yerel_ofsetler[i] = (x, y, z_3d)  # (x, y, z)
         
         elif tip_index == 3:  # SQUARE (Kare)
             # Kare formasyonu: mümkün olduğunca kare şeklinde
-            import math
-            side_length = int(math.ceil(math.sqrt(n_takipci)))
+            side_length = int(math.ceil(math.sqrt(len(takipci_listesi))))
             idx = 0
             for row in range(side_length):
                 for col in range(side_length):
-                    if idx < n_rovs and idx != lider_id:
+                    if idx < len(takipci_listesi):
+                        i = takipci_listesi[idx]
                         x = (col - side_length / 2 + 0.5) * aralik
                         y = -row * aralik
-                        z_3d = hesapla_z_3d(idx, n_rovs, aralik)
-                        pozisyonlar[idx] = (x, y, z_3d)  # (x, y, z)
+                        z_3d = hesapla_z_3d(i)
+                        yerel_ofsetler[i] = (x, y, z_3d)  # (x, y, z)
                     idx += 1
         
         elif tip_index == 4:  # CIRCLE (Daire)
             # Dairesel formasyon: lider merkezde, takipçiler çember üzerinde
-            import math
-            for i in range(n_takipci):
-                if i != lider_id:
-                    angle = 2 * math.pi * i / n_takipci
-                    radius = aralik * 1.5
-                    x = radius * math.cos(angle)
-                    y = radius * math.sin(angle)
-                    z_3d = hesapla_z_3d(i, n_rovs, aralik)
-                    pozisyonlar[i] = (x, y, z_3d)  # (x, y, z)
+            for idx, i in enumerate(takipci_listesi):
+                angle = 2 * math.pi * idx / len(takipci_listesi)
+                radius = aralik * 1.5
+                x = radius * math.cos(angle)
+                y = radius * math.sin(angle)
+                z_3d = hesapla_z_3d(i)
+                yerel_ofsetler[i] = (x, y, z_3d)  # (x, y, z)
         
         elif tip_index == 5:  # ARROW (Ok)
             # Ok şekli: lider önde, takipçiler arkada ok şeklinde
-            for i in range(n_takipci):
-                if i != lider_id:
-                    row = i // 3 + 1
-                    col = (i % 3) - 1  # -1, 0, 1 (sol, orta, sağ)
-                    z_3d = hesapla_z_3d(i, n_rovs, aralik)
-                    pozisyonlar[i] = (col * aralik * 0.8, -row * aralik * 1.2, z_3d)  # (x, y, z)
+            for idx, i in enumerate(takipci_listesi):
+                row = idx // 3 + 1
+                col = (idx % 3) - 1  # -1, 0, 1 (sol, orta, sağ)
+                z_3d = hesapla_z_3d(i)
+                yerel_ofsetler[i] = (col * aralik * 0.8, -row * aralik * 1.2, z_3d)  # (x, y, z)
             
         elif tip_index == 6:  # WEDGE (Kama)
             # Kama şekli: V'ye benzer ama daha dar
-            for i in range(n_takipci):
-                if i != lider_id:
-
-                    row = (i + 2) // 2  # Satır numarası (1, 1, 2, 2, ...)
-                    side = 1 if (i + 1) % 2 == 1 else -1  # Tek indeksler sağ, çift indeksler sol
-                    z_3d = hesapla_z_3d(i, n_rovs, aralik)
-                    pozisyonlar[i] = (side * aralik * row * 0.6, -aralik * row * 0.8, z_3d)  # (x, y, z)
+            for idx, i in enumerate(takipci_listesi):
+                row = (idx + 2) // 2  # Satır numarası (1, 1, 2, 2, ...)
+                side = 1 if (idx + 1) % 2 == 1 else -1  # Tek indeksler sağ, çift indeksler sol
+                z_3d = hesapla_z_3d(i)
+                yerel_ofsetler[i] = (side * aralik * row * 0.6, -aralik * row * 0.8, z_3d)  # (x, y, z)
             
         elif tip_index == 7:  # ECHELON (Eşelon)
             # Eşelon: çapraz sıra
-            for i in range(n_takipci):
-                if i != lider_id:
-                    z_3d = hesapla_z_3d(i, n_rovs, aralik)
-                    pozisyonlar[i] = (aralik * (i + 1) * 0.7, -aralik * (i + 1) * 0.7, z_3d)  # (x, y, z)
+            for idx, i in enumerate(takipci_listesi):
+                z_3d = hesapla_z_3d(i)
+                yerel_ofsetler[i] = (aralik * (idx + 1) * 0.7, -aralik * (idx + 1) * 0.7, z_3d)  # (x, y, z)
         
         elif tip_index == 8:  # COLUMN (Sütun)
             # Sütun: dikey sıra (yan yana)
-            for i in range(n_takipci):
-                if i != lider_id:
-                    z_3d = hesapla_z_3d(i, n_rovs, aralik)
-                    pozisyonlar[i] = (aralik * (i + 1), 0.0, z_3d)  # (x, y, z)
+            for idx, i in enumerate(takipci_listesi):
+                z_3d = hesapla_z_3d(i)
+                yerel_ofsetler[i] = (aralik * (idx + 1), 0.0, z_3d)  # (x, y, z)
         
         elif tip_index == 9:  # SPREAD (Yayılım)
             # Yayılım: geniş açılı dağılım
-            import math
-            for i in range(n_takipci):
-                if i != lider_id:
-                    angle = math.pi * (i + 1) / (n_takipci + 1) - math.pi / 2
-                    radius = aralik * 2.0
-                    x = radius * math.sin(angle)
-                    y = -radius * math.cos(angle) * 0.5
-                    z_3d = hesapla_z_3d(i, n_rovs, aralik)
-                    pozisyonlar[i] = (x, y, z_3d)  # (x, y, z)
+            for idx, i in enumerate(takipci_listesi):
+                angle = math.pi * (idx + 1) / (len(takipci_listesi) + 1) - math.pi / 2
+                radius = aralik * 2.0
+                x = radius * math.sin(angle)
+                y = -radius * math.cos(angle) * 0.5
+                z_3d = hesapla_z_3d(i)
+                yerel_ofsetler[i] = (x, y, z_3d)  # (x, y, z)
         
         elif tip_index == 10:  # TRIANGLE (Üçgen)
             # Üçgen formasyonu: lider önde, takipçiler üçgen şeklinde
-            import math
-            takipci_sayisi = n_rovs - 1
+            takipci_sayisi = len(takipci_listesi)
             if takipci_sayisi > 0:
                 # Üçgenin satır sayısını hesapla
                 satir_sayisi = int(math.ceil((-1 + math.sqrt(1 + 8 * takipci_sayisi)) / 2))
@@ -396,39 +383,31 @@ class Formasyon:
                     satir_eleman_sayisi = satir + 1
                     for pozisyon in range(satir_eleman_sayisi):
                         if idx < takipci_sayisi:
-                            # Takipçi ROV'ları sırayla al (lider hariç)
-                            takipci_listesi = [i for i in range(n_rovs) if i != lider_id]
-                            if idx < len(takipci_listesi):
-                                rov_idx = takipci_listesi[idx]
-                                x_offset = (pozisyon - satir / 2) * aralik
-                                y_offset = -(satir + 1) * aralik
-                                z_3d = hesapla_z_3d(rov_idx, n_rovs, aralik)
-                                pozisyonlar[rov_idx] = (x_offset, y_offset, z_3d)
-                            idx += 1
+                            rov_idx = takipci_listesi[idx]
+                            x_offset = (pozisyon - satir / 2) * aralik
+                            y_offset = -(satir + 1) * aralik
+                            z_3d = hesapla_z_3d(rov_idx)
+                            yerel_ofsetler[rov_idx] = (x_offset, y_offset, z_3d)
+                        idx += 1
         
         elif tip_index == 11:  # CROSS (Haç)
             # Haç formasyonu: lider merkezde, takipçiler dört yöne
-            takipci_sayisi = n_rovs - 1
             yonler = [(1, 0), (-1, 0), (0, -1), (0, 1)]  # Sağ, Sol, Geri, İleri
-            takipci_listesi = [i for i in range(n_rovs) if i != lider_id]
             idx = 0
             for yon_idx, (dx, dy) in enumerate(yonler):
-                for kademe in range(1, (takipci_sayisi // 4) + 2):
+                for kademe in range(1, (len(takipci_listesi) // 4) + 2):
                     if idx < len(takipci_listesi):
                         rov_idx = takipci_listesi[idx]
                         x_offset = dx * kademe * aralik
                         y_offset = dy * kademe * aralik
-                        z_3d = hesapla_z_3d(rov_idx, n_rovs, aralik)
-                        pozisyonlar[rov_idx] = (x_offset, y_offset, z_3d)
+                        z_3d = hesapla_z_3d(rov_idx)
+                        yerel_ofsetler[rov_idx] = (x_offset, y_offset, z_3d)
                         idx += 1
         
         elif tip_index == 12:  # STAGGERED (Kademeli)
             # Kademeli formasyon: her satır bir öncekinden kaydırılmış
-            import math
-            takipci_sayisi = n_rovs - 1
-            if takipci_sayisi > 0:
-                satir_genisligi = int(math.ceil(math.sqrt(takipci_sayisi)))
-                takipci_listesi = [i for i in range(n_rovs) if i != lider_id]
+            if len(takipci_listesi) > 0:
+                satir_genisligi = int(math.ceil(math.sqrt(len(takipci_listesi))))
                 idx = 0
                 for satir in range(satir_genisligi):
                     for kol in range(satir_genisligi):
@@ -437,50 +416,68 @@ class Formasyon:
                             # Her satır yarım aralık kaydırılmış
                             x_offset = (kol - satir_genisligi / 2 + 0.5) * aralik + (satir % 2) * aralik * 0.5
                             y_offset = -satir * aralik
-                            z_3d = hesapla_z_3d(rov_idx, n_rovs, aralik)
-                            pozisyonlar[rov_idx] = (x_offset, y_offset, z_3d)
+                            z_3d = hesapla_z_3d(rov_idx)
+                            yerel_ofsetler[rov_idx] = (x_offset, y_offset, z_3d)
                             idx += 1
         
         elif tip_index == 13:  # WALL (Duvar)
             # Duvar formasyonu: geniş bir duvar gibi yan yana
-            takipci_sayisi = n_rovs - 1
-            if takipci_sayisi > 0:
-                takipci_listesi = [i for i in range(n_rovs) if i != lider_id]
+            if len(takipci_listesi) > 0:
                 for idx, rov_idx in enumerate(takipci_listesi):
                     # Yan yana dizilim
                     x_offset = ((idx % 2) * 2 - 1) * ((idx // 2) + 1) * aralik * 0.5
                     y_offset = -(idx // 2) * aralik * 0.3
-                    z_3d = hesapla_z_3d(rov_idx, n_rovs, aralik)
-                    pozisyonlar[rov_idx] = (x_offset, y_offset, z_3d)
+                    z_3d = hesapla_z_3d(rov_idx)
+                    yerel_ofsetler[rov_idx] = (x_offset, y_offset, z_3d)
         
         elif tip_index == 14:  # STAR (Yıldız)
             # Yıldız formasyonu: lider merkezde, takipçiler yıldız kollarında
-            import math
-            takipci_sayisi = n_rovs - 1
-            if takipci_sayisi > 0:
-                kol_sayisi = min(8, takipci_sayisi)  # Maksimum 8 kol
-                for i in range(takipci_sayisi):
-                    if i != lider_id:
-                        kol_no = i % kol_sayisi
-                        kademe = (i // kol_sayisi) + 1
-                        angle = 2 * math.pi * kol_no / kol_sayisi
-                        radius = aralik * kademe * 1.2
-                        x = radius * math.cos(angle)
-                        y = radius * math.sin(angle)
-                        z_3d = hesapla_z_3d(i, n_rovs, aralik)
-                        pozisyonlar[i] = (x, y, z_3d)  # (x, y, z)
+            if len(takipci_listesi) > 0:
+                kol_sayisi = min(8, len(takipci_listesi))  # Maksimum 8 kol
+                for idx, i in enumerate(takipci_listesi):
+                    kol_no = idx % kol_sayisi
+                    kademe = (idx // kol_sayisi) + 1
+                    angle = 2 * math.pi * kol_no / kol_sayisi
+                    radius = aralik * kademe * 1.2
+                    x = radius * math.cos(angle)
+                    y = radius * math.sin(angle)
+                    z_3d = hesapla_z_3d(i)
+                    yerel_ofsetler[i] = (x, y, z_3d)  # (x, y, z)
             
 
         
-        # Tüm pozisyonlara lider pozisyonunu ekle
-        # Format: (x, y, z) - x,y: 2D koordinatlar, z: derinlik
+        # 3. YAW AÇISINA GÖRE DÖNDÜR VE GLOBAL KOORDİNATA EKLE
+        # Simülasyon sistemi: X=Sağ, Y=İleri. 
+        # Yaw 0 = +Y yönü (Kuzey).
+        angle_rad = math.radians(yaw)
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
 
-        for indis,koordinatlar in enumerate(pozisyonlar):
-            if indis != lider_id:
-                pozisyonlar[indis] = (koordinatlar[0]+pozisyonlar[lider_id][0], koordinatlar[1]+pozisyonlar[lider_id][1], koordinatlar[2]+pozisyonlar[lider_id][2])
+        final_pozisyonlar = [(0.0, 0.0, 0.0)] * n_rovs
         
-        
-        return pozisyonlar
+        for i in range(n_rovs):
+            if i == lider_id:
+                final_pozisyonlar[i] = lider_global_pos
+                continue
+            
+            # Yerel koordinatlar
+            lx, ly, lz = yerel_ofsetler[i]
+            
+            # 2D Rotasyon (X ve Y düzleminde)
+            # x' = x cos θ + y sin θ
+            # y' = -x sin θ + y cos θ
+            # Standart sağ-el kuralına göre rotation:
+            gx = lx * cos_a + ly * sin_a
+            gy = -lx * sin_a + ly * cos_a
+            
+            # Global konuma ekle
+            final_pozisyonlar[i] = (
+                lider_global_pos[0] + gx,
+                lider_global_pos[1] + gy,
+                lider_global_pos[2] + lz
+            )
+
+        return final_pozisyonlar
     
     
     @staticmethod

@@ -2,10 +2,13 @@ import numpy as np
 from ursina import Vec3, time, distance
 from .config import cfg, GATLimitleri, SensorAyarlari, ModemAyarlari, HareketAyarlari, Formasyon
 from .iletisim import AkustikModem
+from .hull import HullManager
 import math
 import random
+import threading
+import queue
 
-# Convex Hull için scipy import
+# Convex Hull için scipy import (geriye dönük uyumluluk için)
 try:
     from scipy.spatial import ConvexHull
     SCIPY_AVAILABLE = True
@@ -71,6 +74,40 @@ class Filo:
         self.ortam_ref = None  # Ortam referansı (hedef görselleştirme için)
         self.hedef_gorsel = None  # Hedef görsel Entity (Ursina'da X işareti)
         self.hedef_pozisyon = None  # Mevcut hedef pozisyonu (x, y, z)
+        self.hull_manager = HullManager(self)  # Convex Hull yönetimi
+        self._command_queue = queue.Queue()  # Thread-safe komut kuyruğu
+        self._main_thread_id = threading.get_ident()  # Ana thread ID'si
+    
+    def _is_main_thread(self):
+        """Şu anki thread'in ana thread olup olmadığını kontrol eder."""
+        return threading.get_ident() == self._main_thread_id
+    
+    def _process_command_queue(self):
+        """Ana thread'de çağrılmalı: Queue'daki komutları işler."""
+        try:
+            # Her frame'de maksimum 10 komut işle (performans için)
+            max_commands = 10
+            processed = 0
+            while not self._command_queue.empty() and processed < max_commands:
+                cmd_type, args, kwargs = self._command_queue.get_nowait()
+                if cmd_type == 'git':
+                    self._git_impl(*args, **kwargs)
+                elif cmd_type == 'guvenlik_hull_olustur':
+                    self._guvenlik_hull_olustur_impl(*args, **kwargs)
+                elif cmd_type == 'formasyon_sec':
+                    self._formasyon_sec_impl(*args, **kwargs)
+                else:
+                    # Genel fonksiyon çağrısı
+                    if isinstance(args, tuple) and len(args) > 0 and callable(args[0]):
+                        func, func_args, func_kwargs = args[0], args[1:], kwargs
+                        func(*func_args, **func_kwargs)
+                processed += 1
+        except queue.Empty:
+            pass
+        except Exception as e:
+            print(f"⚠️ [UYARI] Komut kuyruğu işlenirken hata: {e}")
+            import traceback
+            traceback.print_exc()
     
     @property
     def rovs(self):
@@ -342,6 +379,9 @@ class Filo:
             print(f"🤖 [FİLO] Tüm ROV'lar otomatik moda döndürüldü.")
 
     def guncelle_hepsi(self, tahminler):
+        # Ana thread'de queue'daki komutları işle (thread-safe)
+        self._process_command_queue()
+        
         # Lider ROV'u bul
         lider_rov_id = None
         lider_gnc = None
@@ -708,7 +748,7 @@ class Filo:
         return None
     def formasyon_sec(self, margin=30, is_3d=False, offset=20.0):
         """
-        Convex hull kullanarak en uygun formasyonu seçer.
+        Convex hull kullanarak en uygun formasyonu seçer (Thread-safe).
 
         KESİN KURALLAR:
         - Güvenlik hull (sanal + gerçek engeller) SADECE 1 KEZ hesaplanır (sabit hull)
@@ -725,12 +765,38 @@ class Filo:
         Returns:
             int | None: Seçilen formasyon ID'si veya None (uygun formasyon bulunamazsa)
         """
+        # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
+        if not self._is_main_thread():
+            try:
+                # Ursina'nın invoke mekanizmasını kullan (varsa)
+                from ursina import invoke
+                result = [None]  # Mutable container for return value
+                def wrapper():
+                    result[0] = self._formasyon_sec_impl(margin, is_3d, offset)
+                invoke(wrapper)
+                return result[0]
+            except (ImportError, AttributeError):
+                # Ursina invoke yoksa, queue kullan
+                self._command_queue.put(('formasyon_sec', (margin, is_3d, offset), {}))
+                # Queue'dan dönen değer beklenemez, None döndür
+                return None
+        
+        # Ana thread'deyiz, direkt çalıştır
+        return self._formasyon_sec_impl(margin, is_3d, offset)
+    
+    def _formasyon_sec_impl(self, margin=30, is_3d=False, offset=20.0):
+        """formasyon_sec() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         try:
             # 1. Güvenlik hull'u oluştur (sanal + gerçek engeller, SADECE 1 KEZ)
-            guvenlik_hull_dict = self.guvenlik_hull_olustur(offset=offset)
+            guvenlik_hull_dict = self.hull_manager.guvenlik_hull_olustur(offset=offset)
 
             hull = guvenlik_hull_dict.get("hull")
             merkez = guvenlik_hull_dict.get("center")
+
+            merkez_liste = list(merkez)
+            merkez_liste[2] = 0
+            merkez = tuple(merkez_liste)
+            
 
             if hull is None or merkez is None:
                 return None
@@ -825,44 +891,7 @@ class Filo:
             return None
 
     
-    def _formasyon_gecerli_mi(self, test_points, hull, formasyon_aralik):
-        """
-        Formasyon pozisyonlarının geçerli olup olmadığını kontrol eder.
-        
-        Args:
-            test_points: list - [(x, z, y), ...] Ursina formatında formasyon pozisyonları
-            hull: ConvexHull - Güvenlik hull (2D, Simülasyon formatında)
-            formasyon_aralik: float - ROV'lar arası minimum mesafe
-        
-        Returns:
-            bool: True if formasyon geçerli, False otherwise
-        """
-        if hull is None or test_points is None or len(test_points) == 0:
-            return False
-        
-        try:
-            # 1. Tüm pozisyonlar hull içinde mi?
-            for tp in test_points:
-                # formasyon() fonksiyonu (ursina_x, ursina_z, ursina_y) döner.
-                # Bu zaten (Sim X, Sim Y, Sim Z) demektir.
-                # Sadece ilk iki bileşeni (X, Y) kontrol etmek yeterli.
-                if not self._is_point_inside_hull(tp, hull):
-                    return False
-            
-            # 2. Mesafe kontrolü
-            for i in range(len(test_points)):
-                for j in range(i + 1, len(test_points)):
-                    p1 = np.array(test_points[i])
-                    p2 = np.array(test_points[j])
-                    if np.linalg.norm(p1 - p2) < formasyon_aralik:
-                        return False
-            return True
-        except Exception as e:
-            print(f"❌ [HATA] Formasyon geçerliliği kontrolü sırasında hata: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-    
+
     def hedef(self, x=None, y=None, z=None):
         """
         Sadece lider ROV'un hedefini ayarlar. Takipçiler bu komuttan etkilenmez.
@@ -926,286 +955,66 @@ class Filo:
         
         # Hedef koordinatlarını döndür
         return (x, y, 0)
+
+    def _formasyon_gecerli_mi(self, test_points, hull, formasyon_aralik):
+        """Wrapper: HullManager'a yönlendirir (geriye dönük uyumluluk için)."""
+        return self.hull_manager.formasyon_gecerli_mi(test_points, hull, formasyon_aralik)
+    
     
     def ConvexHull(self, points, test_point, margin=0.0):
-        """
-        3D Convex Hull oluşturur ve test noktasının hull içinde olup olmadığını kontrol eder.
-        
-        Args:
-            points: Nx3 numpy array veya liste - Convex hull oluşturmak için kullanılacak noktalar
-            test_point: (x, y, z) tuple veya liste - Test edilecek nokta
-            margin: float - Minimum mesafe (hull yüzeyinden ne kadar uzakta olmalı)
-        
-        Returns:
-            dict: {
-                'inside': bool - Test noktası hull içinde mi? (margin ile)
-                'center': (x, y, z) - Convex hull'un merkezi (3D koordinat)
-                'hull': ConvexHull objesi (None if scipy not available)
-            }
-        
-        Örnekler:
-            points = np.array([[0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0], [0, 0, 2], [2, 2, 2]])
-            test_point = [1, 1, 1]
-            result = filo.ConvexHull(points, test_point, margin=0.2)
-            print(f"İçinde mi: {result['inside']}, Merkez: {result['center']}")
-        """
-        if not SCIPY_AVAILABLE:
-            print("❌ [HATA] scipy.spatial.ConvexHull bulunamadı!")
-            return {
-                'inside': False,
-                'center': None,
-                'hull': None
-            }
-        
-        try:
-            # Points'i numpy array'e çevir
-            points = np.asarray(points)
-            if points.ndim != 2 or points.shape[1] != 3:
-                print(f"❌ [HATA] Points Nx3 formatında olmalı! Alınan shape: {points.shape}")
-                return {
-                    'inside': False,
-                    'center': None,
-                    'hull': None
-                }
-            
-            # Test point'i numpy array'e çevir
-            test_point = np.asarray(test_point)
-            if test_point.shape != (3,):
-                print(f"❌ [HATA] Test point (x, y, z) formatında olmalı! Alınan shape: {test_point.shape}")
-                return {
-                    'inside': False,
-                    'center': None,
-                    'hull': None
-                }
-            
-            # En az 4 nokta gerekli (3D convex hull için)
-            if len(points) < 4:
-                print(f"⚠️ [UYARI] 3D Convex Hull için en az 4 nokta gerekli! Alınan: {len(points)}")
-                # Yeterli nokta yoksa, merkezi hesapla ve inside=False döndür
-                center = np.mean(points, axis=0)
-                return {
-                    'inside': False,
-                    'center': tuple(center),
-                    'hull': None
-                }
-            
-            # Convex Hull oluştur
-            hull = ConvexHull(points)
-            
-            # Hull merkezini hesapla (tüm noktaların ortalaması)
-            center = np.mean(points, axis=0)
-            
-            # Test noktasının hull içinde olup olmadığını kontrol et
-            inside = self._is_point_inside_hull(test_point, hull)
-            
-            return {
-                'inside': inside,
-                'center': tuple(center),
-                'hull': hull
-            }
-            
-        except Exception as e:
-            print(f"❌ [HATA] ConvexHull hesaplama sırasında hata: {e}")
-            import traceback
-            traceback.print_exc()
-            return {
-                'inside': False,
-                'center': None,
-                'hull': None
-            }
+        """Wrapper: HullManager'a yönlendirir (geriye dönük uyumluluk için)."""
+        return self.hull_manager.convex_hull_3d(points, test_point, margin=margin)
     
     def _is_point_inside_hull(self, point, hull):
         """
-        Noktanın convex hull içinde olup olmadığını 2D (X-Y) düzleminde kontrol eder.
-        
-        Mantık: Scipy hull.equations içindeki her bir denklem için 
-        np.dot(normal, point_2d) + d <= 0 ise nokta içeridedir.
-        Tek bir denklem bile > 0 sonucunu verirse nokta dışarıdadır.
-        
-        Args:
-            point: (x, y, z) numpy array veya (x, y) numpy array - Simülasyon formatı
-            hull: scipy.spatial.ConvexHull (2D)
-        
-        Returns:
-            bool: True if point is inside hull, False otherwise
+        Noktanın convex hull içinde olup olmadığını kontrol eder (wrapper).
+        Geriye dönük uyumluluk için bırakılmıştır.
         """
-        # Gelen nokta 3D ise (X, Y, Z), sadece X ve Y'yi al (Simülasyon formatı)
-        point_2d = np.asarray(point)[:2]
-        
-        # Scipy Hull 2D denklemleri: Ax + By + D <= 0 ise içeridedir
-        for eq in hull.equations:
-            normal = eq[:-1]
-            d = eq[-1]
-            if np.dot(normal, point_2d) + d > 1e-9:  # Hassasiyet payı
-                return False
-        return True
-
+        return self.hull_manager.is_point_inside_hull(point, hull)
     
     def genisletilmis_rov_hull_olustur(self, offset=20.0):
-        """
-        ROV poligonunu dışarı doğru 'offset' kadar genişletir.
-        ROV'ların mavi çizginin içinde kalmasını sağlar.
-        
-        Args:
-            offset (float): Hull köşelerinden dışarı offset mesafesi (metre, varsayılan: 20.0)
-        
-        Returns:
-            list: [(x, y, z), ...] - Genişletilmiş sanal engel noktaları
-        """
-        if not SCIPY_AVAILABLE:
-            return []
-        
-        try:
-            rovs_positions = self._get_all_rovs_positions()
-            if len(rovs_positions) < 3:
-                return []
-            
-            # 1. Noktaları al (Simülasyon X, Y)
-            points = np.array([[p[0], p[1]] for p in rovs_positions.values()])
-            z_avg = np.mean([p[2] for p in rovs_positions.values()])
-            
-            # 2. Hull oluştur ve vertexleri sıralı al (CCW)
-            hull = ConvexHull(points)
-            vertices = points[hull.vertices]
-            n = len(vertices)
-            
-            genisletilmis_noktalar = []
-            
-            for i in range(n):
-                prev = vertices[(i - 1) % n]
-                curr = vertices[i]
-                nxt = vertices[(i + 1) % n]
-                
-                # Kenar vektörleri
-                v1 = (curr - prev)
-                v2 = (nxt - curr)
-                
-                v1_norm = np.linalg.norm(v1)
-                v2_norm = np.linalg.norm(v2)
-                
-                if v1_norm < 1e-6 or v2_norm < 1e-6:
-                    continue
-                
-                v1_u = v1 / v1_norm
-                v2_u = v2 / v2_norm
-                
-                # DIŞ NORMALLER (CCW bir poligonda sağa dönüş dışarı bakar)
-                # (x, y) -> (y, -x)
-                n1 = np.array([v1_u[1], -v1_u[0]])
-                n2 = np.array([v2_u[1], -v2_u[0]])
-                
-                # Açıortay (bisector) yönü
-                bisector = (n1 + n2)
-                b_norm = np.linalg.norm(bisector)
-                
-                if b_norm < 1e-6:
-                    bisector_unit = n1
-                else:
-                    bisector_unit = bisector / b_norm
-                
-                # Köşeyi DIŞARI it (offset kadar)
-                # Not: Tam dairesel genişleme için offset / cos(theta) gerekebilir 
-                # ama güvenli alan için basit itme yeterlidir.
-                p_offset = curr + bisector_unit * offset
-                
-                genisletilmis_noktalar.append((p_offset[0], p_offset[1], z_avg))
-            
-            return genisletilmis_noktalar
-        except Exception as e:
-            print(f"❌ [HATA] Genişletme hatası: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
+        """Wrapper: HullManager'a yönlendirir (geriye dönük uyumluluk için)."""
+        return self.hull_manager.genisletilmis_rov_hull_olustur(offset=offset)
     
     def lidar_engel_noktalari(self):
-        """
-        Tüm ROV'lardan lidar ile tespit edilen gerçek engel koordinatlarını toplar.
-        
-        Returns:
-            list: [(x, y, z), ...] - Tüm tespit edilen engellerin koordinatları
-        """
-        tum_engeller = []
-        
-        try:
-            # Tüm ROV'lar için
-            for rov_id in range(len(self.sistemler)):
-                engels = self._compute_obstacle_positions(rov_id)
-                if engels:
-                    tum_engeller.extend(engels)
-        
-        except Exception as e:
-            print(f"❌ [HATA] Lidar engel noktaları toplanırken hata: {e}")
-            import traceback
-            traceback.print_exc()
-        
-        return tum_engeller
+        """Wrapper: HullManager'a yönlendirir (geriye dönük uyumluluk için)."""
+        return self.hull_manager.lidar_engel_noktalari()
+    
+    def ada_engel_noktalari(self, yakinlik_siniri=200.0):
+        """Wrapper: HullManager'a yönlendirir (geriye dönük uyumluluk için)."""
+        return self.hull_manager.ada_engel_noktalari(yakinlik_siniri=yakinlik_siniri)
+    
+    def ada_engel_noktalari_pro(self, yakinlik_siniri=100.0, offset=20.0):
+        """Wrapper: HullManager'a yönlendirir (geriye dönük uyumluluk için)."""
+        return self.hull_manager.ada_engel_noktalari_pro(yakinlik_siniri=yakinlik_siniri, offset=offset)
     
     def guvenlik_hull_olustur(self, offset=20.0):
         """
-        Sanal (genişletilmiş) noktalar ve gerçek engellerle hull oluşturur.
-        ROV'lar 20 birim güvenli bölge içinde kalır.
-        
-        Args:
-            offset (float): ROV hull genişletme mesafesi (varsayılan: 20.0)
-        
-        Returns:
-            dict: {
-                'hull': ConvexHull objesi (2D) veya None,
-                'points': numpy array - Hull hesaplamasında kullanılan noktalar (2D),
-                'center': (x, y, z) - Hull merkezi veya None
-            }
+        Güvenlik hull oluşturur (Thread-safe).
+        Ana thread'de değilse, komutu queue'ya ekler.
         """
-        if not SCIPY_AVAILABLE:
-            return {'hull': None, 'points': None, 'center': None}
+        # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
+        if not self._is_main_thread():
+            try:
+                # Ursina'nın invoke mekanizmasını kullan (varsa)
+                from ursina import invoke
+                result = [None]  # Mutable container for return value
+                def wrapper():
+                    result[0] = self._guvenlik_hull_olustur_impl(offset)
+                invoke(wrapper)
+                return result[0] if result[0] is not None else {'hull': None, 'points': None, 'center': None}
+            except (ImportError, AttributeError):
+                # Ursina invoke yoksa, queue kullan
+                self._command_queue.put(('guvenlik_hull_olustur', (offset,), {}))
+                # Queue'dan dönen değer beklenemez, None döndür
+                return {'hull': None, 'points': None, 'center': None}
         
-        try:
-            # Şişirilmiş ROV alanı
-            sanal_noktalar = self.genisletilmis_rov_hull_olustur(offset=offset)
-            
-            # Gerçek lidar engelleri
-            gercek_engeller = self.lidar_engel_noktalari()
-            
-            # Birleştir (ROV pozisyonlarını ekleme ki sınır sanal noktalara yaslansın)
-            tum_noktalar = sanal_noktalar + gercek_engeller
-            
-            if len(tum_noktalar) < 3:
-                hull_data = {
-                    'hull': None,
-                    'points': None,
-                    'center': None
-                }
-                
-                # Hull bilgisini haritaya aktar (eğer harita varsa)
-                if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
-                    self.ortam_ref.harita.convex_hull_data = hull_data
-                
-                return hull_data
-
-            # 2. Sadece X ve Y (Simülasyon formatı: Sağ-Sol ve İleri-Geri) eksenlerini al
-            points_2d = np.array([[p[0], p[1]] for p in tum_noktalar])
-            points_2d = np.unique(np.round(points_2d, 4), axis=0)
-
-            # 3. 2D Hull hesapla
-            hull_2d = ConvexHull(points_2d, qhull_options='QJ')
-            
-            center_2d = np.mean(points_2d, axis=0)
-            z_avg = np.mean([p[2] for p in tum_noktalar])
-
-            hull_data = {
-                'hull': hull_2d, 
-                'points': points_2d, 
-                'center': (center_2d[0], center_2d[1], z_avg)
-            }
-
-            if self.ortam_ref and hasattr(self.ortam_ref, 'harita'):
-                self.ortam_ref.harita.convex_hull_data = hull_data
-
-            return hull_data
-        except Exception as e:
-            print(f"❌ [HATA] Hull birleştirme hatası: {e}")
-            import traceback
-            traceback.print_exc()
-            return {'hull': None, 'points': None, 'center': None}
+        # Ana thread'deyiz, direkt çalıştır
+        return self._guvenlik_hull_olustur_impl(offset)
+    
+    def _guvenlik_hull_olustur_impl(self, offset=20.0):
+        """guvenlik_hull_olustur() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
+        return self.hull_manager.guvenlik_hull_olustur(offset=offset)
     
     def _hedef_gorsel_olustur(self, x, y, z):
         """
@@ -1273,7 +1082,7 @@ class Filo:
 
     def git(self, rov_id, x, y, z=None, ai=True):
         """
-        ROV'a hedef koordinatı atar ve otomatik moda geçirir.
+        ROV'a hedef koordinatı atar ve otomatik moda geçirir (Thread-safe).
         Tüm girişler Simülasyon formatındadır: (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
 
         Args:
@@ -1291,6 +1100,23 @@ class Filo:
             filo.git(1, 50, 50, -10, ai=False)  # ROV-1: X=50, Y=50, Z=-10, AI kapalı
             filo.git(2, 30, 40)               # ROV-2: X=30, Y=40, mevcut derinlik, AI açık
         """
+        # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
+        if not self._is_main_thread():
+            try:
+                # Ursina'nın invoke mekanizmasını kullan (varsa)
+                from ursina import invoke
+                invoke(self._git_impl, rov_id, x, y, z, ai)
+                return
+            except (ImportError, AttributeError):
+                # Ursina invoke yoksa, queue kullan
+                self._command_queue.put(('git', (rov_id, x, y, z, ai), {}))
+                return
+        
+        # Ana thread'deyiz, direkt çalıştır
+        self._git_impl(rov_id, x, y, z, ai)
+    
+    def _git_impl(self, rov_id, x, y, z=None, ai=True):
+        """git() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         # Sistemler listesi boş mu kontrol et
         if len(self.sistemler) == 0:
             print(f"❌ [HATA] GNC sistemleri henüz kurulmamış!")
