@@ -584,7 +584,8 @@ class Filo:
             
             x0, y0, z0 = gps[0], gps[1], gps[2]  # Sim formatı: x=sağ, y=ileri, z=derinlik
             
-            # ROV yaw açısı (derece) - Ursina'da 0 derece = İleri (Sim Y+)
+            # ROV yaw açısı (derece) - Ursina Y-rotation
+            # Ursina'da rotation_y (Yaw) 0 iken ROV ileri (+Z) bakar. Bu bizim Simülasyon sistemimizde +Y'dir.
             yaw_deg = self.get(rov_id, "yaw")
             if yaw_deg is None:
                 yaw_deg = 0.0
@@ -599,18 +600,14 @@ class Filo:
                     # Lidar açısal offset
                     offset = LIDAR_OFFSETS[lidar_indis]
                     
-                    # Global açı
-                    theta_deg = yaw_deg + offset
-                    theta_rad = math.radians(theta_deg)
+                    # Ursina Yaw sisteminde: 0 derece -> +Z (Sim Y), 90 derece -> +X (Sim X)
+                    theta_rad = math.radians(yaw_deg + offset)
                     
                     # Engel koordinatı (Simülasyon formatında)
-                    # Simülasyon Y ekseni İLERİ ise:
-                    # x = merkez_x + mesafe * sin(theta)  (sağ-sol)
-                    # y = merkez_y + mesafe * cos(theta)  (ileri-geri)
-                    # z = merkez_z (derinlik aynı)
+                    # X = x0 + d*sin(theta), Y = y0 + d*cos(theta)
                     ox = x0 + distance * math.sin(theta_rad)
                     oy = y0 + distance * math.cos(theta_rad)
-                    oz = z0  # Derinlik aynı
+                    oz = z0  # Derinlik
                     
                     obstacles.append((ox, oy, oz))
         
@@ -834,7 +831,7 @@ class Filo:
         
         Args:
             test_points: list - [(x, z, y), ...] Ursina formatında formasyon pozisyonları
-            hull: ConvexHull - Güvenlik hull (Simülasyon formatında)
+            hull: ConvexHull - Güvenlik hull (2D, Simülasyon formatında)
             formasyon_aralik: float - ROV'lar arası minimum mesafe
         
         Returns:
@@ -845,32 +842,21 @@ class Filo:
         
         try:
             # 1. Tüm pozisyonlar hull içinde mi?
-            for test_point in test_points:
-                # Ursina formatından (x, z, y) -> Simülasyon formatına (x, y, z) dönüştür
-                #sim_point = Koordinator.ursina_to_sim(*test_point)
-                #point_3d = np.array(sim_point)
-                point_3d = np.array(test_point)
-                
-                # _is_point_inside_hull hem 2D hem 3D hull'u destekler
-                if not self._is_point_inside_hull(point_3d, hull):
-                    #print(f"❌ [FORMASYON_GECERLI_MI] Pozisyon hull dışında: {test_point}")
+            for tp in test_points:
+                # formasyon() fonksiyonu (ursina_x, ursina_z, ursina_y) döner.
+                # Bu zaten (Sim X, Sim Y, Sim Z) demektir.
+                # Sadece ilk iki bileşeni (X, Y) kontrol etmek yeterli.
+                if not self._is_point_inside_hull(tp, hull):
                     return False
             
-            # 2. ROV'lar arası mesafe kontrolü (Simülasyon formatında)
+            # 2. Mesafe kontrolü
             for i in range(len(test_points)):
                 for j in range(i + 1, len(test_points)):
-                    # Ursina formatından Sim formatına dönüştür
-                    p1_sim = Koordinator.ursina_to_sim(*test_points[i])
-                    p2_sim = Koordinator.ursina_to_sim(*test_points[j])
-                    p1 = np.array(p1_sim)
-                    p2 = np.array(p2_sim)
-                    mesafe = np.linalg.norm(p1 - p2)
-                    
-                    if mesafe < formasyon_aralik:
+                    p1 = np.array(test_points[i])
+                    p2 = np.array(test_points[j])
+                    if np.linalg.norm(p1 - p2) < formasyon_aralik:
                         return False
-            
             return True
-            
         except Exception as e:
             print(f"❌ [HATA] Formasyon geçerliliği kontrolü sırasında hata: {e}")
             import traceback
@@ -1030,131 +1016,103 @@ class Filo:
     
     def _is_point_inside_hull(self, point, hull):
         """
-        Noktanın convex hull içinde olup olmadığını kontrol eder.
-        2D veya 3D hull destekler.
+        Noktanın convex hull içinde olup olmadığını 2D (X-Y) düzleminde kontrol eder.
         
         Mantık: Scipy hull.equations içindeki her bir denklem için 
-        np.dot(normal, point) + d <= 0 ise nokta içeridedir.
+        np.dot(normal, point_2d) + d <= 0 ise nokta içeridedir.
         Tek bir denklem bile > 0 sonucunu verirse nokta dışarıdadır.
         
         Args:
-            point: (x, y, z) numpy array veya (x, y) numpy array (2D için)
-            hull: scipy.spatial.ConvexHull (2D veya 3D)
+            point: (x, y, z) numpy array veya (x, y) numpy array - Simülasyon formatı
+            hull: scipy.spatial.ConvexHull (2D)
         
         Returns:
             bool: True if point is inside hull, False otherwise
         """
-        point = np.asarray(point)
+        # Gelen nokta 3D ise (X, Y, Z), sadece X ve Y'yi al (Simülasyon formatı)
+        point_2d = np.asarray(point)[:2]
         
-        # Hull'un boyutunu kontrol et (2D veya 3D)
-        hull_dim = hull.points.shape[1]
-        point_dim = point.shape[0]
-        
-        # Eğer hull 2D ise, point'i de 2D'ye çevir
-        if hull_dim == 2:
-            if point_dim == 3:
-                # 3D point'ten 2D'ye çevir (x, y, z) -> (x, y)
-                point_2d = np.array([point[0], point[1]])
-            else:
-                point_2d = point
-        else:
-            # 3D hull
-            point_2d = point
-        
-        # Hull equations'ları kullanarak kontrol et
+        # Scipy Hull 2D denklemleri: Ax + By + D <= 0 ise içeridedir
         for eq in hull.equations:
             normal = eq[:-1]
             d = eq[-1]
-            
-            # np.dot(normal, point) + d <= 0 ise nokta içeridedir
-            # Tek bir denklem bile > 0 sonucunu verirse nokta dışarıdadır
-            if np.dot(normal, point_2d) + d > 0:
+            if np.dot(normal, point_2d) + d > 1e-9:  # Hassasiyet payı
                 return False
-        
         return True
 
     
     def genisletilmis_rov_hull_olustur(self, offset=20.0):
         """
-        ROV'ların convex hull'unu alır ve kenarlarına dik yönde offset uygular.
-        Sistem 2D (x-z düzlemi) çalışır, derinlik sabit kabul edilir.
+        ROV poligonunu dışarı doğru 'offset' kadar genişletir.
+        ROV'ların mavi çizginin içinde kalmasını sağlar.
         
         Args:
-            offset (float): Hull kenarlarından dışarı offset mesafesi (metre, varsayılan: 20.0)
+            offset (float): Hull köşelerinden dışarı offset mesafesi (metre, varsayılan: 20.0)
         
         Returns:
             list: [(x, y, z), ...] - Genişletilmiş sanal engel noktaları
         """
         if not SCIPY_AVAILABLE:
-            print("❌ [HATA] scipy.spatial.ConvexHull bulunamadı!")
             return []
         
         try:
-            # 1. Tüm ROV koordinatlarını al (2D: x-z düzlemi)
             rovs_positions = self._get_all_rovs_positions()
             if len(rovs_positions) < 3:
-                # En az 3 ROV gerekli (2D convex hull için)
-                print(f"⚠️ [UYARI] 2D Convex Hull için en az 3 ROV gerekli! Mevcut: {len(rovs_positions)}")
                 return []
             
-            # 2. ROV pozisyonlarını 2D (x, y) formatına çevir (z derinlik sabit)
-            # x, y: 2D düzlem koordinatları
-            # z: derinlik
-            rov_2d_points = []
-            ortalama_z = 0.0
-            for rov_id, position in rovs_positions.items():
-                if position is not None:
-                    x, y, z = position
-                    rov_2d_points.append([x, y])  # 2D: x-y düzlemi
-                    ortalama_z += z
+            # 1. Noktaları al (Simülasyon X, Y)
+            points = np.array([[p[0], p[1]] for p in rovs_positions.values()])
+            z_avg = np.mean([p[2] for p in rovs_positions.values()])
             
-            ortalama_z /= len(rovs_positions) if len(rovs_positions) > 0 else 1
-            rov_2d_points = np.array(rov_2d_points)
+            # 2. Hull oluştur ve vertexleri sıralı al (CCW)
+            hull = ConvexHull(points)
+            vertices = points[hull.vertices]
+            n = len(vertices)
             
-            # 3. ROV'ların 2D convex hull'unu hesapla
-            if len(rov_2d_points) < 3:
-                return []
-            
-            rov_hull_2d = ConvexHull(rov_2d_points)
-            
-            # 4. Hull kenarlarına dik yönde offset uygula
             genisletilmis_noktalar = []
             
-            # Her hull kenarı için
-            for i in range(len(rov_hull_2d.vertices)):
-                # Kenar başlangıç ve bitiş noktaları
-                v1_idx = rov_hull_2d.vertices[i]
-                v2_idx = rov_hull_2d.vertices[(i + 1) % len(rov_hull_2d.vertices)]
+            for i in range(n):
+                prev = vertices[(i - 1) % n]
+                curr = vertices[i]
+                nxt = vertices[(i + 1) % n]
                 
-                p1 = rov_2d_points[v1_idx]  # [x, z]
-                p2 = rov_2d_points[v2_idx]  # [x, z]
+                # Kenar vektörleri
+                v1 = (curr - prev)
+                v2 = (nxt - curr)
                 
-                # Kenar vektörü
-                edge_vec = p2 - p1
-                edge_length = np.linalg.norm(edge_vec)
+                v1_norm = np.linalg.norm(v1)
+                v2_norm = np.linalg.norm(v2)
                 
-                if edge_length < 1e-6:
+                if v1_norm < 1e-6 or v2_norm < 1e-6:
                     continue
                 
-                # Kenar vektörünü normalize et
-                edge_vec_normalized = edge_vec / edge_length
+                v1_u = v1 / v1_norm
+                v2_u = v2 / v2_norm
                 
-                # Dik vektör (saat yönünün tersine 90 derece döndür)
-                # 2D'de: (x, z) -> (-z, x) saat yönünün tersine
-                normal_vec = np.array([-edge_vec_normalized[1], edge_vec_normalized[0]])
+                # DIŞ NORMALLER (CCW bir poligonda sağa dönüş dışarı bakar)
+                # (x, y) -> (y, -x)
+                n1 = np.array([v1_u[1], -v1_u[0]])
+                n2 = np.array([v2_u[1], -v2_u[0]])
                 
-                # Offset uygula: her iki noktayı da normal yönde offset kadar kaydır
-                p1_offset = p1 + normal_vec * offset
-                p2_offset = p2 + normal_vec * offset
+                # Açıortay (bisector) yönü
+                bisector = (n1 + n2)
+                b_norm = np.linalg.norm(bisector)
                 
-                # 3D formatına çevir (z derinlik sabit)
-                genisletilmis_noktalar.append((p1_offset[0], p1_offset[1], ortalama_z))  # (x, y, z)
-                genisletilmis_noktalar.append((p2_offset[0], p2_offset[1], ortalama_z))  # (x, y, z)
+                if b_norm < 1e-6:
+                    bisector_unit = n1
+                else:
+                    bisector_unit = bisector / b_norm
+                
+                # Köşeyi DIŞARI it (offset kadar)
+                # Not: Tam dairesel genişleme için offset / cos(theta) gerekebilir 
+                # ama güvenli alan için basit itme yeterlidir.
+                p_offset = curr + bisector_unit * offset
+                
+                genisletilmis_noktalar.append((p_offset[0], p_offset[1], z_avg))
             
             return genisletilmis_noktalar
-            
         except Exception as e:
-            print(f"❌ [HATA] Genişletilmiş ROV hull oluşturulurken hata: {e}")
+            print(f"❌ [HATA] Genişletme hatası: {e}")
             import traceback
             traceback.print_exc()
             return []
@@ -1184,52 +1142,33 @@ class Filo:
     
     def guvenlik_hull_olustur(self, offset=20.0):
         """
-        Sanal engel noktaları (genişletilmiş ROV hull) + gerçek engel noktalarını birleştirir
-        ve Convex Hull hesaplar.
+        Sanal (genişletilmiş) noktalar ve gerçek engellerle hull oluşturur.
+        ROV'lar 20 birim güvenli bölge içinde kalır.
         
         Args:
             offset (float): ROV hull genişletme mesafesi (varsayılan: 20.0)
         
         Returns:
             dict: {
-                'hull': ConvexHull objesi veya None,
-                'points': numpy array - Hull hesaplamasında kullanılan noktalar,
+                'hull': ConvexHull objesi (2D) veya None,
+                'points': numpy array - Hull hesaplamasında kullanılan noktalar (2D),
                 'center': (x, y, z) - Hull merkezi veya None
             }
         """
         if not SCIPY_AVAILABLE:
-            print("❌ [HATA] scipy.spatial.ConvexHull bulunamadı!")
-            hull_data = {
-                'hull': None,
-                'points': None,
-                'center': None
-            }
-            
-            # Hull bilgisini haritaya aktar (eğer harita varsa)
-            if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
-                self.ortam_ref.harita.convex_hull_data = hull_data
-            
-            return hull_data
+            return {'hull': None, 'points': None, 'center': None}
         
         try:
-            # 1. Genişletilmiş ROV hull noktalarını al (sanal engeller)
-            sanal_engeller = self.genisletilmis_rov_hull_olustur(offset=offset)
+            # Şişirilmiş ROV alanı
+            sanal_noktalar = self.genisletilmis_rov_hull_olustur(offset=offset)
             
-            # 2. Gerçek engel noktalarını al (lidar)
+            # Gerçek lidar engelleri
             gercek_engeller = self.lidar_engel_noktalari()
             
-            # 3. ROV pozisyonlarını da ekle (tüm ROV'ların hull içinde kalması için)
-            rovs_positions = self._get_all_rovs_positions()
-            rov_pozisyonlari = []
-            for rov_id, position in rovs_positions.items():
-                if position is not None:
-                    rov_pozisyonlari.append(position)
+            # Birleştir (ROV pozisyonlarını ekleme ki sınır sanal noktalara yaslansın)
+            tum_noktalar = sanal_noktalar + gercek_engeller
             
-            # 4. Birleştir: Genişletilmiş ROV hull + Gerçek engeller + ROV pozisyonları
-            tum_noktalar = sanal_engeller + gercek_engeller + rov_pozisyonlari
-            
-            if len(tum_noktalar) == 0:
-                print("⚠️ [UYARI] Güvenlik hull için nokta bulunamadı!")
+            if len(tum_noktalar) < 3:
                 hull_data = {
                     'hull': None,
                     'points': None,
@@ -1241,121 +1180,32 @@ class Filo:
                     self.ortam_ref.harita.convex_hull_data = hull_data
                 
                 return hull_data
+
+            # 2. Sadece X ve Y (Simülasyon formatı: Sağ-Sol ve İleri-Geri) eksenlerini al
+            points_2d = np.array([[p[0], p[1]] for p in tum_noktalar])
+            points_2d = np.unique(np.round(points_2d, 4), axis=0)
+
+            # 3. 2D Hull hesapla
+            hull_2d = ConvexHull(points_2d, qhull_options='QJ')
             
-            # 4. Noktaları 2D (x-y düzlemi) formatına çevir ve derinlik bilgisini sakla
-            # x, y: 2D düzlem koordinatları
-            # z: derinlik
-            points_2d = []
-            z_degerleri = []
-            
-            for nokta in tum_noktalar:
-                x, y, z = nokta
-                points_2d.append([x, y])  # 2D: x-y düzlemi
-                z_degerleri.append(z)
-            
-            points_2d = np.array(points_2d)
-            ortalama_z = np.mean(z_degerleri) if z_degerleri else 0.0
-            
-            # 5. En az 3 nokta gerekli (2D convex hull için)
-            if len(points_2d) < 3:
-                print(f"⚠️ [UYARI] 2D Convex Hull için en az 3 nokta gerekli! Mevcut: {len(points_2d)}")
-                # Yeterli nokta yoksa, merkezi hesapla
-                if len(points_2d) > 0:
-                    center_2d = np.mean(points_2d, axis=0)
-                    center = (center_2d[0], center_2d[1], ortalama_z)  # (x, y, z)
-                else:
-                    center = (0.0, 0.0, ortalama_z)
-                hull_data = {
-                    'hull': None,
-                    'points': np.array(tum_noktalar) if tum_noktalar else None,
-                    'center': center
-                }
-                
-                # Hull bilgisini haritaya aktar (eğer harita varsa)
-                if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
-                    self.ortam_ref.harita.convex_hull_data = hull_data
-                
-                return hull_data
-            
-            # 6. 2D Convex Hull hesapla (TEK KEZ)
-            try:
-                hull_2d = ConvexHull(points_2d)
-            except Exception as e:
-                print(f"⚠️ [UYARI] 2D Convex Hull hesaplanamadı: {e}")
-                # QJ (joggle) seçeneği ile tekrar dene
-                try:
-                    hull_2d = ConvexHull(points_2d, qhull_options='QJ')
-                except Exception as e2:
-                    print(f"❌ [HATA] 2D Convex Hull (QJ ile) hesaplanamadı: {e2}")
-                    center_2d = np.mean(points_2d, axis=0)
-                    center = (center_2d[0], center_2d[1], ortalama_z)  # (x, y, z)
-                    hull_data = {
-                        'hull': None,
-                        'points': np.array(tum_noktalar),
-                        'center': center
-                    }
-                    
-                    # Hull bilgisini haritaya aktar (eğer harita varsa)
-                    if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
-                        self.ortam_ref.harita.convex_hull_data = hull_data
-                    
-                    return hull_data
-            
-            # 7. 2D hull'u 3D'ye çevir (derinlik bilgisini ekle)
-            # Hull'u 3D noktalara çevir (z derinlik sabit)
-            hull_3d_points = []
-            for vertex_idx in hull_2d.vertices:
-                x, y = points_2d[vertex_idx]
-                hull_3d_points.append([x, y, ortalama_z])  # (x, y, z)
-            
-            hull_3d_points = np.array(hull_3d_points)
-            
-            # 8. 3D hull oluştur (eğer yeterli nokta varsa)
-            hull = None
-            if len(hull_3d_points) >= 4:
-                try:
-                    hull = ConvexHull(hull_3d_points, qhull_options='QJ')
-                except Exception:
-                    # 3D hull oluşturulamazsa, 2D hull'u kullan
-                    # Bu durumda _is_point_inside_hull fonksiyonu 2D'yi destekliyor
-                    # Şimdilik 2D hull'u saklayalım
-                    pass
-            
-            # 9. Hull merkezini hesapla
             center_2d = np.mean(points_2d, axis=0)
-            center = (center_2d[0], center_2d[1], ortalama_z)  # (x, y, z)
-            
-            # Eğer 3D hull oluşturulamadıysa, 2D hull'u kullan
-            if hull is None:
-                # 2D hull'u kullan (zaten _is_point_inside_hull 2D'yi destekliyor)
-                hull = hull_2d
-                # 2D hull için points_2d'yi sakla
-                points_for_hull = points_2d
-            else:
-                # 3D hull için points_3d'yi sakla
-                points_for_hull = np.array(tum_noktalar)
-            
+            z_avg = np.mean([p[2] for p in tum_noktalar])
+
             hull_data = {
-                'hull': hull,
-                'points': points_for_hull,
-                'center': tuple(center)
+                'hull': hull_2d, 
+                'points': points_2d, 
+                'center': (center_2d[0], center_2d[1], z_avg)
             }
-            
-            # Hull bilgisini haritaya aktar (eğer harita varsa)
-            if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
+
+            if self.ortam_ref and hasattr(self.ortam_ref, 'harita'):
                 self.ortam_ref.harita.convex_hull_data = hull_data
-            
+
             return hull_data
-            
         except Exception as e:
-            print(f"❌ [HATA] Güvenlik hull oluşturulurken hata: {e}")
+            print(f"❌ [HATA] Hull birleştirme hatası: {e}")
             import traceback
             traceback.print_exc()
-            return {
-                'hull': None,
-                'points': None,
-                'center': None
-            }
+            return {'hull': None, 'points': None, 'center': None}
     
     def _hedef_gorsel_olustur(self, x, y, z):
         """
