@@ -70,7 +70,7 @@ try:
     from FiratROVNet import gat, ortam, gnc, iletisim, config
     from FiratROVNet.gat import GAT_Modeli, Train, FiratAnalizci
     from FiratROVNet.ortam import veri_uret
-    from FiratROVNet.gnc import Filo, LiderGNC, TakipciGNC
+    from FiratROVNet.gnc import Filo, TemelGNC
     from FiratROVNet.iletisim import AkustikModem
     from FiratROVNet.config import cfg
     # Mock distance fonksiyonunu gnc modülüne ekle (test için)
@@ -326,8 +326,8 @@ try:
     modem1 = AkustikModem(1)
     
     # Lider ve Takipçi GNC oluştur
-    lider_gnc = LiderGNC(rov0, modem0)
-    takipci_gnc = TakipciGNC(rov1, modem1, lider_modem_ref=modem0)
+    lider_gnc = TemelGNC(rov0, modem0)
+    takipci_gnc = TemelGNC(rov1, modem1)
     
     filo.ekle(lider_gnc)
     filo.ekle(takipci_gnc)
@@ -430,8 +430,8 @@ try:
     rov0 = MockROV(0)
     rov1 = MockROV(1)
     
-    gnc0 = LiderGNC(rov0, modem0)
-    gnc1 = TakipciGNC(rov1, modem1, lider_modem_ref=modem0)
+    gnc0 = TemelGNC(rov0, modem0)
+    gnc1 = TemelGNC(rov1, modem1)
     
     filo.ekle(gnc0)
     filo.ekle(gnc1)
@@ -541,8 +541,8 @@ try:
     rov0 = MockROV(0)
     rov1 = MockROV(1)
     
-    gnc0 = LiderGNC(rov0, modem0)
-    gnc1 = TakipciGNC(rov1, modem1, lider_modem_ref=modem0)
+    gnc0 = TemelGNC(rov0, modem0)
+    gnc1 = TemelGNC(rov1, modem1)
     
     filo.ekle(gnc0)
     filo.ekle(gnc1)
