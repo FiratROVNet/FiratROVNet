@@ -1031,8 +1031,24 @@ class Filo:
         try:
             # Eski formasyon hedeflerini temizle (yeni formasyon için)
             self._formasyon_hedefleri.clear()
-            # 1. Güvenlik hull'u oluştur (sanal + gerçek engeller, SADECE 1 KEZ)
-            guvenlik_hull_dict = self.hull_manager.hull(offset=offset)
+            # 1. Ada çevre noktalarını al (yasaklı noktalar olarak kullanılacak)
+            ada_cevre_noktalari = self.ada_cevre()
+            
+            # Ada çevre noktalarını 2D formatına çevir (sadece x, y)
+            yasakli_noktalar = []
+            if ada_cevre_noktalari:
+                for nokta in ada_cevre_noktalari:
+                    if len(nokta) >= 2:
+                        yasakli_noktalar.append([float(nokta[0]), float(nokta[1])])
+            
+            # 2. Yeni hull oluştur (yasaklı noktaları çıkararak)
+            guvenlik_hull_dict = self.yeni_hull(
+                yasakli_noktalar=yasakli_noktalar,
+                offset=offset,
+                alpha=2.0,
+                buffer_radius=0.06,
+                channel_width=0.03
+            )
 
             hull = guvenlik_hull_dict.get("hull")
             hull_merkez = guvenlik_hull_dict.get("center")
