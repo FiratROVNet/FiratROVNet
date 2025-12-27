@@ -1016,24 +1016,33 @@ class Filo:
         self._formasyon_yaw_senkronizasyon_mesafesi = yaw_senkronizasyon_mesafesi
         self._maksimum_yaw_donme_hizi = maksimum_yaw_donme_hizi
         
-        # Eğer önceki bir arama thread'i hala çalışıyorsa, beklemeyi atla (yeni arama başlatılacak)
-        if self._formasyon_arama_thread is not None and self._formasyon_arama_thread.is_alive():
-            print("⚠️ [FORMASYON] Önceki arama hala devam ediyor, yeni arama başlatılıyor...")
+        # Platform-specific optimizasyon: Linux'ta senkron, Windows'ta asenkron
+        is_windows = sys.platform == 'win32'
         
-        # Asenkron arama: Ağır hesaplamaları background thread'de yap
-        # Ana thread'i bloke etmemek için worker thread başlat
-        self._formasyon_arama_thread = threading.Thread(
-            target=self._formasyon_sec_worker,
-            args=(margin, is_3d, offset),
-            daemon=True  # Ana program kapandığında thread de kapansın
-        )
-        self._formasyon_arama_thread.start()
-        
-        print("🔍 [FORMASYON] Formasyon araması başlatıldı (arka planda çalışıyor)...")
-        
-        # Hemen dön (ana thread'i bloke etme)
-        # Sonuç bulunduğunda worker thread içinde ROV'lar hareket ettirilecek
-        return None
+        if is_windows:
+            # Windows: Asenkron arama (background thread)
+            # Eğer önceki bir arama thread'i hala çalışıyorsa, beklemeyi atla (yeni arama başlatılacak)
+            if self._formasyon_arama_thread is not None and self._formasyon_arama_thread.is_alive():
+                print("⚠️ [FORMASYON] Önceki arama hala devam ediyor, yeni arama başlatılıyor...")
+            
+            # Asenkron arama: Ağır hesaplamaları background thread'de yap
+            # Ana thread'i bloke etmemek için worker thread başlat
+            self._formasyon_arama_thread = threading.Thread(
+                target=self._formasyon_sec_worker,
+                args=(margin, is_3d, offset),
+                daemon=True  # Ana program kapandığında thread de kapansın
+            )
+            self._formasyon_arama_thread.start()
+            
+            print("🔍 [FORMASYON] Formasyon araması başlatıldı (arka planda çalışıyor)...")
+            
+            # Hemen dön (ana thread'i bloke etme)
+            # Sonuç bulunduğunda worker thread içinde ROV'lar hareket ettirilecek
+            return None
+        else:
+            # Linux: Senkron arama (doğrudan çalıştır, thread overhead'i yok)
+            # Linux'un thread yönetimi bunu kaldırabiliyor
+            return self._formasyon_sec_impl(margin, is_3d, offset)
     
     def _formasyon_sec_worker(self, margin=30, is_3d=False, offset=20.0):
         """

@@ -6,6 +6,7 @@ from FiratROVNet.config import Formasyon
 from ursina import *
 import numpy as np
 import os
+import sys
 
 # 1. KURULUM
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
@@ -158,21 +159,40 @@ print("🤖 ROV yönetimi aktif! Kullanım: ROV(0, 10, -5, 20) - ROV 0'ı (10, -
 
 
 # 2. ANA DÖNGÜ
+# Platform-specific throttling değişkenleri
+is_windows = sys.platform == 'win32'
+frame_count = 0
+
 def update():
+    global frame_count
+    frame_count += 1
+    
     try:
-        # Thread-safe komut kuyruğunu işle (konsoldan gelen komutlar için)
+        # Her zaman komutları işle (en başta, her frame'de)
         filo.execute_queued_commands()
         
-        veri = app.simden_veriye()
+        # Platform-specific throttling: Windows'ta AI analizi ve harita güncellemesi daha seyrek
+        ai_step = 5 if is_windows else 1  # Windows: 5 frame'de bir, Linux: her frame
+        harita_step = 10 if is_windows else 2  # Windows: 10 frame'de bir, Linux: 2 frame'de bir
         
-        ai_aktif = getattr(cfg, 'ai_aktif', True)
-        if ai_aktif and beyin:
-            try: 
-                tahminler, _, _ = beyin.analiz_et(veri)
-            except: 
+        # AI Analizi (throttled)
+        if frame_count % ai_step == 0:
+            veri = app.simden_veriye()
+            
+            ai_aktif = getattr(cfg, 'ai_aktif', True)
+            if ai_aktif and beyin:
+                try: 
+                    tahminler, _, _ = beyin.analiz_et(veri)
+                except: 
+                    tahminler = np.zeros(len(app.rovs), dtype=int)
+            else:
                 tahminler = np.zeros(len(app.rovs), dtype=int)
         else:
+            # Throttled frame'lerde önceki GAT kodlarını kullan (ROV'lardan oku)
             tahminler = np.zeros(len(app.rovs), dtype=int)
+            for i, rov in enumerate(app.rovs):
+                if hasattr(rov, 'gat_kodu'):
+                    tahminler[i] = rov.gat_kodu
 
         kod_renkleri = {0:color.orange, 1:color.red, 2:color.black, 3:color.yellow, 5:color.magenta}
         durum_txts = ["OK", "ENGEL", "CARPISMA", "KOPUK", "-", "UZAK"]
@@ -211,15 +231,16 @@ def update():
         
         filo.guncelle_hepsi(tahminler)
         
-        # Harita güncelle (Matplotlib penceresi) - Throttled içeride yapılıyor
-        if hasattr(app, 'harita') and app.harita is not None:
-            try:
-                # Matplotlib penceresini güncelle (throttled, non-blocking)
-                app.harita.update()
-                # plt.pause() kaldırıldı - harita.update() içinde throttle var
-            except Exception as e:
-                # Harita güncelleme hatası (sessizce geç, simülasyon devam etsin)
-                pass
+        # Harita güncelle (Matplotlib penceresi) - Platform-specific throttling
+        if frame_count % harita_step == 0:
+            if hasattr(app, 'harita') and app.harita is not None:
+                try:
+                    # Matplotlib penceresini güncelle (throttled, non-blocking)
+                    app.harita.update()
+                    # plt.pause() kaldırıldı - harita.update() içinde throttle var
+                except Exception as e:
+                    # Harita güncelleme hatası (sessizce geç, simülasyon devam etsin)
+                    pass
         
     except Exception as e: 
         pass
@@ -235,5 +256,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt: 
         pass
     finally: 
-        os.system('stty sane')
+        # stty komutu sadece Linux/Unix sistemlerde çalışır, Windows'ta hata verir
+        if sys.platform != 'win32':
+            os.system('stty sane')
         os._exit(0)
