@@ -2207,12 +2207,13 @@ class Ortam:
         # Ada çevresine görsel sınır çizgisi ekle (yarı saydam sphere - cylinder yerine)
         # Bu, ROV'ların ada sınırlarını görmesini sağlar
         # Ursina'da cylinder modeli yok, bu yüzden sphere kullanıyoruz
+        # ŞİMDİLİK GÖRSEL GÖSTERİM KAPALI (visible=False)
         sinir_cizgisi = Entity(
             model='sphere',
             position=(island_x-5, -max_height/2, island_z+10),
             scale=(max_radius * 2.5, max_height, max_radius * 2.2),  # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri)
             color=color.rgba(255, 200, 0, 0.3),  # Turuncu-sarı, yarı saydam
-            visible=True,  # Görünür (sınır çizgisi)
+            visible=False,  # Görünmez (şimdilik görsel gösterim kapalı)
             double_sided=True,
             unlit=True,
             transparent=True,  # Şeffaflık için
