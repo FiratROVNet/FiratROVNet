@@ -1343,6 +1343,78 @@ class Filo:
         """guvenlik_hull_olustur() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         return self.hull_manager.hull(offset=offset)
     
+    def ada_cevre(self, offset=10.0):
+        """
+        Simülasyondaki adaları tespit edip her ada için eşit çevrede 4 nokta döndürür.
+        
+        Her ada için 4 nokta hesaplanır (kuzey, doğu, güney, batı - 0°, 90°, 180°, 270°).
+        Noktalar ada yarıçapından belirli bir mesafe uzakta olur (offset parametresi).
+        
+        Args:
+            offset (float): Ada yarıçapından uzaklık (metre, varsayılan: 10.0)
+                - Noktalar ada merkezinden (radius + offset) mesafede olur
+        
+        Returns:
+            list: [(x1, y1, z1), (x2, y2, z2), ...] - Ada çevresi noktaları (Simülasyon formatı)
+                - 1 ada varsa: 4 nokta
+                - 2 ada varsa: 8 nokta
+                - 3 ada varsa: 12 nokta
+                - Format: (x, y, z) - x: sağ-sol, y: ileri-geri, z: derinlik
+        
+        Örnekler:
+            # Tüm adaların çevre noktalarını al
+            noktalar = filo.ada_cevre()
+            # Çıktı: [(x1, y1, z1), (x2, y2, z2), ...] - Her ada için 4 nokta
+            
+            # Özel offset ile
+            noktalar = filo.ada_cevre(offset=15.0)  # Ada yarıçapından 15 metre uzakta
+        """
+        if not self.ortam_ref:
+            print("⚠️ [UYARI] Ortam referansı bulunamadı!")
+            return []
+        
+        # Ada pozisyonlarını al
+        if not hasattr(self.ortam_ref, 'island_positions') or not self.ortam_ref.island_positions:
+            print("⚠️ [UYARI] Simülasyonda ada bulunamadı!")
+            return []
+        
+        tum_noktalar = []
+        
+        # Her ada için 4 nokta hesapla
+        for island_data in self.ortam_ref.island_positions:
+            if len(island_data) < 3:
+                continue
+            
+            # Ada bilgileri: (island_x, island_z, island_radius)
+            island_x = float(island_data[0])  # X koordinatı (sağ-sol)
+            island_z = float(island_data[1])  # Z koordinatı (ileri-geri) - Simülasyon formatında Y
+            island_radius = float(island_data[2])  # Ada yarıçapı
+            
+            # Çevre mesafesi: Ada yarıçapı + offset
+            cevre_mesafesi = island_radius + offset
+            
+            # 4 nokta hesapla (0°, 90°, 180°, 270°)
+            # Simülasyon sistemi: X=Sağ-Sol, Y=İleri-Geri
+            # 0° = Kuzey (+Y), 90° = Doğu (+X), 180° = Güney (-Y), 270° = Batı (-X)
+            acilar = [0, 90, 180, 270]  # Derece
+            
+            for aci in acilar:
+                # Açıyı radyana çevir
+                aci_rad = math.radians(aci)
+                
+                # Nokta koordinatları (Simülasyon formatı)
+                # X = island_x + mesafe * sin(aci)
+                # Y = island_z + mesafe * cos(aci)
+                # Z = 0 (yüzey, derinlik yok)
+                nokta_x = island_x + cevre_mesafesi * math.sin(aci_rad)
+                nokta_y = island_z + cevre_mesafesi * math.cos(aci_rad)
+                nokta_z = 0.0  # Yüzey (derinlik yok)
+                
+                tum_noktalar.append((nokta_x, nokta_y, nokta_z))
+        
+        print(f"✅ [ADA_CEVRE] {len(self.ortam_ref.island_positions)} ada için {len(tum_noktalar)} nokta hesaplandı (offset={offset}m)")
+        return tum_noktalar
+    
     def _hedef_gorsel_olustur(self, x, y, z):
         """
         Hedef pozisyonunu Ursina'da büyük X işareti olarak gösterir.
