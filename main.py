@@ -160,6 +160,9 @@ print("🤖 ROV yönetimi aktif! Kullanım: ROV(0, 10, -5, 20) - ROV 0'ı (10, -
 # 2. ANA DÖNGÜ
 def update():
     try:
+        # Thread-safe komut kuyruğunu işle (konsoldan gelen komutlar için)
+        filo.execute_queued_commands()
+        
         veri = app.simden_veriye()
         
         ai_aktif = getattr(cfg, 'ai_aktif', True)

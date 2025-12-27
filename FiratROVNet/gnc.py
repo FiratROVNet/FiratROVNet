@@ -90,7 +90,12 @@ class Filo:
     
     def _is_main_thread(self):
         """Şu anki thread'in ana thread olup olmadığını kontrol eder."""
-        return threading.get_ident() == self._main_thread_id
+        try:
+            # threading.main_thread() Python 3.4+ için
+            return threading.current_thread() is threading.main_thread()
+        except AttributeError:
+            # Geriye dönük uyumluluk için eski yöntem
+            return threading.get_ident() == self._main_thread_id
     
     def _process_command_queue(self):
         """Ana thread'de çağrılmalı: Queue'daki komutları işler."""
@@ -106,6 +111,10 @@ class Filo:
                     self._guvenlik_hull_olustur_impl(*args, **kwargs)
                 elif cmd_type == 'formasyon_sec':
                     self._formasyon_sec_impl(*args, **kwargs)
+                elif cmd_type == 'set':
+                    self._set_impl(*args, **kwargs)
+                elif cmd_type == 'hedef':
+                    self._hedef_impl(*args, **kwargs)
                 else:
                     # Genel fonksiyon çağrısı
                     if isinstance(args, tuple) and len(args) > 0 and callable(args[0]):
@@ -118,6 +127,13 @@ class Filo:
             print(f"⚠️ [UYARI] Komut kuyruğu işlenirken hata: {e}")
             import traceback
             traceback.print_exc()
+    
+    def execute_queued_commands(self):
+        """
+        Ana thread'de çağrılmalı: Queue'daki tüm komutları işler.
+        main.py'deki update() fonksiyonunun başına eklenmelidir.
+        """
+        self._process_command_queue()
     
     def _formasyon_id_pool_olustur(self):
         """Formasyon ID pool'unu oluşturur ve shuffle eder."""
@@ -565,7 +581,7 @@ class Filo:
     
     def set(self, rov_id, ayar_adi, deger):
         """
-        ROV ayarlarını değiştirir.
+        ROV ayarlarını değiştirir (Thread-safe).
         
         Args:
             rov_id: ROV ID (0, 1, 2, ...)
@@ -580,6 +596,16 @@ class Filo:
             filo.set(0, 'yaw', 90.0)  # ROV-0'ı 90 dereceye döndür
             filo.set(1, 'yaw', 180)  # ROV-1'i 180 dereceye döndür
         """
+        # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
+        if not self._is_main_thread():
+            self._command_queue.put(('set', (rov_id, ayar_adi, deger), {}))
+            return True  # Queue'ya eklendi, başarılı kabul et
+        
+        # Ana thread'deyiz, direkt çalıştır
+        return self._set_impl(rov_id, ayar_adi, deger)
+    
+    def _set_impl(self, rov_id, ayar_adi, deger):
+        """set() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         # Sistemler listesi boş mu kontrol et
         if len(self.sistemler) == 0:
             print(f"❌ [HATA] GNC sistemleri henüz kurulmamış!")
@@ -1184,7 +1210,7 @@ class Filo:
 
     def hedef(self, x=None, y=None, z=None):
         """
-        Sadece lider ROV'un hedefini ayarlar. Takipçiler bu komuttan etkilenmez.
+        Sadece lider ROV'un hedefini ayarlar (Thread-safe). Takipçiler bu komuttan etkilenmez.
         Hedef görsel olarak (büyük X işareti) gösterilir ve haritaya eklenir.
         Derinlik her zaman 0 (su üstünde) olarak ayarlanır.
         
@@ -1204,13 +1230,25 @@ class Filo:
             filo.hedef(40, 50)  # Sadece lider (40, 50, 0) hedefine gider
             filo.hedef()  # Mevcut hedef koordinatlarını döndürür: (x, y, 0) veya None
         """
-        # Parametre verilmediyse mevcut hedefi döndür
+        # Parametre verilmediyse mevcut hedefi döndür (thread-safe değil, sadece okuma)
         if x is None or y is None:
             if self.hedef_pozisyon:
                 return self.hedef_pozisyon
             else:
                 return None
         
+        # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
+        if not self._is_main_thread():
+            self._command_queue.put(('hedef', (x, y, z), {}))
+            # Queue'ya eklendi, hedef pozisyonunu kaydet (okuma için)
+            self.hedef_pozisyon = (x, y, 0)
+            return (x, y, 0)
+        
+        # Ana thread'deyiz, direkt çalıştır
+        return self._hedef_impl(x, y, z)
+    
+    def _hedef_impl(self, x, y, z):
+        """hedef() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         # Derinlik her zaman 0 (su üstünde)
         z = 0
         
@@ -1229,7 +1267,6 @@ class Filo:
             return None
         
         # Sadece liderin hedefini güncelle (Sim formatında)
-        # Sadece liderin hedefini güncelle (Sim formatında)
         # filo.git() artık Sim formatında çalışıyor: (x, y, z)
         self.git(lider_rov_id, x, y, z, ai=True)
         
@@ -1237,7 +1274,7 @@ class Filo:
         ursina_pos = (x, y, z)
         self._hedef_gorsel_olustur(*ursina_pos)
         
-        # Haritaya hedefi ekle
+        # Haritaya hedefi ekle (Matplotlib - ana thread'de olmalı)
         if self.ortam_ref and hasattr(self.ortam_ref, 'harita'):
             self.ortam_ref.harita.hedef_pozisyon = (x, y)
         
