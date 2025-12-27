@@ -751,9 +751,9 @@ class Filo:
             # y: ileri-geri (aynı)
             # z: derinlik (aynı)
             
-            # Eğer yüzeydeyse (z >= 0), su altına gönder (-10 metre default derinlik)
+            # Eğer yüzeydeyse (z >= 0), su altına gönder (default derinlik config'den)
             if sim_z >= 0:
-                sim_z = -10.0
+                sim_z = HareketAyarlari.FORMASYON_DEFAULT_DERINLIK
             
             # filo.git() ile hedefi uygula (Sim formatında)
             try:
@@ -858,9 +858,9 @@ class Filo:
                 lider_gps = hull_merkez
 
             # 3. Formasyon aralığı parametreleri
-            min_aralik = margin * 0.2
-            baslangic_aralik = margin * 0.6
-            adim = 1.0  # metre
+            min_aralik = margin * HareketAyarlari.FORMASYON_MARGIN_MIN_KATSAYISI
+            baslangic_aralik = margin * HareketAyarlari.FORMASYON_MARGIN_BASLANGIC_KATSAYISI
+            adim = HareketAyarlari.FORMASYON_ADIM  # metre
 
             # 4. Yaw açıları (0, 90, 180, 270 derece)
             yaw_acilari = [0, 90, 180, 270]
@@ -1384,7 +1384,7 @@ class Filo:
                 if hasattr(rov, 'manuel_hareket'):
                     rov.manuel_hareket['yon'] = None
                     rov.manuel_hareket['guc'] = 0.0
-                rov.velocity *= 0.9  # Yavaşça dur (momentum korunumu)
+                rov.velocity *= HareketAyarlari.HAREKET_DUR_YAVASLATMA  # Yavaşça dur (momentum korunumu)
                 print(f"🛑 [FİLO] ROV-{rov_id} durduruluyor")
                 return
             
@@ -1400,10 +1400,10 @@ class Filo:
                 havuz_sinir = havuz_genisligi  # +-havuz_genisligi
                 
                 # Sınırda mı kontrol et
-                sinirda_x = abs(rov.x) >= havuz_sinir * 0.95
-                sinirda_z = abs(rov.z) >= havuz_sinir * 0.95
-                sinirda_y_ust = rov.y >= 0.3
-                sinirda_y_alt = rov.y <= -95
+                sinirda_x = abs(rov.x) >= havuz_sinir * HareketAyarlari.HAVUZ_SINIR_KATSAYISI
+                sinirda_z = abs(rov.z) >= havuz_sinir * HareketAyarlari.HAVUZ_SINIR_KATSAYISI
+                sinirda_y_ust = rov.y >= HareketAyarlari.HAVUZ_Y_UST_SINIR
+                sinirda_y_alt = rov.y <= HareketAyarlari.HAVUZ_Y_ALT_SINIR
                 
                 # Sınırda ise o yöne hareketi engelle
                 if sinirda_x and ((yon == 'sag' and rov.x > 0) or (yon == 'sol' and rov.x < 0)):

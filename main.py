@@ -6,7 +6,6 @@ from FiratROVNet.config import Formasyon
 from ursina import *
 import numpy as np
 import os
-import sys
 
 # 1. KURULUM
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
@@ -161,13 +160,9 @@ print("🤖 ROV yönetimi aktif! Kullanım: ROV(0, 10, -5, 20) - ROV 0'ı (10, -
 # 2. ANA DÖNGÜ
 def update():
     try:
-        # Komutları işle (her frame'de)
-        filo.execute_queued_commands()
-        
-        # AI Analizi HER FRAME (throttling kaldırıldı)
         veri = app.simden_veriye()
-        ai_aktif = getattr(cfg, 'ai_aktif', True)
         
+        ai_aktif = getattr(cfg, 'ai_aktif', True)
         if ai_aktif and beyin:
             try: 
                 tahminler, _, _ = beyin.analiz_et(veri)
@@ -213,11 +208,12 @@ def update():
         
         filo.guncelle_hepsi(tahminler)
         
-        # Harita güncelle (Matplotlib penceresi) - HER FRAME (throttling kaldırıldı)
+        # Harita güncelle (Matplotlib penceresi) - Throttled içeride yapılıyor
         if hasattr(app, 'harita') and app.harita is not None:
             try:
-                # Matplotlib penceresini güncelle (non-blocking)
+                # Matplotlib penceresini güncelle (throttled, non-blocking)
                 app.harita.update()
+                # plt.pause() kaldırıldı - harita.update() içinde throttle var
             except Exception as e:
                 # Harita güncelleme hatası (sessizce geç, simülasyon devam etsin)
                 pass
@@ -236,7 +232,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt: 
         pass
     finally: 
-        # stty komutu sadece Linux/Unix sistemlerde çalışır, Windows'ta hata verir
-        if sys.platform != 'win32':
-            os.system('stty sane')
+        os.system('stty sane')
         os._exit(0)

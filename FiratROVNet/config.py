@@ -133,6 +133,76 @@ class HareketAyarlari:
     PASIF_MOD_MIN_HAREKET_MESAFESI = 5.0  # Pasif modda minimal hareket mesafesi (metre)
     VELOCITY_THRESHOLD = 0.1              # Hız eşiği (normalize edilmiş)
     MOTOR_GUC_KATSAYISI = 0.5              # Manuel hareket güç katsayısı
+    
+    # Çarpışma ve titreme önleme
+    CARPISMA_TITREME_MESAFE_ESIGI = 1.5   # Titreme önleme için mesafe eşiği (metre)
+    CARPISMA_TITREME_HIZ_ESIGI = 2.0      # Titreme önleme için hız eşiği (m/s)
+    CARPISMA_AYIRMA_KATSAYISI = 0.5       # Çarpışma ayırma katsayısı (0.0-1.0)
+    CARPISMA_HIZ_YAVASLATMA = 0.7         # Çarpışma sonrası hız yavaşlatma katsayısı (0.0-1.0)
+    CARPISMA_MOMENTUM_YUMUSATMA = 0.5     # Momentum korunumu yumuşatma katsayısı (0.0-1.0)
+    CARPISMA_GOREKELI_HIZ_ESIGI = 0.1     # Göreceli hız eşiği (m/s)
+    
+    # Görselleştirme mesafeleri
+    GORSELLEŞTIRME_ENGEL_CİZGİ_KIRMIZI = 5.0   # Kırmızı çizgi mesafesi (metre)
+    GORSELLEŞTIRME_ENGEL_CİZGİ_TURUNCU = 10.0  # Turuncu çizgi mesafesi (metre)
+    GORSELLEŞTIRME_ENGEL_CİZGİ_PARCA_UZUNLUK = 2.0  # Engel çizgi parça uzunluğu (metre)
+    GORSELLEŞTIRME_ENGEL_CİZGİ_BOSLUK = 1.0    # Engel çizgi boşluk (metre)
+    GORSELLEŞTIRME_ILETISIM_CİZGİ_PARCA_UZUNLUK = 1.5  # İletişim çizgi parça uzunluğu (metre)
+    GORSELLEŞTIRME_ILETISIM_CİZGİ_BOSLUK = 0.8  # İletişim çizgi boşluk (metre)
+    GORSELLEŞTIRME_ILETISIM_YAKIN_ORAN = 0.3    # İletişim yakın mesafe oranı (0.0-1.0)
+    GORSELLEŞTIRME_ILETISIM_ORTA_ORAN = 0.6     # İletişim orta mesafe oranı (0.0-1.0)
+    
+    # Havuz ve güvenlik
+    HAVUZ_GUVENLIK_PAYI = 50.0            # Havuz güvenlik payı (metre)
+    HAVUZ_VARSAYILAN_RADIUS = 50.0        # Varsayılan ada radius (metre)
+    HAVUZ_SINIR_KATSAYISI = 0.95          # Havuz sınır katsayısı (0.0-1.0)
+    HAVUZ_Y_UST_SINIR = 0.3               # Üst yüzey sınırı (metre)
+    HAVUZ_Y_ALT_SINIR = -95.0             # Alt derinlik sınırı (metre)
+    HAVUZ_Y_YUZEY_TOLERANS = 0.5          # Yüzey toleransı (metre)
+    HAVUZ_Y_MIN_DERINLIK = -2.0           # Minimum derinlik (metre)
+    
+    # Formasyon default değerleri
+    FORMASYON_DEFAULT_DERINLIK = -10.0    # Formasyon default derinlik (metre)
+    FORMASYON_ADIM = 1.0                  # Formasyon arama adımı (metre)
+    FORMASYON_MARGIN_MIN_KATSAYISI = 0.2  # Formasyon margin minimum katsayısı
+    FORMASYON_MARGIN_BASLANGIC_KATSAYISI = 0.6  # Formasyon margin başlangıç katsayısı
+    
+    # Maksimum mesafeler (algılama limitleri)
+    MAX_MESAFE_ALGILAMA = 999.0           # Maksimum algılama mesafesi (metre)
+    
+    # Dikey toleranslar
+    DIKEY_TOLERANS_ADA_HASSAS = 5.0       # Ada algılama için hassas dikey tolerans (metre)
+    
+    # Kaçınma katsayıları
+    KACINMA_UZAKLASMA_GUC_KATSAYISI = 0.3  # Uzaklaşma gücü katsayısı (0.0-1.0)
+    
+    # Hareket katsayıları
+    HAREKET_DUR_YAVASLATMA = 0.7          # Dur komutu hız yavaşlatma katsayısı (0.0-1.0)
+    HAREKET_DUR_HIZ_ESIGI = 0.1           # Dur komutu hız eşiği (m/s)
+    HAREKET_YAW_HIZI = 90.0               # Yaw rotasyon hızı (derece/saniye)
+    HAREKET_YAW_GUC_MIN = -1.0            # Yaw güç minimum (-1.0)
+    HAREKET_YAW_GUC_MAX = 1.0             # Yaw güç maksimum (1.0)
+    HAREKET_NORMAL_GUC_MIN = 0.0          # Normal hareket güç minimum (0.0)
+    HAREKET_NORMAL_GUC_MAX = 1.0          # Normal hareket güç maksimum (1.0)
+    
+    # Fizik sabitleri
+    FIZIK_SURTUNME_KATSAYISI = 0.95       # Sürtünme katsayısı (0.0-1.0)
+    FIZIK_HIZLANMA_CARPANI = 30.0         # Hızlanma çarpanı
+    FIZIK_KALDIRMA_KUVVETI = 2.0          # Kaldırma kuvveti
+    FIZIK_BATARYA_SOMURME_KATSAYISI = 0.001  # Batarya sömürme katsayısı
+    
+    # ROV boyutları
+    ROV_SCALE_X = 1.5                     # ROV X ekseni ölçeği
+    ROV_SCALE_Y = 0.8                     # ROV Y ekseni ölçeği
+    ROV_SCALE_Z = 2.5                     # ROV Z ekseni ölçeği
+    ROV_LABEL_Y_OFFSET = 3.0              # ROV label Y offset (metre)
+    ROV_LABEL_SCALE = 20.0                # ROV label ölçeği
+    
+    # Ada algılama
+    ADA_ISLAND_BOUNDARY_FARK = 5.0        # Ada boundary fark eşiği (metre)
+    
+    # İletişim varsayılan değerleri
+    ILETISIM_VARSAYILAN_MENZIL = 35.0     # Varsayılan iletişim menzili (metre)
 
 
 class ModemAyarlari:
@@ -276,86 +346,13 @@ class Formasyon:
   
         
         # 3D mod için derinlik hesaplama yardımcı fonksiyonu
-        # Maksimum derinlik farkı: ROV'lar liderin z'sinden maksimum bu kadar uzaklaşabilir
-        maksimum_z_farki = aralik * 0.8 if is_3d else 0.0
-        
-        def hesapla_z_3d(index, formasyon_tipi=None):
-            """3D modda z koordinatını hesapla (formasyon tipine göre optimize edilmiş)
-            
-            Döndürülen değer liderin z'sine göre ofset olarak kullanılır.
-            Negatif değerler = aşağı (daha derin), pozitif değerler = yukarı (daha sığ)
-            """
+        def hesapla_z_3d(index):
+            """3D modda z koordinatını hesapla (katmanlar halinde)"""
             if not is_3d:
                 return 0.0
-            
-            # Formasyon tipine göre özel 3D yerleşim
-            if formasyon_tipi in [4, 17, 14]:  # CIRCLE, HEXAGON, STAR - Küresel dağılım
-                # Küresel dağılım: hem yatay hem dikey açı
-                total_rovs = len(takipci_listesi)
-                if total_rovs > 0:
-                    # Yatay açı (zaten hesaplanmış)
-                    # Dikey açı (derinlik için) - normalize edilmiş dağılım
-                    vertical_angle = math.pi * (index % 3) / 3 - math.pi / 2  # -90° ile +90° arası
-                    # Derinlik aralığını maksimum_z_farki ile sınırla
-                    depth_range = min(aralik * 0.8, maksimum_z_farki)
-                    return depth_range * math.sin(vertical_angle)
-                return 0.0
-            
-            elif formasyon_tipi == 19:  # SPIRAL - 3D spiral
-                # Spiral hem yatay hem dikey döner - normalize edilmiş
-                total_rovs = max(len(takipci_listesi), 1)
-                spiral_vertical = 2.0 * math.pi * index / total_rovs
-                # Derinlik aralığını sınırla
-                depth_amplitude = min(aralik * 0.4, maksimum_z_farki * 0.5)
-                return -depth_amplitude * math.sin(spiral_vertical)
-            
-            elif formasyon_tipi == 18:  # WAVE - 3D dalga
-                # Dalga hem yatay hem dikey - normalize edilmiş
-                total_rovs = max(len(takipci_listesi), 1)
-                wave_vertical = 2.0 * math.pi * index / total_rovs
-                # Derinlik aralığını sınırla
-                depth_amplitude = min(aralik * 0.3, maksimum_z_farki * 0.5)
-                return -depth_amplitude * math.cos(wave_vertical)
-            
-            elif formasyon_tipi == 10:  # TRIANGLE - 3D piramit
-                # Piramit şeklinde: üstte daha az, altta daha fazla derinlik
-                satir_sayisi = int(math.ceil((-1 + math.sqrt(1 + 8 * len(takipci_listesi))) / 2))
-                satir_no = 0
-                temp_idx = 0
-                for s in range(satir_sayisi):
-                    if temp_idx + s + 1 > index:
-                        satir_no = s
-                        break
-                    temp_idx += s + 1
-                # Üst satırlar daha yukarıda, alt satırlar daha aşağıda
-                # Derinlik farkını normalize et (maksimum satır sayısına göre)
-                if satir_sayisi > 0:
-                    normalized_satir = satir_no / satir_sayisi  # 0.0 - 1.0 arası
-                    return -normalized_satir * maksimum_z_farki
-                return 0.0
-            
-            elif formasyon_tipi in [15, 16]:  # PHALANX, RECTANGLE - 3D katmanlar
-                # Her satır farklı derinlikte
-                genislik = min(len(takipci_listesi), 5) if formasyon_tipi == 15 else int(math.ceil(math.sqrt(len(takipci_listesi) * 2)))
-                satir_no = index // genislik
-                # Maksimum satır sayısını hesapla
-                maksimum_satir = (len(takipci_listesi) + genislik - 1) // genislik
-                if maksimum_satir > 0:
-                    # Derinlik farkını normalize et
-                    normalized_satir = satir_no / maksimum_satir  # 0.0 - 1.0 arası
-                    return -normalized_satir * maksimum_z_farki
-                return 0.0
-            
-            else:
-                # Varsayılan: Her 3-4 ROV bir katman oluşturur
-                katman = index // 3
-                # Maksimum katman sayısını hesapla
-                maksimum_katman = (len(takipci_listesi) + 2) // 3
-                if maksimum_katman > 0:
-                    # Derinlik farkını normalize et
-                    normalized_katman = min(katman / maksimum_katman, 1.0)  # 0.0 - 1.0 arası
-                    return -normalized_katman * maksimum_z_farki
-                return 0.0
+            # Her 3-4 ROV bir katman oluşturur
+            katman = index // 3
+            return -katman * aralik * 0.5  # Negatif = su altı
         
         # Takipçi sayısı (lider hariç)
         takipci_listesi = [i for i in range(n_rovs) if i != lider_id]
@@ -366,7 +363,7 @@ class Formasyon:
         
         if tip_index == 0:  # LINE (Çizgi)
             for idx, i in enumerate(takipci_listesi):
-                z_3d = hesapla_z_3d(i, tip_index)
+                z_3d = hesapla_z_3d(i)
                 yerel_ofsetler[i] = (0.0, -aralik * (idx + 1), z_3d)  # (x, y, z)
                 
         
@@ -375,7 +372,7 @@ class Formasyon:
                 row = (idx + 2) // 2  # Satır numarası (1, 1, 2, 2, 3, 3, ...)
                 # İlk takipçi sağda, ikinci solda, üçüncü sağda, dördüncü solda...
                 side = 1 if (idx + 1) % 2 == 1 else -1  # Tek indeksler sağ, çift indeksler sol
-                z_3d = hesapla_z_3d(i, tip_index)
+                z_3d = hesapla_z_3d(i)
                 yerel_ofsetler[i] = (side * aralik * row, -aralik * row, z_3d)  # (x, y, z)
         
         elif tip_index == 2:  # DIAMOND (Elmas)
@@ -385,7 +382,7 @@ class Formasyon:
                 radius = aralik * (1 + (idx // len(takipci_listesi)))
                 x = radius * math.cos(angle)
                 y = radius * math.sin(angle)
-                z_3d = hesapla_z_3d(i, tip_index)
+                z_3d = hesapla_z_3d(i)
                 yerel_ofsetler[i] = (x, y, z_3d)  # (x, y, z)
         
         elif tip_index == 3:  # SQUARE (Kare)
@@ -398,18 +395,18 @@ class Formasyon:
                         i = takipci_listesi[idx]
                         x = (col - side_length / 2 + 0.5) * aralik
                         y = -row * aralik
-                        z_3d = hesapla_z_3d(i, tip_index)
+                        z_3d = hesapla_z_3d(i)
                         yerel_ofsetler[i] = (x, y, z_3d)  # (x, y, z)
                     idx += 1
         
         elif tip_index == 4:  # CIRCLE (Daire)
-            # Dairesel formasyon: lider merkezde, takipçiler çember üzerinde (3D: küresel dağılım)
+            # Dairesel formasyon: lider merkezde, takipçiler çember üzerinde
             for idx, i in enumerate(takipci_listesi):
                 angle = 2 * math.pi * idx / len(takipci_listesi)
                 radius = aralik * 1.5
                 x = radius * math.cos(angle)
                 y = radius * math.sin(angle)
-                z_3d = hesapla_z_3d(i, tip_index)
+                z_3d = hesapla_z_3d(i)
                 yerel_ofsetler[i] = (x, y, z_3d)  # (x, y, z)
         
         elif tip_index == 5:  # ARROW (Ok)
@@ -417,7 +414,7 @@ class Formasyon:
             for idx, i in enumerate(takipci_listesi):
                 row = idx // 3 + 1
                 col = (idx % 3) - 1  # -1, 0, 1 (sol, orta, sağ)
-                z_3d = hesapla_z_3d(i, tip_index)
+                z_3d = hesapla_z_3d(i)
                 yerel_ofsetler[i] = (col * aralik * 0.8, -row * aralik * 1.2, z_3d)  # (x, y, z)
             
         elif tip_index == 6:  # WEDGE (Kama)
@@ -425,19 +422,19 @@ class Formasyon:
             for idx, i in enumerate(takipci_listesi):
                 row = (idx + 2) // 2  # Satır numarası (1, 1, 2, 2, ...)
                 side = 1 if (idx + 1) % 2 == 1 else -1  # Tek indeksler sağ, çift indeksler sol
-                z_3d = hesapla_z_3d(i, tip_index)
+                z_3d = hesapla_z_3d(i)
                 yerel_ofsetler[i] = (side * aralik * row * 0.6, -aralik * row * 0.8, z_3d)  # (x, y, z)
             
         elif tip_index == 7:  # ECHELON (Eşelon)
             # Eşelon: çapraz sıra
             for idx, i in enumerate(takipci_listesi):
-                z_3d = hesapla_z_3d(i, tip_index)
+                z_3d = hesapla_z_3d(i)
                 yerel_ofsetler[i] = (aralik * (idx + 1) * 0.7, -aralik * (idx + 1) * 0.7, z_3d)  # (x, y, z)
         
         elif tip_index == 8:  # COLUMN (Sütun)
             # Sütun: dikey sıra (yan yana)
             for idx, i in enumerate(takipci_listesi):
-                z_3d = hesapla_z_3d(i, tip_index)
+                z_3d = hesapla_z_3d(i)
                 yerel_ofsetler[i] = (aralik * (idx + 1), 0.0, z_3d)  # (x, y, z)
         
         elif tip_index == 9:  # SPREAD (Yayılım)
@@ -447,11 +444,11 @@ class Formasyon:
                 radius = aralik * 2.0
                 x = radius * math.sin(angle)
                 y = -radius * math.cos(angle) * 0.5
-                z_3d = hesapla_z_3d(i, tip_index)
+                z_3d = hesapla_z_3d(i)
                 yerel_ofsetler[i] = (x, y, z_3d)  # (x, y, z)
         
         elif tip_index == 10:  # TRIANGLE (Üçgen)
-            # Üçgen formasyonu: lider önde, takipçiler üçgen şeklinde (3D: piramit)
+            # Üçgen formasyonu: lider önde, takipçiler üçgen şeklinde
             takipci_sayisi = len(takipci_listesi)
             if takipci_sayisi > 0:
                 # Üçgenin satır sayısını hesapla
@@ -464,7 +461,7 @@ class Formasyon:
                             rov_idx = takipci_listesi[idx]
                             x_offset = (pozisyon - satir / 2) * aralik
                             y_offset = -(satir + 1) * aralik
-                            z_3d = hesapla_z_3d(rov_idx, tip_index)
+                            z_3d = hesapla_z_3d(rov_idx)
                             yerel_ofsetler[rov_idx] = (x_offset, y_offset, z_3d)
                         idx += 1
         
@@ -478,7 +475,7 @@ class Formasyon:
                         rov_idx = takipci_listesi[idx]
                         x_offset = dx * kademe * aralik
                         y_offset = dy * kademe * aralik
-                        z_3d = hesapla_z_3d(rov_idx, tip_index)
+                        z_3d = hesapla_z_3d(rov_idx)
                         yerel_ofsetler[rov_idx] = (x_offset, y_offset, z_3d)
                         idx += 1
         
@@ -494,7 +491,7 @@ class Formasyon:
                             # Her satır yarım aralık kaydırılmış
                             x_offset = (kol - satir_genisligi / 2 + 0.5) * aralik + (satir % 2) * aralik * 0.5
                             y_offset = -satir * aralik
-                            z_3d = hesapla_z_3d(rov_idx, tip_index)
+                            z_3d = hesapla_z_3d(rov_idx)
                             yerel_ofsetler[rov_idx] = (x_offset, y_offset, z_3d)
                             idx += 1
         
@@ -505,11 +502,11 @@ class Formasyon:
                     # Yan yana dizilim
                     x_offset = ((idx % 2) * 2 - 1) * ((idx // 2) + 1) * aralik * 0.5
                     y_offset = -(idx // 2) * aralik * 0.3
-                    z_3d = hesapla_z_3d(rov_idx, tip_index)
+                    z_3d = hesapla_z_3d(rov_idx)
                     yerel_ofsetler[rov_idx] = (x_offset, y_offset, z_3d)
         
         elif tip_index == 14:  # STAR (Yıldız)
-            # Yıldız formasyonu: lider merkezde, takipçiler yıldız kollarında (3D: küresel dağılım)
+            # Yıldız formasyonu: lider merkezde, takipçiler yıldız kollarında
             if len(takipci_listesi) > 0:
                 kol_sayisi = min(8, len(takipci_listesi))  # Maksimum 8 kol
                 for idx, i in enumerate(takipci_listesi):
@@ -519,11 +516,11 @@ class Formasyon:
                     radius = aralik * kademe * 1.2
                     x = radius * math.cos(angle)
                     y = radius * math.sin(angle)
-                    z_3d = hesapla_z_3d(i, tip_index)
+                    z_3d = hesapla_z_3d(i)
                     yerel_ofsetler[i] = (x, y, z_3d)  # (x, y, z)
         
         elif tip_index == 15:  # PHALANX (Falanks)
-            # Falanks: Sıkı düzen, askeri formasyon (geniş ama derin değil) (3D: katmanlar)
+            # Falanks: Sıkı düzen, askeri formasyon (geniş ama derin değil)
             if len(takipci_listesi) > 0:
                 # Genişlik hesapla (mümkün olduğunca geniş ama derin değil)
                 genislik = min(len(takipci_listesi), 5)  # Maksimum 5 sütun
@@ -535,12 +532,12 @@ class Formasyon:
                             rov_idx = takipci_listesi[idx]
                             x_offset = (kol - genislik / 2 + 0.5) * aralik * 0.8
                             y_offset = -satir * aralik * 0.6
-                            z_3d = hesapla_z_3d(rov_idx, tip_index)
+                            z_3d = hesapla_z_3d(rov_idx)
                             yerel_ofsetler[rov_idx] = (x_offset, y_offset, z_3d)
                         idx += 1
         
         elif tip_index == 16:  # RECTANGLE (Dikdörtgen)
-            # Dikdörtgen formasyonu: geniş ve derin (3D: katmanlar)
+            # Dikdörtgen formasyonu: geniş ve derin
             if len(takipci_listesi) > 0:
                 # En-boy oranı yaklaşık 2:1 (genişlik 2 katı)
                 genislik = int(math.ceil(math.sqrt(len(takipci_listesi) * 2)))
@@ -552,12 +549,12 @@ class Formasyon:
                             rov_idx = takipci_listesi[idx]
                             x_offset = (kol - genislik / 2 + 0.5) * aralik
                             y_offset = -satir * aralik
-                            z_3d = hesapla_z_3d(rov_idx, tip_index)
+                            z_3d = hesapla_z_3d(rov_idx)
                             yerel_ofsetler[rov_idx] = (x_offset, y_offset, z_3d)
                         idx += 1
         
         elif tip_index == 17:  # HEXAGON (Altıgen)
-            # Altıgen formasyonu: lider merkezde, takipçiler altıgen şeklinde (3D: küresel dağılım)
+            # Altıgen formasyonu: lider merkezde, takipçiler altıgen şeklinde
             if len(takipci_listesi) > 0:
                 # Altıgen katmanları (katman 1'den başla, katman 0 lider)
                 katman = 1
@@ -573,13 +570,13 @@ class Formasyon:
                             radius = aralik * katman * 1.2
                             x_offset = radius * math.cos(angle)
                             y_offset = radius * math.sin(angle)
-                            z_3d = hesapla_z_3d(rov_idx, tip_index)
+                            z_3d = hesapla_z_3d(rov_idx)
                             yerel_ofsetler[rov_idx] = (x_offset, y_offset, z_3d)
                             idx += 1
                     katman += 1
         
         elif tip_index == 18:  # WAVE (Dalga)
-            # Dalga formasyonu: sinüs dalgası şeklinde (3D: hem yatay hem dikey dalga)
+            # Dalga formasyonu: sinüs dalgası şeklinde
             if len(takipci_listesi) > 0:
                 for idx, i in enumerate(takipci_listesi):
                     # Sinüs dalgası şeklinde yerleştir
@@ -587,11 +584,11 @@ class Formasyon:
                     wave_amplitude = aralik * 0.5
                     wave_frequency = 2.0 * math.pi / max(len(takipci_listesi), 1)
                     y_offset = wave_amplitude * math.sin(wave_frequency * idx) - aralik * 0.5
-                    z_3d = hesapla_z_3d(i, tip_index)
+                    z_3d = hesapla_z_3d(i)
                     yerel_ofsetler[i] = (x_offset, y_offset, z_3d)
         
         elif tip_index == 19:  # SPIRAL (Spiral)
-            # Spiral formasyonu: lider merkezde, takipçiler spiral şeklinde (3D: hem yatay hem dikey spiral)
+            # Spiral formasyonu: lider merkezde, takipçiler spiral şeklinde
             if len(takipci_listesi) > 0:
                 for idx, i in enumerate(takipci_listesi):
                     # Spiral açısı ve yarıçapı
@@ -600,7 +597,7 @@ class Formasyon:
                     radius = aralik * (1.0 + idx * 0.3)  # Yarıçap artarak büyür
                     x_offset = radius * math.cos(angle)
                     y_offset = radius * math.sin(angle)
-                    z_3d = hesapla_z_3d(i, tip_index)
+                    z_3d = hesapla_z_3d(i)
                     yerel_ofsetler[i] = (x_offset, y_offset, z_3d)
             
 
@@ -611,13 +608,6 @@ class Formasyon:
         angle_rad = math.radians(yaw)
         cos_a = math.cos(angle_rad)
         sin_a = math.sin(angle_rad)
-
-        # Liderin z koordinatını referans al (derinlik kontrolü için)
-        lider_z = lider_global_pos[2]
-        
-        # Derinlik farkı limiti: 3D modda ROV'lar liderin z'sinden maksimum bu kadar uzaklaşabilir
-        # 2D modda tüm ROV'lar liderin z'sinde kalır
-        maksimum_derinlik_farki = aralik * 0.8 if is_3d else 0.0  # 3D modda ±aralik*0.8, 2D modda 0
 
         final_pozisyonlar = [(0.0, 0.0, 0.0)] * n_rovs
         
@@ -636,24 +626,11 @@ class Formasyon:
             gx = lx * cos_a + ly * sin_a
             gy = -lx * sin_a + ly * cos_a
             
-            # Z koordinatı (derinlik) kontrolü:
-            # - 2D modda: Tüm ROV'lar liderin z'sinde kalır (lz = 0)
-            # - 3D modda: lz liderin z'sine eklenir ama maksimum derinlik farkı sınırlanır
-            if is_3d:
-                # 3D modda: lz'yi liderin z'sine ekle ama sınırla
-                # lz negatif değerler (aşağı) veya pozitif değerler (yukarı) olabilir
-                # Maksimum derinlik farkını uygula
-                lz_sinirli = max(-maksimum_derinlik_farki, min(maksimum_derinlik_farki, lz))
-                final_z = lider_z + lz_sinirli
-            else:
-                # 2D modda: Tüm ROV'lar liderin z'sinde kalır
-                final_z = lider_z
-            
             # Global konuma ekle
             final_pozisyonlar[i] = (
                 lider_global_pos[0] + gx,
                 lider_global_pos[1] + gy,
-                final_z
+                lider_global_pos[2] + lz
             )
 
         return final_pozisyonlar
