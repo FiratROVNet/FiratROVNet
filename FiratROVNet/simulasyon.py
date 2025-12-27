@@ -1922,18 +1922,18 @@ class Ortam:
         ref_visual_scale = (0.3, 0.8, 0.3)
         # Hitbox boyutları çarpışma ve engel tanıma için optimize edildi
         # Hitbox'lar görünür olacak ve çarpışma algılaması için aktif
-        # Hitbox boyutları %40 artırıldı (0.4 oranında)
+        # Hitbox boyutları %20 azaltıldı (0.2 oranında, 0.8 ile çarpıldı)
         ref_hitbox_scales = [
-            (56, 28, 56),   # Katman 1 (en geniş) - 40 * 1.4 = 56, çarpışma algılama için yeterli boyut
-            (42, 35, 42),   # Katman 2 - 30 * 1.4 = 42
-            (28, 35, 28),   # Katman 3 - 20 * 1.4 = 28
-            (21, 35, 21)    # Katman 4 - 15 * 1.4 = 21
+            (44.8, 22.4, 44.8),   # Katman 1 (en geniş) - 56 * 0.8 = 44.8, çarpışma algılama için yeterli boyut
+            (33.6, 28.0, 33.6),   # Katman 2 - 42 * 0.8 = 33.6
+            (22.4, 28.0, 22.4),   # Katman 3 - 28 * 0.8 = 22.4
+            (16.8, 28.0, 16.8)    # Katman 4 - 21 * 0.8 = 16.8
         ]
         ref_hitbox_positions = [
-            (0, -5, 0),     # Katman 1
-            (0, -25, 0),    # Katman 2
-            (0, -45, 0),    # Katman 3
-            (0, -65, 0)     # Katman 4
+            (-5, -1, 0),     # Katman 1 - X: -5 birim, Y: -5 + 4 = -1 birim
+            (-5, -21, 0),    # Katman 2 - X: -5 birim, Y: -25 + 4 = -21 birim
+            (-5, -41, 0),    # Katman 3 - X: -5 birim, Y: -45 + 4 = -41 birim
+            (-5, -61, 0)     # Katman 4 - X: -5 birim, Y: -65 + 4 = -61 birim
         ]
         
         # Ada pozisyonlarını sakla (ROV yerleştirme için)
@@ -2244,8 +2244,9 @@ class Ortam:
                 ref_scale[2] * scale_multiplier
             )
             
-            # Pozisyonu ada pozisyonuna göre ayarla (Y aynı kalacak)
-            hitbox_pos = (island_x, ref_pos[1], island_z)
+            # Pozisyonu ada pozisyonuna göre ayarla ve kaydır
+            # X yönünde -5 birim, Y yönünde +4 birim kaydırma
+            hitbox_pos = (island_x + ref_pos[0] - 5, ref_pos[1] + 4, island_z + ref_pos[2])
             
             # Hitbox'lar görünür ve algılama için aktif (çarpışma ve engel tanıma için gerekli)
             hitbox_katmanlari.append(Entity(
