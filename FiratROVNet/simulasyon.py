@@ -1564,7 +1564,7 @@ class Harita:
             self.ax.add_patch(circle)
             self._hedef_label_cizildi = True
         
-        # Adaları Çiz
+        # Adaları Çiz (ölçek büyütüldü)
         if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
             from matplotlib import patches
             for is_pos in self.ortam_ref.island_positions:
@@ -1572,7 +1572,8 @@ class Harita:
                     rad = is_pos[2]
                 else:
                     rad = self.havuz_genisligi * 0.08  # Varsayılan boyut
-                ada = patches.Ellipse((is_pos[0], is_pos[1]), width=rad*2.4, height=rad*1.2, 
+                # Ada ölçeği büyütüldü (daha belirgin görünmesi için)
+                ada = patches.Ellipse((is_pos[0], is_pos[1]), width=rad*3.2, height=rad*1.6, 
                                      facecolor='#8B5A3C', edgecolor='black', alpha=0.7, zorder=4)
                 self.ax.add_patch(ada)
 
@@ -1919,18 +1920,20 @@ class Ortam:
         
         # Referans ölçekler (orijinal ada)
         ref_visual_scale = (0.3, 0.8, 0.3)
-        # Hitbox boyutları artırıldı (ROV'ların daha erken algılaması için)
+        # Hitbox boyutları çarpışma ve engel tanıma için optimize edildi
+        # Hitbox'lar görünür olacak ve çarpışma algılaması için aktif
+        # Hitbox boyutları %20 azaltıldı (0.2 oranında, 0.8 ile çarpıldı)
         ref_hitbox_scales = [
-            (75, 20, 75),   # Katman 1 (en geniş) - 55'ten 75'e çıkarıldı
-            (55, 25, 55),   # Katman 2 - 40'tan 55'e çıkarıldı
-            (45, 25, 45),   # Katman 3 - 30'dan 45'e çıkarıldı
-            (20, 25, 20)    # Katman 4 - 10'dan 20'ye çıkarıldı
+            (44.8, 22.4, 44.8),   # Katman 1 (en geniş) - 56 * 0.8 = 44.8, çarpışma algılama için yeterli boyut
+            (33.6, 28.0, 33.6),   # Katman 2 - 42 * 0.8 = 33.6
+            (22.4, 28.0, 22.4),   # Katman 3 - 28 * 0.8 = 22.4
+            (16.8, 28.0, 16.8)    # Katman 4 - 21 * 0.8 = 16.8
         ]
         ref_hitbox_positions = [
-            (0, -5, 0),     # Katman 1
-            (0, -25, 0),    # Katman 2
-            (0, -45, 0),    # Katman 3
-            (0, -65, 0)     # Katman 4
+            (-5, -1, 0),     # Katman 1 - X: -5 birim, Y: -5 + 4 = -1 birim
+            (-5, -21, 0),    # Katman 2 - X: -5 birim, Y: -25 + 4 = -21 birim
+            (-5, -41, 0),    # Katman 3 - X: -5 birim, Y: -45 + 4 = -41 birim
+            (-5, -61, 0)     # Katman 4 - X: -5 birim, Y: -65 + 4 = -61 birim
         ]
         
         # Ada pozisyonlarını sakla (ROV yerleştirme için)
@@ -1972,8 +1975,9 @@ class Ortam:
                 # --- 1. ÖLÇEK HESAPLAMA ---
                 scale_multiplier = random.uniform(0.5, 1.5)
                 
-                # Ada yarıçapı hesaplama (en geniş hitbox katmanına göre)
-                # En geniş katman: scale=(55, 15, 55), yarıçap = max(55, 55) / 2 = 27.5
+                # Ada yarıçapı hesaplama (gerçek görsel ölçeğe göre)
+                # Görsel ölçek: (0.3, 0.8, 0.3) -> gerçek boyut yaklaşık 15-20 birim
+                # Hitbox yarıçapı gerçek ada boyutuna yakın olmalı
                 max_hitbox_radius = max(ref_hitbox_scales[0][0], ref_hitbox_scales[0][2]) / 2
                 island_radius = max_hitbox_radius * scale_multiplier
                 
@@ -2207,12 +2211,13 @@ class Ortam:
         # Ada çevresine görsel sınır çizgisi ekle (yarı saydam sphere - cylinder yerine)
         # Bu, ROV'ların ada sınırlarını görmesini sağlar
         # Ursina'da cylinder modeli yok, bu yüzden sphere kullanıyoruz
+        # Görünürlük kapatıldı (kullanıcı isteği)
         sinir_cizgisi = Entity(
             model='sphere',
             position=(island_x-5, -max_height/2, island_z+10),
             scale=(max_radius * 2.5, max_height, max_radius * 2.2),  # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri)
             color=color.rgba(255, 200, 0, 0.3),  # Turuncu-sarı, yarı saydam
-            visible=True,  # Görünür (sınır çizgisi)
+            visible=False,  # Görünmez (kullanıcı isteği - şimdilik kapalı)
             double_sided=True,
             unlit=True,
             transparent=True,  # Şeffaflık için
@@ -2239,18 +2244,20 @@ class Ortam:
                 ref_scale[2] * scale_multiplier
             )
             
-            # Pozisyonu ada pozisyonuna göre ayarla (Y aynı kalacak)
-            hitbox_pos = (island_x, ref_pos[1], island_z)
+            # Pozisyonu ada pozisyonuna göre ayarla ve kaydır
+            # X yönünde -5 birim, Y yönünde +4 birim kaydırma
+            hitbox_pos = (island_x + ref_pos[0] - 5, ref_pos[1] + 4, island_z + ref_pos[2])
             
-            # Hitbox'lar görünmez ama algılama için aktif
+            # Hitbox'lar görünür ve algılama için aktif (çarpışma ve engel tanıma için gerekli)
             hitbox_katmanlari.append(Entity(
                 model='icosphere',
                 position=hitbox_pos,
                 scale=scaled_size,
-                visible=False,  # Görünmez (sadece algılama için)
+                visible=True,  # Görünür (çarpışma ve engel tanıma için gerekli)
                 collider='sphere',
                 color=colors[layer_idx],
-                unlit=True
+                unlit=True,
+                alpha=0.3  # Yarı saydam (görünür ama engel olmaz)
             ))
         
         return hitbox_katmanlari
@@ -2282,9 +2289,11 @@ class Ortam:
         
         # Engeller (Kayalar)
         # Kayalar su altında oluşmalı ve tabanları deniz tabanına değmeli
+        # Havuz sınırlarına göre dinamik oluşturma
+        havuz_sinir = self.havuz_genisligi  # +-havuz_genisligi
         for _ in range(n_engels):
-            x = random.uniform(-200, 200)
-            z = random.uniform(-200, 200)
+            x = random.uniform(-havuz_sinir, havuz_sinir)
+            z = random.uniform(-havuz_sinir, havuz_sinir)
             
             # Kaya boyutları
             s_x = random.uniform(15, 40)
