@@ -1458,8 +1458,10 @@ class Filo:
         4. Haritada yansımasını sağlar
         
         Args:
-            yasakli_noktalar (list): Yasaklı noktalar listesi [[x1, y1], [x2, y2], ...]
-                - 2D formatında (x, y) koordinatları
+            yasakli_noktalar (list): Yasaklı noktalar listesi
+                - 2D formatında: [[x1, y1], [x2, y2], ...]
+                - 3D formatında: [(x1, y1, z1), (x2, y2, z2), ...] - Otomatik 2D'ye çevrilir
+                - Her iki format da kabul edilir
             offset (float): Hull genişletme mesafesi (varsayılan: 20.0)
             alpha (float): Alpha Shape sarma sıkılığı (varsayılan: 2.0)
             buffer_radius (float): Yasaklı nokta etrafındaki güvenli bölge yarıçapı (varsayılan: 0.06)
@@ -1506,10 +1508,19 @@ class Filo:
                 print("⚠️ [UYARI] Yetersiz hull noktası (en az 3 nokta gerekli)")
                 return {'hull': None, 'points': None, 'center': None}
             
+            # 2.5. Yasaklı noktaları 2D formatına çevir (otomatik dönüşüm)
+            yasakli_noktalar_2d = []
+            if yasakli_noktalar:
+                for nokta in yasakli_noktalar:
+                    if isinstance(nokta, (list, tuple)):
+                        if len(nokta) >= 2:
+                            # 2D veya 3D formatında olabilir, sadece ilk 2 koordinatı al
+                            yasakli_noktalar_2d.append([float(nokta[0]), float(nokta[1])])
+            
             # 3. yeniden_ciz ile yeni kontur hesapla (yasaklı noktaları çıkararak)
             yeni_kontur_noktalari = self.yeniden_ciz(
                 noktalar=hull_noktalari_2d,
-                yasakli_noktalar=yasakli_noktalar,
+                yasakli_noktalar=yasakli_noktalar_2d,
                 alpha=alpha,
                 buffer_radius=buffer_radius,
                 channel_width=channel_width
@@ -1629,19 +1640,38 @@ class Filo:
             # 2. Temel şekli (Alpha Shape) oluştur
             base_shape = alphashape.alphashape(points_cloud, alpha)
             
+            # Alpha Shape sonucunu kontrol et
+            if base_shape is None or base_shape.is_empty:
+                print("⚠️ [UYARI] Alpha Shape oluşturulamadı (boş şekil)")
+                return []
+            
             # Çoklu parça dönerse en büyüğünü al
             if isinstance(base_shape, MultiPolygon):
                 if not base_shape.is_empty:
                     base_shape = max(base_shape.geoms, key=lambda a: a.area)
                 else:
-                    print("⚠️ [UYARI] Alpha Shape oluşturulamadı (boş şekil)")
+                    print("⚠️ [UYARI] Alpha Shape oluşturulamadı (boş MultiPolygon)")
+                    return []
+            
+            # LineString veya Point durumunu kontrol et (yeterli nokta yoksa)
+            from shapely.geometry import LineString, Point
+            if isinstance(base_shape, (LineString, Point)):
+                print(f"⚠️ [UYARI] Alpha Shape Polygon değil, {type(base_shape).__name__} döndü (yetersiz nokta veya alpha değeri)")
+                # LineString'i Polygon'a çevirmeyi dene
+                if isinstance(base_shape, LineString) and len(base_shape.coords) >= 3:
+                    try:
+                        base_shape = Polygon(base_shape.coords)
+                    except:
+                        print("⚠️ [UYARI] LineString'den Polygon oluşturulamadı")
+                        return []
+                else:
                     return []
             
             # Sadece dış kabuğu al (iç delikleri temizle)
             if isinstance(base_shape, Polygon):
                 base_shape = Polygon(base_shape.exterior)
             else:
-                print("⚠️ [UYARI] Geçerli bir Polygon oluşturulamadı")
+                print(f"⚠️ [UYARI] Geçerli bir Polygon oluşturulamadı (tip: {type(base_shape).__name__})")
                 return []
             
             final_shape = base_shape
