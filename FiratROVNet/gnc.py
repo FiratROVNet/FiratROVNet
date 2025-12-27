@@ -80,16 +80,28 @@ class Filo:
         # Formasyon ID shuffle mekanizması
         self._formasyon_id_pool = []  # Shuffle edilmiş formasyon ID'leri
         self._formasyon_id_pool_olustur()  # İlk pool'u oluştur
+        # Formasyon hedef takibi (ROV ID -> {'pozisyon': (x, y, z), 'hedef_yaw': float})
+        self._formasyon_hedefleri = {}  # Takipçi ROV'ların formasyon hedefleri ve hedef yaw açıları
+        self._formasyon_yaw_senkronizasyon_mesafesi = 5.0  # Yaw senkronizasyonu için mesafe eşiği (metre)
+        self._maksimum_yaw_donme_hizi = 60.0  # Maksimum yaw dönme hızı (derece/saniye) - Formasyon için
+        # git() hedef takibi (ROV ID -> hedef_yaw açısı)
+        self._git_hedef_yaw = {}  # git() ile gönderilen ROV'ların hedef yaw açıları (kademeli dönüş için)
+        self._git_maksimum_yaw_donme_hizi = 90.0  # git() için maksimum yaw dönme hızı (derece/saniye)
     
     def _is_main_thread(self):
         """Şu anki thread'in ana thread olup olmadığını kontrol eder."""
-        return threading.get_ident() == self._main_thread_id
+        try:
+            # threading.main_thread() Python 3.4+ için
+            return threading.current_thread() is threading.main_thread()
+        except AttributeError:
+            # Geriye dönük uyumluluk için eski yöntem
+            return threading.get_ident() == self._main_thread_id
     
     def _process_command_queue(self):
         """Ana thread'de çağrılmalı: Queue'daki komutları işler."""
         try:
-            # Her frame'de maksimum komut işle (performans için)
-            max_commands = HareketAyarlari.GNC_KOMUT_KUYRUK_MAX
+            # Her frame'de maksimum 10 komut işle (performans için)
+            max_commands = 10
             processed = 0
             while not self._command_queue.empty() and processed < max_commands:
                 cmd_type, args, kwargs = self._command_queue.get_nowait()
@@ -99,6 +111,10 @@ class Filo:
                     self._guvenlik_hull_olustur_impl(*args, **kwargs)
                 elif cmd_type == 'formasyon_sec':
                     self._formasyon_sec_impl(*args, **kwargs)
+                elif cmd_type == 'set':
+                    self._set_impl(*args, **kwargs)
+                elif cmd_type == 'hedef':
+                    self._hedef_impl(*args, **kwargs)
                 else:
                     # Genel fonksiyon çağrısı
                     if isinstance(args, tuple) and len(args) > 0 and callable(args[0]):
@@ -111,6 +127,13 @@ class Filo:
             print(f"⚠️ [UYARI] Komut kuyruğu işlenirken hata: {e}")
             import traceback
             traceback.print_exc()
+    
+    def execute_queued_commands(self):
+        """
+        Ana thread'de çağrılmalı: Queue'daki tüm komutları işler.
+        main.py'deki update() fonksiyonunun başına eklenmelidir.
+        """
+        self._process_command_queue()
     
     def _formasyon_id_pool_olustur(self):
         """Formasyon ID pool'unu oluşturur ve shuffle eder."""
@@ -233,15 +256,15 @@ class Filo:
         # Varsayılan modem ayarları (config.py'den alınır)
         if modem_ayarlari is None:
             modem_ayarlari = {
-                'lider': ModemAyarlari.get('lider').copy(),
-                'takipci': ModemAyarlari.get('takipci').copy()
+                'lider': ModemAyarlari.LIDER.copy(),
+                'takipci': ModemAyarlari.TAKIPCI.copy()
             }
         
         # Varsayılan sensör ayarları (config.py'den alınır - GAT limitleri ile tutarlı)
         if sensor_ayarlari is None:
             sensor_ayarlari = {
-                'lider': SensorAyarlari.get('lider').copy(),
-                'takipci': SensorAyarlari.get('takipci').copy()
+                'lider': SensorAyarlari.LIDER.copy(),
+                'takipci': SensorAyarlari.TAKIPCI.copy()
             }
         
         # Ortam referansını kaydet
@@ -252,7 +275,7 @@ class Filo:
             self.ortam_ref = rovs[0].environment_ref
         
         # Sensör ayarları için kontrol listesi (config.py'den alınır)
-        varsayilan_sensor_ayarlari = SensorAyarlari.get('varsayilan').copy()
+        varsayilan_sensor_ayarlari = SensorAyarlari.VARSAYILAN.copy()
         
         tum_modemler = {}
         lider_modem = None
@@ -415,10 +438,150 @@ class Filo:
         for i, gnc in enumerate(self.sistemler):
             if i < len(tahminler):
                 gnc.guncelle(tahminler[i])
+        
+        # Formasyon yaw senkronizasyonu: Takipçi ROV'lar hedefe yaklaştığında liderin yaw açısına göre yönlenir
+        # Kademeli dönme: Maksimum 90 derece/saniye dönme hızı ile yumuşak dönüş
+        if lider_rov_id is not None and len(self._formasyon_hedefleri) > 0:
+            lider_yaw = self.get(lider_rov_id, 'yaw')
+            if lider_yaw is not None:
+                # Frame süresini al (saniye cinsinden)
+                dt = time.dt if hasattr(time, 'dt') else 0.016  # Varsayılan: 60 FPS
+                
+                for rov_id, hedef_bilgisi in list(self._formasyon_hedefleri.items()):
+                    # Sadece takipçi ROV'lar için kontrol et
+                    if rov_id >= len(self.sistemler) or rov_id == lider_rov_id:
+                        continue
+                    
+                    if hasattr(self.sistemler[rov_id], 'rov'):
+                        takipci_rov = self.sistemler[rov_id].rov
+                        # Takipçi ROV'un mevcut pozisyonunu al (Sim formatında)
+                        mevcut_sim_pos = Koordinator.ursina_to_sim(
+                            takipci_rov.x,
+                            takipci_rov.y,
+                            takipci_rov.z
+                        )
+                        mevcut_x, mevcut_y, mevcut_z = mevcut_sim_pos
+                        
+                        # Hedef bilgisini al (dict formatında)
+                        if isinstance(hedef_bilgisi, dict):
+                            hedef_pozisyon = hedef_bilgisi.get('pozisyon')
+                            hedef_yaw = hedef_bilgisi.get('hedef_yaw', lider_yaw)
+                        else:
+                            # Geriye dönük uyumluluk: Eski format (sadece pozisyon tuple'ı)
+                            hedef_pozisyon = hedef_bilgisi
+                            hedef_yaw = lider_yaw
+                            # Yeni formata dönüştür
+                            self._formasyon_hedefleri[rov_id] = {
+                                'pozisyon': hedef_pozisyon,
+                                'hedef_yaw': hedef_yaw
+                            }
+                        
+                        if hedef_pozisyon is None:
+                            continue
+                        
+                        hedef_x, hedef_y, hedef_z = hedef_pozisyon
+                        
+                        # 2D mesafe hesapla (X-Y düzleminde, Z'yi yok say)
+                        dx = hedef_x - mevcut_x
+                        dy = hedef_y - mevcut_y
+                        mesafe_2d = math.sqrt(dx**2 + dy**2)
+                        
+                        # Eğer hedefe yaklaştıysa (mesafe eşiğinin altındaysa), liderin yaw açısına göre yönlen
+                        if mesafe_2d <= self._formasyon_yaw_senkronizasyon_mesafesi:
+                            # Takipçinin mevcut yaw açısını al
+                            mevcut_yaw = self.get(rov_id, 'yaw')
+                            if mevcut_yaw is not None:
+                                # Hedef yaw açısını güncelle (liderin yaw açısı değişmiş olabilir)
+                                hedef_yaw = lider_yaw
+                                self._formasyon_hedefleri[rov_id]['hedef_yaw'] = hedef_yaw
+                                
+                                # Yaw açıları arasındaki farkı hesapla
+                                yaw_farki = hedef_yaw - mevcut_yaw
+                                # Açı farkını -180 ile +180 arasına normalize et
+                                while yaw_farki > 180:
+                                    yaw_farki -= 360
+                                while yaw_farki < -180:
+                                    yaw_farki += 360
+                                
+                                # Eğer açı farkı önemliyse (1 dereceden fazla), kademeli olarak döndür
+                                if abs(yaw_farki) > 1.0:
+                                    # Maksimum dönme hızına göre bu frame'de döndürülecek açı
+                                    maksimum_donme_acisi = self._maksimum_yaw_donme_hizi * dt
+                                    
+                                    # Eğer kalan açı farkı maksimum dönme açısından küçükse, direkt hedefe git
+                                    if abs(yaw_farki) <= maksimum_donme_acisi:
+                                        yeni_yaw = hedef_yaw
+                                        # Hedefi kaldır (artık yaw senkronize edildi)
+                                        if rov_id in self._formasyon_hedefleri:
+                                            del self._formasyon_hedefleri[rov_id]
+                                    else:
+                                        # Kademeli dönme: Maksimum dönme hızına göre döndür
+                                        donme_yonu = 1 if yaw_farki > 0 else -1
+                                        yeni_yaw = mevcut_yaw + (donme_yonu * maksimum_donme_acisi)
+                                        # Yaw açısını 0-360 aralığına normalize et
+                                        while yeni_yaw >= 360:
+                                            yeni_yaw -= 360
+                                        while yeni_yaw < 0:
+                                            yeni_yaw += 360
+                                    
+                                    # Yaw açısını güncelle
+                                    self.set(rov_id, 'yaw', yeni_yaw)
+        
+        # git() yaw senkronizasyonu: git() ile gönderilen ROV'ların yaw açıları kademeli olarak güncellenir
+        if len(self._git_hedef_yaw) > 0:
+            # Frame süresini al (saniye cinsinden)
+            dt = time.dt if hasattr(time, 'dt') else 0.016  # Varsayılan: 60 FPS
+            
+            for rov_id, hedef_yaw in list(self._git_hedef_yaw.items()):
+                # ROV ID geçerliliği kontrolü
+                if rov_id >= len(self.sistemler):
+                    if rov_id in self._git_hedef_yaw:
+                        del self._git_hedef_yaw[rov_id]
+                    continue
+                
+                if hasattr(self.sistemler[rov_id], 'rov'):
+                    # Mevcut yaw açısını al
+                    mevcut_yaw = self.get(rov_id, 'yaw')
+                    if mevcut_yaw is not None:
+                        # Yaw açıları arasındaki farkı hesapla
+                        yaw_farki = hedef_yaw - mevcut_yaw
+                        # Açı farkını -180 ile +180 arasına normalize et
+                        while yaw_farki > 180:
+                            yaw_farki -= 360
+                        while yaw_farki < -180:
+                            yaw_farki += 360
+                        
+                        # Eğer açı farkı önemliyse (1 dereceden fazla), kademeli olarak döndür
+                        if abs(yaw_farki) > 1.0:
+                            # git() için maksimum dönme hızına göre bu frame'de döndürülecek açı (90 derece/saniye)
+                            maksimum_donme_acisi = self._git_maksimum_yaw_donme_hizi * dt
+                            
+                            # Eğer kalan açı farkı maksimum dönme açısından küçükse, direkt hedefe git
+                            if abs(yaw_farki) <= maksimum_donme_acisi:
+                                yeni_yaw = hedef_yaw
+                                # Hedefi kaldır (artık yaw hedefine ulaşıldı)
+                                if rov_id in self._git_hedef_yaw:
+                                    del self._git_hedef_yaw[rov_id]
+                            else:
+                                # Kademeli dönme: Maksimum dönme hızına göre döndür
+                                donme_yonu = 1 if yaw_farki > 0 else -1
+                                yeni_yaw = mevcut_yaw + (donme_yonu * maksimum_donme_acisi)
+                                # Yaw açısını 0-360 aralığına normalize et
+                                while yeni_yaw >= 360:
+                                    yeni_yaw -= 360
+                                while yeni_yaw < 0:
+                                    yeni_yaw += 360
+                            
+                            # Yaw açısını güncelle
+                            self.set(rov_id, 'yaw', yeni_yaw)
+                        else:
+                            # Açı farkı çok küçük, hedefe ulaşıldı
+                            if rov_id in self._git_hedef_yaw:
+                                del self._git_hedef_yaw[rov_id]
     
     def set(self, rov_id, ayar_adi, deger):
         """
-        ROV ayarlarını değiştirir.
+        ROV ayarlarını değiştirir (Thread-safe).
         
         Args:
             rov_id: ROV ID (0, 1, 2, ...)
@@ -433,6 +596,16 @@ class Filo:
             filo.set(0, 'yaw', 90.0)  # ROV-0'ı 90 dereceye döndür
             filo.set(1, 'yaw', 180)  # ROV-1'i 180 dereceye döndür
         """
+        # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
+        if not self._is_main_thread():
+            self._command_queue.put(('set', (rov_id, ayar_adi, deger), {}))
+            return True  # Queue'ya eklendi, başarılı kabul et
+        
+        # Ana thread'deyiz, direkt çalıştır
+        return self._set_impl(rov_id, ayar_adi, deger)
+    
+    def _set_impl(self, rov_id, ayar_adi, deger):
+        """set() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         # Sistemler listesi boş mu kontrol et
         if len(self.sistemler) == 0:
             print(f"❌ [HATA] GNC sistemleri henüz kurulmamış!")
@@ -453,7 +626,9 @@ class Filo:
         try:
             rov = self.sistemler[rov_id].rov
             rov.set(ayar_adi, deger)
-            print(f"✅ [FİLO] ROV-{rov_id} ayarı güncellendi: {ayar_adi} = {deger}")
+            # Yaw güncellemeleri için log yazma (çok sık çağrılıyor, ekranı dolduruyor)
+            if ayar_adi != 'yaw':
+                print(f"✅ [FİLO] ROV-{rov_id} ayarı güncellendi: {ayar_adi} = {deger}")
             return True
         except Exception as e:
             print(f"❌ [HATA] Ayar güncelleme sırasında hata: {e}")
@@ -751,9 +926,9 @@ class Filo:
             # y: ileri-geri (aynı)
             # z: derinlik (aynı)
             
-            # Eğer yüzeydeyse (z >= 0), su altına gönder (config'den alınan derinlik)
+            # Eğer yüzeydeyse (z >= 0), su altına gönder
             if sim_z >= 0:
-                sim_z = HareketAyarlari.FORMASYON_DERINLIK
+                sim_z = -10.0
             
             # filo.git() ile hedefi uygula (Sim formatında)
             try:
@@ -764,7 +939,7 @@ class Filo:
         
         print(f"✅ [FORMASYON] Formasyon kuruldu: Tip={formasyon_id}, Aralık={aralik}, ROV Sayısı={len(pozisyonlar)}")
         return None
-    def formasyon_sec(self, margin=30, is_3d=False, offset=20.0, harita=False):
+    def formasyon_sec(self, margin=30, is_3d=False, offset=20.0, harita=False, yaw_senkronizasyon_mesafesi=5.0, maksimum_yaw_donme_hizi=90.0):
         """
         Convex hull kullanarak en uygun formasyonu seçer (Thread-safe).
 
@@ -773,6 +948,9 @@ class Filo:
         - Margin sadece formasyon_aralik için kullanılır (ROV'lar arası mesafe)
         - Hull içinde kalma kontrolü margin olmadan yapılır
         - İlk geçerli formasyon bulunduğunda DERHAL döner
+        - Takipçi ROV'lar hedef pozisyonlarına yaklaştığında (yaw_senkronizasyon_mesafesi metre), 
+          liderin yaw açısına göre otomatik olarak yönlenirler
+        - Yaw dönüşü kademeli olarak yapılır (maksimum_yaw_donme_hizi derece/saniye)
 
         Args:
             margin (float): Formasyon aralığı için kullanılır (varsayılan: 30)
@@ -780,16 +958,25 @@ class Filo:
             is_3d (bool): 3D formasyon modu (varsayılan: False)
             offset (float): ROV hull genişletme mesafesi (varsayılan: 20.0)
             harita (bool): Harita görüntülemeyi aç/kapat (varsayılan: False)
+            yaw_senkronizasyon_mesafesi (float): Takipçi ROV'ların hedefe yaklaştığında liderin yaw açısına 
+                göre yönlenmesi için mesafe eşiği (metre, varsayılan: 5.0)
+            maksimum_yaw_donme_hizi (float): Maksimum yaw dönme hızı (derece/saniye, varsayılan: 60.0)
 
         Returns:
-            tuple | None: Seçilen formasyon bilgileri (formasyon_id, aralik, yaw) veya None (uygun formasyon bulunamazsa)
+            tuple | None: Seçilen formasyon bilgileri (formasyon_id, aralik, yaw, koordinat) veya None (uygun formasyon bulunamazsa)
                 - formasyon_id (int): Formasyon tipi ID'si (0-19)
                 - aralik (float): ROV'lar arası mesafe (metre)
                 - yaw (float): Liderin yaw açısı (derece)
+                - koordinat (tuple): Seçilen formasyon koordinatı (x, y, z) - Lider pozisyonu
         """
         if harita:
             if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
                 self.ortam_ref.harita.goster(True, True)
+        
+        # Yaw senkronizasyon parametrelerini ayarla
+        self._formasyon_yaw_senkronizasyon_mesafesi = yaw_senkronizasyon_mesafesi
+        self._maksimum_yaw_donme_hizi = maksimum_yaw_donme_hizi
+        
         # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
         if not self._is_main_thread():
             try:
@@ -819,12 +1006,15 @@ class Filo:
         - Adım C: Eğer liderin olduğu yerde hiçbir açıda uygun formasyon bulunamazsa, Hull Merkezi koordinatına geç
         
         Returns:
-            tuple | None: (formasyon_id, aralik, yaw) veya None
+            tuple | None: (formasyon_id, aralik, yaw, koordinat) veya None
                 - formasyon_id (int): Formasyon tipi ID'si (0-19)
                 - aralik (float): ROV'lar arası mesafe (metre)
                 - yaw (float): Liderin yaw açısı (derece)
+                - koordinat (tuple): Seçilen formasyon koordinatı (x, y, z) - Lider pozisyonu
         """
         try:
+            # Eski formasyon hedeflerini temizle (yeni formasyon için)
+            self._formasyon_hedefleri.clear()
             # 1. Güvenlik hull'u oluştur (sanal + gerçek engeller, SADECE 1 KEZ)
             guvenlik_hull_dict = self.hull_manager.hull(offset=offset)
 
@@ -858,20 +1048,52 @@ class Filo:
                 lider_gps = hull_merkez
 
             # 3. Formasyon aralığı parametreleri
-            min_aralik = margin * HareketAyarlari.FORMASYON_MARGIN_MIN
-            baslangic_aralik = margin * HareketAyarlari.FORMASYON_MARGIN_BASLANGIC
-            adim = HareketAyarlari.FORMASYON_ADIM  # metre
+            min_aralik = margin * 0.2
+            baslangic_aralik = margin * 0.6
+            adim = 1.0  # metre
 
             # 4. Yaw açıları (0, 90, 180, 270 derece)
             yaw_acilari = [0, 90, 180, 270]
 
             # 5. HİYERARŞİK ARAMA: Nokta Döngüsü -> Yaw Döngüsü -> Formasyon Tipi Döngüsü -> Aralık Döngüsü
             # Adım A: Lider GPS koordinatı
+            # Adım B: Lider GPS'ten Hull Merkezi'ne kadar 20 metre dilimlerle ara noktalar
             # Adım C: Hull Merkezi (eğer lider GPS'te bulunamazsa)
-            arama_noktalari = [
-                ("Lider GPS", lider_gps),
-                ("Hull Merkezi", hull_merkez)
-            ]
+            arama_noktalari = [("Lider GPS", lider_gps)]
+            
+            # Lider GPS'ten Hull Merkezi'ne kadar 20 metre dilimlerle ara noktalar oluştur
+            lider_x, lider_y, lider_z = lider_gps
+            hull_x, hull_y, hull_z = hull_merkez
+            
+            # 2D mesafe hesapla (X-Y düzleminde, Z'yi yok say)
+            dx = hull_x - lider_x
+            dy = hull_y - lider_y
+            mesafe_2d = math.sqrt(dx**2 + dy**2)
+            
+            # Eğer mesafe 20 metreden fazlaysa, ara noktalar oluştur
+            if mesafe_2d > 10.0:
+                # Normalize edilmiş yön vektörü
+                if mesafe_2d > 0.001:  # Sıfıra bölme kontrolü
+                    yon_x = dx / mesafe_2d
+                    yon_y = dy / mesafe_2d
+                    
+                    # 20 metre dilimlerle ara noktalar oluştur
+                    dilim_boyutu = 10.0
+                    mevcut_mesafe = dilim_boyutu
+                    
+                    while mevcut_mesafe < mesafe_2d:
+                        # Ara nokta koordinatları
+                        ara_x = lider_x + (yon_x * mevcut_mesafe)
+                        ara_y = lider_y + (yon_y * mevcut_mesafe)
+                        ara_z = lider_z  # Z koordinatını lider ile aynı tut
+                        
+                        # Ara noktayı listeye ekle
+                        arama_noktalari.append((f"Ara Nokta ({mevcut_mesafe:.1f}m)", (ara_x, ara_y, ara_z)))
+                        
+                        mevcut_mesafe += dilim_boyutu
+            
+            # Hull Merkezi'ni en sona ekle
+            arama_noktalari.append(("Hull Merkezi", hull_merkez))
 
             for nokta_adi, merkez_koordinat in arama_noktalari:
                 # Yaw Döngüsü: 0, 90, 180, 270 derece
@@ -928,13 +1150,13 @@ class Filo:
                                 # Liderin yaw açısını set et
                                 self.set(lider_rov_id, 'yaw', float(deneme_yaw))
 
-                                # Eğer formasyon Hull Merkezi üzerinde bulunduysa, lideri oraya gönder
-                                if nokta_adi == "Hull Merkezi":
+                                # Eğer formasyon Lider GPS dışında bir noktada bulunduysa (ara nokta veya Hull Merkezi), lideri oraya gönder
+                                if nokta_adi != "Lider GPS":
                                     self.git(
                                         lider_rov_id,
-                                        hull_merkez[0],
-                                        hull_merkez[1],
-                                        hull_merkez[2],
+                                        merkez_koordinat[0],
+                                        merkez_koordinat[1],
+                                        merkez_koordinat[2],
                                         ai=True
                                     )
 
@@ -950,9 +1172,16 @@ class Filo:
                                     # Config formatı = Sim formatı: (x, y, z)
                                     sim_x, sim_y, sim_z = pozisyon
                                     
-                                    # Eğer yüzeydeyse (z >= 0), su altına gönder (config'den alınan derinlik)
+                                    # Eğer yüzeydeyse (z >= 0), su altına gönder
                                     if sim_z >= 0:
-                                        sim_z = HareketAyarlari.FORMASYON_DERINLIK
+                                        sim_z = -10.0
+                                    
+                                    # Takipçi ROV'un formasyon hedefini kaydet (yaw senkronizasyonu için)
+                                    # Liderin yaw açısını hedef yaw olarak kaydet
+                                    self._formasyon_hedefleri[rov_id] = {
+                                        'pozisyon': (sim_x, sim_y, sim_z),
+                                        'hedef_yaw': deneme_yaw  # Liderin yaw açısı
+                                    }
                                     
                                     # Takipçi ROV'u formasyon pozisyonuna gönder
                                     self.git(rov_id, sim_x, sim_y, sim_z, ai=True)
@@ -961,8 +1190,11 @@ class Filo:
                                 if i in self._formasyon_id_pool:
                                     self._formasyon_id_pool.remove(i)
                                 
-                                # Formasyon bilgilerini döndür: (formasyon_id, aralik, yaw)
-                                return (i, aralik, deneme_yaw)
+                                # Seçilen formasyon koordinatı (lider pozisyonu)
+                                secilen_koordinat = merkez_koordinat
+                                
+                                # Formasyon bilgilerini döndür: (formasyon_id, aralik, yaw, koordinat)
+                                return (i, aralik, deneme_yaw, secilen_koordinat)
 
                             aralik -= adim
 
@@ -978,7 +1210,7 @@ class Filo:
 
     def hedef(self, x=None, y=None, z=None):
         """
-        Sadece lider ROV'un hedefini ayarlar. Takipçiler bu komuttan etkilenmez.
+        Sadece lider ROV'un hedefini ayarlar (Thread-safe). Takipçiler bu komuttan etkilenmez.
         Hedef görsel olarak (büyük X işareti) gösterilir ve haritaya eklenir.
         Derinlik her zaman 0 (su üstünde) olarak ayarlanır.
         
@@ -998,13 +1230,25 @@ class Filo:
             filo.hedef(40, 50)  # Sadece lider (40, 50, 0) hedefine gider
             filo.hedef()  # Mevcut hedef koordinatlarını döndürür: (x, y, 0) veya None
         """
-        # Parametre verilmediyse mevcut hedefi döndür
+        # Parametre verilmediyse mevcut hedefi döndür (thread-safe değil, sadece okuma)
         if x is None or y is None:
             if self.hedef_pozisyon:
                 return self.hedef_pozisyon
             else:
                 return None
         
+        # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
+        if not self._is_main_thread():
+            self._command_queue.put(('hedef', (x, y, z), {}))
+            # Queue'ya eklendi, hedef pozisyonunu kaydet (okuma için)
+            self.hedef_pozisyon = (x, y, 0)
+            return (x, y, 0)
+        
+        # Ana thread'deyiz, direkt çalıştır
+        return self._hedef_impl(x, y, z)
+    
+    def _hedef_impl(self, x, y, z):
+        """hedef() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         # Derinlik her zaman 0 (su üstünde)
         z = 0
         
@@ -1023,7 +1267,6 @@ class Filo:
             return None
         
         # Sadece liderin hedefini güncelle (Sim formatında)
-        # Sadece liderin hedefini güncelle (Sim formatında)
         # filo.git() artık Sim formatında çalışıyor: (x, y, z)
         self.git(lider_rov_id, x, y, z, ai=True)
         
@@ -1031,7 +1274,7 @@ class Filo:
         ursina_pos = (x, y, z)
         self._hedef_gorsel_olustur(*ursina_pos)
         
-        # Haritaya hedefi ekle
+        # Haritaya hedefi ekle (Matplotlib - ana thread'de olmalı)
         if self.ortam_ref and hasattr(self.ortam_ref, 'harita'):
             self.ortam_ref.harita.hedef_pozisyon = (x, y)
         
@@ -1189,16 +1432,14 @@ class Filo:
             x: X koordinatı (Sağ-Sol)
             y: Y koordinatı (İleri-Geri)
             z: Z koordinatı (Derinlik, opsiyonel)
-                - 0 = yüzey
-                - Negatif değerler = derinlik (ör: -10 = -1 metre dibe dalması)
                 - None ise mevcut derinlik korunur
             ai: AI aktif/pasif (varsayılan: True)
                 - True: Zeki Mod (GAT tahminleri kullanılır)
                 - False: Kör Mod (GAT tahminleri görmezden gelinir)
 
         Örnekler:
-            filo.git(0, 40, 60, 0)           # ROV-0: X=40 (sağ), Y=60 (ileri), Z=0 (yüzey), AI açık
-            filo.git(1, 50, 50, -10, ai=False)  # ROV-1: X=50, Y=50, Z=-10 (-1 metre derinlik), AI kapalı
+            filo.git(0, 40, 60, 20)           # ROV-0: X=40 (sağ), Y=60 (ileri), Z=20 (derinlik), AI açık
+            filo.git(1, 50, 50, -10, ai=False)  # ROV-1: X=50, Y=50, Z=-10, AI kapalı
             filo.git(2, 30, 40)               # ROV-2: X=30, Y=40, mevcut derinlik, AI açık
         """
         # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
@@ -1242,14 +1483,40 @@ class Filo:
         # AI Durumunu Ayarla
         self.sistemler[rov_id].ai_aktif = ai
         
+        # Mevcut pozisyonu al (Sim formatında)
+        current_sim_pos = Koordinator.ursina_to_sim(
+            self.sistemler[rov_id].rov.x,
+            self.sistemler[rov_id].rov.y,
+            self.sistemler[rov_id].rov.z
+        )
+        current_x, current_y, current_z = current_sim_pos
+        
         # Eğer Z (derinlik) verilmemişse mevcut derinliği koru
         if z is None:
-            current_sim_pos = Koordinator.ursina_to_sim(
-                self.sistemler[rov_id].rov.x,
-                self.sistemler[rov_id].rov.y,
-                self.sistemler[rov_id].rov.z
-            )
-            z = current_sim_pos[2]
+            z = current_z
+        
+        # Yaw açısını hesapla (hedef yönüne doğru)
+        # Sim formatında: X=Sağ-Sol, Y=İleri-Geri
+        # Yaw açısı: atan2(dx, dy) - Y eksenine göre açı
+        dx = x - current_x
+        dy = y - current_y
+        
+        # Mesafe kontrolü (çok yakınsa yaw açısını değiştirme)
+        mesafe = math.sqrt(dx**2 + dy**2)
+        if mesafe > 0.1:  # 10 cm'den fazla mesafe varsa yaw açısını ayarla
+            # Yaw açısını hesapla (derece)
+            # atan2(dx, dy) -> Y eksenine göre açı (0 derece = +Y yönü)
+            yaw_rad = math.atan2(dx, dy)
+            yaw_deg = math.degrees(yaw_rad)
+            
+            # Yaw açısını normalize et (0-360 arası)
+            while yaw_deg >= 360:
+                yaw_deg -= 360
+            while yaw_deg < 0:
+                yaw_deg += 360
+            
+            # Hedef yaw açısını kaydet (kademeli dönüş için, direkt set etme)
+            self._git_hedef_yaw[rov_id] = yaw_deg
         
         # GNC'ye hedefi SİMÜLASYON formatında veriyoruz
         try:
@@ -1330,9 +1597,9 @@ class Filo:
             if yon == 'yaw':
                 # Yaw rotasyonu için rotation.y güncelle
                 # Güç değeri: 1.0 = saat yönünün tersine, -1.0 = saat yönünde
-                # Maksimum dönüş hızı config'den alınır
+                # Maksimum dönüş hızı: 90 derece/saniye (config'den alınabilir)
                 from .config import HareketAyarlari
-                yaw_hizi = abs(guc) * HareketAyarlari.HAREKET_YAW_HIZI  # Derece/saniye
+                yaw_hizi = abs(guc) * 90.0  # Derece/saniye (maksimum 90 derece/saniye)
                 yaw_delta = yaw_hizi * time.dt  # Bu frame'de döndürülecek açı (küçük adım)
                 
                 # Mevcut rotation değerini al ve Vec3 olarak ayarla
@@ -1384,7 +1651,7 @@ class Filo:
                 if hasattr(rov, 'manuel_hareket'):
                     rov.manuel_hareket['yon'] = None
                     rov.manuel_hareket['guc'] = 0.0
-                rov.velocity *= HareketAyarlari.HAREKET_DUR_YAVASLATMA  # Yavaşça dur (momentum korunumu)
+                rov.velocity *= 0.9  # Yavaşça dur (momentum korunumu)
                 print(f"🛑 [FİLO] ROV-{rov_id} durduruluyor")
                 return
             
@@ -1400,10 +1667,10 @@ class Filo:
                 havuz_sinir = havuz_genisligi  # +-havuz_genisligi
                 
                 # Sınırda mı kontrol et
-                sinirda_x = abs(rov.x) >= havuz_sinir * HareketAyarlari.HAVUZ_SINIR_KATSAYISI
-                sinirda_z = abs(rov.z) >= havuz_sinir * HareketAyarlari.HAVUZ_SINIR_KATSAYISI
-                sinirda_y_ust = rov.y >= HareketAyarlari.HAVUZ_Y_UST_SINIR
-                sinirda_y_alt = rov.y <= HareketAyarlari.HAVUZ_Y_ALT_SINIR
+                sinirda_x = abs(rov.x) >= havuz_sinir * 0.95
+                sinirda_z = abs(rov.z) >= havuz_sinir * 0.95
+                sinirda_y_ust = rov.y >= 0.3
+                sinirda_y_alt = rov.y <= -95
                 
                 # Sınırda ise o yöne hareketi engelle
                 if sinirda_x and ((yon == 'sag' and rov.x > 0) or (yon == 'sol' and rov.x < 0)):
@@ -1480,7 +1747,7 @@ class Filo:
             max_guc = 100.0 * guc
             if hareket_vektoru.length() > 0:
                 # Manuel hareket güç katsayısı (Config'den)
-                rov.velocity += hareket_vektoru.normalized() * max_guc * time.dt * HareketAyarlari.KATSAYI_MOTOR_GUC
+                rov.velocity += hareket_vektoru.normalized() * max_guc * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
                 
                 # Hız limiti
                 if rov.velocity.length() > max_guc:
@@ -1534,11 +1801,8 @@ class TemelGNC:
         # Hedef yoksa işlem yapma
         if self.hedef is None:
             # Hedef yoksa motorları durdur
-            if not hasattr(self.rov, 'hedef_mesafe'):
-                self.rov.hedef_mesafe = None
-            self.rov.hedef_mesafe = None  # Hedef yok, mesafe bilgisini temizle
-            if self.rov.velocity.length() > HareketAyarlari.HAREKET_DUR_HIZ_ESIGI:
-                self.rov.velocity *= HareketAyarlari.GNC_HEDEF_YOK_YAVASLATMA  # Momentumu yumuşatarak durdur
+            if self.rov.velocity.length() > 0.1:
+                self.rov.velocity *= 0.8  # Momentumu yumuşatarak durdur
             return
         
         # 1. Mevcut pozisyonu Ursina'dan alıp Simülasyona çevir
@@ -1547,27 +1811,12 @@ class TemelGNC:
         # 2. Farkı Simülasyon dünyasında hesapla
         fark = self.hedef - current_sim_pos
         mevcut_mesafe = fark.length()
-        
-        # ROV'a hedef mesafesini kaydet (kaçınma mekanizması için)
-        if not hasattr(self.rov, 'hedef_mesafe'):
-            self.rov.hedef_mesafe = None
-        self.rov.hedef_mesafe = mevcut_mesafe
-        
-        # Hedef toleransını rol bazlı config'den al
-        if self.rov.role == 1:  # Lider
-            hedef_tolerans = HareketAyarlari.MESAFE_HEDEF_TOLERANS_LIDER
-        else:  # Takipçi
-            hedef_tolerans = HareketAyarlari.MESAFE_HEDEF_TOLERANS_TAKIPCI
 
-        # HEDEF KONTROLÜ: Hedefe ulaşıldıysa dur ve hedefi temizle
-        if mevcut_mesafe <= hedef_tolerans:
-            # Hedefe ulaşıldı, tamamen durdur
-            self.rov.velocity = Vec3(0, 0, 0)  # Tamamen durdur (titreme önleme)
-            
-            # Hedefe ulaşıldı, hedefi ve mesafe bilgisini temizle (titreme önleme)
-            # Bu sayede bir sonraki frame'de tekrar hedefe gitmeye çalışmaz
-            self.rov.hedef_mesafe = None  # Hedefe ulaşıldı, mesafe bilgisini temizle
-            self.hedef = None  # Hedefi temizle (bir sonraki frame'de tekrar hedefe gitmeye çalışmasın)
+        # HEDEF KONTROLÜ: Hedefe ulaşıldıysa dur
+        if mevcut_mesafe <= 0.1:
+            # Hedefe ulaşıldı, dur
+            if self.rov.velocity.length() > 0.1:
+                self.rov.velocity *= 0.8  # Momentumu yumuşatarak durdur
             return
 
         # 3. Hareket vektörünü normalize et
@@ -1580,8 +1829,8 @@ class TemelGNC:
         # hareket_vektoru.x -> Sağ/Sol
         # hareket_vektoru.y -> İleri/Geri (Simülasyonda Y ileridir)
         # hareket_vektoru.z -> Çık/Bat (Simülasyonda Z derinliktir)
-        # Hızı config'den alınan güç ile çarp
-        self.vektor_to_motor_sim(hareket_vektoru, guc=HareketAyarlari.GNC_HEDEF_GUC)
+        # Hızı 0.5 ile çarp (yarı hız)
+        self.vektor_to_motor_sim(hareket_vektoru, guc=0.5)
 
     def vektor_to_motor_sim(self, v_sim, guc=1.0):
         """
@@ -1590,30 +1839,42 @@ class TemelGNC:
         
         Args:
             v_sim: Simülasyon formatında vektör (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
-                - Z: 0 = yüzey, negatif değerler = derinlik (ör: -10 = -1 metre)
             guc: Güç çarpanı (varsayılan: 1.0)
         """
-        if v_sim.length() < HareketAyarlari.VEKTOR_UZUNLUK_ESIGI:
-            # Hedefe varınca yavaşla
-            self.rov.velocity *= HareketAyarlari.VEKTOR_YAVASLATMA
+        if v_sim.length() < 0.01:
             return
         
         # Güç çarpanını normalize et
-        guc = max(0.0, min(1.0, guc))
+        guc = max(0.0, min(2.0, guc))
         
         # Vektörü normalize et
         v = v_sim.normalized()
         
-        # Hedef hız değeri (Windows'ta yavaşlamayı önlemek için doğrudan atama)
-        # Config'den alınan taban hız ile güç çarpanı çarpılır
-        hedef_hiz_degeri = HareketAyarlari.GNC_HEDEF_HIZ_BASE * guc
+        # Direkt global koordinatlara göre velocity ayarla (yaw açısından bağımsız)
+        # Sim formatından Ursina formatına dönüştür
+        from .config import HareketAyarlari
+        from ursina import time
         
-        # Sim (X: Sağ, Y: İleri, Z: Derinlik) -> Ursina (X: Sağ, Y: Yukarı, Z: İleri)
-        # Derinlik: Sim'de 0 = yüzey, negatif = derinlik
-        # Ursina'da Y pozitif = yukarı, Y negatif = aşağı
-        # Sim Z = 0 (yüzey) -> Ursina Y = 0 (yüzey)
-        # Sim Z = -10 (derinlik) -> Ursina Y = -10 (aşağı)
-        # Doğrudan hedef hızı ata (velocity += yerine velocity =)
-        self.rov.velocity = Vec3(v.x * hedef_hiz_degeri, v.z * hedef_hiz_degeri, v.y * hedef_hiz_degeri)
+        # Hız çarpanı
+        max_guc = 100.0 * guc
+        thrust = max_guc * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
+        
+        # X: Sağ-Sol (Sim ve Ursina'da aynı)
+        if abs(v.x) > 0.01:
+            self.rov.velocity.x += v.x * thrust
+        
+        # Y: İleri-Geri (Simülasyon Y = Ursina Z)
+        if abs(v.y) > 0.01:
+            self.rov.velocity.z += v.y * thrust
+            
+        # Z: Derinlik (Simülasyon Z = Ursina Y)
+        # Ursina'da Y yukarı (+), Simülasyonda Z derinlik (+) ise:
+        # v_sim.z > 0 (daha derine git) -> Ursina Y negatif
+        if abs(v.z) > 0.01:
+            self.rov.velocity.y += v.z * thrust  # Sim Z+ (derinlik) -> Ursina Y+ (yukarı)
+        
+        # Hız limiti
+        if self.rov.velocity.length() > max_guc:
+            self.rov.velocity = self.rov.velocity.normalized() * max_guc
 
 
