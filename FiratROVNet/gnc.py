@@ -1624,21 +1624,21 @@ class Filo:
                 channel_width=15.0
             )
         """
-        # Gerekli kütüphaneler kontrolü
+        # 1. Kütüphane kontrolü (Global değişkenleri kullanıyoruz)
         if not ALPHASHAPE_AVAILABLE:
-            print("❌ [HATA] alphashape kütüphanesi bulunamadı! Lütfen yükleyin: pip install alphashape")
+            print("❌ [HATA] alphashape kütüphanesi bulunamadı!")
             return []
         
         if not SHAPELY_AVAILABLE:
-            print("❌ [HATA] shapely kütüphanesi bulunamadı! Lütfen yükleyin: pip install shapely")
+            print("❌ [HATA] shapely kütüphanesi bulunamadı!")
             return []
         
-        # Shapely nesnelerini burada import edelim
-        from shapely.geometry import Point, LineString, Polygon, MultiPolygon
-        from shapely.ops import unary_union, nearest_points
+        # NOT: import satırlarını buradan kaldırdık. 
+        # Dosyanın en başındaki global import'lar (Point, Polygon vb.) kullanılacak.
+        # Bu sayede UnboundLocalError hatası çözülür.
 
         try:
-            # 1. Giriş verisini düzenle
+            # 2. Giriş verisini düzenle
             points_cloud = []
             for p in noktalar:
                 if len(p) >= 2:
@@ -1655,20 +1655,19 @@ class Filo:
             
             # Yöntem 1: Alpha Shape Dene
             try:
-                # Alpha değerini nokta yoğunluğuna göre biraz ayarla
                 base_shape = alphashape.alphashape(points_cloud, alpha)
             except Exception as e:
-                print(f"⚠️ [UYARI] Alpha shape oluşturma hatası: {e}")
+                print(f"⚠️ [UYARI] Alpha shape oluşturulamadı, Convex Hull denenecek. Hata: {e}")
 
-            # Alpha Shape başarısızsa veya boşsa
+            # Alpha Shape başarısızsa veya boşsa -> Convex Hull Fallback
             if base_shape is None or base_shape.is_empty:
-                print("⚠️ [UYARI] Alpha Shape boş döndü, Convex Hull fallback kullanılıyor.")
                 if SCIPY_AVAILABLE:
                     try:
                         points_np = np.array(points_cloud)
-                        hull = ConvexHull(points_np)  # qhull_options='QJ' bazen hata verebilir, varsayılanı dene
+                        hull = ConvexHull(points_np) 
                         hull_points = points_np[hull.vertices]
                         base_shape = Polygon(hull_points)
+                        print("ℹ️ [INFO] Convex Hull fallback başarılı.")
                     except Exception as e:
                         print(f"❌ [HATA] Convex Hull da başarısız oldu: {e}")
                         return []
@@ -1684,7 +1683,8 @@ class Filo:
 
             # LineString vb. gelirse Polygon'a çevir
             if not isinstance(base_shape, Polygon):
-                if isinstance(base_shape, LineString) and len(base_shape.coords) >= 3:
+                # Nadir durumlar için koruma
+                if hasattr(base_shape, 'coords') and len(base_shape.coords) >= 3:
                     base_shape = Polygon(base_shape.coords)
                 else:
                     print(f"⚠️ [UYARI] Şekil Polygon değil: {type(base_shape)}")
@@ -1694,17 +1694,17 @@ class Filo:
             final_shape = Polygon(base_shape.exterior)
 
             # ==========================================================
-            # ADIM B: YASAKLI NOKTALARI KESİP ÇIKAR (CHANNEL CUTTING)
+            # ADIM B: YASAKLI NOKTALARI KESİP ÇIKAR
             # ==========================================================
             if yasakli_noktalar:
                 for fp in yasakli_noktalar:
                     if len(fp) < 2: 
                         continue
                     
-                    # Nokta nesnesi oluştur
+                    # Point nesnesi artık global scope'tan geliyor, hata vermez
                     p_obj = Point(float(fp[0]), float(fp[1]))
                     
-                    # Eğer nokta zaten dışarıdaysa işlem yapma
+                    # Eğer nokta zaten şeklin dışındaysa işlem yapma
                     if not final_shape.contains(p_obj):
                         continue
                     
@@ -1718,7 +1718,7 @@ class Filo:
                     channel_line = LineString([p_obj, p2])
                     channel_poly = channel_line.buffer(channel_width)
                     
-                    # 3. Kesme işlemi
+                    # 3. Kesme işlemi (Difference)
                     cut_area = unary_union([forbidden_zone, channel_poly])
                     final_shape = final_shape.difference(cut_area)
                     
@@ -1727,7 +1727,7 @@ class Filo:
                         if not final_shape.is_empty:
                             final_shape = max(final_shape.geoms, key=lambda a: a.area)
                         else:
-                            # Çok nadir durum: Şekil tamamen yok olduysa eski haline dön
+                            # Şekil tamamen kaybolursa (çok nadir), orijinal hull'a dön
                             final_shape = Polygon(base_shape.exterior)
 
             # ==========================================================
