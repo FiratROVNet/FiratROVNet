@@ -1919,12 +1919,14 @@ class Ortam:
         
         # Referans ölçekler (orijinal ada)
         ref_visual_scale = (0.3, 0.8, 0.3)
-        # Hitbox boyutları artırıldı (ROV'ların daha erken algılaması için)
+        # Hitbox boyutları gerçek ada görsel ölçeğine göre ayarlandı
+        # Görsel ölçek: (0.3, 0.8, 0.3) -> gerçek boyut yaklaşık 15-20 birim
+        # Hitbox'lar gerçek ada boyutuna yakın olmalı (güvenlik payı minimal)
         ref_hitbox_scales = [
-            (75, 20, 75),   # Katman 1 (en geniş) - 55'ten 75'e çıkarıldı
-            (55, 25, 55),   # Katman 2 - 40'tan 55'e çıkarıldı
-            (45, 25, 45),   # Katman 3 - 30'dan 45'e çıkarıldı
-            (20, 25, 20)    # Katman 4 - 10'dan 20'ye çıkarıldı
+            (25, 20, 25),   # Katman 1 (en geniş) - gerçek ada boyutuna yakın
+            (20, 25, 20),   # Katman 2
+            (15, 25, 15),   # Katman 3
+            (10, 25, 10)    # Katman 4
         ]
         ref_hitbox_positions = [
             (0, -5, 0),     # Katman 1
@@ -1972,8 +1974,9 @@ class Ortam:
                 # --- 1. ÖLÇEK HESAPLAMA ---
                 scale_multiplier = random.uniform(0.5, 1.5)
                 
-                # Ada yarıçapı hesaplama (en geniş hitbox katmanına göre)
-                # En geniş katman: scale=(55, 15, 55), yarıçap = max(55, 55) / 2 = 27.5
+                # Ada yarıçapı hesaplama (gerçek görsel ölçeğe göre)
+                # Görsel ölçek: (0.3, 0.8, 0.3) -> gerçek boyut yaklaşık 15-20 birim
+                # Hitbox yarıçapı gerçek ada boyutuna yakın olmalı
                 max_hitbox_radius = max(ref_hitbox_scales[0][0], ref_hitbox_scales[0][2]) / 2
                 island_radius = max_hitbox_radius * scale_multiplier
                 
@@ -2207,12 +2210,13 @@ class Ortam:
         # Ada çevresine görsel sınır çizgisi ekle (yarı saydam sphere - cylinder yerine)
         # Bu, ROV'ların ada sınırlarını görmesini sağlar
         # Ursina'da cylinder modeli yok, bu yüzden sphere kullanıyoruz
+        # Görünürlük kapatıldı (kullanıcı isteği)
         sinir_cizgisi = Entity(
             model='sphere',
             position=(island_x, -max_height/2, island_z),
             scale=(max_radius * 2, max_height, max_radius * 2),  # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri)
             color=color.rgba(255, 200, 0, 0.3),  # Turuncu-sarı, yarı saydam
-            visible=True,  # Görünür (sınır çizgisi)
+            visible=False,  # Görünmez (kullanıcı isteği - şimdilik kapalı)
             double_sided=True,
             unlit=True,
             transparent=True,  # Şeffaflık için
@@ -2282,9 +2286,11 @@ class Ortam:
         
         # Engeller (Kayalar)
         # Kayalar su altında oluşmalı ve tabanları deniz tabanına değmeli
+        # Havuz sınırlarına göre dinamik oluşturma
+        havuz_sinir = self.havuz_genisligi  # +-havuz_genisligi
         for _ in range(n_engels):
-            x = random.uniform(-200, 200)
-            z = random.uniform(-200, 200)
+            x = random.uniform(-havuz_sinir, havuz_sinir)
+            z = random.uniform(-havuz_sinir, havuz_sinir)
             
             # Kaya boyutları
             s_x = random.uniform(15, 40)
