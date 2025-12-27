@@ -2249,15 +2249,18 @@ class Ortam:
             hitbox_pos = (island_x + ref_pos[0] - 5, ref_pos[1] + 4, island_z + ref_pos[2])
             
             # Hitbox'lar görünür ve algılama için aktif (çarpışma ve engel tanıma için gerekli)
+            # Color zaten rgba formatında (alpha dahil), direkt kullan
+            hitbox_color = colors[layer_idx]
+            
             hitbox_katmanlari.append(Entity(
                 model='icosphere',
                 position=hitbox_pos,
                 scale=scaled_size,
                 visible=True,  # Görünür (çarpışma ve engel tanıma için gerekli)
                 collider='sphere',
-                color=colors[layer_idx],
+                color=hitbox_color,
                 unlit=True,
-                alpha=0.3  # Yarı saydam (görünür ama engel olmaz)
+                transparent=True  # Şeffaflık için
             ))
         
         return hitbox_katmanlari
