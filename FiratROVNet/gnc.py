@@ -89,6 +89,8 @@ class Filo:
         # git() hedef takibi (ROV ID -> hedef_yaw açısı)
         self._git_hedef_yaw = {}  # git() ile gönderilen ROV'ların hedef yaw açıları (kademeli dönüş için)
         self._git_maksimum_yaw_donme_hizi = 90.0  # git() için maksimum yaw dönme hızı (derece/saniye)
+        # Formasyon arama thread tracking
+        self._formasyon_arama_thread = None  # Aktif formasyon arama thread'i
     
     def _is_main_thread(self):
         """
@@ -137,6 +139,21 @@ class Filo:
                     self._set_impl(*args, **kwargs)
                 elif cmd_type == 'hedef':
                     self._hedef_impl(*args, **kwargs)
+                elif cmd_type == '_clear_formasyon_hedefleri':
+                    # Worker thread'den gelen: Formasyon hedeflerini temizle
+                    self._formasyon_hedefleri.clear()
+                elif cmd_type == '_set_formasyon_hedefi':
+                    # Worker thread'den gelen: Formasyon hedefi kaydet
+                    rov_id, sim_x, sim_y, sim_z, deneme_yaw = args
+                    self._formasyon_hedefleri[rov_id] = {
+                        'pozisyon': (sim_x, sim_y, sim_z),
+                        'hedef_yaw': deneme_yaw
+                    }
+                elif cmd_type == '_remove_formasyon_id_from_pool':
+                    # Worker thread'den gelen: Formasyon ID'yi pool'dan çıkar
+                    formasyon_id = args[0]
+                    if formasyon_id in self._formasyon_id_pool:
+                        self._formasyon_id_pool.remove(formasyon_id)
                 else:
                     # Genel fonksiyon çağrısı
                     if isinstance(args, tuple) and len(args) > 0 and callable(args[0]):
@@ -999,24 +1016,247 @@ class Filo:
         self._formasyon_yaw_senkronizasyon_mesafesi = yaw_senkronizasyon_mesafesi
         self._maksimum_yaw_donme_hizi = maksimum_yaw_donme_hizi
         
-        # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
-        if not self._is_main_thread():
-            try:
-                # Ursina'nın invoke mekanizmasını kullan (varsa)
-                from ursina import invoke
-                result = [None]  # Mutable container for return value
-                def wrapper():
-                    result[0] = self._formasyon_sec_impl(margin, is_3d, offset)
-                invoke(wrapper)
-                return result[0]
-            except (ImportError, AttributeError):
-                # Ursina invoke yoksa, queue kullan
-                self._command_queue.put(('formasyon_sec', (margin, is_3d, offset), {}))
-                # Queue'dan dönen değer beklenemez, None döndür
-                return None
+        # Eğer önceki bir arama thread'i hala çalışıyorsa, beklemeyi atla (yeni arama başlatılacak)
+        if self._formasyon_arama_thread is not None and self._formasyon_arama_thread.is_alive():
+            print("⚠️ [FORMASYON] Önceki arama hala devam ediyor, yeni arama başlatılıyor...")
         
-        # Ana thread'deyiz, direkt çalıştır
-        return self._formasyon_sec_impl(margin, is_3d, offset)
+        # Asenkron arama: Ağır hesaplamaları background thread'de yap
+        # Ana thread'i bloke etmemek için worker thread başlat
+        self._formasyon_arama_thread = threading.Thread(
+            target=self._formasyon_sec_worker,
+            args=(margin, is_3d, offset),
+            daemon=True  # Ana program kapandığında thread de kapansın
+        )
+        self._formasyon_arama_thread.start()
+        
+        print("🔍 [FORMASYON] Formasyon araması başlatıldı (arka planda çalışıyor)...")
+        
+        # Hemen dön (ana thread'i bloke etme)
+        # Sonuç bulunduğunda worker thread içinde ROV'lar hareket ettirilecek
+        return None
+    
+    def _formasyon_sec_worker(self, margin=30, is_3d=False, offset=20.0):
+        """
+        Formasyon arama worker thread'i (arka planda çalışır).
+        Ağır matematiksel hesaplamaları yapar ve sonuç bulunduğunda ROV'ları hareket ettirir.
+        
+        Args:
+            margin (float): Formasyon aralığı için kullanılır
+            is_3d (bool): 3D formasyon modu
+            offset (float): ROV hull genişletme mesafesi
+        """
+        try:
+            # Eski formasyon hedeflerini temizle (yeni formasyon için)
+            # Thread-safe: Ana thread'de çalışacak şekilde queue'ya ekle
+            if not self._is_main_thread():
+                self._command_queue.put(('_clear_formasyon_hedefleri', (), {}))
+            else:
+                self._formasyon_hedefleri.clear()
+            
+            # 1. Kritik verileri yerel değişkenlere kopyala (thread çakışmasını önlemek için)
+            # Sistem sayısını kopyala
+            sistem_sayisi = len(self.sistemler)
+            
+            # Lider ROV'u bul ve GPS koordinatını yerel değişkene kopyala
+            lider_rov_id = None
+            lider_gps = None
+            for rov_id in range(sistem_sayisi):
+                # Thread-safe okuma: get() fonksiyonu kullan
+                rol = self.get(rov_id, "rol")
+                if rol == 1:
+                    lider_rov_id = rov_id
+                    gps = self.get(rov_id, "gps")
+                    if gps:
+                        # GPS koordinatını yerel değişkene kopyala
+                        lider_gps = (float(gps[0]), float(gps[1]), float(gps[2]))
+                    break
+            
+            if lider_rov_id is None:
+                print("❌ [FORMASYON] Lider ROV bulunamadı!")
+                return
+            
+            # 2. Güvenlik hull'u oluştur (yerel değişkene kopyala)
+            # Thread-safe: hull_manager.hull() çağrısı
+            guvenlik_hull_dict = self.hull_manager.hull(offset=offset)
+            hull = guvenlik_hull_dict.get("hull")
+            hull_merkez = guvenlik_hull_dict.get("center")
+            
+            if hull is None or hull_merkez is None:
+                print("❌ [FORMASYON] Güvenlik hull oluşturulamadı!")
+                return
+            
+            # Hull merkezini Sim formatına dönüştür (z=0 yap) ve yerel değişkene kopyala
+            hull_merkez_liste = list(hull_merkez)
+            hull_merkez_liste[2] = 0
+            hull_merkez = tuple(hull_merkez_liste)
+            
+            if lider_gps is None:
+                lider_gps = hull_merkez
+            
+            # 3. Formasyon aralığı parametreleri (yerel değişkenler)
+            min_aralik = margin * 0.2
+            baslangic_aralik = margin * 0.6
+            adim = 1.0  # metre
+            
+            # 4. Yaw açıları (0, 90, 180, 270 derece)
+            yaw_acilari = [0, 90, 180, 270]
+            
+            # 5. HİYERARŞİK ARAMA: Nokta Döngüsü -> Yaw Döngüsü -> Formasyon Tipi Döngüsü -> Aralık Döngüsü
+            # Adım A: Lider GPS koordinatı
+            # Adım B: Lider GPS'ten Hull Merkezi'ne kadar 20 metre dilimlerle ara noktalar
+            # Adım C: Hull Merkezi (eğer lider GPS'te bulunamazsa)
+            arama_noktalari = [("Lider GPS", lider_gps)]
+            
+            # Lider GPS'ten Hull Merkezi'ne kadar 20 metre dilimlerle ara noktalar oluştur
+            lider_x, lider_y, lider_z = lider_gps
+            hull_x, hull_y, hull_z = hull_merkez
+            
+            # 2D mesafe hesapla (X-Y düzleminde, Z'yi yok say)
+            dx = hull_x - lider_x
+            dy = hull_y - lider_y
+            mesafe_2d = math.sqrt(dx**2 + dy**2)
+            
+            # Eğer mesafe 20 metreden fazlaysa, ara noktalar oluştur
+            if mesafe_2d > 10.0:
+                # Normalize edilmiş yön vektörü
+                if mesafe_2d > 0.001:  # Sıfıra bölme kontrolü
+                    yon_x = dx / mesafe_2d
+                    yon_y = dy / mesafe_2d
+                    
+                    # 20 metre dilimlerle ara noktalar oluştur
+                    dilim_boyutu = 10.0
+                    mevcut_mesafe = dilim_boyutu
+                    
+                    while mevcut_mesafe < mesafe_2d:
+                        # Ara nokta koordinatları
+                        ara_x = lider_x + (yon_x * mevcut_mesafe)
+                        ara_y = lider_y + (yon_y * mevcut_mesafe)
+                        ara_z = lider_z  # Z koordinatını lider ile aynı tut
+                        
+                        # Ara noktayı listeye ekle
+                        arama_noktalari.append((f"Ara Nokta ({mevcut_mesafe:.1f}m)", (ara_x, ara_y, ara_z)))
+                        
+                        mevcut_mesafe += dilim_boyutu
+            
+            # Hull Merkezi'ni en sona ekle
+            arama_noktalari.append(("Hull Merkezi", hull_merkez))
+            
+            # 6. AĞIR HESAPLAMALAR: Hiyerarşik arama döngüleri
+            for nokta_adi, merkez_koordinat in arama_noktalari:
+                # Yaw Döngüsü: 0, 90, 180, 270 derece
+                for deneme_yaw in yaw_acilari:
+                    # Formasyon Tipi Döngüsü - Pool'dan random ID'leri sırayla dene
+                    # Pool'dan mevcut ID'leri kopyala (thread-safe)
+                    denenecek_formasyon_idleri = []
+                    pool_kopyasi = self._formasyon_id_pool.copy()
+                    while len(denenecek_formasyon_idleri) < len(Formasyon.TIPLER) and len(pool_kopyasi) > 0:
+                        denenecek_formasyon_idleri.append(pool_kopyasi.pop(0))
+                    # Eğer pool boşaldıysa, kalan ID'leri ekle ve shuffle et
+                    if len(denenecek_formasyon_idleri) < len(Formasyon.TIPLER):
+                        kalan_idler = [i for i in range(len(Formasyon.TIPLER)) if i not in denenecek_formasyon_idleri]
+                        random.shuffle(kalan_idler)
+                        denenecek_formasyon_idleri.extend(kalan_idler)
+                    
+                    for i in denenecek_formasyon_idleri:
+                        formasyon_tipi = Formasyon.TIPLER[i]
+                        aralik = baslangic_aralik
+                        
+                        # Aralık Döngüsü
+                        while aralik >= min_aralik:
+                            # Formasyon pozisyonlarını hesapla (yaw açısı ile)
+                            formasyon_obj = Formasyon(self)
+                            pozisyonlar = formasyon_obj.pozisyonlar(
+                                i,
+                                aralik=aralik,
+                                is_3d=is_3d,
+                                lider_koordinat=merkez_koordinat,
+                                yaw=deneme_yaw
+                            )
+                            
+                            if not pozisyonlar:
+                                aralik -= adim
+                                continue
+                            
+                            # Pozisyonları Ursina formatına dönüştür (test için)
+                            ursina_positions = []
+                            for pozisyon in pozisyonlar:
+                                config_x, config_y, config_z = pozisyon
+                                # Config (x, y, z) -> Ursina (x, z, y)
+                                ursina_x = config_x
+                                ursina_z = config_y
+                                ursina_y = config_z
+                                ursina_positions.append((ursina_x, ursina_z, ursina_y))
+                            
+                            # Formasyon geçerliliğini kontrol et
+                            if self._formasyon_gecerli_mi(ursina_positions, hull, aralik):
+                                # Başarılı formasyon bulundu! Uygula
+                                # Thread-safe: self.set() ve self.git() zaten thread-safe (queue kullanıyor)
+                                
+                                # Liderin yaw açısını set et
+                                self.set(lider_rov_id, 'yaw', float(deneme_yaw))
+                                
+                                # Eğer formasyon Lider GPS dışında bir noktada bulunduysa, lideri oraya gönder
+                                if nokta_adi != "Lider GPS":
+                                    self.git(
+                                        lider_rov_id,
+                                        merkez_koordinat[0],
+                                        merkez_koordinat[1],
+                                        merkez_koordinat[2],
+                                        ai=True
+                                    )
+                                
+                                # Takipçi ROV'ları formasyon pozisyonlarına gönder
+                                for rov_id, pozisyon in enumerate(pozisyonlar):
+                                    if rov_id >= sistem_sayisi:
+                                        break
+                                    
+                                    # Lider'i atla (zaten işlendi)
+                                    if rov_id == lider_rov_id:
+                                        continue
+                                    
+                                    # Config formatı = Sim formatı: (x, y, z)
+                                    sim_x, sim_y, sim_z = pozisyon
+                                    
+                                    # Eğer yüzeydeyse (z >= 0), su altına gönder
+                                    if sim_z >= 0:
+                                        sim_z = -10.0
+                                    
+                                    # Takipçi ROV'un formasyon hedefini kaydet (yaw senkronizasyonu için)
+                                    # Thread-safe: Ana thread'de çalışacak şekilde queue'ya ekle
+                                    if not self._is_main_thread():
+                                        self._command_queue.put(('_set_formasyon_hedefi', (rov_id, sim_x, sim_y, sim_z, deneme_yaw), {}))
+                                    else:
+                                        self._formasyon_hedefleri[rov_id] = {
+                                            'pozisyon': (sim_x, sim_y, sim_z),
+                                            'hedef_yaw': deneme_yaw
+                                        }
+                                    
+                                    # Takipçi ROV'u formasyon pozisyonuna gönder (thread-safe)
+                                    self.git(rov_id, sim_x, sim_y, sim_z, ai=True)
+                                
+                                # Formasyon bulundu, pool'dan bu ID'yi çıkar (thread-safe)
+                                if not self._is_main_thread():
+                                    self._command_queue.put(('_remove_formasyon_id_from_pool', (i,), {}))
+                                else:
+                                    if i in self._formasyon_id_pool:
+                                        self._formasyon_id_pool.remove(i)
+                                
+                                # Kullanıcı bilgilendirmesi
+                                formasyon_adi = Formasyon.TIPLER[i]
+                                print(f"✅ [FORMASYON] Formasyon bulundu: {formasyon_adi} (ID: {i}), Aralık: {aralik:.1f}m, Yaw: {deneme_yaw:.1f}°")
+                                
+                                # Thread tamamlandı
+                                return
+                            
+                            aralik -= adim
+            
+            # Hiçbir formasyon geçerli değil
+            print("❌ [FORMASYON] Uygun formasyon bulunamadı!")
+            
+        except Exception as e:
+            print(f"❌ [FORMASYON] Arama sırasında hata: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _formasyon_sec_impl(self, margin=30, is_3d=False, offset=20.0):
         """
