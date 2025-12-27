@@ -751,7 +751,7 @@ class Filo:
             # y: ileri-geri (aynı)
             # z: derinlik (aynı)
             
-            # Eğer yüzeydeyse (z >= 0), su altına gönder
+            # Eğer yüzeydeyse (z >= 0), su altına gönder (-10 metre default derinlik)
             if sim_z >= 0:
                 sim_z = -10.0
             

@@ -1127,11 +1127,12 @@ class ROV(Entity):
                 
                 mesafe = distance(self.position, diger_rov.position)
                 
-                # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (2m içinde) kaçınma mekanizmasını devre dışı bırak
-                # Bu, ROV'ların birbirini sürekli itmesini önler
-                minimum_mesafe = 2.0  # 2 metre - çok yakınsa kaçınma yok
+                # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (çarpışma menzili içinde) kaçınma mekanizmasını devre dışı bırak
+                # Bu, ROV'ların birbirini sürekli itmesini ve titreme sorununu önler
+                # Çarpışma menzili config'den alınır (GATLimitleri.CARPISMA)
+                minimum_mesafe = GATLimitleri.CARPISMA  # Çarpışma menzili (varsayılan: 8.0 metre)
                 if mesafe < minimum_mesafe:
-                    continue  # Çok yakınsa kaçınma yapma
+                    continue  # Çok yakınsa kaçınma yapma (titreme önleme)
                 
                 # Kaçınma mesafesi veya daha küçük mesafede uzaklaş
                 if mesafe <= kacinma_mesafesi and mesafe > 0:
@@ -1272,19 +1273,34 @@ class ROV(Entity):
                 continue
             
             mesafe = distance(self.position, diger_rov.position)
-            min_mesafe = 2.0  # ROV boyutlarına göre minimum mesafe
+            # Minimum mesafe config'den alınır (çarpışma menzili)
+            min_mesafe = GATLimitleri.CARPISMA  # Çarpışma menzili (varsayılan: 8.0 metre)
             
             if mesafe < min_mesafe:
                 # Çarpışma tespit edildi
                 # Normalize edilmiş çarpışma yönü
-                carpisma_yonu = (self.position - diger_rov.position).normalized()
+                if mesafe < 0.01:
+                    # Çok yakınsa (neredeyse aynı pozisyonda), rastgele bir yön seç
+                    import random
+                    carpisma_yonu = Vec3(random.uniform(-1, 1), 0, random.uniform(-1, 1)).normalized()
+                else:
+                    carpisma_yonu = (self.position - diger_rov.position).normalized()
                 
                 # Göreceli hız
                 goreceli_hiz = self.velocity - diger_rov.velocity
                 goreceli_hiz_buyuklugu = goreceli_hiz.length()
                 
-                if goreceli_hiz_buyuklugu > 0.1:
-                    # Momentum korunumu (elastik çarpışma)
+                # Titreme önleme: Çok yakınsa ve hız çok düşükse, sadece pozisyon ayırma yap
+                if mesafe < 1.5 and goreceli_hiz_buyuklugu < 2.0:
+                    # Sadece pozisyon ayırma (titreme önleme)
+                    ayirma_mesafesi = (min_mesafe - mesafe) * 0.5  # Yumuşak ayırma
+                    self.position += carpisma_yonu * ayirma_mesafesi
+                    diger_rov.position -= carpisma_yonu * ayirma_mesafesi
+                    # Hızları yavaşlat (titreme önleme)
+                    self.velocity *= 0.7
+                    diger_rov.velocity *= 0.7
+                elif goreceli_hiz_buyuklugu > 0.1:
+                    # Normal çarpışma işleme (momentum korunumu)
                     # Basitleştirilmiş: Her iki ROV da aynı kütlede
                     diger_rov_kutlesi = 1.0
                     
@@ -1295,24 +1311,17 @@ class ROV(Entity):
                     nokta_carpim = goreceli_hiz.dot(carpisma_yonu)
                     
                     if nokta_carpim < 0:  # Birbirine yaklaşıyorlar
-                        # Yeni hızlar
-                        # Ursina'da Vec3 * float çalışır, float * Vec3 çalışmaz
-                        carpan1 = (2 * diger_rov_kutlesi / (rov_kutlesi + diger_rov_kutlesi)) * nokta_carpim
+                        # Yeni hızlar (daha yumuşak)
+                        carpan1 = (2 * diger_rov_kutlesi / (rov_kutlesi + diger_rov_kutlesi)) * nokta_carpim * 0.5  # %50 yumuşatma
                         self.velocity = self.velocity - carpisma_yonu * carpan1
                         
-                        carpan2 = (2 * rov_kutlesi / (rov_kutlesi + diger_rov_kutlesi)) * (-nokta_carpim)
+                        carpan2 = (2 * rov_kutlesi / (rov_kutlesi + diger_rov_kutlesi)) * (-nokta_carpim) * 0.5  # %50 yumuşatma
                         diger_rov.velocity = diger_rov.velocity - (-carpisma_yonu) * carpan2
                         
-                        # Çarpışma sonrası pozisyonları ayır (daha aktif)
-                        ayirma_mesafesi = (min_mesafe - mesafe) + 2.0  # Ekstra mesafe ekle
+                        # Çarpışma sonrası pozisyonları ayır (yumuşak)
+                        ayirma_mesafesi = (min_mesafe - mesafe) * 0.8  # Yumuşak ayırma
                         self.position += carpisma_yonu * ayirma_mesafesi
                         diger_rov.position -= carpisma_yonu * ayirma_mesafesi
-                        
-                        # Aktif kaçınma: Hızı da artır (çarpışmadan kurtulmak için)
-                        if self.velocity.length() < 5.0:
-                            self.velocity += carpisma_yonu * 3.0  # Kaçınma hızı ekle
-                        if diger_rov.velocity.length() < 5.0:
-                            diger_rov.velocity -= carpisma_yonu * 3.0  # Kaçınma hızı ekle
         
         # Kayalarla ve ada sınırlarıyla çarpışma
         for engel in self.environment_ref.engeller:
@@ -2207,13 +2216,12 @@ class Ortam:
         # Ada çevresine görsel sınır çizgisi ekle (yarı saydam sphere - cylinder yerine)
         # Bu, ROV'ların ada sınırlarını görmesini sağlar
         # Ursina'da cylinder modeli yok, bu yüzden sphere kullanıyoruz
-        # ŞİMDİLİK GÖRSEL GÖSTERİM KAPALI (visible=False)
         sinir_cizgisi = Entity(
             model='sphere',
-            position=(island_x-5, -max_height/2, island_z+10),
-            scale=(max_radius * 2.5, max_height, max_radius * 2.2),  # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri)
+            position=(island_x, -max_height/2, island_z),
+            scale=(max_radius * 2, max_height, max_radius * 2),  # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri)
             color=color.rgba(255, 200, 0, 0.3),  # Turuncu-sarı, yarı saydam
-            visible=False,  # Görünmez (şimdilik görsel gösterim kapalı)
+            visible=True,  # Görünür (sınır çizgisi)
             double_sided=True,
             unlit=True,
             transparent=True,  # Şeffaflık için
