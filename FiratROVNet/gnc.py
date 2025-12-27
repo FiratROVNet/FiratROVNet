@@ -88,8 +88,8 @@ class Filo:
     def _process_command_queue(self):
         """Ana thread'de çağrılmalı: Queue'daki komutları işler."""
         try:
-            # Her frame'de maksimum 10 komut işle (performans için)
-            max_commands = 10
+            # Her frame'de maksimum komut işle (performans için)
+            max_commands = HareketAyarlari.GNC_KOMUT_KUYRUK_MAX
             processed = 0
             while not self._command_queue.empty() and processed < max_commands:
                 cmd_type, args, kwargs = self._command_queue.get_nowait()
@@ -751,7 +751,7 @@ class Filo:
             # y: ileri-geri (aynı)
             # z: derinlik (aynı)
             
-            # Eğer yüzeydeyse (z >= 0), su altına gönder (default derinlik config'den)
+            # Eğer yüzeydeyse (z >= 0), su altına gönder (config'den alınan derinlik)
             if sim_z >= 0:
                 sim_z = HareketAyarlari.FORMASYON_DERINLIK
             
@@ -950,9 +950,9 @@ class Filo:
                                     # Config formatı = Sim formatı: (x, y, z)
                                     sim_x, sim_y, sim_z = pozisyon
                                     
-                                    # Eğer yüzeydeyse (z >= 0), su altına gönder
+                                    # Eğer yüzeydeyse (z >= 0), su altına gönder (config'den alınan derinlik)
                                     if sim_z >= 0:
-                                        sim_z = -10.0
+                                        sim_z = HareketAyarlari.FORMASYON_DERINLIK
                                     
                                     # Takipçi ROV'u formasyon pozisyonuna gönder
                                     self.git(rov_id, sim_x, sim_y, sim_z, ai=True)
@@ -1330,9 +1330,9 @@ class Filo:
             if yon == 'yaw':
                 # Yaw rotasyonu için rotation.y güncelle
                 # Güç değeri: 1.0 = saat yönünün tersine, -1.0 = saat yönünde
-                # Maksimum dönüş hızı: 90 derece/saniye (config'den alınabilir)
+                # Maksimum dönüş hızı config'den alınır
                 from .config import HareketAyarlari
-                yaw_hizi = abs(guc) * 90.0  # Derece/saniye (maksimum 90 derece/saniye)
+                yaw_hizi = abs(guc) * HareketAyarlari.HAREKET_YAW_HIZI  # Derece/saniye
                 yaw_delta = yaw_hizi * time.dt  # Bu frame'de döndürülecek açı (küçük adım)
                 
                 # Mevcut rotation değerini al ve Vec3 olarak ayarla
@@ -1537,8 +1537,8 @@ class TemelGNC:
             if not hasattr(self.rov, 'hedef_mesafe'):
                 self.rov.hedef_mesafe = None
             self.rov.hedef_mesafe = None  # Hedef yok, mesafe bilgisini temizle
-            if self.rov.velocity.length() > 0.1:
-                self.rov.velocity *= 0.8  # Momentumu yumuşatarak durdur
+            if self.rov.velocity.length() > HareketAyarlari.HAREKET_DUR_HIZ_ESIGI:
+                self.rov.velocity *= HareketAyarlari.GNC_HEDEF_YOK_YAVASLATMA  # Momentumu yumuşatarak durdur
             return
         
         # 1. Mevcut pozisyonu Ursina'dan alıp Simülasyona çevir
@@ -1559,14 +1559,15 @@ class TemelGNC:
         else:  # Takipçi
             hedef_tolerans = HareketAyarlari.MESAFE_HEDEF_TOLERANS_TAKIPCI
 
-        # HEDEF KONTROLÜ: Hedefe ulaşıldıysa dur
+        # HEDEF KONTROLÜ: Hedefe ulaşıldıysa dur ve hedefi temizle
         if mevcut_mesafe <= hedef_tolerans:
-            # Hedefe ulaşıldı, dur
-            if self.rov.velocity.length() > 0.1:
-                self.rov.velocity *= 0.5  # Daha agresif durdurma
-            else:
-                self.rov.velocity = Vec3(0, 0, 0)  # Tamamen durdur
+            # Hedefe ulaşıldı, tamamen durdur
+            self.rov.velocity = Vec3(0, 0, 0)  # Tamamen durdur (titreme önleme)
+            
+            # Hedefe ulaşıldı, hedefi ve mesafe bilgisini temizle (titreme önleme)
+            # Bu sayede bir sonraki frame'de tekrar hedefe gitmeye çalışmaz
             self.rov.hedef_mesafe = None  # Hedefe ulaşıldı, mesafe bilgisini temizle
+            self.hedef = None  # Hedefi temizle (bir sonraki frame'de tekrar hedefe gitmeye çalışmasın)
             return
 
         # 3. Hareket vektörünü normalize et
@@ -1579,8 +1580,8 @@ class TemelGNC:
         # hareket_vektoru.x -> Sağ/Sol
         # hareket_vektoru.y -> İleri/Geri (Simülasyonda Y ileridir)
         # hareket_vektoru.z -> Çık/Bat (Simülasyonda Z derinliktir)
-        # Hızı 0.5 ile çarp (yarı hız)
-        self.vektor_to_motor_sim(hareket_vektoru, guc=0.5)
+        # Hızı config'den alınan güç ile çarp
+        self.vektor_to_motor_sim(hareket_vektoru, guc=HareketAyarlari.GNC_HEDEF_GUC)
 
     def vektor_to_motor_sim(self, v_sim, guc=1.0):
         """
@@ -1592,9 +1593,9 @@ class TemelGNC:
                 - Z: 0 = yüzey, negatif değerler = derinlik (ör: -10 = -1 metre)
             guc: Güç çarpanı (varsayılan: 1.0)
         """
-        if v_sim.length() < 0.01:
+        if v_sim.length() < HareketAyarlari.VEKTOR_UZUNLUK_ESIGI:
             # Hedefe varınca yavaşla
-            self.rov.velocity *= 0.8
+            self.rov.velocity *= HareketAyarlari.VEKTOR_YAVASLATMA
             return
         
         # Güç çarpanını normalize et
@@ -1604,8 +1605,8 @@ class TemelGNC:
         v = v_sim.normalized()
         
         # Hedef hız değeri (Windows'ta yavaşlamayı önlemek için doğrudan atama)
-        # Gücü burada belirleyebilirsin
-        hedef_hiz_degeri = 40.0 * guc
+        # Config'den alınan taban hız ile güç çarpanı çarpılır
+        hedef_hiz_degeri = HareketAyarlari.GNC_HEDEF_HIZ_BASE * guc
         
         # Sim (X: Sağ, Y: İleri, Z: Derinlik) -> Ursina (X: Sağ, Y: Yukarı, Z: İleri)
         # Derinlik: Sim'de 0 = yüzey, negatif = derinlik

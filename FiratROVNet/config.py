@@ -167,6 +167,15 @@ class HareketAyarlari:
     VEKTOR_NORMAL_KACINMA = 0.5
     VEKTOR_TAKIPCI_KACINMA = 0.8
     VEKTOR_TAKIPCI_HEDEF = 0.2
+    VEKTOR_YAVASLATMA = 0.8          # Hedefe yakınken vektör yavaşlatma çarpanı
+    VEKTOR_UZUNLUK_ESIGI = 0.5       # Vektör uzunluk eşiği (bu değerin altında yavaşlat)
+    
+    # GNC özel parametreleri
+    GNC_HEDEF_HIZ_BASE = 40.0        # Hedef hız taban değeri (güç çarpanı ile çarpılır)
+    GNC_HEDEF_GUC = 0.5              # Hedefe giderken varsayılan güç (0.0-1.0)
+    GNC_HEDEF_YOK_YAVASLATMA = 0.8   # Hedef yokken yavaşlatma çarpanı
+    GNC_HEDEF_ULASILDI_YAVASLATMA = 0.5  # Hedefe ulaşıldığında yavaşlatma çarpanı
+    GNC_KOMUT_KUYRUK_MAX = 10        # Her frame'de işlenecek maksimum komut sayısı
     
     # Görselleştirme
     GORSELLEŞTIRME_ENGEL_KIRMIZI = 5.0

@@ -2273,7 +2273,7 @@ class Ortam:
         sinir_cizgisi = Entity(
             model='sphere',
             position=(island_x-5, -max_height/2, island_z+10),
-            scale=(max_radius * 2, max_height, max_radius * 2),  # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri)
+            scale=(max_radius * 2.4, max_height, max_radius * 2.4),  # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri)
             color=color.rgba(255, 200, 0, 0.3),  # Turuncu-sarı, yarı saydam
             visible=True,  # Görünür (sınır çizgisi)
             double_sided=True,
