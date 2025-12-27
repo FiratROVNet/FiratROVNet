@@ -1240,14 +1240,34 @@ class Filo:
         # AI Durumunu Ayarla
         self.sistemler[rov_id].ai_aktif = ai
         
+        # Mevcut pozisyonu al (Sim formatında)
+        current_sim_pos = Koordinator.ursina_to_sim(
+            self.sistemler[rov_id].rov.x,
+            self.sistemler[rov_id].rov.y,
+            self.sistemler[rov_id].rov.z
+        )
+        current_x, current_y, current_z = current_sim_pos
+        
         # Eğer Z (derinlik) verilmemişse mevcut derinliği koru
         if z is None:
-            current_sim_pos = Koordinator.ursina_to_sim(
-                self.sistemler[rov_id].rov.x,
-                self.sistemler[rov_id].rov.y,
-                self.sistemler[rov_id].rov.z
-            )
-            z = current_sim_pos[2]
+            z = current_z
+        
+        # Yaw açısını hesapla (hedef yönüne doğru)
+        # Sim formatında: X=Sağ-Sol, Y=İleri-Geri
+        # Yaw açısı: atan2(dx, dy) - Y eksenine göre açı
+        dx = x - current_x
+        dy = y - current_y
+        
+        # Mesafe kontrolü (çok yakınsa yaw açısını değiştirme)
+        mesafe = math.sqrt(dx**2 + dy**2)
+        if mesafe > 0.1:  # 10 cm'den fazla mesafe varsa yaw açısını ayarla
+            # Yaw açısını hesapla (derece)
+            # atan2(dx, dy) -> Y eksenine göre açı (0 derece = +Y yönü)
+            yaw_rad = math.atan2(dx, dy)
+            yaw_deg = math.degrees(yaw_rad)
+            
+            # Yaw açısını set et
+            self.set(rov_id, 'yaw', yaw_deg)
         
         # GNC'ye hedefi SİMÜLASYON formatında veriyoruz
         try:
