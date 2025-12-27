@@ -1046,8 +1046,8 @@ class Filo:
                 yasakli_noktalar=yasakli_noktalar,
                 offset=offset,
                 alpha=2.0,
-                buffer_radius=0.06,
-                channel_width=0.03
+                buffer_radius=15.0,  # Ada çevresinden 15 metre güvenli mesafe
+                channel_width=10.0   # Kanal genişliği 10 metre
             )
 
             hull = guvenlik_hull_dict.get("hull")
@@ -1447,7 +1447,7 @@ class Filo:
         print(f"✅ [ADA_CEVRE] {len(self.ortam_ref.island_positions)} ada için {len(tum_noktalar)} nokta hesaplandı (offset={offset}m)")
         return tum_noktalar
     
-    def yeni_hull(self, yasakli_noktalar, offset=20.0, alpha=2.0, buffer_radius=0.06, channel_width=0.03):
+    def yeni_hull(self, yasakli_noktalar, offset=20.0, alpha=2.0, buffer_radius=15.0, channel_width=10.0):
         """
         Hull noktalarını alıp yasaklı noktaları çıkararak yeni hull oluşturur.
         
@@ -1669,19 +1669,63 @@ class Filo:
             # Alpha Shape sonucunu kontrol et
             if base_shape is None or base_shape.is_empty:
                 print(f"⚠️ [UYARI] Alpha Shape oluşturulamadı (boş şekil, {nokta_sayisi} nokta)")
-                # Fallback: Normal convex hull kullan
+                # Fallback: Normal convex hull kullan ve yasaklı noktaları çıkar
                 if SCIPY_AVAILABLE and len(points_cloud) >= 3:
                     try:
                         points_np = np.array(points_cloud)
                         hull_2d = ConvexHull(points_np, qhull_options='QJ')
                         # Convex hull vertexlerini al
                         hull_points = points_np[hull_2d.vertices]
-                        # Kapalı çokgen için ilk noktayı sona ekle
-                        if len(hull_points) > 0:
-                            hull_points_closed = np.vstack([hull_points, hull_points[0]])
-                            return [[float(p[0]), float(p[1])] for p in hull_points_closed]
+                        # Shapely Polygon oluştur
+                        hull_polygon = Polygon(hull_points)
+                        
+                        # Yasaklı noktaları çıkar (eğer varsa)
+                        if yasakli_noktalar and len(yasakli_noktalar) > 0:
+                            final_polygon = hull_polygon
+                            for fp in yasakli_noktalar:
+                                if len(fp) >= 2:
+                                    p_obj = Point(float(fp[0]), float(fp[1]))
+                                    # Nokta zaten dışarıdaysa işlem yapma
+                                    if not final_polygon.contains(p_obj):
+                                        continue
+                                    
+                                    # Yasaklı bölge (Daire)
+                                    forbidden_zone = p_obj.buffer(buffer_radius)
+                                    
+                                    # Kanal Açma (En kısa yoldan dışarı tünel)
+                                    exterior_line = final_polygon.exterior
+                                    p1, p2 = nearest_points(forbidden_zone, exterior_line)
+                                    
+                                    channel_line = LineString([p_obj, p2])
+                                    channel_poly = channel_line.buffer(channel_width)
+                                    
+                                    # Kesme işlemi
+                                    cut_area = unary_union([forbidden_zone, channel_poly])
+                                    final_polygon = final_polygon.difference(cut_area)
+                                    
+                                    # Parçalanma kontrolü (En büyük kıtayı koru)
+                                    if isinstance(final_polygon, MultiPolygon):
+                                        if not final_polygon.is_empty:
+                                            final_polygon = max(final_polygon.geoms, key=lambda a: a.area)
+                                        else:
+                                            final_polygon = hull_polygon  # Eğer boşaldıysa orijinal hull'u kullan
+                            
+                            # Sonuç koordinatlarını çıkar
+                            if isinstance(final_polygon, Polygon):
+                                return list(final_polygon.exterior.coords)
+                            else:
+                                # Polygon değilse, orijinal hull'u kullan
+                                hull_points_closed = np.vstack([hull_points, hull_points[0]])
+                                return [[float(p[0]), float(p[1])] for p in hull_points_closed]
+                        else:
+                            # Yasaklı nokta yoksa, direkt hull'u döndür
+                            if len(hull_points) > 0:
+                                hull_points_closed = np.vstack([hull_points, hull_points[0]])
+                                return [[float(p[0]), float(p[1])] for p in hull_points_closed]
                     except Exception as e:
                         print(f"⚠️ [UYARI] Convex Hull fallback de başarısız: {e}")
+                        import traceback
+                        traceback.print_exc()
                 return []
             
             # Çoklu parça dönerse en büyüğünü al
