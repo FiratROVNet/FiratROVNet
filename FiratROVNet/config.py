@@ -276,8 +276,15 @@ class Formasyon:
   
         
         # 3D mod için derinlik hesaplama yardımcı fonksiyonu
+        # Maksimum derinlik farkı: ROV'lar liderin z'sinden maksimum bu kadar uzaklaşabilir
+        maksimum_z_farki = aralik * 0.8 if is_3d else 0.0
+        
         def hesapla_z_3d(index, formasyon_tipi=None):
-            """3D modda z koordinatını hesapla (formasyon tipine göre optimize edilmiş)"""
+            """3D modda z koordinatını hesapla (formasyon tipine göre optimize edilmiş)
+            
+            Döndürülen değer liderin z'sine göre ofset olarak kullanılır.
+            Negatif değerler = aşağı (daha derin), pozitif değerler = yukarı (daha sığ)
+            """
             if not is_3d:
                 return 0.0
             
@@ -287,21 +294,28 @@ class Formasyon:
                 total_rovs = len(takipci_listesi)
                 if total_rovs > 0:
                     # Yatay açı (zaten hesaplanmış)
-                    # Dikey açı (derinlik için)
+                    # Dikey açı (derinlik için) - normalize edilmiş dağılım
                     vertical_angle = math.pi * (index % 3) / 3 - math.pi / 2  # -90° ile +90° arası
-                    depth_range = aralik * 0.8
+                    # Derinlik aralığını maksimum_z_farki ile sınırla
+                    depth_range = min(aralik * 0.8, maksimum_z_farki)
                     return depth_range * math.sin(vertical_angle)
-                return -index * aralik * 0.3
+                return 0.0
             
             elif formasyon_tipi == 19:  # SPIRAL - 3D spiral
-                # Spiral hem yatay hem dikey döner
-                spiral_vertical = 2.0 * math.pi * index / max(len(takipci_listesi), 1)
-                return -aralik * 0.4 * math.sin(spiral_vertical)
+                # Spiral hem yatay hem dikey döner - normalize edilmiş
+                total_rovs = max(len(takipci_listesi), 1)
+                spiral_vertical = 2.0 * math.pi * index / total_rovs
+                # Derinlik aralığını sınırla
+                depth_amplitude = min(aralik * 0.4, maksimum_z_farki * 0.5)
+                return -depth_amplitude * math.sin(spiral_vertical)
             
             elif formasyon_tipi == 18:  # WAVE - 3D dalga
-                # Dalga hem yatay hem dikey
-                wave_vertical = 2.0 * math.pi * index / max(len(takipci_listesi), 1)
-                return -aralik * 0.3 * math.cos(wave_vertical)
+                # Dalga hem yatay hem dikey - normalize edilmiş
+                total_rovs = max(len(takipci_listesi), 1)
+                wave_vertical = 2.0 * math.pi * index / total_rovs
+                # Derinlik aralığını sınırla
+                depth_amplitude = min(aralik * 0.3, maksimum_z_farki * 0.5)
+                return -depth_amplitude * math.cos(wave_vertical)
             
             elif formasyon_tipi == 10:  # TRIANGLE - 3D piramit
                 # Piramit şeklinde: üstte daha az, altta daha fazla derinlik
@@ -314,18 +328,34 @@ class Formasyon:
                         break
                     temp_idx += s + 1
                 # Üst satırlar daha yukarıda, alt satırlar daha aşağıda
-                return -(satir_no * aralik * 0.4)
+                # Derinlik farkını normalize et (maksimum satır sayısına göre)
+                if satir_sayisi > 0:
+                    normalized_satir = satir_no / satir_sayisi  # 0.0 - 1.0 arası
+                    return -normalized_satir * maksimum_z_farki
+                return 0.0
             
             elif formasyon_tipi in [15, 16]:  # PHALANX, RECTANGLE - 3D katmanlar
                 # Her satır farklı derinlikte
                 genislik = min(len(takipci_listesi), 5) if formasyon_tipi == 15 else int(math.ceil(math.sqrt(len(takipci_listesi) * 2)))
                 satir_no = index // genislik
-                return -satir_no * aralik * 0.5
+                # Maksimum satır sayısını hesapla
+                maksimum_satir = (len(takipci_listesi) + genislik - 1) // genislik
+                if maksimum_satir > 0:
+                    # Derinlik farkını normalize et
+                    normalized_satir = satir_no / maksimum_satir  # 0.0 - 1.0 arası
+                    return -normalized_satir * maksimum_z_farki
+                return 0.0
             
             else:
                 # Varsayılan: Her 3-4 ROV bir katman oluşturur
                 katman = index // 3
-                return -katman * aralik * 0.5  # Negatif = su altı
+                # Maksimum katman sayısını hesapla
+                maksimum_katman = (len(takipci_listesi) + 2) // 3
+                if maksimum_katman > 0:
+                    # Derinlik farkını normalize et
+                    normalized_katman = min(katman / maksimum_katman, 1.0)  # 0.0 - 1.0 arası
+                    return -normalized_katman * maksimum_z_farki
+                return 0.0
         
         # Takipçi sayısı (lider hariç)
         takipci_listesi = [i for i in range(n_rovs) if i != lider_id]
@@ -582,6 +612,13 @@ class Formasyon:
         cos_a = math.cos(angle_rad)
         sin_a = math.sin(angle_rad)
 
+        # Liderin z koordinatını referans al (derinlik kontrolü için)
+        lider_z = lider_global_pos[2]
+        
+        # Derinlik farkı limiti: 3D modda ROV'lar liderin z'sinden maksimum bu kadar uzaklaşabilir
+        # 2D modda tüm ROV'lar liderin z'sinde kalır
+        maksimum_derinlik_farki = aralik * 0.8 if is_3d else 0.0  # 3D modda ±aralik*0.8, 2D modda 0
+
         final_pozisyonlar = [(0.0, 0.0, 0.0)] * n_rovs
         
         for i in range(n_rovs):
@@ -599,11 +636,24 @@ class Formasyon:
             gx = lx * cos_a + ly * sin_a
             gy = -lx * sin_a + ly * cos_a
             
+            # Z koordinatı (derinlik) kontrolü:
+            # - 2D modda: Tüm ROV'lar liderin z'sinde kalır (lz = 0)
+            # - 3D modda: lz liderin z'sine eklenir ama maksimum derinlik farkı sınırlanır
+            if is_3d:
+                # 3D modda: lz'yi liderin z'sine ekle ama sınırla
+                # lz negatif değerler (aşağı) veya pozitif değerler (yukarı) olabilir
+                # Maksimum derinlik farkını uygula
+                lz_sinirli = max(-maksimum_derinlik_farki, min(maksimum_derinlik_farki, lz))
+                final_z = lider_z + lz_sinirli
+            else:
+                # 2D modda: Tüm ROV'lar liderin z'sinde kalır
+                final_z = lider_z
+            
             # Global konuma ekle
             final_pozisyonlar[i] = (
                 lider_global_pos[0] + gx,
                 lider_global_pos[1] + gy,
-                lider_global_pos[2] + lz
+                final_z
             )
 
         return final_pozisyonlar
