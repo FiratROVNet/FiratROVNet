@@ -68,7 +68,7 @@ forbidden_points = np.array([
     [0.8, 0.3],    # Sağ altta
     [0.3, 0.5],   # Tam ortada
     [0.8, 0.8],   # Sol üstte
-    [0.1, 0.3]    # Sağ altta
+    [1.1, 1.3]    # Sağ altta
     
 ])
 
