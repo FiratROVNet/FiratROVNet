@@ -1564,7 +1564,7 @@ class Harita:
             self.ax.add_patch(circle)
             self._hedef_label_cizildi = True
         
-        # Adaları Çiz
+        # Adaları Çiz (ölçek büyütüldü)
         if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
             from matplotlib import patches
             for is_pos in self.ortam_ref.island_positions:
@@ -1572,7 +1572,8 @@ class Harita:
                     rad = is_pos[2]
                 else:
                     rad = self.havuz_genisligi * 0.08  # Varsayılan boyut
-                ada = patches.Ellipse((is_pos[0], is_pos[1]), width=rad*2.4, height=rad*1.2, 
+                # Ada ölçeği büyütüldü (daha belirgin görünmesi için)
+                ada = patches.Ellipse((is_pos[0], is_pos[1]), width=rad*3.2, height=rad*1.6, 
                                      facecolor='#8B5A3C', edgecolor='black', alpha=0.7, zorder=4)
                 self.ax.add_patch(ada)
 
@@ -1919,14 +1920,14 @@ class Ortam:
         
         # Referans ölçekler (orijinal ada)
         ref_visual_scale = (0.3, 0.8, 0.3)
-        # Hitbox boyutları gerçek ada görsel ölçeğine göre ayarlandı
-        # Görsel ölçek: (0.3, 0.8, 0.3) -> gerçek boyut yaklaşık 15-20 birim
-        # Hitbox'lar gerçek ada boyutuna yakın olmalı (güvenlik payı minimal)
+        # Hitbox boyutları çarpışma ve engel tanıma için optimize edildi
+        # Hitbox'lar görünür olacak ve çarpışma algılaması için aktif
+        # Hitbox boyutları %40 artırıldı (0.4 oranında)
         ref_hitbox_scales = [
-            (25, 20, 25),   # Katman 1 (en geniş) - gerçek ada boyutuna yakın
-            (20, 25, 20),   # Katman 2
-            (15, 25, 15),   # Katman 3
-            (10, 25, 10)    # Katman 4
+            (56, 28, 56),   # Katman 1 (en geniş) - 40 * 1.4 = 56, çarpışma algılama için yeterli boyut
+            (42, 35, 42),   # Katman 2 - 30 * 1.4 = 42
+            (28, 35, 28),   # Katman 3 - 20 * 1.4 = 28
+            (21, 35, 21)    # Katman 4 - 15 * 1.4 = 21
         ]
         ref_hitbox_positions = [
             (0, -5, 0),     # Katman 1
@@ -2246,15 +2247,16 @@ class Ortam:
             # Pozisyonu ada pozisyonuna göre ayarla (Y aynı kalacak)
             hitbox_pos = (island_x, ref_pos[1], island_z)
             
-            # Hitbox'lar görünmez ama algılama için aktif
+            # Hitbox'lar görünür ve algılama için aktif (çarpışma ve engel tanıma için gerekli)
             hitbox_katmanlari.append(Entity(
                 model='icosphere',
                 position=hitbox_pos,
                 scale=scaled_size,
-                visible=False,  # Görünmez (sadece algılama için)
+                visible=True,  # Görünür (çarpışma ve engel tanıma için gerekli)
                 collider='sphere',
                 color=colors[layer_idx],
-                unlit=True
+                unlit=True,
+                alpha=0.3  # Yarı saydam (görünür ama engel olmaz)
             ))
         
         return hitbox_katmanlari
