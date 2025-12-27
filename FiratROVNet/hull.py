@@ -352,13 +352,9 @@ class HullManager:
             sanal_rov_noktalari = self.genisletilmis_rov_hull_olustur(offset=offset)
             
             # Adaların sanal bariyerleri (Adadan filoya doğru itilmiş noktalar)
-            sanal_ada_bariyerleri = self.ada_engel_noktalari_pro(yakinlik_siniri=100.0, offset=offset)
-            
-            # Lidar engelleri (Anlık)
-            gercek_engeller = self.lidar_engel_noktalari()
-            
+    
             # Sadece bu sanal noktaları birleştiriyoruz (Gerçek ROV veya gerçek ADA merkezlerini değil!)
-            tum_noktalar = sanal_rov_noktalari + sanal_ada_bariyerleri + gercek_engeller
+            tum_noktalar = sanal_rov_noktalari
             
             if len(tum_noktalar) < 3:
                 hull_data = {

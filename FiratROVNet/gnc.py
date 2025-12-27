@@ -1377,9 +1377,9 @@ class Filo:
     
     def ada_cevre(self, offset=10.0):
         """
-        Simülasyondaki adaları tespit edip her ada için eşit çevrede 4 nokta döndürür.
+        Simülasyondaki adaları tespit edip her ada için eşit çevrede 12 nokta döndürür.
         
-        Her ada için 4 nokta hesaplanır (kuzey, doğu, güney, batı - 0°, 90°, 180°, 270°).
+        Her ada için 12 nokta hesaplanır (30° aralıklarla: 0°, 30°, 60°, ..., 330°).
         Noktalar ada yarıçapından belirli bir mesafe uzakta olur (offset parametresi).
         
         Args:
@@ -1388,15 +1388,15 @@ class Filo:
         
         Returns:
             list: [(x1, y1, z1), (x2, y2, z2), ...] - Ada çevresi noktaları (Simülasyon formatı)
-                - 1 ada varsa: 4 nokta
-                - 2 ada varsa: 8 nokta
-                - 3 ada varsa: 12 nokta
+                - 1 ada varsa: 12 nokta
+                - 2 ada varsa: 24 nokta
+                - 3 ada varsa: 36 nokta
                 - Format: (x, y, z) - x: sağ-sol, y: ileri-geri, z: derinlik
         
         Örnekler:
             # Tüm adaların çevre noktalarını al
             noktalar = filo.ada_cevre()
-            # Çıktı: [(x1, y1, z1), (x2, y2, z2), ...] - Her ada için 4 nokta
+            # Çıktı: [(x1, y1, z1), (x2, y2, z2), ...] - Her ada için 12 nokta
             
             # Özel offset ile
             noktalar = filo.ada_cevre(offset=15.0)  # Ada yarıçapından 15 metre uzakta
@@ -1412,7 +1412,7 @@ class Filo:
         
         tum_noktalar = []
         
-        # Her ada için 4 nokta hesapla
+        # Her ada için 12 nokta hesapla
         for island_data in self.ortam_ref.island_positions:
             if len(island_data) < 3:
                 continue
@@ -1425,10 +1425,10 @@ class Filo:
             # Çevre mesafesi: Ada yarıçapı + offset
             cevre_mesafesi = island_radius + offset
             
-            # 4 nokta hesapla (0°, 90°, 180°, 270°)
+            # 12 nokta hesapla (30° aralıklarla: 0°, 30°, 60°, 90°, 120°, 150°, 180°, 210°, 240°, 270°, 300°, 330°)
             # Simülasyon sistemi: X=Sağ-Sol, Y=İleri-Geri
             # 0° = Kuzey (+Y), 90° = Doğu (+X), 180° = Güney (-Y), 270° = Batı (-X)
-            acilar = [0, 90, 180, 270]  # Derece
+            acilar = [i * 30 for i in range(12)]  # 0°, 30°, 60°, ..., 330° (12 nokta)
             
             for aci in acilar:
                 # Açıyı radyana çevir
