@@ -1035,64 +1035,10 @@ class Filo:
             guvenlik_hull_dict = self.hull_manager.hull(offset=offset)
 
             hull = guvenlik_hull_dict.get("hull")
-            hull_noktalari = guvenlik_hull_dict.get("points")  # 2D noktalar (np.array)
             hull_merkez = guvenlik_hull_dict.get("center")
 
             if hull is None or hull_merkez is None:
                 return None
-
-            # 2. Ada çevre noktalarını al (yasaklı noktalar olarak kullanılacak)
-            ada_cevre_noktalari = self.ada_cevre()
-            
-            # Ada çevre noktalarını 2D formatına çevir (sadece x, y)
-            yasakli_noktalar = []
-            if ada_cevre_noktalari:
-                for nokta in ada_cevre_noktalari:
-                    if len(nokta) >= 2:
-                        yasakli_noktalar.append([float(nokta[0]), float(nokta[1])])
-            
-            # 3. Hull noktalarını 2D formatına çevir (yeniden_ciz için)
-            hull_noktalari_2d = []
-            if hull_noktalari is not None:
-                if isinstance(hull_noktalari, np.ndarray):
-                    hull_noktalari_2d = [[float(p[0]), float(p[1])] for p in hull_noktalari]
-                else:
-                    hull_noktalari_2d = [[float(p[0]), float(p[1])] for p in hull_noktalari if len(p) >= 2]
-            
-            # 4. yeniden_ciz ile yeni kontur hesapla (yasaklı noktaları çıkararak)
-            yeni_kontur_noktalari = []
-            if hull_noktalari_2d and len(hull_noktalari_2d) >= 3:
-                yeni_kontur_noktalari = self.yeniden_ciz(
-                    noktalar=hull_noktalari_2d,
-                    yasakli_noktalar=yasakli_noktalar,
-                    alpha=2.0,
-                    buffer_radius=0.06,
-                    channel_width=0.03
-                )
-            
-            # 5. Yeni konturdan merkez ve hull hesapla
-            if yeni_kontur_noktalari and len(yeni_kontur_noktalari) >= 3:
-                # Yeni konturdan merkez hesapla
-                kontur_noktalari_np = np.array(yeni_kontur_noktalari)
-                yeni_hull_merkez_2d = np.mean(kontur_noktalari_np, axis=0)
-                
-                # Z koordinatını eski hull merkezinden al
-                eski_z = hull_merkez[2] if len(hull_merkez) >= 3 else 0.0
-                hull_merkez = (float(yeni_hull_merkez_2d[0]), float(yeni_hull_merkez_2d[1]), float(eski_z))
-                
-                # Yeni konturdan ConvexHull oluştur (formasyon geçerliliği için)
-                if SCIPY_AVAILABLE:
-                    try:
-                        # Yeni kontur noktalarından ConvexHull oluştur
-                        yeni_hull_2d = ConvexHull(kontur_noktalari_np, qhull_options='QJ')
-                        hull = yeni_hull_2d
-                        print(f"✅ [FORMASYON] Yeni kontur hull'u oluşturuldu: {len(yeni_kontur_noktalari)} nokta")
-                    except Exception as e:
-                        print(f"⚠️ [UYARI] Yeni konturdan hull oluşturulamadı, eski hull kullanılıyor: {e}")
-                        # Eski hull'u kullanmaya devam et
-            else:
-                print(f"⚠️ [UYARI] Yeni kontur oluşturulamadı veya yetersiz nokta, eski hull kullanılıyor")
-                # Eski hull'u kullanmaya devam et
 
             # Hull merkezini Sim formatına dönüştür (z=0 yap)
             hull_merkez_liste = list(hull_merkez)
@@ -1484,6 +1430,119 @@ class Filo:
         
         print(f"✅ [ADA_CEVRE] {len(self.ortam_ref.island_positions)} ada için {len(tum_noktalar)} nokta hesaplandı (offset={offset}m)")
         return tum_noktalar
+    
+    def yeni_hull(self, yasakli_noktalar, offset=20.0, alpha=2.0, buffer_radius=0.06, channel_width=0.03):
+        """
+        Hull noktalarını alıp yasaklı noktaları çıkararak yeni hull oluşturur.
+        
+        Bu fonksiyon:
+        1. Önce hull_manager.hull() ile mevcut hull noktalarını alır
+        2. filo.yeniden_ciz() ile yasaklı noktaları çıkararak yeni kontur hesaplar
+        3. Yeni konturdan merkez ve ConvexHull oluşturur
+        4. Haritada yansımasını sağlar
+        
+        Args:
+            yasakli_noktalar (list): Yasaklı noktalar listesi [[x1, y1], [x2, y2], ...]
+                - 2D formatında (x, y) koordinatları
+            offset (float): Hull genişletme mesafesi (varsayılan: 20.0)
+            alpha (float): Alpha Shape sarma sıkılığı (varsayılan: 2.0)
+            buffer_radius (float): Yasaklı nokta etrafındaki güvenli bölge yarıçapı (varsayılan: 0.06)
+            channel_width (float): Dışarı açılan kanalın genişliği (varsayılan: 0.03)
+        
+        Returns:
+            dict: {
+                'hull': ConvexHull objesi (2D) veya None,
+                'points': np.array - Yeni kontur noktaları (2D) veya None,
+                'center': (x, y, z) - Yeni hull merkezi veya None
+            }
+        
+        Örnekler:
+            # Ada çevre noktalarını yasaklı olarak kullan
+            ada_noktalari = filo.ada_cevre()
+            yasakli = [[n[0], n[1]] for n in ada_noktalari]  # 2D formatına çevir
+            
+            # Yeni hull oluştur
+            yeni_hull_dict = filo.yeni_hull(yasakli_noktalar=yasakli)
+            
+            # Hull bilgilerini kullan
+            hull = yeni_hull_dict.get('hull')
+            merkez = yeni_hull_dict.get('center')
+        """
+        try:
+            # 1. Hull noktalarını al (hull_manager.hull() ile)
+            guvenlik_hull_dict = self.hull_manager.hull(offset=offset)
+            
+            hull_noktalari = guvenlik_hull_dict.get("points")  # 2D noktalar (np.array)
+            eski_hull_merkez = guvenlik_hull_dict.get("center")
+            
+            if hull_noktalari is None or eski_hull_merkez is None:
+                print("⚠️ [UYARI] Hull noktaları veya merkez bulunamadı")
+                return {'hull': None, 'points': None, 'center': None}
+            
+            # 2. Hull noktalarını 2D formatına çevir (yeniden_ciz için)
+            hull_noktalari_2d = []
+            if isinstance(hull_noktalari, np.ndarray):
+                hull_noktalari_2d = [[float(p[0]), float(p[1])] for p in hull_noktalari]
+            else:
+                hull_noktalari_2d = [[float(p[0]), float(p[1])] for p in hull_noktalari if len(p) >= 2]
+            
+            if len(hull_noktalari_2d) < 3:
+                print("⚠️ [UYARI] Yetersiz hull noktası (en az 3 nokta gerekli)")
+                return {'hull': None, 'points': None, 'center': None}
+            
+            # 3. yeniden_ciz ile yeni kontur hesapla (yasaklı noktaları çıkararak)
+            yeni_kontur_noktalari = self.yeniden_ciz(
+                noktalar=hull_noktalari_2d,
+                yasakli_noktalar=yasakli_noktalar,
+                alpha=alpha,
+                buffer_radius=buffer_radius,
+                channel_width=channel_width
+            )
+            
+            # 4. Yeni konturdan merkez ve hull hesapla
+            if yeni_kontur_noktalari and len(yeni_kontur_noktalari) >= 3:
+                # Yeni konturdan merkez hesapla
+                kontur_noktalari_np = np.array(yeni_kontur_noktalari)
+                yeni_hull_merkez_2d = np.mean(kontur_noktalari_np, axis=0)
+                
+                # Z koordinatını eski hull merkezinden al
+                eski_z = eski_hull_merkez[2] if len(eski_hull_merkez) >= 3 else 0.0
+                yeni_hull_merkez = (float(yeni_hull_merkez_2d[0]), float(yeni_hull_merkez_2d[1]), float(eski_z))
+                
+                # Yeni konturdan ConvexHull oluştur
+                yeni_hull_2d = None
+                if SCIPY_AVAILABLE:
+                    try:
+                        # Yeni kontur noktalarından ConvexHull oluştur
+                        yeni_hull_2d = ConvexHull(kontur_noktalari_np, qhull_options='QJ')
+                        print(f"✅ [YENI_HULL] Yeni kontur hull'u oluşturuldu: {len(yeni_kontur_noktalari)} nokta")
+                    except Exception as e:
+                        print(f"⚠️ [UYARI] Yeni konturdan hull oluşturulamadı: {e}")
+                
+                # 5. Haritada yansımasını sağla
+                if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
+                    hull_data = {
+                        'hull': yeni_hull_2d,
+                        'points': kontur_noktalari_np,
+                        'center': yeni_hull_merkez
+                    }
+                    self.ortam_ref.harita.convex_hull_data = hull_data
+                    print(f"✅ [YENI_HULL] Haritada yansıtıldı")
+                
+                return {
+                    'hull': yeni_hull_2d,
+                    'points': kontur_noktalari_np,
+                    'center': yeni_hull_merkez
+                }
+            else:
+                print(f"⚠️ [UYARI] Yeni kontur oluşturulamadı veya yetersiz nokta")
+                return {'hull': None, 'points': None, 'center': None}
+        
+        except Exception as e:
+            print(f"❌ [HATA] Yeni hull oluşturulurken hata: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'hull': None, 'points': None, 'center': None}
     
     def yeniden_ciz(self, noktalar, yasakli_noktalar, alpha=2.0, buffer_radius=0.06, channel_width=0.03):
         """
