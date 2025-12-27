@@ -1518,13 +1518,21 @@ class Filo:
                             yasakli_noktalar_2d.append([float(nokta[0]), float(nokta[1])])
             
             # 3. yeniden_ciz ile yeni kontur hesapla (yasaklı noktaları çıkararak)
-            yeni_kontur_noktalari = self.yeniden_ciz(
-                noktalar=hull_noktalari_2d,
-                yasakli_noktalar=yasakli_noktalar_2d,
-                alpha=alpha,
-                buffer_radius=buffer_radius,
-                channel_width=channel_width
-            )
+            # Eğer yasaklı nokta yoksa, direkt hull noktalarını kullan (yeniden_ciz'e gerek yok)
+            yeni_kontur_noktalari = []
+            if yasakli_noktalar_2d and len(yasakli_noktalar_2d) > 0:
+                # Yasaklı noktalar varsa yeniden_ciz kullan
+                yeni_kontur_noktalari = self.yeniden_ciz(
+                    noktalar=hull_noktalari_2d,
+                    yasakli_noktalar=yasakli_noktalar_2d,
+                    alpha=alpha,
+                    buffer_radius=buffer_radius,
+                    channel_width=channel_width
+                )
+            else:
+                # Yasaklı nokta yoksa, hull noktalarını direkt kullan
+                print("ℹ️ [YENI_HULL] Yasaklı nokta yok, mevcut hull kullanılıyor")
+                yeni_kontur_noktalari = hull_noktalari_2d
             
             # 4. Yeni konturdan merkez ve hull hesapla
             if yeni_kontur_noktalari and len(yeni_kontur_noktalari) >= 3:
@@ -1638,11 +1646,42 @@ class Filo:
                 return []
             
             # 2. Temel şekli (Alpha Shape) oluştur
-            base_shape = alphashape.alphashape(points_cloud, alpha)
+            # Alpha değerini dinamik olarak ayarla (nokta sayısına göre)
+            nokta_sayisi = len(points_cloud)
+            if nokta_sayisi < 10:
+                dinamik_alpha = alpha * 0.5  # Az nokta varsa daha küçük alpha
+            elif nokta_sayisi > 50:
+                dinamik_alpha = alpha * 2.0  # Çok nokta varsa daha büyük alpha
+            else:
+                dinamik_alpha = alpha
+            
+            base_shape = None
+            # Farklı alpha değerleri dene
+            alpha_degerleri = [dinamik_alpha, dinamik_alpha * 0.5, dinamik_alpha * 2.0, dinamik_alpha * 0.25, dinamik_alpha * 4.0]
+            for deneme_alpha in alpha_degerleri:
+                try:
+                    base_shape = alphashape.alphashape(points_cloud, deneme_alpha)
+                    if base_shape is not None and not base_shape.is_empty:
+                        break
+                except:
+                    continue
             
             # Alpha Shape sonucunu kontrol et
             if base_shape is None or base_shape.is_empty:
-                print("⚠️ [UYARI] Alpha Shape oluşturulamadı (boş şekil)")
+                print(f"⚠️ [UYARI] Alpha Shape oluşturulamadı (boş şekil, {nokta_sayisi} nokta)")
+                # Fallback: Normal convex hull kullan
+                if SCIPY_AVAILABLE and len(points_cloud) >= 3:
+                    try:
+                        points_np = np.array(points_cloud)
+                        hull_2d = ConvexHull(points_np, qhull_options='QJ')
+                        # Convex hull vertexlerini al
+                        hull_points = points_np[hull_2d.vertices]
+                        # Kapalı çokgen için ilk noktayı sona ekle
+                        if len(hull_points) > 0:
+                            hull_points_closed = np.vstack([hull_points, hull_points[0]])
+                            return [[float(p[0]), float(p[1])] for p in hull_points_closed]
+                    except Exception as e:
+                        print(f"⚠️ [UYARI] Convex Hull fallback de başarısız: {e}")
                 return []
             
             # Çoklu parça dönerse en büyüğünü al
