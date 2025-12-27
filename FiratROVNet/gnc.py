@@ -77,6 +77,9 @@ class Filo:
         self.hull_manager = HullManager(self)  # Convex Hull yönetimi
         self._command_queue = queue.Queue()  # Thread-safe komut kuyruğu
         self._main_thread_id = threading.get_ident()  # Ana thread ID'si
+        # Formasyon ID shuffle mekanizması
+        self._formasyon_id_pool = []  # Shuffle edilmiş formasyon ID'leri
+        self._formasyon_id_pool_olustur()  # İlk pool'u oluştur
     
     def _is_main_thread(self):
         """Şu anki thread'in ana thread olup olmadığını kontrol eder."""
@@ -92,7 +95,7 @@ class Filo:
                 cmd_type, args, kwargs = self._command_queue.get_nowait()
                 if cmd_type == 'git':
                     self._git_impl(*args, **kwargs)
-                elif cmd_type == 'guvenlik_hull_olustur':
+                elif cmd_type == 'hull':
                     self._guvenlik_hull_olustur_impl(*args, **kwargs)
                 elif cmd_type == 'formasyon_sec':
                     self._formasyon_sec_impl(*args, **kwargs)
@@ -108,6 +111,21 @@ class Filo:
             print(f"⚠️ [UYARI] Komut kuyruğu işlenirken hata: {e}")
             import traceback
             traceback.print_exc()
+    
+    def _formasyon_id_pool_olustur(self):
+        """Formasyon ID pool'unu oluşturur ve shuffle eder."""
+        # Tüm formasyon ID'lerini al (0'dan len(Formasyon.TIPLER)-1'e kadar)
+        self._formasyon_id_pool = list(range(len(Formasyon.TIPLER)))
+        # Random shuffle et
+        random.shuffle(self._formasyon_id_pool)
+    
+    def _formasyon_id_al(self):
+        """Formasyon ID pool'undan bir ID alır. Pool boşalırsa yeniden doldurur."""
+        if len(self._formasyon_id_pool) == 0:
+            # Pool boşaldı, yeniden doldur ve shuffle et
+            self._formasyon_id_pool_olustur()
+        # Pool'dan bir ID pop et
+        return self._formasyon_id_pool.pop(0)
     
     @property
     def rovs(self):
@@ -746,7 +764,7 @@ class Filo:
         
         print(f"✅ [FORMASYON] Formasyon kuruldu: Tip={formasyon_id}, Aralık={aralik}, ROV Sayısı={len(pozisyonlar)}")
         return None
-    def formasyon_sec(self, margin=30, is_3d=False, offset=20.0):
+    def formasyon_sec(self, margin=30, is_3d=False, offset=20.0, harita=False):
         """
         Convex hull kullanarak en uygun formasyonu seçer (Thread-safe).
 
@@ -761,10 +779,17 @@ class Filo:
                 - formasyon_aralik = margin * 0.6 (ROV'lar arası mesafe)
             is_3d (bool): 3D formasyon modu (varsayılan: False)
             offset (float): ROV hull genişletme mesafesi (varsayılan: 20.0)
+            harita (bool): Harita görüntülemeyi aç/kapat (varsayılan: False)
 
         Returns:
-            int | None: Seçilen formasyon ID'si veya None (uygun formasyon bulunamazsa)
+            tuple | None: Seçilen formasyon bilgileri (formasyon_id, aralik, yaw) veya None (uygun formasyon bulunamazsa)
+                - formasyon_id (int): Formasyon tipi ID'si (0-19)
+                - aralik (float): ROV'lar arası mesafe (metre)
+                - yaw (float): Liderin yaw açısı (derece)
         """
+        if harita:
+            if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
+                self.ortam_ref.harita.goster(True, True)
         # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
         if not self._is_main_thread():
             try:
@@ -792,10 +817,16 @@ class Filo:
         - Adım A: Lider ROV'un GPS koordinatını merkez kabul et, tüm formasyon tiplerini ve aralıklarını dene
         - Adım B: Eğer mevcut açıyla sığmıyorsa, liderin yaw açısını 90, 180, 270 derece döndürerek tekrar dene
         - Adım C: Eğer liderin olduğu yerde hiçbir açıda uygun formasyon bulunamazsa, Hull Merkezi koordinatına geç
+        
+        Returns:
+            tuple | None: (formasyon_id, aralik, yaw) veya None
+                - formasyon_id (int): Formasyon tipi ID'si (0-19)
+                - aralik (float): ROV'lar arası mesafe (metre)
+                - yaw (float): Liderin yaw açısı (derece)
         """
         try:
             # 1. Güvenlik hull'u oluştur (sanal + gerçek engeller, SADECE 1 KEZ)
-            guvenlik_hull_dict = self.hull_manager.guvenlik_hull_olustur(offset=offset)
+            guvenlik_hull_dict = self.hull_manager.hull(offset=offset)
 
             hull = guvenlik_hull_dict.get("hull")
             hull_merkez = guvenlik_hull_dict.get("center")
@@ -821,11 +852,9 @@ class Filo:
                     break
 
             if lider_rov_id is None:
-                print("❌ [FORMASYON_SEC] Lider ROV bulunamadı!")
                 return None
 
             if lider_gps is None:
-                print("⚠️ [FORMASYON_SEC] Lider GPS koordinatı alınamadı, hull merkezini kullanıyoruz.")
                 lider_gps = hull_merkez
 
             # 3. Formasyon aralığı parametreleri
@@ -845,14 +874,25 @@ class Filo:
             ]
 
             for nokta_adi, merkez_koordinat in arama_noktalari:
-                print(f"🔍 [FORMASYON_SEC] {nokta_adi} üzerinde arama başlatılıyor: {merkez_koordinat}")
-
                 # Yaw Döngüsü: 0, 90, 180, 270 derece
                 for deneme_yaw in yaw_acilari:
-                    print(f"  🔄 [FORMASYON_SEC] Yaw açısı deneniyor: {deneme_yaw}°")
 
-                    # Formasyon Tipi Döngüsü
-                    for i, formasyon_tipi in enumerate(Formasyon.TIPLER):
+                    # Formasyon Tipi Döngüsü - Pool'dan random ID'leri sırayla dene
+                    # Bu arama için tüm formasyon ID'lerini random sırayla al
+                    # (Pool'dan çıkarılmadan önce kopyala)
+                    denenecek_formasyon_idleri = []
+                    # Pool'dan mevcut ID'leri al
+                    pool_kopyasi = self._formasyon_id_pool.copy()
+                    while len(denenecek_formasyon_idleri) < len(Formasyon.TIPLER) and len(pool_kopyasi) > 0:
+                        denenecek_formasyon_idleri.append(pool_kopyasi.pop(0))
+                    # Eğer pool boşaldıysa, kalan ID'leri ekle ve shuffle et
+                    if len(denenecek_formasyon_idleri) < len(Formasyon.TIPLER):
+                        kalan_idler = [i for i in range(len(Formasyon.TIPLER)) if i not in denenecek_formasyon_idleri]
+                        random.shuffle(kalan_idler)
+                        denenecek_formasyon_idleri.extend(kalan_idler)
+                    
+                    for i in denenecek_formasyon_idleri:
+                        formasyon_tipi = Formasyon.TIPLER[i]
                         aralik = baslangic_aralik
 
                         # Aralık Döngüsü
@@ -883,16 +923,10 @@ class Filo:
 
                             # Formasyon geçerliliğini kontrol et
                             if self._formasyon_gecerli_mi(ursina_positions, hull, aralik):
-                                print(
-                                    f"✅ [FORMASYON_SEC] Formasyon seçildi: {formasyon_tipi} "
-                                    f"(ID={i}, aralık={aralik:.1f}m, yaw={deneme_yaw}°, nokta={nokta_adi})"
-                                )
-
                                 # Başarılı formasyon bulundu! Uygula
                                 
                                 # Liderin yaw açısını set et
                                 self.set(lider_rov_id, 'yaw', float(deneme_yaw))
-                                print(f"✅ [FORMASYON_SEC] Lider ROV-{lider_rov_id} yaw açısı {deneme_yaw}° olarak ayarlandı.")
 
                                 # Eğer formasyon Hull Merkezi üzerinde bulunduysa, lideri oraya gönder
                                 if nokta_adi == "Hull Merkezi":
@@ -903,7 +937,6 @@ class Filo:
                                         hull_merkez[2],
                                         ai=True
                                     )
-                                    print(f"✅ [FORMASYON_SEC] Lider ROV-{lider_rov_id} hull merkezine gönderildi: {hull_merkez}")
 
                                 # Takipçi ROV'ları formasyon pozisyonlarına gönder
                                 for rov_id, pozisyon in enumerate(pozisyonlar):
@@ -923,18 +956,20 @@ class Filo:
                                     
                                     # Takipçi ROV'u formasyon pozisyonuna gönder
                                     self.git(rov_id, sim_x, sim_y, sim_z, ai=True)
-                                    print(f"✅ [FORMASYON_SEC] ROV-{rov_id} formasyon pozisyonuna gönderildi: ({sim_x:.2f}, {sim_y:.2f}, {sim_z:.2f})")
 
-                                return i
+                                # Formasyon bulundu, pool'dan bu ID'yi çıkar
+                                if i in self._formasyon_id_pool:
+                                    self._formasyon_id_pool.remove(i)
+                                
+                                # Formasyon bilgilerini döndür: (formasyon_id, aralik, yaw)
+                                return (i, aralik, deneme_yaw)
 
                             aralik -= adim
 
             # Hiçbir formasyon geçerli değil
-            print("❌ [FORMASYON_SEC] Hiçbir formasyon geçerli bulunamadı.")
             return None
 
         except Exception as e:
-            print(f"❌ [HATA] Formasyon seçimi sırasında hata: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -993,7 +1028,7 @@ class Filo:
         self.git(lider_rov_id, x, y, z, ai=True)
         
         # Hedef görselini oluştur/güncelle (Ursina formatına dönüştür)
-        ursina_pos = Koordinator.sim_to_ursina(x, y, z)
+        ursina_pos = (x, y, z)
         self._hedef_gorsel_olustur(*ursina_pos)
         
         # Haritaya hedefi ekle
@@ -1037,7 +1072,7 @@ class Filo:
         """Wrapper: HullManager'a yönlendirir (geriye dönük uyumluluk için)."""
         return self.hull_manager.ada_engel_noktalari_pro(yakinlik_siniri=yakinlik_siniri, offset=offset)
     
-    def guvenlik_hull_olustur(self, offset=20.0):
+    def hull(self, offset=20.0):
         """
         Güvenlik hull oluşturur (Thread-safe).
         Ana thread'de değilse, komutu queue'ya ekler.
@@ -1054,7 +1089,7 @@ class Filo:
                 return result[0] if result[0] is not None else {'hull': None, 'points': None, 'center': None}
             except (ImportError, AttributeError):
                 # Ursina invoke yoksa, queue kullan
-                self._command_queue.put(('guvenlik_hull_olustur', (offset,), {}))
+                self._command_queue.put(('hull', (offset,), {}))
                 # Queue'dan dönen değer beklenemez, None döndür
                 return {'hull': None, 'points': None, 'center': None}
         
@@ -1063,7 +1098,7 @@ class Filo:
     
     def _guvenlik_hull_olustur_impl(self, offset=20.0):
         """guvenlik_hull_olustur() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
-        return self.hull_manager.guvenlik_hull_olustur(offset=offset)
+        return self.hull_manager.hull(offset=offset)
     
     def _hedef_gorsel_olustur(self, x, y, z):
         """
@@ -1098,9 +1133,9 @@ class Filo:
         Entity(
             model='cube',
             position=(0, 0, 0),
-            rotation=(0, 0, 45),  # 45 derece döndür
+            rotation=(90, 0, 45),  # 45 derece döndür
             scale=(x_boyutu, kalinlik, kalinlik),
-            color=color.red,
+            color=color.rgba(255, 0, 0, 0.5),
             parent=self.hedef_gorsel,
             unlit=True,
             billboard=False
@@ -1110,24 +1145,39 @@ class Filo:
         Entity(
             model='cube',
             position=(0, 0, 0),
-            rotation=(0, 0, -45),  # -45 derece döndür
+            rotation=(90, 0, -45),  # -45 derece döndür
             scale=(x_boyutu, kalinlik, kalinlik),
-            color=color.red,
+            color=color.rgba(255, 0, 0, 0.5),
             parent=self.hedef_gorsel,
             unlit=True,
             billboard=False
         )
+
+
         
         # Merkez nokta (daha belirgin olsun)
         Entity(
             model='sphere',
             position=(0, 0, 0),
             scale=(2, 2, 2),
-            color=color.red,
+            color=color.rgba(255, 0, 0, 0.5),
             parent=self.hedef_gorsel,
             unlit=True
         )
-    
+                    # Dış çember
+        hedef_rengi = color.rgb(0, 255, 120)
+
+        # Ring (içi boş çember)
+        Entity(
+            model='circle',
+            position=(0, 0, 0),
+            rotation=(90, 0, 0),
+            scale=(x_boyutu * 1.5, x_boyutu * 1.5, 1),
+            color=hedef_rengi,
+            parent=self.hedef_gorsel,
+            unlit=True,
+            wireframe=True
+        )
 
     def git(self, rov_id, x, y, z=None, ai=True):
         """

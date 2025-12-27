@@ -310,6 +310,24 @@ class HullManager:
         
         return sanal_bariyer_noktalari
     
+    def hull(self, offset=20.0):
+        """
+        1. ROV'ları 20m dışarı iten noktaları alır.
+        2. Yakındaki adaları 20m içeri (filoya doğru) çeken sanal noktaları alır.
+        3. Hepsini birleştirerek adayı DIŞARIDA bırakan güvenli alanı hesaplar.
+        
+        Args:
+            offset (float): ROV hull genişletme mesafesi (varsayılan: 20.0)
+        
+        Returns:
+            dict: {
+                'hull': ConvexHull objesi (2D) veya None,
+                'points': numpy array - Hull hesaplamasında kullanılan noktalar (2D),
+                'center': (x, y, z) - Hull merkezi veya None
+            }
+        """
+        return self.guvenlik_hull_olustur(offset=offset)
+    
     def guvenlik_hull_olustur(self, offset=20.0):
         """
         1. ROV'ları 20m dışarı iten noktaları alır.

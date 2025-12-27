@@ -235,6 +235,11 @@ pozisyonlar = filo.formasyon("LINE", aralik=15, lider_koordinat=(10, 20, -5))
 - `"STAGGERED"`: Kademeli
 - `"WALL"`: Duvar
 - `"STAR"`: Yıldız
+- `"PHALANX"`: Falanks (sıkı düzen, askeri formasyon)
+- `"RECTANGLE"`: Dikdörtgen formasyonu
+- `"HEXAGON"`: Altıgen formasyonu
+- `"WAVE"`: Dalga formasyonu
+- `"SPIRAL"`: Spiral formasyonu
 
 **Formasyon Seçimi - `formasyon_sec()`:**
 
