@@ -7,7 +7,8 @@ ROV pozisyonları, adalar ve lidar engelleri dahil edilerek dinamik güvenli ala
 
 import numpy as np
 import math
-
+from shapely.geometry import Point
+from shapely.ops import unary_union
 # Convex Hull için scipy import
 try:
     from scipy.spatial import ConvexHull
@@ -30,31 +31,38 @@ class HullManager:
         """
         self.filo = filo_ref
     
+    
+
+    # HullManager sınıfının içindeki fonksiyonu güncelleyin:
     def is_point_inside_hull(self, point, hull):
         """
-        Noktanın convex hull içinde olup olmadığını 2D (X-Y) düzleminde kontrol eder.
-        
-        Mantık: Scipy hull.equations içindeki her bir denklem için 
-        np.dot(normal, point_2d) + d <= 0 ise nokta içeridedir.
-        Tek bir denklem bile > 0 sonucunu verirse nokta dışarıdadır.
-        
-        Args:
-            point: (x, y, z) numpy array veya (x, y) numpy array - Simülasyon formatı
-            hull: scipy.spatial.ConvexHull (2D)
-        
-        Returns:
-            bool: True if point is inside hull, False otherwise
+        Noktanın hull içinde olup olmadığını kontrol eder.
+        Hem Scipy ConvexHull hem de Shapely Polygon (SahteHull) destekler.
         """
-        # Gelen nokta 3D ise (X, Y, Z), sadece X ve Y'yi al (Simülasyon formatı)
-        point_2d = np.asarray(point)[:2]
-        
-        # Scipy Hull 2D denklemleri: Ax + By + D <= 0 ise içeridedir
-        for eq in hull.equations:
-            normal = eq[:-1]
-            d = eq[-1]
-            if np.dot(normal, point_2d) + d > 1e-9:  # Hassasiyet payı
-                return False
-        return True
+        if hull is None:
+            return False
+
+        # 1. YÖNTEM: Eğer bizim oluşturduğumuz SahteHull ise (Polygon içeriyorsa)
+        if hasattr(hull, 'polygon') and hull.polygon is not None:
+            # Point sadece X ve Y (2D) alır
+            p = Point(point[0], point[1])
+            # contains() metodu nokta sınırın içindeyse True döner
+            return hull.polygon.contains(p)
+
+        # 2. YÖNTEM: Standart Scipy Convex Hull ise (equations içeriyorsa)
+        if hasattr(hull, 'equations'):
+            # Noktayı uygun boyuta getir (equations genellikle 2D için 3 elemanlıdır: ax+by+c <= 0)
+            # ConvexHull hesaplaması 2D yapıldıysa point de 2D olmalı
+            point_check = np.array(point[:2]) # Sadece X ve Y al
+            
+            for eq in hull.equations:
+                # Dot product: normal * point + offset <= 0 ise içeridedir
+                # eq[:-1] normal vektörü, eq[-1] offset
+                if np.dot(eq[:-1], point_check) + eq[-1] > 1e-6: # Biraz tolerans
+                    return False
+            return True
+            
+        return False
     
     def genisletilmis_rov_hull_olustur(self, offset=20.0):
         """
