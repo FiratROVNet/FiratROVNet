@@ -8,6 +8,22 @@ import random
 import threading
 import queue
 
+# Alpha Shape ve Shapely için import (kontur hesaplama için)
+try:
+    import alphashape
+    ALPHASHAPE_AVAILABLE = True
+except ImportError:
+    ALPHASHAPE_AVAILABLE = False
+    print("⚠️ [UYARI] alphashape bulunamadı. yeniden_ciz() fonksiyonu çalışmayacak.")
+
+try:
+    from shapely.geometry import Point, LineString, Polygon, MultiPolygon
+    from shapely.ops import unary_union, nearest_points
+    SHAPELY_AVAILABLE = True
+except ImportError:
+    SHAPELY_AVAILABLE = False
+    print("⚠️ [UYARI] shapely bulunamadı. yeniden_ciz() fonksiyonu çalışmayacak.")
+
 # Convex Hull için scipy import (geriye dönük uyumluluk için)
 try:
     from scipy.spatial import ConvexHull
@@ -1414,6 +1430,139 @@ class Filo:
         
         print(f"✅ [ADA_CEVRE] {len(self.ortam_ref.island_positions)} ada için {len(tum_noktalar)} nokta hesaplandı (offset={offset}m)")
         return tum_noktalar
+    
+    def yeniden_ciz(self, noktalar, yasakli_noktalar, alpha=2.0, buffer_radius=0.06, channel_width=0.03):
+        """
+        Verilen nokta kümesini saran, ancak yasaklı noktaları dışarıda bırakacak şekilde
+        içeri bükülmüş sınırın koordinatlarını döndürür.
+        
+        Bu fonksiyon Alpha Shape algoritması kullanarak nokta kümesini saran bir şekil oluşturur,
+        ardından yasaklı noktaları bu şekilden çıkararak yeni sınırları hesaplar.
+        
+        Args:
+            noktalar (list veya np.array): Alanı oluşturan geçerli noktalar
+                Format: [[x1, y1], [x2, y2], ...] veya np.array şeklinde
+                - 2D noktalar (x, y) - Simülasyon formatında (x: sağ-sol, y: ileri-geri)
+            yasakli_noktalar (list veya np.array): Sınırın dışında kalması gereken noktalar
+                Format: [[x1, y1], [x2, y2], ...] veya np.array şeklinde
+                - 2D noktalar (x, y) - Simülasyon formatında
+            alpha (float): Şeklin sarma sıkılığı (varsayılan: 2.0)
+                - Daha büyük = daha detaylı girintiler
+            buffer_radius (float): Yasaklı nokta etrafındaki güvenli bölge yarıçapı (varsayılan: 0.06)
+            channel_width (float): Dışarı açılan kanalın genişliği (varsayılan: 0.03)
+        
+        Returns:
+            list: Sınır çizgisini oluşturan noktalar listesi [[x, y], [x, y], ...]
+                - Boş liste dönerse şekil oluşturulamadı veya hata oluştu
+                - Format: 2D noktalar (x, y) - Simülasyon formatında
+        
+        Örnekler:
+            # ROV pozisyonları ve ada çevre noktaları ile sınır hesapla
+            rov_noktalari = [(x1, y1), (x2, y2), ...]  # ROV pozisyonları (2D)
+            ada_noktalari = filo.ada_cevre()  # Ada çevre noktaları
+            yasakli = [(x1, y1), (x2, y2), ...]  # Yasaklı noktalar (adalar vb.)
+            
+            # Sınır hesapla
+            sinir_noktalari = filo.yeniden_ciz(rov_noktalari + ada_noktalari, yasakli)
+            
+            # Özel parametrelerle
+            sinir_noktalari = filo.yeniden_ciz(
+                noktalar=rov_noktalari,
+                yasakli_noktalar=ada_noktalari,
+                alpha=3.0,
+                buffer_radius=0.1,
+                channel_width=0.05
+            )
+        """
+        # Gerekli kütüphaneler kontrolü
+        if not ALPHASHAPE_AVAILABLE:
+            print("❌ [HATA] alphashape kütüphanesi bulunamadı! Lütfen yükleyin: pip install alphashape")
+            return []
+        
+        if not SHAPELY_AVAILABLE:
+            print("❌ [HATA] shapely kütüphanesi bulunamadı! Lütfen yükleyin: pip install shapely")
+            return []
+        
+        try:
+            # 1. Giriş verisini düzenle
+            # Noktaları 2D formatına çevir (x, y) - z koordinatını atla
+            points_cloud = []
+            for p in noktalar:
+                if len(p) >= 2:
+                    points_cloud.append((float(p[0]), float(p[1])))
+            
+            if len(points_cloud) < 3:
+                print("⚠️ [UYARI] Yeterli nokta yok (en az 3 nokta gerekli)")
+                return []
+            
+            # 2. Temel şekli (Alpha Shape) oluştur
+            base_shape = alphashape.alphashape(points_cloud, alpha)
+            
+            # Çoklu parça dönerse en büyüğünü al
+            if isinstance(base_shape, MultiPolygon):
+                if not base_shape.is_empty:
+                    base_shape = max(base_shape.geoms, key=lambda a: a.area)
+                else:
+                    print("⚠️ [UYARI] Alpha Shape oluşturulamadı (boş şekil)")
+                    return []
+            
+            # Sadece dış kabuğu al (iç delikleri temizle)
+            if isinstance(base_shape, Polygon):
+                base_shape = Polygon(base_shape.exterior)
+            else:
+                print("⚠️ [UYARI] Geçerli bir Polygon oluşturulamadı")
+                return []
+            
+            final_shape = base_shape
+            
+            # 3. Yasaklı noktaları kesip çıkar
+            for fp in yasakli_noktalar:
+                if len(fp) < 2:
+                    continue
+                
+                p_obj = Point(float(fp[0]), float(fp[1]))
+                
+                # Nokta zaten dışarıdaysa işlem yapma
+                if not final_shape.contains(p_obj):
+                    continue
+                
+                # A. Yasaklı bölge (Daire)
+                forbidden_zone = p_obj.buffer(buffer_radius)
+                
+                # B. Kanal Açma (En kısa yoldan dışarı tünel)
+                exterior_line = final_shape.exterior
+                p1, p2 = nearest_points(forbidden_zone, exterior_line)
+                
+                channel_line = LineString([p_obj, p2])
+                channel_poly = channel_line.buffer(channel_width)
+                
+                # C. Kesme işlemi
+                cut_area = unary_union([forbidden_zone, channel_poly])
+                final_shape = final_shape.difference(cut_area)
+                
+                # Parçalanma kontrolü (En büyük kıtayı koru)
+                if isinstance(final_shape, MultiPolygon):
+                    if not final_shape.is_empty:
+                        final_shape = max(final_shape.geoms, key=lambda a: a.area)
+                    else:
+                        print("⚠️ [UYARI] Kesme işlemi sonrası şekil boşaldı")
+                        return []
+            
+            # 4. Sonuç koordinatlarını çıkar
+            if isinstance(final_shape, Polygon):
+                # shapely coords nesnesini listeye çeviriyoruz
+                kontur_noktalari = list(final_shape.exterior.coords)
+                print(f"✅ [YENIDEN_CIZ] {len(kontur_noktalari)} noktalı kontur hesaplandı")
+                return kontur_noktalari
+            else:
+                print("⚠️ [UYARI] Geçerli bir Polygon sonucu oluşturulamadı")
+                return []
+        
+        except Exception as e:
+            print(f"❌ [HATA] Kontur hesaplama sırasında hata: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
     
     def _hedef_gorsel_olustur(self, x, y, z):
         """
