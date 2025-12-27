@@ -7,6 +7,8 @@ import math
 import random
 import threading
 import queue
+import sys
+import platform
 
 # Convex Hull için scipy import (geriye dönük uyumluluk için)
 try:
@@ -89,13 +91,33 @@ class Filo:
         self._git_maksimum_yaw_donme_hizi = 90.0  # git() için maksimum yaw dönme hızı (derece/saniye)
     
     def _is_main_thread(self):
-        """Şu anki thread'in ana thread olup olmadığını kontrol eder."""
-        try:
-            # threading.main_thread() Python 3.4+ için
-            return threading.current_thread() is threading.main_thread()
-        except AttributeError:
-            # Geriye dönük uyumluluk için eski yöntem
-            return threading.get_ident() == self._main_thread_id
+        """
+        Şu anki thread'in ana thread olup olmadığını kontrol eder.
+        Windows ve Linux için platform-specific yaklaşım kullanır.
+        """
+        # Platform kontrolü
+        is_windows = sys.platform.startswith('win') or platform.system() == 'Windows'
+        
+        if is_windows:
+            # Windows için: Thread ID bazlı kontrol (daha güvenilir)
+            try:
+                current_thread_id = threading.get_ident()
+                return current_thread_id == self._main_thread_id
+            except Exception:
+                # Hata durumunda varsayılan olarak ana thread olduğunu kabul et
+                return True
+        else:
+            # Linux/Unix için: threading.main_thread() kullan
+            try:
+                # threading.main_thread() Python 3.4+ için
+                return threading.current_thread() is threading.main_thread()
+            except (AttributeError, TypeError):
+                # Geriye dönük uyumluluk için thread ID kontrolü
+                try:
+                    return threading.get_ident() == self._main_thread_id
+                except Exception:
+                    # Hata durumunda varsayılan olarak ana thread olduğunu kabul et
+                    return True
     
     def _process_command_queue(self):
         """Ana thread'de çağrılmalı: Queue'daki komutları işler."""
