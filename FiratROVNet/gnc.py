@@ -1519,7 +1519,7 @@ class Filo:
                     except Exception as e:
                         print(f"⚠️ [UYARI] Yeni konturdan hull oluşturulamadı: {e}")
                 
-                # 5. Haritada yansımasını sağla
+                # 5. Haritada yansımasını sağla (tıpkı hull() çağrıldığı gibi)
                 if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
                     hull_data = {
                         'hull': yeni_hull_2d,
@@ -1527,7 +1527,9 @@ class Filo:
                         'center': yeni_hull_merkez
                     }
                     self.ortam_ref.harita.convex_hull_data = hull_data
-                    print(f"✅ [YENI_HULL] Haritada yansıtıldı")
+                    # Haritayı aç ve convex hull'u göster (tıpkı hull() çağrıldığı gibi)
+                    self.ortam_ref.harita.goster(True, True)  # (harita_ac, convex_goster)
+                    print(f"✅ [YENI_HULL] Haritada yansıtıldı ve harita açıldı")
                 
                 return {
                     'hull': yeni_hull_2d,
