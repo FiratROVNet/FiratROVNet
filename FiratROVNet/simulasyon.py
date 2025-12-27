@@ -71,10 +71,10 @@ def ursina_to_sim(ursina_x, ursina_y, ursina_z):
 
 # --- FİZİK SABİTLERİ ---
 # Config'den alınıyor: HareketAyarlari.FIZIK_*
-SURTUNME_KATSAYISI = HareketAyarlari.FIZIK_SURTUNME_KATSAYISI
-HIZLANMA_CARPANI = HareketAyarlari.FIZIK_HIZLANMA_CARPANI
-KALDIRMA_KUVVETI = HareketAyarlari.FIZIK_KALDIRMA_KUVVETI
-BATARYA_SOMURME_KATSAYISI = HareketAyarlari.FIZIK_BATARYA_SOMURME_KATSAYISI
+SURTUNME_KATSAYISI = HareketAyarlari.FIZIK_SURTUNME
+HIZLANMA_CARPANI = HareketAyarlari.FIZIK_HIZLANMA
+KALDIRMA_KUVVETI = HareketAyarlari.FIZIK_KALDIRMA
+BATARYA_SOMURME_KATSAYISI = HareketAyarlari.FIZIK_BATARYA
 
 
 
@@ -97,7 +97,7 @@ class ROV(Entity):
             # Fallback: Mevcut cube model
             self.model = 'cube'
             self.color = color.orange  # Turuncu her zaman görünür
-            self.scale = (HareketAyarlari.ROV_SCALE_X, HareketAyarlari.ROV_SCALE_Y, HareketAyarlari.ROV_SCALE_Z)
+            self.scale = HareketAyarlari.ROV_SCALE
             self.collider = 'box'
             self.unlit = True
             self.gat_kodu = 0  # GAT kodu için değişken 
@@ -116,7 +116,7 @@ class ROV(Entity):
             # Varsayılan pozisyon: (x_2d=-100, y_2d=0, z_depth=-10)
             self.position = sim_to_ursina(-100, 0, -10)
 
-        self.label = Text(text=f"ROV-{rov_id}", parent=self, y=HareketAyarlari.ROV_LABEL_Y_OFFSET, scale=HareketAyarlari.ROV_LABEL_SCALE, billboard=True, color=color.white, origin=(0, 0))
+        self.label = Text(text=f"ROV-{rov_id}", parent=self, y=HareketAyarlari.ROV_LABEL_Y, scale=HareketAyarlari.ROV_LABEL_SCALE, billboard=True, color=color.white, origin=(0, 0))
         
         self.id = rov_id
         self.velocity = Vec3(0, 0, 0)
@@ -129,7 +129,7 @@ class ROV(Entity):
         
         # Sensör ayarları config.py'den alınır (GAT limitleri ile tutarlı)
         from .config import SensorAyarlari
-        self.sensor_config = SensorAyarlari.VARSAYILAN.copy()
+        self.sensor_config = SensorAyarlari.get('varsayilan').copy()
         self.environment_ref = None
         
         # Manuel hareket kontrolü (sürekli hareket için)
@@ -140,7 +140,7 @@ class ROV(Entity):
         
         # Engel tespit bilgisi (kesikli çizgi için)
         self.tespit_edilen_engel = None  # En yakın engel referansı
-        self.engel_mesafesi = HareketAyarlari.MAX_MESAFE_ALGILAMA  # En yakın engel mesafesi
+        self.engel_mesafesi = HareketAyarlari.MESAFE_MAX_ALGILAMA  # En yakın engel mesafesi
         self.engel_cizgi = None  # Kesikli çizgi entity'si
         
         # Sonar iletişim bilgisi (ROV'lar arası kesikli çizgi için)
@@ -148,7 +148,10 @@ class ROV(Entity):
         
         # İletişim durumu (liderle iletişim var mı?)
         self.lider_ile_iletisim = False  # Liderle iletişim durumu
-        self.yuzeyde = False  # Yüzeyde mi? (z_depth >= 0, yani derinlik pozitif) 
+        self.yuzeyde = False  # Yüzeyde mi? (z_depth >= 0, yani derinlik pozitif)
+        
+        # Hedef mesafesi (GNC'den güncellenir, kaçınma mekanizması için)
+        self.hedef_mesafe = None  # Hedefe olan mesafe (metre), None ise hedef yok 
 
     def update(self):
         # Manuel hareket kontrolü (sürekli hareket için)
@@ -403,8 +406,8 @@ class ROV(Entity):
             Eğer engel sonar mesafesindeyse (engel_mesafesi limiti içindeyse) mesafeyi döndürür,
             değilse -1 döndürür (engel yok veya menzil dışında).
             """
-            min_dist = HareketAyarlari.MAX_MESAFE_ALGILAMA
-            engel_mesafesi_limit = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
+            min_dist = HareketAyarlari.MESAFE_MAX_ALGILAMA
+            engel_mesafesi_limit = self.sensor_config.get("engel_mesafesi", SensorAyarlari.get('varsayilan', 'engel_mesafesi'))
             
             if not self.environment_ref:
                 return -1
@@ -464,7 +467,7 @@ class ROV(Entity):
                         dy = abs(fark_vektoru.y)
                         
                         # Silindirik algılama: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
-                        dikey_tolerans = HareketAyarlari.DIKEY_TOLERANS_ADA_HASSAS
+                        dikey_tolerans = HareketAyarlari.TOLERANS_DIKEY_ADA
                         
                         if dy <= (dikey_yaricap + dikey_tolerans):
                             duvara_mesafe = yatay_uzaklik - yatay_yaricap
@@ -510,7 +513,7 @@ class ROV(Entity):
             from ursina import Vec3
             
             # Lidar ayarları
-            lidar_menzil = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
+            lidar_menzil = self.sensor_config.get("engel_mesafesi", SensorAyarlari.get('varsayilan', 'engel_mesafesi'))
             lidar_acisi = math.radians(30)  # 30 derece görüş açısı
             
             if not self.environment_ref:
@@ -559,7 +562,7 @@ class ROV(Entity):
             else:
                 return -1  # Geçersiz taraf parametresi
             
-            min_dist = HareketAyarlari.MAX_MESAFE_ALGILAMA
+            min_dist = HareketAyarlari.MESAFE_MAX_ALGILAMA
             
             # 1. Havuz sınırlarını kontrol et (sonar mantığı gibi)
             if hasattr(self.environment_ref, 'havuz_genisligi'):
@@ -623,7 +626,7 @@ class ROV(Entity):
                         fark_vektoru = self.position - engel.position
                         yatay_uzaklik = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
                         dy = abs(fark_vektoru.y)
-                        dikey_tolerans = HareketAyarlari.DIKEY_TOLERANS_ADA_HASSAS
+                        dikey_tolerans = HareketAyarlari.TOLERANS_DIKEY_ADA
                         
                         if dy <= (dikey_yaricap + dikey_tolerans):
                             duvara_mesafe = yatay_uzaklik - yatay_yaricap
@@ -678,11 +681,11 @@ class ROV(Entity):
         if not self.environment_ref or not hasattr(self.environment_ref, 'engeller'):
             return
         
-        min_mesafe = HareketAyarlari.MAX_MESAFE_ALGILAMA
+        min_mesafe = HareketAyarlari.MESAFE_MAX_ALGILAMA
         en_yakin_engel = None
         en_yakin_nokta = None  # Çizgi çekilecek nokta
         
-        engel_mesafesi_limit = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
+        engel_mesafesi_limit = self.sensor_config.get("engel_mesafesi", SensorAyarlari.get('varsayilan', 'engel_mesafesi'))
         
         # Havuz sınırlarını kontrol et (sanal engeller)
         # Sınırlar: +-havuz_genisligi (yani +-200 birim)
@@ -758,7 +761,7 @@ class ROV(Entity):
                 dy = abs(fark_vektoru.y)
                 
                 # Silindirik algılama: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
-                dikey_tolerans = HareketAyarlari.DIKEY_TOLERANS_ADA_HASSAS  # Daha hassas tolerans
+                dikey_tolerans = HareketAyarlari.TOLERANS_DIKEY_ADA  # Daha hassas tolerans
                 
                 if dy <= (dikey_yaricap + dikey_tolerans):
                     duvara_mesafe = yatay_uzaklik - yatay_yaricap
@@ -797,7 +800,7 @@ class ROV(Entity):
                 dy = abs(fark_vektoru.y)
                 
                 # 3. Kapsama Alanı Kontrolü
-                dikey_tolerans = HareketAyarlari.DIKEY_TOLERANS_ENGEL  # Config'den alınan dikey tolerans 
+                dikey_tolerans = HareketAyarlari.TOLERANS_DIKEY_ENGEL  # Config'den alınan dikey tolerans 
                 
                 if dy <= (dikey_yaricap + dikey_tolerans):
                     duvara_mesafe = yatay_uzaklik - yatay_yaricap
@@ -836,7 +839,7 @@ class ROV(Entity):
                 self._kesikli_cizgi_ciz(en_yakin_nokta, min_mesafe)
         else:
             self.tespit_edilen_engel = None
-            self.engel_mesafesi = HareketAyarlari.MAX_MESAFE_ALGILAMA
+            self.engel_mesafesi = HareketAyarlari.MESAFE_MAX_ALGILAMA
             if hasattr(self, 'engel_cizgi') and self.engel_cizgi:
                 destroy(self.engel_cizgi)
                 self.engel_cizgi = None
@@ -854,9 +857,9 @@ class ROV(Entity):
             destroy(self.engel_cizgi)
         
         # Renk belirle
-        if mesafe < HareketAyarlari.GORSELLEŞTIRME_ENGEL_CİZGİ_KIRMIZI:
+        if mesafe < HareketAyarlari.GORSELLEŞTIRME_ENGEL_KIRMIZI:
             cizgi_rengi = color.red
-        elif mesafe < HareketAyarlari.GORSELLEŞTIRME_ENGEL_CİZGİ_TURUNCU:
+        elif mesafe < HareketAyarlari.GORSELLEŞTIRME_ENGEL_TURUNCU:
             cizgi_rengi = color.orange
         else:
             cizgi_rengi = color.yellow
@@ -876,8 +879,8 @@ class ROV(Entity):
         yon = yon.normalized()
         
         # Parça ayarları
-        parca_uzunlugu = HareketAyarlari.GORSELLEŞTIRME_ENGEL_CİZGİ_PARCA_UZUNLUK
-        bosluk_uzunlugu = HareketAyarlari.GORSELLEŞTIRME_ENGEL_CİZGİ_BOSLUK
+        parca_uzunlugu = HareketAyarlari.GORSELLEŞTIRME_ENGEL_PARCA
+        bosluk_uzunlugu = HareketAyarlari.GORSELLEŞTIRME_ENGEL_BOSLUK
         
         self.engel_cizgi = Entity()
         
@@ -1006,9 +1009,9 @@ class ROV(Entity):
             iletisim_menzili = self.sensor_config.get("iletisim_menzili", HareketAyarlari.ILETISIM_VARSAYILAN_MENZIL)
             mesafe_orani = mesafe / iletisim_menzili
             
-            if mesafe_orani < HareketAyarlari.GORSELLEŞTIRME_ILETISIM_YAKIN_ORAN:  # Çok yakın
+            if mesafe_orani < HareketAyarlari.GORSELLEŞTIRME_ILETISIM_YAKIN:  # Çok yakın
                 cizgi_rengi = color.blue
-            elif mesafe_orani < HareketAyarlari.GORSELLEŞTIRME_ILETISIM_ORTA_ORAN:  # Orta mesafe
+            elif mesafe_orani < HareketAyarlari.GORSELLEŞTIRME_ILETISIM_ORTA:  # Orta mesafe
                 cizgi_rengi = color.cyan
             else:  # Uzak ama hala menzil içinde
                 cizgi_rengi = color.rgb(100, 200, 255)  # Açık mavi
@@ -1023,8 +1026,8 @@ class ROV(Entity):
         toplam_mesafe = distance(baslangic, bitis)
         
         # Kesikli çizgi parçaları
-        parca_uzunlugu = HareketAyarlari.GORSELLEŞTIRME_ILETISIM_CİZGİ_PARCA_UZUNLUK
-        bosluk_uzunlugu = HareketAyarlari.GORSELLEŞTIRME_ILETISIM_CİZGİ_BOSLUK
+        parca_uzunlugu = HareketAyarlari.GORSELLEŞTIRME_ILETISIM_PARCA
+        bosluk_uzunlugu = HareketAyarlari.GORSELLEŞTIRME_ILETISIM_BOSLUK
         
         # Ana çizgi entity'si (parçaları tutmak için)
         cizgi_entity = Entity()
@@ -1095,7 +1098,7 @@ class ROV(Entity):
             
             # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda iletişim kopmasını görmezden gel
             # Bu, çarpışma önleme mekanizmasının neden olduğu geçici iletişim kopmalarını önler (Config'den)
-            yakin_mesafe_esigi = HareketAyarlari.YAKIN_MESAFE_ESIGI
+            yakin_mesafe_esigi = HareketAyarlari.MESAFE_YAKIN_ESIGI
             if mesafe < yakin_mesafe_esigi:
                 # Çok yakınsa, iletişim var say (geçici kopmaları önle)
                 self.lider_ile_iletisim = True
@@ -1110,12 +1113,30 @@ class ROV(Entity):
         if not self.environment_ref:
             return
         
+        # Hedefe yakınken kaçınma mekanizmasını yumuşat (titreme önleme)
+        hedef_yakinlik_carpani = 1.0  # Varsayılan: tam güç
+        if hasattr(self, 'hedef_mesafe') and self.hedef_mesafe is not None:
+            # Hedef toleransını rol bazlı al
+            if self.role == 1:  # Lider
+                hedef_tolerans = HareketAyarlari.MESAFE_HEDEF_TOLERANS_LIDER
+            else:  # Takipçi
+                hedef_tolerans = HareketAyarlari.MESAFE_HEDEF_TOLERANS_TAKIPCI
+            
+            # Hedefe yakınken (tolerans * 3 mesafede) kaçınma mekanizmasını yumuşat
+            hedef_yakinlik_esigi = hedef_tolerans * 3.0
+            if self.hedef_mesafe <= hedef_yakinlik_esigi:
+                # Hedefe yaklaştıkça kaçınma gücünü azalt (0.0 - 1.0 arası)
+                hedef_yakinlik_carpani = max(0.0, (self.hedef_mesafe - hedef_tolerans) / (hedef_yakinlik_esigi - hedef_tolerans))
+                # Hedefe çok yakınsa (tolerans içinde) kaçınmayı tamamen devre dışı bırak
+                if self.hedef_mesafe <= hedef_tolerans:
+                    hedef_yakinlik_carpani = 0.0
+        
         # Kaçınma mesafesini sensör ayarlarından al
         kacinma_mesafesi = self.sensor_config.get("kacinma_mesafesi", None)
         if kacinma_mesafesi is None:
             # Eğer kacinma_mesafesi yoksa, engel_mesafesi'nin bir kısmını kullan (Config'den katsayı)
-            engel_mesafesi = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
-            kacinma_mesafesi = engel_mesafesi * HareketAyarlari.KACINMA_MESAFESI_FALLBACK_KATSAYISI
+            engel_mesafesi = self.sensor_config.get("engel_mesafesi", SensorAyarlari.get('varsayilan', 'engel_mesafesi'))
+            kacinma_mesafesi = engel_mesafesi * HareketAyarlari.KATSAYI_KACINMA_FALLBACK
         
         uzaklasma_vektoru = Vec3(0, 0, 0)
         
@@ -1128,10 +1149,10 @@ class ROV(Entity):
                 
                 mesafe = distance(self.position, diger_rov.position)
                 
-                # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (çarpışma menzili içinde) kaçınma mekanizmasını devre dışı bırak
+                # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (minimum mesafe içinde) kaçınma mekanizmasını devre dışı bırak
                 # Bu, ROV'ların birbirini sürekli itmesini ve titreme sorununu önler
-                # Çarpışma menzili config'den alınır (GATLimitleri.CARPISMA)
-                minimum_mesafe = GATLimitleri.CARPISMA  # Çarpışma menzili (varsayılan: 8.0 metre)
+                # Minimum mesafe config'den alınır (titreme önleme için optimize edildi)
+                minimum_mesafe = HareketAyarlari.MESAFE_MIN_KACINMA  # Minimum kaçınma mesafesi (varsayılan: 3.0 metre)
                 if mesafe < minimum_mesafe:
                     continue  # Çok yakınsa kaçınma yapma (titreme önleme)
                 
@@ -1142,7 +1163,8 @@ class ROV(Entity):
                     # Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
                     # Ancak gücü daha da yumuşat (çok agresif olmasın)
                     uzaklasma_gucu = (kacinma_mesafesi - mesafe) / kacinma_mesafesi
-                    uzaklasma_gucu *= HareketAyarlari.KACINMA_UZAKLASMA_GUC_KATSAYISI  # Gücü indir (daha yumuşak)
+                    uzaklasma_gucu *= HareketAyarlari.KATSAYI_UZAKLASMA  # Gücü indir (daha yumuşak)
+                    uzaklasma_gucu *= hedef_yakinlik_carpani  # Hedefe yakınken yumuşat
                     uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
         
         # Engellerden uzaklaşma
@@ -1169,7 +1191,7 @@ class ROV(Entity):
                 dikey_fark = abs(fark_vektoru.y)
                 
                 # Silindirik algılama: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
-                if dikey_fark <= (engel_yukseklik + HareketAyarlari.DIKEY_TOLERANS_ADA_HASSAS):  # Dikey tolerans
+                if dikey_fark <= (engel_yukseklik + HareketAyarlari.TOLERANS_DIKEY_ADA):  # Dikey tolerans
                     gercek_mesafe = yatay_mesafe - engel_yari_cap
                 else:
                     continue  # Dikey olarak çok uzaksa atla
@@ -1199,7 +1221,8 @@ class ROV(Entity):
                 # Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
                 # Config'den alınan uzaklaşma gücü katsayısı
                 uzaklasma_gucu = (kacinma_mesafesi - gercek_mesafe) / kacinma_mesafesi
-                uzaklasma_gucu *= HareketAyarlari.UZAKLASMA_GUC_KATSAYISI
+                uzaklasma_gucu *= HareketAyarlari.KATSAYI_UZAKLASMA
+                uzaklasma_gucu *= hedef_yakinlik_carpani  # Hedefe yakınken yumuşat
                 uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
         
         # Havuz sınırlarından uzaklaşma (sanal engeller)
@@ -1238,6 +1261,7 @@ class ROV(Entity):
                 # Uzaklaşma gücü
                 uzaklasma_gucu = (kacinma_mesafesi - en_yakin_sinir_mesafe) / kacinma_mesafesi
                 uzaklasma_gucu *= 0.3  # Gücü %30'a indir (daha yumuşak)
+                uzaklasma_gucu *= hedef_yakinlik_carpani  # Hedefe yakınken yumuşat
                 uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
         
         # Uzaklaşma vektörünü uygula
@@ -1247,7 +1271,7 @@ class ROV(Entity):
             uzaklasma_gucu = min(uzaklasma_vektoru.length(), 1.0)  # Maksimum %100 güç
             
             # Daha yumuşak uzaklaşma için gücü azalt (Config'den yumuşaklık çarpanı)
-            uzaklasma_gucu *= HareketAyarlari.YUMUSAKLIK_CARPANI
+            uzaklasma_gucu *= HareketAyarlari.KATSAYI_YUMUSAKLIK
             
             # Hız vektörüne ekle (momentum korunumu için)
             uzaklasma_hizi = uzaklasma_vektoru * uzaklasma_gucu * HIZLANMA_CARPANI * time.dt
@@ -1265,6 +1289,24 @@ class ROV(Entity):
         if not self.environment_ref:
             return
         
+        # Hedefe yakınken çarpışma kontrolünü yumuşat (titreme önleme)
+        hedef_yakinlik_carpani = 1.0  # Varsayılan: tam güç
+        if hasattr(self, 'hedef_mesafe') and self.hedef_mesafe is not None:
+            # Hedef toleransını rol bazlı al
+            if self.role == 1:  # Lider
+                hedef_tolerans = HareketAyarlari.MESAFE_HEDEF_TOLERANS_LIDER
+            else:  # Takipçi
+                hedef_tolerans = HareketAyarlari.MESAFE_HEDEF_TOLERANS_TAKIPCI
+            
+            # Hedefe yakınken (tolerans * 2 mesafede) çarpışma kontrolünü yumuşat
+            hedef_yakinlik_esigi = hedef_tolerans * 2.0
+            if self.hedef_mesafe <= hedef_yakinlik_esigi:
+                # Hedefe yaklaştıkça çarpışma gücünü azalt (0.0 - 1.0 arası)
+                hedef_yakinlik_carpani = max(0.0, (self.hedef_mesafe - hedef_tolerans) / (hedef_yakinlik_esigi - hedef_tolerans))
+                # Hedefe çok yakınsa (tolerans içinde) çarpışma kontrolünü tamamen devre dışı bırak
+                if self.hedef_mesafe <= hedef_tolerans:
+                    hedef_yakinlik_carpani = 0.0
+        
         # ROV kütlesi (basitleştirilmiş)
         rov_kutlesi = 1.0
         
@@ -1275,7 +1317,7 @@ class ROV(Entity):
             
             mesafe = distance(self.position, diger_rov.position)
             # Minimum mesafe config'den alınır (çarpışma menzili)
-            min_mesafe = GATLimitleri.CARPISMA  # Çarpışma menzili (varsayılan: 8.0 metre)
+            min_mesafe = GATLimitleri.CARPISMA  # Çarpışma menzili (varsayılan: 5.0 metre)
             
             if mesafe < min_mesafe:
                 # Çarpışma tespit edildi
@@ -1292,15 +1334,26 @@ class ROV(Entity):
                 goreceli_hiz_buyuklugu = goreceli_hiz.length()
                 
                 # Titreme önleme: Çok yakınsa ve hız çok düşükse, sadece pozisyon ayırma yap
-                if mesafe < HareketAyarlari.CARPISMA_TITREME_MESAFE_ESIGI and goreceli_hiz_buyuklugu < HareketAyarlari.CARPISMA_TITREME_HIZ_ESIGI:
-                    # Sadece pozisyon ayırma (titreme önleme)
-                    ayirma_mesafesi = (min_mesafe - mesafe) * HareketAyarlari.CARPISMA_AYIRMA_KATSAYISI  # Yumuşak ayırma
-                    self.position += carpisma_yonu * ayirma_mesafesi
-                    diger_rov.position -= carpisma_yonu * ayirma_mesafesi
-                    # Hızları yavaşlat (titreme önleme)
-                    self.velocity *= HareketAyarlari.CARPISMA_HIZ_YAVASLATMA
-                    diger_rov.velocity *= HareketAyarlari.CARPISMA_HIZ_YAVASLATMA
-                elif goreceli_hiz_buyuklugu > HareketAyarlari.CARPISMA_GOREKELI_HIZ_ESIGI:
+                if mesafe < HareketAyarlari.CARPISMA_TITREME_MESAFE and goreceli_hiz_buyuklugu < HareketAyarlari.CARPISMA_TITREME_HIZ:
+                    # Hedefe yakınken çarpışma kontrolünü yumuşat
+                    carpisma_guc_carpani = hedef_yakinlik_carpani
+                    # Hedefe çok yakınsa çarpışma kontrolünü tamamen devre dışı bırak
+                    if carpisma_guc_carpani < 0.1:
+                        return  # Çarpışma kontrolünü atla
+                    
+                    # Sadece pozisyon ayırma (titreme önleme) - daha yumuşak
+                    if mesafe < min_mesafe:
+                        ayirma_mesafesi = (min_mesafe - mesafe) * HareketAyarlari.CARPISMA_AYIRMA * carpisma_guc_carpani  # Yumuşak ayırma
+                        self.position += carpisma_yonu * ayirma_mesafesi
+                        diger_rov.position -= carpisma_yonu * ayirma_mesafesi
+                    # Hızları yavaşlat (titreme önleme) - daha agresif
+                    self.velocity *= HareketAyarlari.CARPISMA_HIZ_YAVASLATMA * (0.5 + 0.5 * carpisma_guc_carpani)  # Hedefe yakınken daha yumuşak
+                    diger_rov.velocity *= HareketAyarlari.CARPISMA_HIZ_YAVASLATMA * (0.5 + 0.5 * carpisma_guc_carpani)
+                    # Titreme önleme için hızları sıfırla (çok yakınsa)
+                    if mesafe < min_mesafe * 0.5:  # Çok çok yakınsa
+                        self.velocity *= 0.3 * carpisma_guc_carpani
+                        diger_rov.velocity *= 0.3 * carpisma_guc_carpani
+                elif goreceli_hiz_buyuklugu > HareketAyarlari.CARPISMA_HIZ_ESIGI:
                     # Normal çarpışma işleme (momentum korunumu)
                     # Basitleştirilmiş: Her iki ROV da aynı kütlede
                     diger_rov_kutlesi = 1.0
@@ -1313,10 +1366,10 @@ class ROV(Entity):
                     
                     if nokta_carpim < 0:  # Birbirine yaklaşıyorlar
                         # Yeni hızlar (daha yumuşak)
-                        carpan1 = (2 * diger_rov_kutlesi / (rov_kutlesi + diger_rov_kutlesi)) * nokta_carpim * HareketAyarlari.CARPISMA_MOMENTUM_YUMUSATMA  # Yumuşatma
+                        carpan1 = (2 * diger_rov_kutlesi / (rov_kutlesi + diger_rov_kutlesi)) * nokta_carpim * HareketAyarlari.CARPISMA_MOMENTUM  # Yumuşatma
                         self.velocity = self.velocity - carpisma_yonu * carpan1
                         
-                        carpan2 = (2 * rov_kutlesi / (rov_kutlesi + diger_rov_kutlesi)) * (-nokta_carpim) * HareketAyarlari.CARPISMA_MOMENTUM_YUMUSATMA  # Yumuşatma
+                        carpan2 = (2 * rov_kutlesi / (rov_kutlesi + diger_rov_kutlesi)) * (-nokta_carpim) * HareketAyarlari.CARPISMA_MOMENTUM  # Yumuşatma
                         diger_rov.velocity = diger_rov.velocity - (-carpisma_yonu) * carpan2
                         
                         # Çarpışma sonrası pozisyonları ayır (yumuşak)
@@ -1346,7 +1399,7 @@ class ROV(Entity):
                 dikey_fark = abs(fark_vektoru.y)
                 
                 # Silindirik çarpışma: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
-                if dikey_fark <= (engel_yukseklik + HareketAyarlari.DIKEY_TOLERANS_ENGEL):  # Config'den dikey tolerans
+                if dikey_fark <= (engel_yukseklik + HareketAyarlari.TOLERANS_DIKEY_ENGEL):  # Config'den dikey tolerans
                     min_mesafe = engel_yari_cap + 1.0
                     
                     if yatay_mesafe < min_mesafe:

@@ -233,15 +233,15 @@ class Filo:
         # Varsayılan modem ayarları (config.py'den alınır)
         if modem_ayarlari is None:
             modem_ayarlari = {
-                'lider': ModemAyarlari.LIDER.copy(),
-                'takipci': ModemAyarlari.TAKIPCI.copy()
+                'lider': ModemAyarlari.get('lider').copy(),
+                'takipci': ModemAyarlari.get('takipci').copy()
             }
         
         # Varsayılan sensör ayarları (config.py'den alınır - GAT limitleri ile tutarlı)
         if sensor_ayarlari is None:
             sensor_ayarlari = {
-                'lider': SensorAyarlari.LIDER.copy(),
-                'takipci': SensorAyarlari.TAKIPCI.copy()
+                'lider': SensorAyarlari.get('lider').copy(),
+                'takipci': SensorAyarlari.get('takipci').copy()
             }
         
         # Ortam referansını kaydet
@@ -252,7 +252,7 @@ class Filo:
             self.ortam_ref = rovs[0].environment_ref
         
         # Sensör ayarları için kontrol listesi (config.py'den alınır)
-        varsayilan_sensor_ayarlari = SensorAyarlari.VARSAYILAN.copy()
+        varsayilan_sensor_ayarlari = SensorAyarlari.get('varsayilan').copy()
         
         tum_modemler = {}
         lider_modem = None
@@ -753,7 +753,7 @@ class Filo:
             
             # Eğer yüzeydeyse (z >= 0), su altına gönder (default derinlik config'den)
             if sim_z >= 0:
-                sim_z = HareketAyarlari.FORMASYON_DEFAULT_DERINLIK
+                sim_z = HareketAyarlari.FORMASYON_DERINLIK
             
             # filo.git() ile hedefi uygula (Sim formatında)
             try:
@@ -858,8 +858,8 @@ class Filo:
                 lider_gps = hull_merkez
 
             # 3. Formasyon aralığı parametreleri
-            min_aralik = margin * HareketAyarlari.FORMASYON_MARGIN_MIN_KATSAYISI
-            baslangic_aralik = margin * HareketAyarlari.FORMASYON_MARGIN_BASLANGIC_KATSAYISI
+            min_aralik = margin * HareketAyarlari.FORMASYON_MARGIN_MIN
+            baslangic_aralik = margin * HareketAyarlari.FORMASYON_MARGIN_BASLANGIC
             adim = HareketAyarlari.FORMASYON_ADIM  # metre
 
             # 4. Yaw açıları (0, 90, 180, 270 derece)
@@ -1480,7 +1480,7 @@ class Filo:
             max_guc = 100.0 * guc
             if hareket_vektoru.length() > 0:
                 # Manuel hareket güç katsayısı (Config'den)
-                rov.velocity += hareket_vektoru.normalized() * max_guc * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
+                rov.velocity += hareket_vektoru.normalized() * max_guc * time.dt * HareketAyarlari.KATSAYI_MOTOR_GUC
                 
                 # Hız limiti
                 if rov.velocity.length() > max_guc:
@@ -1534,6 +1534,9 @@ class TemelGNC:
         # Hedef yoksa işlem yapma
         if self.hedef is None:
             # Hedef yoksa motorları durdur
+            if not hasattr(self.rov, 'hedef_mesafe'):
+                self.rov.hedef_mesafe = None
+            self.rov.hedef_mesafe = None  # Hedef yok, mesafe bilgisini temizle
             if self.rov.velocity.length() > 0.1:
                 self.rov.velocity *= 0.8  # Momentumu yumuşatarak durdur
             return
@@ -1544,12 +1547,26 @@ class TemelGNC:
         # 2. Farkı Simülasyon dünyasında hesapla
         fark = self.hedef - current_sim_pos
         mevcut_mesafe = fark.length()
+        
+        # ROV'a hedef mesafesini kaydet (kaçınma mekanizması için)
+        if not hasattr(self.rov, 'hedef_mesafe'):
+            self.rov.hedef_mesafe = None
+        self.rov.hedef_mesafe = mevcut_mesafe
+        
+        # Hedef toleransını rol bazlı config'den al
+        if self.rov.role == 1:  # Lider
+            hedef_tolerans = HareketAyarlari.MESAFE_HEDEF_TOLERANS_LIDER
+        else:  # Takipçi
+            hedef_tolerans = HareketAyarlari.MESAFE_HEDEF_TOLERANS_TAKIPCI
 
         # HEDEF KONTROLÜ: Hedefe ulaşıldıysa dur
-        if mevcut_mesafe <= 0.1:
+        if mevcut_mesafe <= hedef_tolerans:
             # Hedefe ulaşıldı, dur
             if self.rov.velocity.length() > 0.1:
-                self.rov.velocity *= 0.8  # Momentumu yumuşatarak durdur
+                self.rov.velocity *= 0.5  # Daha agresif durdurma
+            else:
+                self.rov.velocity = Vec3(0, 0, 0)  # Tamamen durdur
+            self.rov.hedef_mesafe = None  # Hedefe ulaşıldı, mesafe bilgisini temizle
             return
 
         # 3. Hareket vektörünü normalize et

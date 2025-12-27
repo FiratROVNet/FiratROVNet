@@ -22,10 +22,10 @@ class GATLimitleri:
     Bu limitler ortam.py (eğitim) ve gnc.py/simulasyon.py (kullanım) tarafından kullanılır.
     """
     # GAT Kod Limitleri (metre cinsinden)
-    CARPISMA = 8.0    # Kod 2: Çarpışma riski mesafesi
+    CARPISMA = 5.0    # Kod 2: Çarpışma riski mesafesi
     ENGEL = 20.0      # Kod 1: Engel yakınlığı mesafesi
-    KOPMA = 35.0      # Kod 3: Bağlantı kopması mesafesi
-    UZAK = 60.0       # Kod 5: Liderden uzaklık mesafesi
+    KOPMA = 60.0      # Kod 3: Bağlantı kopması mesafesi
+    UZAK = 80.0       # Kod 5: Liderden uzaklık mesafesi
     
     @classmethod
     def dict(cls):
@@ -40,188 +40,203 @@ class GATLimitleri:
 
 class SensorAyarlari:
     """
-    Sensör ayarları - Eğitim ve kullanımda tutarlı olmalı!
-    Bu ayarlar GAT limitleri ile uyumlu olmalı:
-    - engel_mesafesi >= GATLimitleri.ENGEL (20.0)
-    - iletisim_menzili >= GATLimitleri.KOPMA (35.0)
-    - kacinma_mesafesi <= GATLimitleri.CARPISMA (8.0)
+    Sensör ayarları - Fonksiyonlar ile dinamik değer döndürür.
     """
-    # Lider ROV için varsayılan ayarlar
-    LIDER = {
-        'engel_mesafesi': 20.0,      # GATLimitleri.ENGEL ile aynı
-        'iletisim_menzili': 50.0,     # GATLimitleri.KOPMA ile aynı
-        'min_pil_uyarisi': 0.2,       # Normalize edilmiş (0.0-1.0)
-        'kacinma_mesafesi': 5.0       # GATLimitleri.CARPISMA ile aynı
-    }
+    @staticmethod
+    def get(rol='varsayilan', parametre=None):
+        """
+        ROV rolüne göre sensör ayarlarını döndürür.
+        
+        Args:
+            rol (str): 'lider', 'takipci' veya 'varsayilan'
+            parametre (str, optional): Belirli bir parametre isteniyorsa ('engel_mesafesi', 'iletisim_menzili', vb.)
+        
+        Returns:
+            dict veya float: Tüm ayarlar dict'i veya belirli parametre değeri
+        """
+        # Temel değerler (GAT limitlerinden türetilir)
+        engel_mesafesi = GATLimitleri.ENGEL
+        iletisim_menzili = GATLimitleri.KOPMA
+        kacinma_mesafesi = GATLimitleri.CARPISMA
+        
+        # Rol bazlı farklılıklar
+        if rol == 'lider':
+            min_pil_uyarisi = 0.2
+        elif rol == 'takipci':
+            min_pil_uyarisi = 0.15
+        else:  # varsayilan
+            min_pil_uyarisi = 0.2
+        
+        ayarlar = {
+            'engel_mesafesi': engel_mesafesi,
+            'iletisim_menzili': iletisim_menzili,
+            'min_pil_uyarisi': min_pil_uyarisi,
+            'kacinma_mesafesi': kacinma_mesafesi
+        }
+        
+        return ayarlar.get(parametre) if parametre else ayarlar
     
-    # Takipçi ROV için varsayılan ayarlar
-    TAKIPCI = {
-        'engel_mesafesi': 20.0,       # GATLimitleri.ENGEL ile aynı
-        'iletisim_menzili': 50.0,     # GATLimitleri.KOPMA ile aynı
-        'min_pil_uyarisi': 0.15,      # Normalize edilmiş (0.0-1.0)
-        'kacinma_mesafesi': 5.0       # GATLimitleri.CARPISMA ile aynı
-    }
+    # Geriye dönük uyumluluk için class property'ler
+    @classmethod
+    def LIDER(cls):
+        return cls.get('lider')
     
-    # Genel varsayılan ayarlar (fallback için)
-    VARSAYILAN = {
-        'engel_mesafesi': 20.0,
-        'iletisim_menzili': 50.0,
-        'min_pil_uyarisi': 0.2,
-        'kacinma_mesafesi': 5.0
-    }
+    @classmethod
+    def TAKIPCI(cls):
+        return cls.get('takipci')
+    
+    @classmethod
+    def VARSAYILAN(cls):
+        return cls.get('varsayilan')
 
 
 class HareketAyarlari:
     """
-    Hareket ve formasyon ayarları - Tüm sistemde kullanılan katsayılar ve mesafeler.
+    Hareket ve formasyon ayarları - Minimum değişken, maksimum fonksiyon kullanımı.
     """
-    # Takipçi hareket eşikleri
-    HAREKET_ESIGI_KATSAYISI = 0.7      # İletişim menzilinin %70'i (lider uzaklaşma eşiği)
-    HISTERESIS_KATSAYISI = 0.9         # Aktif moddan pasif moda geçiş toleransı
+    # Temel katsayılar (birleştirilmiş)
+    KATSAYI_HAREKET_ESIGI = 0.7      # İletişim menzilinin %70'i
+    KATSAYI_HISTERESIS = 0.9         # Aktif-pasif mod geçişi
+    KATSAYI_KACINMA_FALLBACK = 0.2   # Engel mesafesinin %20'si
+    KATSAYI_UZAKLASMA = 0.2          # Uzaklaşma gücü (azaltıldı: 0.4 -> 0.2, daha yumuşak)
+    KATSAYI_YUMUSAKLIK = 0.2         # Yumuşaklık çarpanı (azaltıldı: 0.4 -> 0.2, daha yumuşak)
+    KATSAYI_MOTOR_GUC = 0.5          # Manuel hareket güç
     
-    # Hedef toleransları (metre)
-    HEDEF_TOLERANS_LIDER = 0.5         # Lider için hedef toleransı
-    HEDEF_TOLERANS_TAKIPCI = 2.0       # Takipçi için hedef toleransı
+    # Mesafe eşikleri (metre)
+    MESAFE_HEDEF_TOLERANS_LIDER = 0.5
+    MESAFE_HEDEF_TOLERANS_TAKIPCI = 2.0
+    MESAFE_FORMAYON = 15.0
+    MESAFE_MIN_KACINMA = 3.0         # Minimum kaçınma mesafesi (artırıldı: 2.0 -> 3.0, titreme önleme)
+    MESAFE_YAKIN_ESIGI = 20.0
+    MESAFE_MAX_ALGILAMA = 999.0
+    MESAFE_PASIF_MOD_MIN = 5.0
     
-    # Formasyon ayarları
-    FORMASYON_MESAFESI = 15.0          # Varsayılan formasyon mesafesi (metre)
-    FORMASYON_VARSAYILAN_ARALIK = 15.0  # Formasyon aralığı (metre)
+    # Toleranslar (metre)
+    TOLERANS_DIKEY_ENGEL = 10.0
+    TOLERANS_DIKEY_ADA = 5.0
     
-    # Kaçınma ayarları
-    KACINMA_MESAFESI_FALLBACK_KATSAYISI = 0.2  # Engel mesafesinin %20'si (fallback)
-    MINIMUM_MESAFE_KACINMA = 2.0       # Minimum mesafe (çok yakınsa kaçınma yok)
-    YAKIN_MESAFE_ESIGI = 15.0          # Yakın mesafe eşiği (iletişim kopmasını önleme)
+    # Güç seviyeleri (0.0-1.0)
+    GUC_ENGEL = 0.6
+    GUC_PASIF = 0.1
+    GUC_UZAK = 1.5
     
-    # Dikey toleranslar (metre)
-    DIKEY_TOLERANS_ENGEL = 10.0         # Engel algılama için dikey tolerans
-    DIKEY_TOLERANS_ADA = 5.0            # Ada algılama için dikey tolerans
-    
-    # Vektör birleştirme katsayıları (0.0-1.0)
-    VEKTOR_BIRLESTIRME_NORMAL_KACINMA = 0.5      # Normal durumda kaçınma ağırlığı
-    VEKTOR_BIRLESTIRME_TAKIPCI_KACINMA = 0.8      # Takipçi için kaçınma ağırlığı
-    VEKTOR_BIRLESTIRME_TAKIPCI_HEDEF = 0.2        # Takipçi için hedef ağırlığı
-    
-    # Güç ayarları (0.0-1.0)
-    GUC_ENGEL = 0.5                    # Engel durumunda motor gücü
-    GUC_PASIF_MOD = 0.1                # Pasif modda motor gücü
-    GUC_UZAK = 1.5                     # Uzak durumda motor gücü (takipçi)
-    
-    # Hedef görselleştirme
-    HEDEF_X_BOYUTU = 10.0              # Hedef X işareti boyutu
-    HEDEF_KALINLIK = 1.0               # Hedef X işareti kalınlığı
-    
-    # Random hedef oluşturma
-    RANDOM_HEDEF_HAVUZ_KATSAYISI = 0.7  # Havuz genişliğinin %70'i içinde
-    RANDOM_HEDEF_MIN_MESAFE_ADA = 30.0  # Adalardan minimum mesafe
-    
-    # Havuz sınırları
-    HAVUZ_SINIR_TOLERANS = 0.95        # Havuz sınır toleransı (%95)
-    HAVUZ_SINIR_Y_UST = 0.3            # Üst yüzey sınırı
-    HAVUZ_SINIR_Y_ALT = -95.0          # Alt derinlik sınırı
-    
-    # Formasyon şekil katsayıları
-    V_FORMASYON_X_KATSAYISI = 0.8      # V formasyonu X ekseni katsayısı
-    V_FORMASYON_Z_KATSAYISI = 0.6      # V formasyonu Z ekseni katsayısı
-    OK_FORMASYON_X_KATSAYISI = 0.8     # Ok formasyonu X ekseni katsayısı
-    OK_FORMASYON_Z_KATSAYISI = 1.5     # Ok formasyonu Z ekseni katsayısı
-    
-    # Uzaklaşma gücü katsayıları (0.0-1.0)
-    UZAKLASMA_GUC_KATSAYISI = 0.3      # Uzaklaşma gücü katsayısı (%30)
-    YUMUSAKLIK_CARPANI = 0.2            # Yumuşaklık çarpanı (%20)
-    
-    # Diğer ayarlar
-    PASIF_MOD_MIN_HAREKET_MESAFESI = 5.0  # Pasif modda minimal hareket mesafesi (metre)
-    VELOCITY_THRESHOLD = 0.1              # Hız eşiği (normalize edilmiş)
-    MOTOR_GUC_KATSAYISI = 0.5              # Manuel hareket güç katsayısı
-    
-    # Çarpışma ve titreme önleme
-    CARPISMA_TITREME_MESAFE_ESIGI = 1.5   # Titreme önleme için mesafe eşiği (metre)
-    CARPISMA_TITREME_HIZ_ESIGI = 2.0      # Titreme önleme için hız eşiği (m/s)
-    CARPISMA_AYIRMA_KATSAYISI = 0.5       # Çarpışma ayırma katsayısı (0.0-1.0)
-    CARPISMA_HIZ_YAVASLATMA = 0.7         # Çarpışma sonrası hız yavaşlatma katsayısı (0.0-1.0)
-    CARPISMA_MOMENTUM_YUMUSATMA = 0.5     # Momentum korunumu yumuşatma katsayısı (0.0-1.0)
-    CARPISMA_GOREKELI_HIZ_ESIGI = 0.1     # Göreceli hız eşiği (m/s)
-    
-    # Görselleştirme mesafeleri
-    GORSELLEŞTIRME_ENGEL_CİZGİ_KIRMIZI = 5.0   # Kırmızı çizgi mesafesi (metre)
-    GORSELLEŞTIRME_ENGEL_CİZGİ_TURUNCU = 10.0  # Turuncu çizgi mesafesi (metre)
-    GORSELLEŞTIRME_ENGEL_CİZGİ_PARCA_UZUNLUK = 2.0  # Engel çizgi parça uzunluğu (metre)
-    GORSELLEŞTIRME_ENGEL_CİZGİ_BOSLUK = 1.0    # Engel çizgi boşluk (metre)
-    GORSELLEŞTIRME_ILETISIM_CİZGİ_PARCA_UZUNLUK = 1.5  # İletişim çizgi parça uzunluğu (metre)
-    GORSELLEŞTIRME_ILETISIM_CİZGİ_BOSLUK = 0.8  # İletişim çizgi boşluk (metre)
-    GORSELLEŞTIRME_ILETISIM_YAKIN_ORAN = 0.3    # İletişim yakın mesafe oranı (0.0-1.0)
-    GORSELLEŞTIRME_ILETISIM_ORTA_ORAN = 0.6     # İletişim orta mesafe oranı (0.0-1.0)
-    
-    # Havuz ve güvenlik
-    HAVUZ_GUVENLIK_PAYI = 50.0            # Havuz güvenlik payı (metre)
-    HAVUZ_VARSAYILAN_RADIUS = 50.0        # Varsayılan ada radius (metre)
-    HAVUZ_SINIR_KATSAYISI = 0.95          # Havuz sınır katsayısı (0.0-1.0)
-    HAVUZ_Y_UST_SINIR = 0.3               # Üst yüzey sınırı (metre)
-    HAVUZ_Y_ALT_SINIR = -95.0             # Alt derinlik sınırı (metre)
-    HAVUZ_Y_YUZEY_TOLERANS = 0.5          # Yüzey toleransı (metre)
-    HAVUZ_Y_MIN_DERINLIK = -2.0           # Minimum derinlik (metre)
-    
-    # Formasyon default değerleri
-    FORMASYON_DEFAULT_DERINLIK = -10.0    # Formasyon default derinlik (metre)
-    FORMASYON_ADIM = 1.0                  # Formasyon arama adımı (metre)
-    FORMASYON_MARGIN_MIN_KATSAYISI = 0.2  # Formasyon margin minimum katsayısı
-    FORMASYON_MARGIN_BASLANGIC_KATSAYISI = 0.6  # Formasyon margin başlangıç katsayısı
-    
-    # Maksimum mesafeler (algılama limitleri)
-    MAX_MESAFE_ALGILAMA = 999.0           # Maksimum algılama mesafesi (metre)
-    
-    # Dikey toleranslar
-    DIKEY_TOLERANS_ADA_HASSAS = 5.0       # Ada algılama için hassas dikey tolerans (metre)
-    
-    # Kaçınma katsayıları
-    KACINMA_UZAKLASMA_GUC_KATSAYISI = 0.3  # Uzaklaşma gücü katsayısı (0.0-1.0)
-    
-    # Hareket katsayıları
-    HAREKET_DUR_YAVASLATMA = 0.7          # Dur komutu hız yavaşlatma katsayısı (0.0-1.0)
-    HAREKET_DUR_HIZ_ESIGI = 0.1           # Dur komutu hız eşiği (m/s)
-    HAREKET_YAW_HIZI = 90.0               # Yaw rotasyon hızı (derece/saniye)
-    HAREKET_YAW_GUC_MIN = -1.0            # Yaw güç minimum (-1.0)
-    HAREKET_YAW_GUC_MAX = 1.0             # Yaw güç maksimum (1.0)
-    HAREKET_NORMAL_GUC_MIN = 0.0          # Normal hareket güç minimum (0.0)
-    HAREKET_NORMAL_GUC_MAX = 1.0          # Normal hareket güç maksimum (1.0)
+    # Çarpışma parametreleri
+    CARPISMA_TITREME_MESAFE = 5.0
+    CARPISMA_TITREME_HIZ = 2.0
+    CARPISMA_AYIRMA = 0.6
+    CARPISMA_HIZ_YAVASLATMA = 0.7
+    CARPISMA_MOMENTUM = 0.6
+    CARPISMA_HIZ_ESIGI = 0.1
     
     # Fizik sabitleri
-    FIZIK_SURTUNME_KATSAYISI = 0.95       # Sürtünme katsayısı (0.0-1.0)
-    FIZIK_HIZLANMA_CARPANI = 30.0         # Hızlanma çarpanı
-    FIZIK_KALDIRMA_KUVVETI = 2.0          # Kaldırma kuvveti
-    FIZIK_BATARYA_SOMURME_KATSAYISI = 0.001  # Batarya sömürme katsayısı
+    FIZIK_SURTUNME = 0.95
+    FIZIK_HIZLANMA = 30.0
+    FIZIK_KALDIRMA = 2.0
+    FIZIK_BATARYA = 0.001
+    
+    # Havuz sınırları
+    HAVUZ_SINIR_KATSAYISI = 0.95
+    HAVUZ_Y_UST = 0.3
+    HAVUZ_Y_ALT = -95.0
+    HAVUZ_Y_YUZEY_TOLERANS = 0.5
+    HAVUZ_Y_MIN_DERINLIK = -2.0
+    HAVUZ_GUVENLIK_PAYI = 50.0
+    HAVUZ_VARSAYILAN_RADIUS = 50.0
+    
+    # Formasyon
+    FORMASYON_DERINLIK = -10.0
+    FORMASYON_ADIM = 1.0
+    FORMASYON_MARGIN_MIN = 0.2
+    FORMASYON_MARGIN_BASLANGIC = 0.6
     
     # ROV boyutları
-    ROV_SCALE_X = 1.5                     # ROV X ekseni ölçeği
-    ROV_SCALE_Y = 0.8                     # ROV Y ekseni ölçeği
-    ROV_SCALE_Z = 2.5                     # ROV Z ekseni ölçeği
-    ROV_LABEL_Y_OFFSET = 3.0              # ROV label Y offset (metre)
-    ROV_LABEL_SCALE = 20.0                # ROV label ölçeği
+    ROV_SCALE = (1.5, 0.8, 2.5)
+    ROV_LABEL_Y = 3.0
+    ROV_LABEL_SCALE = 20.0
     
-    # Ada algılama
-    ADA_ISLAND_BOUNDARY_FARK = 5.0        # Ada boundary fark eşiği (metre)
+    # Hareket
+    HAREKET_DUR_YAVASLATMA = 0.7
+    HAREKET_DUR_HIZ_ESIGI = 0.1
+    HAREKET_YAW_HIZI = 90.0
+    HAREKET_YAW_GUC_MIN = -1.0
+    HAREKET_YAW_GUC_MAX = 1.0
+    HAREKET_NORMAL_GUC_MIN = 0.0
+    HAREKET_NORMAL_GUC_MAX = 1.0
     
-    # İletişim varsayılan değerleri
-    ILETISIM_VARSAYILAN_MENZIL = 35.0     # Varsayılan iletişim menzili (metre)
+    # Vektör birleştirme
+    VEKTOR_NORMAL_KACINMA = 0.5
+    VEKTOR_TAKIPCI_KACINMA = 0.8
+    VEKTOR_TAKIPCI_HEDEF = 0.2
+    
+    # Görselleştirme
+    GORSELLEŞTIRME_ENGEL_KIRMIZI = 5.0
+    GORSELLEŞTIRME_ENGEL_TURUNCU = 10.0
+    GORSELLEŞTIRME_ENGEL_PARCA = 2.0
+    GORSELLEŞTIRME_ENGEL_BOSLUK = 1.0
+    GORSELLEŞTIRME_ILETISIM_PARCA = 1.5
+    GORSELLEŞTIRME_ILETISIM_BOSLUK = 0.8
+    GORSELLEŞTIRME_ILETISIM_YAKIN = 0.3
+    GORSELLEŞTIRME_ILETISIM_ORTA = 0.6
+    
+    # Hedef ve diğer
+    HEDEF_X_BOYUTU = 10.0
+    HEDEF_KALINLIK = 1.0
+    RANDOM_HEDEF_HAVUZ_KATSAYISI = 0.7
+    RANDOM_HEDEF_MIN_MESAFE_ADA = 30.0
+    ADA_ISLAND_BOUNDARY_FARK = 5.0
+    ILETISIM_VARSAYILAN_MENZIL = 35.0
+    VELOCITY_THRESHOLD = 0.1
+    
+    # Formasyon şekil katsayıları (fonksiyon ile)
+    @staticmethod
+    def formasyon_katsayisi(tip='v'):
+        """Formasyon tipine göre katsayıları döndürür."""
+        katsayilar = {
+            'v': {'x': 0.8, 'z': 0.6},
+            'ok': {'x': 0.8, 'z': 1.5}
+        }
+        return katsayilar.get(tip.lower(), {'x': 0.8, 'z': 0.6})
 
 
 class ModemAyarlari:
     """
-    Modem ayarları - İletişim parametreleri
+    Modem ayarları - Fonksiyonlar ile dinamik değer döndürür.
     """
-    # Lider modem için varsayılan ayarlar
-    LIDER = {
-        'gurultu_orani': 0.05,    # Gürültü oranı (0.0-1.0)
-        'kayip_orani': 0.1,       # Paket kayıp oranı (0.0-1.0)
-        'gecikme': 0.5            # Gecikme (saniye)
-    }
+    @staticmethod
+    def get(rol='lider', parametre=None):
+        """
+        ROV rolüne göre modem ayarlarını döndürür.
+        
+        Args:
+            rol (str): 'lider' veya 'takipci'
+            parametre (str, optional): Belirli bir parametre isteniyorsa
+        
+        Returns:
+            dict veya float: Tüm ayarlar dict'i veya belirli parametre değeri
+        """
+        if rol == 'lider':
+            ayarlar = {
+                'gurultu_orani': 0.05,
+                'kayip_orani': 0.1,
+                'gecikme': 0.5
+            }
+        else:  # takipci
+            ayarlar = {
+                'gurultu_orani': 0.1,
+                'kayip_orani': 0.1,
+                'gecikme': 0.5
+            }
+        
+        return ayarlar.get(parametre) if parametre else ayarlar
     
-    # Takipçi modem için varsayılan ayarlar
-    TAKIPCI = {
-        'gurultu_orani': 0.1,     # Gürültü oranı (0.0-1.0)
-        'kayip_orani': 0.1,       # Paket kayıp oranı (0.0-1.0)
-        'gecikme': 0.5            # Gecikme (saniye)
-    }
+    # Geriye dönük uyumluluk için class method'lar
+    @classmethod
+    def LIDER(cls):
+        return cls.get('lider')
+    
+    @classmethod
+    def TAKIPCI(cls):
+        return cls.get('takipci')
 
 
 class Formasyon:
@@ -648,4 +663,3 @@ class Formasyon:
             str: Formasyon ismi
         """
         return Formasyon.TIPLER[tip_index % len(Formasyon.TIPLER)]
-
