@@ -8,6 +8,22 @@ import random
 import threading
 import queue
 
+# Alpha Shape ve Shapely için import (kontur hesaplama için)
+try:
+    import alphashape
+    ALPHASHAPE_AVAILABLE = True
+except ImportError:
+    ALPHASHAPE_AVAILABLE = False
+    print("⚠️ [UYARI] alphashape bulunamadı. yeniden_ciz() fonksiyonu çalışmayacak.")
+
+try:
+    from shapely.geometry import Point, LineString, Polygon, MultiPolygon
+    from shapely.ops import unary_union, nearest_points
+    SHAPELY_AVAILABLE = True
+except ImportError:
+    SHAPELY_AVAILABLE = False
+    print("⚠️ [UYARI] shapely bulunamadı. yeniden_ciz() fonksiyonu çalışmayacak.")
+
 # Convex Hull için scipy import (geriye dönük uyumluluk için)
 try:
     from scipy.spatial import ConvexHull
@@ -1015,8 +1031,24 @@ class Filo:
         try:
             # Eski formasyon hedeflerini temizle (yeni formasyon için)
             self._formasyon_hedefleri.clear()
-            # 1. Güvenlik hull'u oluştur (sanal + gerçek engeller, SADECE 1 KEZ)
-            guvenlik_hull_dict = self.hull_manager.hull(offset=offset)
+            # 1. Ada çevre noktalarını al (yasaklı noktalar olarak kullanılacak)
+            ada_cevre_noktalari = self.ada_cevre()
+            
+            # Ada çevre noktalarını 2D formatına çevir (sadece x, y)
+            yasakli_noktalar = []
+            if ada_cevre_noktalari:
+                for nokta in ada_cevre_noktalari:
+                    if len(nokta) >= 2:
+                        yasakli_noktalar.append([float(nokta[0]), float(nokta[1])])
+            
+            # 2. Yeni hull oluştur (yasaklı noktaları çıkararak)
+            guvenlik_hull_dict = self.yeni_hull(
+                yasakli_noktalar=yasakli_noktalar,
+                offset=offset,
+                alpha=2.0,
+                buffer_radius=15.0,  # Ada çevresinden 15 metre güvenli mesafe
+                channel_width=10.0   # Kanal genişliği 10 metre
+            )
 
             hull = guvenlik_hull_dict.get("hull")
             hull_merkez = guvenlik_hull_dict.get("center")
@@ -1342,6 +1374,292 @@ class Filo:
     def _guvenlik_hull_olustur_impl(self, offset=20.0):
         """guvenlik_hull_olustur() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         return self.hull_manager.hull(offset=offset)
+    
+    def ada_cevre(self, offset=10.0):
+        """
+        Simülasyondaki adaları tespit edip her ada için eşit çevrede 12 nokta döndürür.
+        
+        Her ada için 12 nokta hesaplanır (30° aralıklarla: 0°, 30°, 60°, ..., 330°).
+        Noktalar ada yarıçapından belirli bir mesafe uzakta olur (offset parametresi).
+        
+        Args:
+            offset (float): Ada yarıçapından uzaklık (metre, varsayılan: 10.0)
+                - Noktalar ada merkezinden (radius + offset) mesafede olur
+        
+        Returns:
+            list: [(x1, y1, z1), (x2, y2, z2), ...] - Ada çevresi noktaları (Simülasyon formatı)
+                - 1 ada varsa: 12 nokta
+                - 2 ada varsa: 24 nokta
+                - 3 ada varsa: 36 nokta
+                - Format: (x, y, z) - x: sağ-sol, y: ileri-geri, z: derinlik
+        
+        Örnekler:
+            # Tüm adaların çevre noktalarını al
+            noktalar = filo.ada_cevre()
+            # Çıktı: [(x1, y1, z1), (x2, y2, z2), ...] - Her ada için 12 nokta
+            
+            # Özel offset ile
+            noktalar = filo.ada_cevre(offset=15.0)  # Ada yarıçapından 15 metre uzakta
+        """
+        if not self.ortam_ref:
+            print("⚠️ [UYARI] Ortam referansı bulunamadı!")
+            return []
+        
+        # Ada pozisyonlarını al
+        if not hasattr(self.ortam_ref, 'island_positions') or not self.ortam_ref.island_positions:
+            print("⚠️ [UYARI] Simülasyonda ada bulunamadı!")
+            return []
+        
+        tum_noktalar = []
+        
+        # Her ada için 12 nokta hesapla
+        for island_data in self.ortam_ref.island_positions:
+            if len(island_data) < 3:
+                continue
+            
+            # Ada bilgileri: (island_x, island_z, island_radius)
+            island_x = float(island_data[0])  # X koordinatı (sağ-sol)
+            island_z = float(island_data[1])  # Z koordinatı (ileri-geri) - Simülasyon formatında Y
+            island_radius = float(island_data[2])  # Ada yarıçapı
+            
+            # Çevre mesafesi: Ada yarıçapı + offset
+            cevre_mesafesi = island_radius + offset
+            
+            # 12 nokta hesapla (30° aralıklarla: 0°, 30°, 60°, 90°, 120°, 150°, 180°, 210°, 240°, 270°, 300°, 330°)
+            # Simülasyon sistemi: X=Sağ-Sol, Y=İleri-Geri
+            # 0° = Kuzey (+Y), 90° = Doğu (+X), 180° = Güney (-Y), 270° = Batı (-X)
+            acilar = [i * 30 for i in range(12)]  # 0°, 30°, 60°, ..., 330° (12 nokta)
+            
+            for aci in acilar:
+                # Açıyı radyana çevir
+                aci_rad = math.radians(aci)
+                
+                # Nokta koordinatları (Simülasyon formatı)
+                # X = island_x + mesafe * sin(aci)
+                # Y = island_z + mesafe * cos(aci)
+                # Z = 0 (yüzey, derinlik yok)
+                nokta_x = island_x + cevre_mesafesi * math.sin(aci_rad)
+                nokta_y = island_z + cevre_mesafesi * math.cos(aci_rad)
+                nokta_z = 0.0  # Yüzey (derinlik yok)
+                
+                tum_noktalar.append((nokta_x, nokta_y, nokta_z))
+        
+        print(f"✅ [ADA_CEVRE] {len(self.ortam_ref.island_positions)} ada için {len(tum_noktalar)} nokta hesaplandı (offset={offset}m)")
+        return tum_noktalar
+    
+    def yeni_hull(self, yasakli_noktalar, offset=20.0, alpha=2.0, buffer_radius=20.0, channel_width=15.0):
+            """
+            Mevcut hull noktalarını alır, yasaklı bölgeleri kesip çıkarır.
+            Hem harita çizimi hem de 'is_point_inside' kontrolü için uyumlu nesne döndürür.
+            """
+            try:
+                # 1. Kütüphane kontrolü
+                if not SHAPELY_AVAILABLE:
+                    return {'hull': None, 'points': None, 'center': None}
+                    
+                from shapely.geometry import Point, Polygon
+                
+                # --- 1. Mevcut Hull'ı Al ---
+                guvenlik_hull_dict = self.hull_manager.hull(offset=offset)
+                hull_noktalari = guvenlik_hull_dict.get("points")
+                eski_hull_merkez = guvenlik_hull_dict.get("center")
+                
+                if hull_noktalari is None:
+                    return {'hull': None, 'points': None, 'center': None}
+                
+                # --- 2. Noktaları Hazırla ---
+                hull_noktalari_2d = []
+                if isinstance(hull_noktalari, np.ndarray):
+                    hull_noktalari_2d = [[float(p[0]), float(p[1])] for p in hull_noktalari]
+                else:
+                    hull_noktalari_2d = [[float(p[0]), float(p[1])] for p in hull_noktalari if len(p) >= 2]
+                
+                yasakli_noktalar_2d = []
+                if yasakli_noktalar:
+                    for nokta in yasakli_noktalar:
+                        if len(nokta) >= 2:
+                            yasakli_noktalar_2d.append([float(nokta[0]), float(nokta[1])])
+                
+                # --- 3. Yeniden Çiz ---
+                if yasakli_noktalar_2d:
+                    yeni_kontur_noktalari = self.yeniden_ciz(
+                        noktalar=hull_noktalari_2d,
+                        yasakli_noktalar=yasakli_noktalar_2d,
+                        alpha=alpha,
+                        buffer_radius=buffer_radius,
+                        channel_width=channel_width
+                    )
+                else:
+                    yeni_kontur_noktalari = hull_noktalari_2d
+
+                # --- 4. Sonuçları Paketle ---
+                if yeni_kontur_noktalari and len(yeni_kontur_noktalari) >= 3:
+                    kontur_noktalari_np = np.array(yeni_kontur_noktalari)
+                    
+                    # Polygon nesnesi oluştur (Geometrik kontrol için şart)
+                    yeni_poly = Polygon(yeni_kontur_noktalari)
+                    if not yeni_poly.is_valid:
+                        yeni_poly = yeni_poly.buffer(0)
+                    
+                    # Merkez hesapla (Eski merkez güvenli mi?)
+                    eski_merkez_2d = (eski_hull_merkez[0], eski_hull_merkez[1])
+                    if yeni_poly.contains(Point(eski_merkez_2d)):
+                        final_merkez_2d = eski_merkez_2d
+                    else:
+                        guvenli_nokta = yeni_poly.representative_point()
+                        final_merkez_2d = (guvenli_nokta.x, guvenli_nokta.y)
+
+                    eski_z = eski_hull_merkez[2] if eski_hull_merkez and len(eski_hull_merkez) >= 3 else 0.0
+                    yeni_hull_merkez = (float(final_merkez_2d[0]), float(final_merkez_2d[1]), float(eski_z))
+                    
+                    # --- SAHTE HULL (GÜNCELLENDİ) ---
+                    class SahteHull:
+                        def __init__(self, points, polygon_obj):
+                            self.points = points
+                            self.polygon = polygon_obj  # <-- KRİTİK EKLEME: Polygon nesnesini sakla
+                            self.vertices = np.arange(len(points))
+                            self.simplices = []
+                            for i in range(len(points)):
+                                self.simplices.append([i, (i + 1) % len(points)])
+                            self.simplices = np.array(self.simplices)
+                            # equations özelliği YOK, bu yüzden hull.py'de bunu kontrol edeceğiz
+
+                    custom_hull = SahteHull(kontur_noktalari_np, yeni_poly)
+                    
+                    # Haritaya gönder
+                    if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
+                        hull_data = {
+                            'hull': custom_hull,
+                            'points': kontur_noktalari_np,
+                            'center': yeni_hull_merkez
+                        }
+                        self.ortam_ref.harita.convex_hull_data = hull_data
+                        self.ortam_ref.harita.goster(True, True)
+                    
+                    return {
+                        'hull': custom_hull,
+                        'points': kontur_noktalari_np,
+                        'center': yeni_hull_merkez
+                    }
+                else:
+                    return {'hull': None, 'points': None, 'center': None}
+            
+            except Exception as e:
+                print(f"❌ [HATA] Yeni hull oluşturulurken hata: {e}")
+                import traceback
+                traceback.print_exc()
+                return {'hull': None, 'points': None, 'center': None}
+    
+    def yeniden_ciz(self, noktalar, yasakli_noktalar, alpha=2.0, buffer_radius=15.0, channel_width=10.0):
+            """
+            Verilen nokta kümesini saran, ancak yasaklı noktaları dışarıda bırakacak şekilde
+            içeri bükülmüş sınırın koordinatlarını döndürür.
+            """
+            # 1. Kütüphane kontrolü
+            if not SHAPELY_AVAILABLE:
+                print("❌ [HATA] shapely kütüphanesi bulunamadı!")
+                return []
+                
+            # Global importları kullan
+            try:
+                from shapely.geometry import Point, LineString, Polygon, MultiPolygon
+                from shapely.ops import unary_union, nearest_points
+                from scipy.spatial import ConvexHull
+            except ImportError as e:
+                print(f"❌ [HATA] Gerekli kütüphaneler eksik: {e}")
+                return []
+
+            try:
+                # 2. Giriş verisini düzenle
+                points_cloud = []
+                for p in noktalar:
+                    if len(p) >= 2:
+                        points_cloud.append((float(p[0]), float(p[1])))
+                
+                if len(points_cloud) < 3:
+                    print("⚠️ [UYARI] Yeterli nokta yok (en az 3 nokta gerekli)")
+                    return []
+                
+                # ==========================================================
+                # ADIM A: TEMEL ŞEKLİ (CONVEX HULL) OLUŞTUR
+                # ==========================================================
+                # Alpha shape yerine ConvexHull kullanıyoruz. 
+                # Çünkü "Güvenlik Hull"ı her zaman en dıştan sarmalıdır.
+                try:
+                    points_np = np.array(points_cloud)
+                    hull = ConvexHull(points_np) 
+                    # Convex Hull noktalarını sıraya diz (önemli!)
+                    hull_points = points_np[hull.vertices]
+                    base_shape = Polygon(hull_points)
+                except Exception as e:
+                    print(f"❌ [HATA] Başlangıç Hull oluşturulamadı: {e}")
+                    return []
+
+                # Şekil temizliği
+                if not base_shape.is_valid:
+                    base_shape = base_shape.buffer(0)
+
+                final_shape = base_shape
+                kesilen_nokta_sayisi = 0
+
+                # ==========================================================
+                # ADIM B: YASAKLI NOKTALARI KESİP ÇIKAR
+                # ==========================================================
+                if yasakli_noktalar:
+                    print(f"🔍 [YENIDEN_CIZ] Kontrol edilecek yasaklı nokta: {len(yasakli_noktalar)}")
+                    
+                    for i, fp in enumerate(yasakli_noktalar):
+                        if len(fp) < 2: continue
+                        
+                        p_obj = Point(float(fp[0]), float(fp[1]))
+                        
+                        # Eğer nokta zaten şeklin dışındaysa işlem yapma
+                        if not final_shape.contains(p_obj):
+                            # print(f"   -> Nokta {i} zaten dışarıda.")
+                            continue
+                        
+                        # Buraya geldiyse nokta içeride demektir, kesip atacağız
+                        kesilen_nokta_sayisi += 1
+                        # print(f"   ✂️  Nokta {i} ({fp[0]:.1f}, {fp[1]:.1f}) içeride! Kesiliyor...")
+                        
+                        # 1. Yasaklı Bölge (Güvenlik Çemberi)
+                        forbidden_zone = p_obj.buffer(buffer_radius)
+                        
+                        # 2. Kanal Açma (En kısa yoldan dışarı tünel)
+                        exterior_line = final_shape.exterior
+                        p1, p2 = nearest_points(forbidden_zone, exterior_line)
+                        
+                        channel_line = LineString([p_obj, p2])
+                        # Kanal genişliği en az buffer kadar olmalı ki darboğaz olmasın
+                        channel_poly = channel_line.buffer(max(channel_width, buffer_radius * 0.5))
+                        
+                        # 3. Kesme işlemi
+                        cut_area = unary_union([forbidden_zone, channel_poly])
+                        final_shape = final_shape.difference(cut_area)
+                        
+                        # 4. Parçalanma kontrolü
+                        if isinstance(final_shape, MultiPolygon):
+                            if not final_shape.is_empty:
+                                final_shape = max(final_shape.geoms, key=lambda a: a.area)
+                            else:
+                                final_shape = base_shape # Hata durumunda geri al
+
+                print(f"✅ [YENIDEN_CIZ] İşlem tamam. Kesilen engel sayısı: {kesilen_nokta_sayisi}")
+
+                # ==========================================================
+                # ADIM C: SONUÇ KOORDİNATLARINI DÖNDÜR
+                # ==========================================================
+                if isinstance(final_shape, Polygon):
+                    return list(final_shape.exterior.coords)
+                else:
+                    print("⚠️ [UYARI] Sonuç bir Polygon değil.")
+                    return []
+            
+            except Exception as e:
+                print(f"❌ [HATA] Kontur hesaplama genel hatası: {e}")
+                import traceback
+                traceback.print_exc()
+                return []
     
     def _hedef_gorsel_olustur(self, x, y, z):
         """

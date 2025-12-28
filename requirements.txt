@@ -4,15 +4,19 @@ torch-geometric>=2.3.0
 
 # --- 3D Simülasyon ve Oyun Motoru ---
 ursina>=5.0.0
-panda3d  # Ursina'nın altyapısı (Otomatik gelir ama garanti olsun)
+panda3d
 
 # --- Matematik ve Veri İşleme ---
 numpy>=1.21.0
-networkx>=3.0  # Graf ve yol hesaplama (Zincirleme etki için)
-scipy>=1.9.0  # Convex Hull hesaplamaları için
+networkx>=3.0
+scipy>=1.9.0
+
+# --- Geometri ve Alan Hesaplama (Kritik Modüller) ---
+shapely>=2.0.0
+alphashape>=1.3.1
 
 # --- Görselleştirme ve Grafikler ---
 matplotlib>=3.5.0
 
 # --- Sistem Araçları ---
-screeninfo  # Ekran çözünürlüğü tespiti için (Ursina kullanabilir)
+screeninfo
