@@ -1567,14 +1567,25 @@ class Harita:
         # Adaları Çiz (ölçek büyütüldü)
         if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
             from matplotlib import patches
+            # Adaları Çiz (DÜZELTİLMİŞ)
             for is_pos in self.ortam_ref.island_positions:
                 if len(is_pos) == 3:
+                    # is_pos = (x, y, radius) -> radius artık görselle uyumlu gerçek yarıçap
                     rad = is_pos[2]
                 else:
                     rad = self.havuz_genisligi * 0.08  # Varsayılan boyut
-                # Ada çizimi: gerçek yarıçapı kullanarak tam çapı çizdir (hafif perspektif için)
-                ada = patches.Ellipse((is_pos[0], is_pos[1]), width=rad * 2.0, height=rad * 1.8, 
-                                     facecolor='#8B5A3C', edgecolor='black', alpha=0.7, zorder=4)
+                
+                # DÜZELTME: Keyfi çarpanları kaldırdık (3.2 gibi). 
+                # Doğrudan çapı (2 * rad) kullanıyoruz.
+                ada = patches.Ellipse(
+                    (is_pos[0], is_pos[1]), 
+                    width=rad * 2.0,      # Tam çap (Görsel genişlikle birebir)
+                    height=rad * 1.8,     # Hafif perspektif için Y ekseni biraz basık olabilir
+                    facecolor='#8B5A3C', 
+                    edgecolor='black', 
+                    alpha=0.7, 
+                    zorder=4
+                )
                 self.ax.add_patch(ada)
 
         # Manuel Engeller
@@ -1971,30 +1982,36 @@ class Ortam:
             # ============================================================
             # HER ADA İÇİN OLUŞTURMA DÖNGÜSÜ
             # ============================================================
-            # Modelin ham genişliği (ada modelinin orijinal boyutu)
-            MODEL_HAM_GENISLIK = 140.0
-            
             for island_idx in range(n_islands):
                 # --- 1. ÖLÇEK HESAPLAMA ---
                 scale_multiplier = random.uniform(0.5, 1.5)
                 
-                # --- 3. GÖRSEL ADA OLUŞTURMA (Önce visual_scale hesaplanmalı) ---
+                # --- DÜZELTME BAŞLANGICI ---
+                # Görsel ölçeği hesapla
+                # Not: Görselin çok büyük olmaması için 0.8 ile çarpmıştınız, onu koruyoruz.
+                VISUAL_SCALE_REDUCTION = 0.4 
+                visual_scale_x = ref_visual_scale[0] * scale_multiplier * VISUAL_SCALE_REDUCTION
+                visual_scale_z = ref_visual_scale[2] * scale_multiplier * VISUAL_SCALE_REDUCTION
+                
                 visual_scale = (
-                    ref_visual_scale[0] * scale_multiplier,
-                    ref_visual_scale[1] * scale_multiplier,
-                    ref_visual_scale[2] * scale_multiplier
+                    visual_scale_x,
+                    ref_visual_scale[1] * scale_multiplier * VISUAL_SCALE_REDUCTION,
+                    visual_scale_z
                 )
                 
-                # Görsel ölçek değerlerini al (X ve Z eksenleri)
-                visual_scale_x = visual_scale[0]
-                visual_scale_z = visual_scale[2]
+                # KRİTİK AYAR: Modelin ham genişliği (scale=1 iken)
+                # Ursina'daki 'island1_design2_c4d.obj' modeli yaklaşık 140 birim genişliğindedir.
+                MODEL_HAM_GENISLIK = 140.0 
                 
-                # Ada yarıçapı hesaplama (gerçek görsel ölçeğe göre)
-                # Formül: (MODEL_HAM_GENISLIK * max(visual_scale_x, visual_scale_z)) / 2
-                island_radius = (MODEL_HAM_GENISLIK * max(visual_scale_x, visual_scale_z)) / 2
+                # Gerçek dünya yarıçapı = (Ham Boyut * Ölçek) / 2
+                gercek_yaricap = (MODEL_HAM_GENISLIK * max(visual_scale_x, visual_scale_z)) / 2
+                
+                # Haritaya ve hitbox mantığına bu gerçek yarıçapı gönderiyoruz
+                island_radius = gercek_yaricap
+                # --- DÜZELTME BİTİŞİ ---
                 
                 # Minimum mesafe (2.5 kat güvenlik payı ile)
-                min_distance_between_islands = island_radius * 3
+                min_distance_between_islands = island_radius
                 
                 # --- 2. GÜVENLİ POZİSYON BULMA (X ve Z random, Y sabit) ---
                 island_x, island_z = self._find_safe_island_position(
@@ -2112,7 +2129,7 @@ class Ortam:
         
         # Harita sistemi (Matplotlib - ayrı pencere)
         try:
-            self.harita = Harita(ortam_ref=self, pencere_boyutu=(800, 800))
+            self.harita = Harita(ortam_ref=self, pencere_boyutu=(600, 600))
             print("✅ Harita sistemi başarıyla oluşturuldu (Matplotlib penceresi)")
         except Exception as e:
             print(f"❌ Harita oluşturulurken hata: {e}")
