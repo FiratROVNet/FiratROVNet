@@ -1796,11 +1796,13 @@ class Ortam:
             
             # Havuz sınırları: +-havuz_genisligi (yani +-200 birim)
             # X ve Z eksenleri random, Y ekseni su yüzeyinin üstünde sabit
-            havuz_sinir = self.havuz_genisligi  # +-havuz_genisligi
-            min_x = -havuz_sinir
-            max_x = havuz_sinir
-            min_z = -havuz_sinir
-            max_z = havuz_sinir
+            # Güvenlik payı: Adaların yarıçapı olduğu için kenarlara yerleşen adalar
+            # havuz dışına taşmaması için güvenlik payı ekleniyor (tahmini maksimum ada yarıçapı: 90.0)
+            guvenli_sinir = max(10.0, self.havuz_genisligi - 90.0)
+            min_x = -guvenli_sinir
+            max_x = guvenli_sinir
+            min_z = -guvenli_sinir
+            max_z = guvenli_sinir
             
             # Mevcut ada pozisyonları (çakışma kontrolü için)
             placed_island_positions = []
