@@ -1848,15 +1848,28 @@ class Ortam:
                 min_distance_between_islands = island_radius
                 
                 # --- 2. GÜVENLİ POZİSYON BULMA (X ve Z random, Y sabit) ---
-                island_x, island_z = self._find_safe_island_position(
-                    placed_island_positions=placed_island_positions,
-                    min_x=min_x,
-                    max_x=max_x,
-                    min_z=min_z,
-                    max_z=max_z,
-                    min_distance=min_distance_between_islands,
-                    max_attempts=100
-                )
+                # Ada yarıçapını hesaba katarak havuz sınırlarını daralt
+                # Ada kenarlarının havuz sınırları içinde kalması için
+                min_x_safe = min_x + island_radius
+                max_x_safe = max_x - island_radius
+                min_z_safe = min_z + island_radius
+                max_z_safe = max_z - island_radius
+                
+                # Eğer ada çok büyükse ve havuz sınırlarına sığmıyorsa, merkeze yerleştir
+                if min_x_safe >= max_x_safe or min_z_safe >= max_z_safe:
+                    # Ada çok büyük, merkeze yerleştir
+                    island_x = 0.0
+                    island_z = 0.0
+                else:
+                    island_x, island_z = self._find_safe_island_position(
+                        placed_island_positions=placed_island_positions,
+                        min_x=min_x_safe,
+                        max_x=max_x_safe,
+                        min_z=min_z_safe,
+                        max_z=max_z_safe,
+                        min_distance=min_distance_between_islands,
+                        max_attempts=100
+                    )
                 
                 island = Entity(
                     model=island_model_path,
@@ -1975,11 +1988,12 @@ class Ortam:
         Returns:
             (island_x, island_z): Güvenli ada pozisyonu (X ve Z random)
         """
-        # İlk ada ise, merkezden uzak bir yere yerleştir
+        # İlk ada ise, güvenli sınırlar içinde rastgele yerleştir
         if not placed_island_positions:
+            # Sınırlar zaten ada yarıçapı hesaba katılarak daraltılmış (min_x_safe, max_x_safe vb.)
             return (
-                random.choice([min_x + 20, max_x - 20]),
-                random.choice([min_z + 20, max_z - 20])
+                random.uniform(min_x, max_x),
+                random.uniform(min_z, max_z)
             )
         
         # Güvenli pozisyon bul (maksimum deneme sayısı kadar)
