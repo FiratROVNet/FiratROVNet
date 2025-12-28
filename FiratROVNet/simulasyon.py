@@ -1324,7 +1324,7 @@ class Harita:
         
         # ROV ID'sini yazdır
         if rov_id is not None:
-            self.ax.text(x, y - pin_boyut * 1.5, f'ROV-{rov_id}', 
+            self.ax.text(x, y - pin_boyut * 1.5, f'{rov_id}', 
                         fontsize=9, ha='center', va='top', 
                         bbox=dict(boxstyle='round,pad=0.3', facecolor='white', 
                                 edgecolor='black', alpha=0.8, linewidth=0.5),
@@ -1948,7 +1948,7 @@ class Ortam:
         
         # Harita sistemi (Matplotlib - ayrı pencere)
         try:
-            self.harita = Harita(ortam_ref=self, pencere_boyutu=(600, 600))
+            self.harita = Harita(ortam_ref=self, pencere_boyutu=(800, 800))
             print("✅ Harita sistemi başarıyla oluşturuldu (Matplotlib penceresi)")
         except Exception as e:
             print(f"❌ Harita oluşturulurken hata: {e}")
@@ -2033,6 +2033,44 @@ class Ortam:
         # Havuz genişliğini güncelle (ada oluşturma için)
         self.havuz_genisligi = havuz_genisligi
         
+        # ============================================================
+        # GÖRSEL BOYUTLANDIRMA: havuz_genisligi'ne göre dinamik ayarlama
+        # ============================================================
+        # Yeni görsel boyut hesapla (kenarlarda boşluk kalmaması için çarpan kullan)
+        yeni_boyut = havuz_genisligi * 2.5
+        
+        # Görsel nesnelerin X ve Z scale'lerini güncelle (Y eksenini koru)
+        if hasattr(self, 'ocean_surface') and self.ocean_surface:
+            # Y eksenini koru (mevcut scale.y değeri)
+            mevcut_y = self.ocean_surface.scale.y if hasattr(self.ocean_surface.scale, 'y') else self.ocean_surface.scale[1]
+            self.ocean_surface.scale = (yeni_boyut, mevcut_y, yeni_boyut)
+        
+        if hasattr(self, 'water_volume') and self.water_volume:
+            # Y eksenini koru (mevcut scale.y değeri)
+            mevcut_y = self.water_volume.scale.y if hasattr(self.water_volume.scale, 'y') else self.water_volume.scale[1]
+            self.water_volume.scale = (yeni_boyut, mevcut_y, yeni_boyut)
+        
+        if hasattr(self, 'seabed') and self.seabed:
+            # Y eksenini koru (mevcut scale.y değeri)
+            mevcut_y = self.seabed.scale.y if hasattr(self.seabed.scale, 'y') else self.seabed.scale[1]
+            self.seabed.scale = (yeni_boyut, mevcut_y, yeni_boyut)
+        
+        if hasattr(self, 'cimen_katmani') and self.cimen_katmani:
+            # Y eksenini koru (mevcut scale.y değeri)
+            mevcut_y = self.cimen_katmani.scale.y if hasattr(self.cimen_katmani.scale, 'y') else self.cimen_katmani.scale[1]
+            self.cimen_katmani.scale = (yeni_boyut, mevcut_y, yeni_boyut)
+        
+        # ocean_taban için orantılı scale (orijinal 500'e göre)
+        if hasattr(self, 'ocean_taban') and self.ocean_taban:
+            # Orijinal scale: (2.2 * (500 / 500), 1, 1.8 * (500 / 500)) = (2.2, 1, 1.8)
+            # Orijinal boyut: 500
+            # Yeni boyut: yeni_boyut
+            # Oran: yeni_boyut / 500
+            oran = yeni_boyut / 500.0
+            mevcut_y = self.ocean_taban.scale.y if hasattr(self.ocean_taban.scale, 'y') else self.ocean_taban.scale[1]
+            self.ocean_taban.scale = (2.2 * oran, mevcut_y, 1.8 * oran)
+        # ============================================================
+        
         # Ada pozisyonlarını koru (eğer varsa)
         ada_positions_backup = []
         if hasattr(self, 'island_positions') and self.island_positions:
@@ -2095,7 +2133,7 @@ class Ortam:
         max_z = havuz_sinir
         
         # Güvenlik payı (ada radyusuna ek olarak bırakılacak minimum mesafe)
-        GUVENLIK_PAYI = 50.0  # birim
+        GUVENLIK_PAYI = 100.0  # birim
         
         # Ada pozisyonları ve radyusları kontrolü (eğer varsa)
         ada_bilgileri = []
@@ -2112,7 +2150,7 @@ class Ortam:
                 elif len(island_data) == 2:
                     # Geriye uyumluluk: Radyus yoksa varsayılan değer kullan
                     island_x_2d, island_y_2d = island_data
-                    varsayilan_radius = 50.0  # Güvenli varsayılan değer
+                    varsayilan_radius = 100.0  # Güvenli varsayılan değer
                     ada_bilgileri.append({
                         'x': island_x_2d,
                         'y': island_y_2d,
