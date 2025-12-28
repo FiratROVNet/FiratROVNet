@@ -1816,8 +1816,8 @@ class Ortam:
                 
                 # --- DÜZELTME BAŞLANGICI ---
                 # Görsel ölçeği hesapla
-                # Not: Görselin çok büyük olmaması için 0.8 ile çarpmıştınız, onu koruyoruz.
-                VISUAL_SCALE_REDUCTION = 1 
+                # Ada boyutu 0.2 oranında küçültüldü (0.8 ile çarpıldı)
+                VISUAL_SCALE_REDUCTION = 0.8  # 0.2 oranında küçültme = 0.8 ile çarpma
                 visual_scale_x = ref_visual_scale[0] * scale_multiplier * VISUAL_SCALE_REDUCTION
                 visual_scale_z = ref_visual_scale[2] * scale_multiplier * VISUAL_SCALE_REDUCTION
                 
