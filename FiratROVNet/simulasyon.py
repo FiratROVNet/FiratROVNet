@@ -1572,8 +1572,8 @@ class Harita:
                     rad = is_pos[2]
                 else:
                     rad = self.havuz_genisligi * 0.08  # Varsayılan boyut
-                # Ada ölçeği büyütüldü (daha belirgin görünmesi için)
-                ada = patches.Ellipse((is_pos[0], is_pos[1]), width=rad*3.2, height=rad*1.6, 
+                # Ada çizimi: gerçek yarıçapı kullanarak tam çapı çizdir (hafif perspektif için)
+                ada = patches.Ellipse((is_pos[0], is_pos[1]), width=rad * 2.0, height=rad * 1.8, 
                                      facecolor='#8B5A3C', edgecolor='black', alpha=0.7, zorder=4)
                 self.ax.add_patch(ada)
 
@@ -1971,15 +1971,27 @@ class Ortam:
             # ============================================================
             # HER ADA İÇİN OLUŞTURMA DÖNGÜSÜ
             # ============================================================
+            # Modelin ham genişliği (ada modelinin orijinal boyutu)
+            MODEL_HAM_GENISLIK = 140.0
+            
             for island_idx in range(n_islands):
                 # --- 1. ÖLÇEK HESAPLAMA ---
                 scale_multiplier = random.uniform(0.5, 1.5)
                 
+                # --- 3. GÖRSEL ADA OLUŞTURMA (Önce visual_scale hesaplanmalı) ---
+                visual_scale = (
+                    ref_visual_scale[0] * scale_multiplier,
+                    ref_visual_scale[1] * scale_multiplier,
+                    ref_visual_scale[2] * scale_multiplier
+                )
+                
+                # Görsel ölçek değerlerini al (X ve Z eksenleri)
+                visual_scale_x = visual_scale[0]
+                visual_scale_z = visual_scale[2]
+                
                 # Ada yarıçapı hesaplama (gerçek görsel ölçeğe göre)
-                # Görsel ölçek: (0.3, 0.8, 0.3) -> gerçek boyut yaklaşık 15-20 birim
-                # Hitbox yarıçapı gerçek ada boyutuna yakın olmalı
-                max_hitbox_radius = max(ref_hitbox_scales[0][0], ref_hitbox_scales[0][2]) / 2
-                island_radius = max_hitbox_radius * scale_multiplier
+                # Formül: (MODEL_HAM_GENISLIK * max(visual_scale_x, visual_scale_z)) / 2
+                island_radius = (MODEL_HAM_GENISLIK * max(visual_scale_x, visual_scale_z)) / 2
                 
                 # Minimum mesafe (2.5 kat güvenlik payı ile)
                 min_distance_between_islands = island_radius * 3
@@ -1993,13 +2005,6 @@ class Ortam:
                     max_z=max_z,
                     min_distance=min_distance_between_islands,
                     max_attempts=100
-                )
-                
-                # --- 3. GÖRSEL ADA OLUŞTURMA ---
-                visual_scale = (
-                    ref_visual_scale[0] * scale_multiplier,
-                    ref_visual_scale[1] * scale_multiplier,
-                    ref_visual_scale[2] * scale_multiplier
                 )
                 
                 island = Entity(
