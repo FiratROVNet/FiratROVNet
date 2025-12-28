@@ -2036,8 +2036,11 @@ class Ortam:
         # ============================================================
         # GÖRSEL BOYUTLANDIRMA: havuz_genisligi'ne göre dinamik ayarlama
         # ============================================================
-        # Yeni görsel boyut hesapla (kenarlarda boşluk kalmaması için çarpan kullan)
-        yeni_boyut = havuz_genisligi * 2.5
+        # Yeni görsel boyut hesapla
+        # havuz_genisligi yarıçap gibi kullanılıyor (merkezden kenara), 
+        # toplam genişlik = havuz_genisligi * 2
+        # Görsel nesne toplam genişliğe eşit olmalı (kenar boşluğu için minimal çarpan)
+        yeni_boyut = havuz_genisligi * 2.0
         
         # Görsel nesnelerin X ve Z scale'lerini güncelle (Y eksenini koru)
         if hasattr(self, 'ocean_surface') and self.ocean_surface:
