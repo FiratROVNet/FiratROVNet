@@ -735,53 +735,7 @@ class ROV(Entity):
             else:
                 s_x, s_y, s_z = 1.0, 1.0, 1.0
             
-            # Ada hitbox'ları için özel işleme (daha hassas algılama)
-            # Eğer engel bir cylinder modeli ise (ada sınır çizgisi), daha hassas hesaplama yap
-            is_island_boundary = (hasattr(engel, 'model') and 
-                                 engel.model == 'cylinder' and
-                                 hasattr(engel, 'visible') and 
-                                 engel.visible == True)
-            
-            if is_island_boundary:
-                # Ada sınır çizgisi için silindirik algılama
-                yatay_yaricap = max(s_x, s_z) / 2
-                dikey_yaricap = s_y / 2
-                
-                # Vektör hesaplamaları
-                fark_vektoru = self.position - engel.position
-                
-                # Yatay uzaklık (X-Z düzlemi)
-                yatay_uzaklik = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
-                
-                # Dikey uzaklık (Y ekseni)
-                dy = abs(fark_vektoru.y)
-                
-                # Silindirik algılama: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
-                dikey_tolerans = 5.0  # Daha hassas tolerans
-                
-                if dy <= (dikey_yaricap + dikey_tolerans):
-                    duvara_mesafe = yatay_uzaklik - yatay_yaricap
-                    
-                    # İçindeyse mesafe 0
-                    if duvara_mesafe < 0:
-                        duvara_mesafe = 0
-                    
-                    if duvara_mesafe < min_mesafe:
-                        min_mesafe = duvara_mesafe
-                        en_yakin_engel = engel
-                        
-                        # Yüzey noktasını hesapla
-                        if yatay_uzaklik > 0.001:
-                            yon_x = fark_vektoru.x / yatay_uzaklik
-                            yon_z = fark_vektoru.z / yatay_uzaklik
-                        else:
-                            yon_x, yon_z = 1, 0
-                        
-                        hedef_x = engel.position.x + (yon_x * yatay_yaricap)
-                        hedef_z = engel.position.z + (yon_z * yatay_yaricap)
-                        en_yakin_nokta = Vec3(hedef_x, self.position.y, hedef_z)
-            else:
-                # Normal engel algılama (kayalar vb.)
+            # Normal engel algılama (kayalar vb.)
                 yatay_yaricap = max(s_x, s_z) / 2
                 dikey_yaricap = s_y / 2
                 
@@ -1147,34 +1101,9 @@ class ROV(Entity):
         for engel in self.environment_ref.engeller:
             mesafe = distance(self.position, engel.position)
             
-            # Ada sınır çizgisi kontrolü (daha hassas algılama)
-            is_island_boundary = (hasattr(engel, 'model') and 
-                                 engel.model == 'sphere' and
-                                 hasattr(engel, 'visible') and 
-                                 engel.visible == True and
-                                 hasattr(engel, 'scale') and
-                                 # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri) kontrolü
-                                 abs(engel.scale.y - max(engel.scale.x, engel.scale.z)) > 5.0)
-            
-            if is_island_boundary:
-                # Ada sınır çizgisi için silindirik mesafe hesaplama
-                engel_yari_cap = max(engel.scale_x, engel.scale_z) / 2
-                engel_yukseklik = engel.scale_y / 2
-                
-                # Yatay mesafe (X-Z düzlemi)
-                fark_vektoru = self.position - engel.position
-                yatay_mesafe = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
-                dikey_fark = abs(fark_vektoru.y)
-                
-                # Silindirik algılama: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
-                if dikey_fark <= (engel_yukseklik + 5.0):  # Dikey tolerans
-                    gercek_mesafe = yatay_mesafe - engel_yari_cap
-                else:
-                    continue  # Dikey olarak çok uzaksa atla
-            else:
-                # Normal engel algılama (kayalar vb.)
-                engel_yari_cap = max(engel.scale_x, engel.scale_y, engel.scale_z) / 2
-                gercek_mesafe = mesafe - engel_yari_cap
+            # Normal engel algılama (kayalar vb.)
+            engel_yari_cap = max(engel.scale_x, engel.scale_y, engel.scale_z) / 2
+            gercek_mesafe = mesafe - engel_yari_cap
             
             # ÖNEMLİ: Engel çok yakınsa (engel yarıçapı + 1m içinde) kaçınma mekanizmasını devre dışı bırak
             # Bu, ROV'ların engellere çok yaklaşmasını önler ama sürekli itmeyi engeller
@@ -1185,14 +1114,7 @@ class ROV(Entity):
             # Kaçınma mesafesi veya daha küçük mesafede uzaklaş
             if gercek_mesafe <= kacinma_mesafesi and gercek_mesafe > 0:
                 # Uzaklaşma yönü (bu ROV'dan engele)
-                if is_island_boundary:
-                    # Ada sınırı için yatay uzaklaşma (sadece X-Z düzleminde)
-                    if yatay_mesafe > 0.001:
-                        uzaklasma_yonu = Vec3(fark_vektoru.x / yatay_mesafe, 0, fark_vektoru.z / yatay_mesafe)
-                    else:
-                        uzaklasma_yonu = Vec3(1, 0, 0)  # Varsayılan yön
-                else:
-                    uzaklasma_yonu = (self.position - engel.position).normalized()
+                uzaklasma_yonu = (self.position - engel.position).normalized()
                 
                 # Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
                 # Config'den alınan uzaklaşma gücü katsayısı
@@ -1314,55 +1236,32 @@ class ROV(Entity):
                         if diger_rov.velocity.length() < 5.0:
                             diger_rov.velocity -= carpisma_yonu * 3.0  # Kaçınma hızı ekle
         
-        # Kayalarla ve ada sınırlarıyla çarpışma
+        # Kayalarla çarpışma
         for engel in self.environment_ref.engeller:
-            # Ada sınır çizgisi kontrolü (daha hassas algılama)
-            is_island_boundary = (hasattr(engel, 'model') and 
-                                 engel.model == 'sphere' and
-                                 hasattr(engel, 'visible') and 
-                                 engel.visible == True and
-                                 hasattr(engel, 'scale') and
-                                 # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri) kontrolü
-                                 abs(engel.scale.y - max(engel.scale.x, engel.scale.z)) > 5.0)
+            # Normal engel çarpışma kontrolü
+            engel_yari_cap = max(engel.scale_x, engel.scale_y, engel.scale_z) / 2
+            mesafe = distance(self.position, engel.position)
+            min_mesafe = engel_yari_cap + 1.0
             
-            if is_island_boundary:
-                # Ada sınır çizgisi için silindirik çarpışma kontrolü
-                engel_yari_cap = max(engel.scale_x, engel.scale_z) / 2
-                engel_yukseklik = engel.scale_y / 2
+            if mesafe < min_mesafe:
+                # Çarpışma tespit edildi
+                if mesafe > 0.001:
+                    fark_vektoru = self.position - engel.position
+                    carpisma_yonu = fark_vektoru.normalized()
+                else:
+                    carpisma_yonu = Vec3(1, 0, 0)  # Varsayılan yön
                 
-                # Yatay mesafe (X-Z düzlemi)
-                fark_vektoru = self.position - engel.position
-                yatay_mesafe = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
-                dikey_fark = abs(fark_vektoru.y)
-                
-                # Silindirik çarpışma: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
-                if dikey_fark <= (engel_yukseklik + HareketAyarlari.DIKEY_TOLERANS_ENGEL):  # Config'den dikey tolerans
-                    min_mesafe = engel_yari_cap + 1.0
-                    
-                    if yatay_mesafe < min_mesafe:
-                        # Ada sınırı ile çarpışma
-                        if yatay_mesafe > 0.001:
-                            carpisma_yonu = Vec3(fark_vektoru.x / yatay_mesafe, 0, fark_vektoru.z / yatay_mesafe)
-                        else:
-                            carpisma_yonu = Vec3(1, 0, 0)  # Varsayılan yön
+                # Hızı yansıt
+                hiz_buyuklugu = self.velocity.length()
+                if hiz_buyuklugu > 0.1:
+                    nokta_carpim = self.velocity.dot(carpisma_yonu)
+                    if nokta_carpim < 0:  # Engele doğru gidiyor
+                        # Hızı yansıt
+                        self.velocity = self.velocity - carpisma_yonu * (2 * nokta_carpim)
                         
-                        # Hızı yansıt (sadece yatay düzlemde)
-                        hiz_buyuklugu = (self.velocity.x**2 + self.velocity.z**2)**0.5
-                        if hiz_buyuklugu > 0.1:
-                            # Yatay hız vektörü
-                            yatay_hiz = Vec3(self.velocity.x, 0, self.velocity.z)
-                            nokta_carpim = yatay_hiz.dot(carpisma_yonu)
-                            if nokta_carpim < 0:  # Ada sınırına doğru gidiyor
-                                # Yatay hızı yansıt
-                                self.velocity.x = self.velocity.x - carpisma_yonu.x * (2 * nokta_carpim)
-                                self.velocity.z = self.velocity.z - carpisma_yonu.z * (2 * nokta_carpim)
-                                
-                                # Pozisyonu ayır (yatay düzlemde)
-                                ayirma_mesafesi = (min_mesafe - yatay_mesafe)
-                                self.position += carpisma_yonu * ayirma_mesafesi
-            else:
-                # Normal engel çarpışma kontrolü (kayalar vb.)
-                mesafe = distance(self.position, engel.position)
+                        # Pozisyonu ayır
+                        ayirma_mesafesi = (min_mesafe - mesafe)
+                        self.position += carpisma_yonu * ayirma_mesafesi
                 # Engel boyutuna göre minimum mesafe
                 engel_yari_cap = max(engel.scale_x, engel.scale_y, engel.scale_z) / 2
                 min_mesafe = engel_yari_cap + 1.0
@@ -1931,25 +1830,9 @@ class Ortam:
         
         # Referans ölçekler (orijinal ada)
         ref_visual_scale = (0.3, 0.8, 0.3)
-        # Hitbox boyutları çarpışma ve engel tanıma için optimize edildi
-        # Hitbox'lar görünür olacak ve çarpışma algılaması için aktif
-        # Hitbox boyutları %20 azaltıldı (0.2 oranında, 0.8 ile çarpıldı)
-        ref_hitbox_scales = [
-            (44.8, 22.4, 44.8),   # Katman 1 (en geniş) - 56 * 0.8 = 44.8, çarpışma algılama için yeterli boyut
-            (33.6, 28.0, 33.6),   # Katman 2 - 42 * 0.8 = 33.6
-            (22.4, 28.0, 22.4),   # Katman 3 - 28 * 0.8 = 22.4
-            (16.8, 28.0, 16.8)    # Katman 4 - 21 * 0.8 = 16.8
-        ]
-        ref_hitbox_positions = [
-            (-5, -1, 0),     # Katman 1 - X: -5 birim, Y: -5 + 4 = -1 birim
-            (-5, -21, 0),    # Katman 2 - X: -5 birim, Y: -25 + 4 = -21 birim
-            (-5, -41, 0),    # Katman 3 - X: -5 birim, Y: -45 + 4 = -41 birim
-            (-5, -61, 0)     # Katman 4 - X: -5 birim, Y: -65 + 4 = -61 birim
-        ]
         
         # Ada pozisyonlarını sakla (ROV yerleştirme için)
         self.island_positions = []
-        self.island_hitboxes = []
         
         # Havuz genişliği (varsayılan 200, sim_olustur'da güncellenebilir)
         self.havuz_genisligi = 200
@@ -2042,25 +1925,10 @@ class Ortam:
                 if island_idx == 0:
                     self.island = island
                 
-                # --- 4. ÇOK KATMANLI HİTBOX SİSTEMİ OLUŞTURMA ---
-                hitbox_katmanlari = self._create_island_hitboxes(
-                    island_x=island_x,
-                    island_z=island_z,
-                    scale_multiplier=scale_multiplier,
-                    ref_hitbox_scales=ref_hitbox_scales,
-                    ref_hitbox_positions=ref_hitbox_positions,
-                    island_idx=island_idx
-                )
-                
-                # Hitbox'ları engel listesine ekle
-                for parca in hitbox_katmanlari:
-                    self.engeller.append(parca)
-                
-                # Ada pozisyonunu, yarıçapını ve hitbox'larını sakla
+                # Ada pozisyonunu ve yarıçapını sakla
                 # Koordinat sistemi: (x_2d, y_2d, radius) - z_depth her zaman aynı (su yüzeyinin üstünde)
                 # radius: Ada yarıçapı (harita çizimi için)
                 self.island_positions.append((island_x, island_z, island_radius))  # (x_2d, y_2d, radius)
-                self.island_hitboxes.extend(hitbox_katmanlari)
                 
                 # Yerleştirilen ada pozisyonunu kaydet (sonraki adalar için çakışma kontrolü)
                 placed_island_positions.append((island_x, island_z))
@@ -2209,104 +2077,18 @@ class Ortam:
             random.choice([min_z + 20, max_z - 20])
         )
     
-    def _create_island_hitboxes(self, island_x, island_z, scale_multiplier, ref_hitbox_scales, ref_hitbox_positions, island_idx):
-        """
-        Ada için çok katmanlı hitbox sistemi oluşturur.
-        Görsel sınır çizgisi ve hassas algılama için optimize edilmiştir.
-        
-        Args:
-            island_x, island_z: Ada pozisyonu
-            scale_multiplier: Ölçek çarpanı
-            ref_hitbox_scales: Referans hitbox ölçekleri listesi
-            ref_hitbox_positions: Referans hitbox pozisyonları listesi
-            island_idx: Ada indeksi (renk farklılaştırması için)
-            
-        Returns:
-            hitbox_katmanlari: Hitbox entity'leri listesi
-        """
-        hitbox_katmanlari = []
-        
-        # En geniş katmanın yarıçapını hesapla (görsel sınır çizgisi için)
-        max_radius = max(ref_hitbox_scales[0][0], ref_hitbox_scales[0][2]) / 2 * scale_multiplier
-        max_height = ref_hitbox_scales[0][1] * scale_multiplier
-        
-        # Ada çevresine görsel sınır çizgisi ekle (yarı saydam sphere - cylinder yerine)
-        # Bu, ROV'ların ada sınırlarını görmesini sağlar
-        # Ursina'da cylinder modeli yok, bu yüzden sphere kullanıyoruz
-        # Görünürlük kapatıldı (kullanıcı isteği)
-        sinir_cizgisi = Entity(
-            model='sphere',
-            position=(island_x, -max_height/2, island_z),
-            scale=(max_radius * 2, max_height, max_radius * 2),  # Y ekseni uzun, X-Z eksenleri eşit (silindir benzeri)
-            color=color.rgba(255, 200, 0, 0.3),  # Turuncu-sarı, yarı saydam
-            visible=False,  # Görünmez (kullanıcı isteği - şimdilik kapalı)
-            double_sided=True,
-            unlit=True,
-            transparent=True,  # Şeffaflık için
-            texture=None
-        )
-        
-        hitbox_katmanlari.append(sinir_cizgisi)
-        
-        # Renkleri farklılaştır (her ada için farklı ton)
-        color_offset = island_idx * 50
-        colors = [
-            color.rgba(255 - color_offset, 0, 0, 0.3),      # Kırmızı
-            color.rgba(0, 255 - color_offset, 0, 0.3),      # Yeşil
-            color.rgba(0, 0, 255 - color_offset, 0.3),       # Mavi
-            color.rgba(255 - color_offset, 255 - color_offset, 0, 0.3)  # Sarı
-        ]
-        
-        # Her katman için hitbox oluştur (daha hassas algılama için)
-        for layer_idx, (ref_scale, ref_pos) in enumerate(zip(ref_hitbox_scales, ref_hitbox_positions)):
-            # Ölçeği çarpanla çarp
-            scaled_size = (
-                ref_scale[0] * scale_multiplier,
-                ref_scale[1] * scale_multiplier,
-                ref_scale[2] * scale_multiplier
-            )
-            
-            # Pozisyonu ada pozisyonuna göre ayarla ve kaydır
-            # X yönünde -5 birim, Y yönünde +4 birim kaydırma
-            hitbox_pos = (island_x + ref_pos[0] - 5, ref_pos[1] + 4, island_z + ref_pos[2])
-            
-            # Hitbox'lar görünür ve algılama için aktif (çarpışma ve engel tanıma için gerekli)
-            # Color zaten rgba formatında (alpha dahil), direkt kullan
-            hitbox_color = colors[layer_idx]
-            
-            hitbox_katmanlari.append(Entity(
-                model='icosphere',
-                position=hitbox_pos,
-                scale=scaled_size,
-                visible=True,  # Görünür (çarpışma ve engel tanıma için gerekli)
-                collider='sphere',
-                color=hitbox_color,
-                unlit=True,
-                transparent=True  # Şeffaflık için
-            ))
-        
-        return hitbox_katmanlari
-
     # --- Simülasyon Nesnelerini Oluştur ---
     def sim_olustur(self, n_rovs=3, n_engels=15, havuz_genisligi=200):
         # Havuz genişliğini güncelle (ada oluşturma için)
         self.havuz_genisligi = havuz_genisligi
         
-        # Ada hitbox'larını ve pozisyonlarını koru (eğer varsa)
-        ada_hitbox_backup = []
+        # Ada pozisyonlarını koru (eğer varsa)
         ada_positions_backup = []
-        if hasattr(self, 'island_hitboxes') and self.island_hitboxes:
-            ada_hitbox_backup = self.island_hitboxes.copy()
         if hasattr(self, 'island_positions') and self.island_positions:
             ada_positions_backup = self.island_positions.copy()
         
-        # Engeller (Kayalar) - Listeyi sıfırla ama ada hitbox'larını koruyacağız
+        # Engeller (Kayalar) - Listeyi sıfırla
         self.engeller = []
-        
-        # Ada hitbox'larını geri ekle (eğer varsa)
-        if ada_hitbox_backup:
-            for hitbox in ada_hitbox_backup:
-                self.engeller.append(hitbox)
         
         # Ada pozisyonlarını geri yükle (eğer varsa)
         if ada_positions_backup:
@@ -2510,39 +2292,6 @@ class Ortam:
             old_pos = self.island_positions[ada_id]
             self.island_positions[ada_id] = (x, y, radius)
             
-            # Ada hitbox'larını güncelle (eğer varsa)
-            if hasattr(self, 'island_hitboxes') and self.island_hitboxes:
-                # Ada hitbox'larını bul ve güncelle
-                # Her ada için birden fazla hitbox olabilir (katmanlı sistem)
-                # Ada ID'sine göre hitbox'ları bulmak için pozisyon karşılaştırması yapılır
-                for hitbox in self.island_hitboxes:
-                    if hasattr(hitbox, 'position'):
-                        # Eski pozisyona yakın hitbox'ları bul
-                        old_x, old_y = old_pos[0], old_pos[1]
-                        hitbox_x = hitbox.position.x
-                        hitbox_z = hitbox.position.z
-                        mesafe = ((hitbox_x - old_x)**2 + (hitbox_z - old_y)**2)**0.5
-                        
-                        # Eğer hitbox bu ada'ya aitse (yakın mesafede)
-                        if mesafe < radius * 2:
-                            # Hitbox pozisyonunu güncelle
-                            hitbox.position = (x, hitbox.position.y, y)
-            
-            # Engeller listesindeki ada hitbox'larını da güncelle
-            if hasattr(self, 'engeller') and self.engeller:
-                old_x, old_y = old_pos[0], old_pos[1]
-                for engel in self.engeller:
-                    if hasattr(engel, 'position') and hasattr(engel, 'model'):
-                        # Ada sınır çizgisi kontrolü (sphere modeli ve görünür)
-                        is_island_boundary = (engel.model == 'sphere' and 
-                                             hasattr(engel, 'visible') and 
-                                             engel.visible == True)
-                        if is_island_boundary:
-                            engel_x = engel.position.x
-                            engel_z = engel.position.z
-                            mesafe = ((engel_x - old_x)**2 + (engel_z - old_y)**2)**0.5
-                            if mesafe < radius * 2:
-                                engel.position = (x, engel.position.y, y)
             
             # Verbose kontrolü için ortam referansı gerekli
             verbose = False
