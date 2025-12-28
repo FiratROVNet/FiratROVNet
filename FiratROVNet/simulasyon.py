@@ -1298,7 +1298,7 @@ class Harita:
         self.fig = None
         self.ax = None
     
-    def _ciz_gps_pin(self, x, y, renk, yon=None):
+    def _ciz_gps_pin(self, x, y, renk, yon=None, rov_id=None):
         """Uyarı vermeyen GPS pin çizimi."""
         if not self.ax:
             return
@@ -1321,6 +1321,14 @@ class Harita:
                           facecolor=renk_matplotlib, edgecolor='black', linewidth=1, zorder=10))
         self.ax.plot(x, y, 'o', color='white', markersize=3, zorder=11, 
                     markeredgecolor='black', markeredgewidth=1)
+        
+        # ROV ID'sini yazdır
+        if rov_id is not None:
+            self.ax.text(x, y - pin_boyut * 1.5, f'ROV-{rov_id}', 
+                        fontsize=9, ha='center', va='top', 
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='white', 
+                                edgecolor='black', alpha=0.8, linewidth=0.5),
+                        zorder=12)
 
     def _ciz_ada_sekli(self, x, y, boyut):
         """Ada şeklinde çizim (ters koni/oval şekil)."""
@@ -1375,7 +1383,14 @@ class Harita:
                 if hasattr(rov, 'velocity') and rov.velocity.length() > 0.1:
                     yon = (rov.velocity.x, rov.velocity.z)
                 
-                self._ciz_gps_pin(x_2d, y_2d, renk, yon)
+                # ROV ID'sini al
+                rov_id = None
+                if hasattr(rov, 'id'):
+                    rov_id = rov.id
+                elif hasattr(rov, 'rov_id'):
+                    rov_id = rov.rov_id
+                
+                self._ciz_gps_pin(x_2d, y_2d, renk, yon, rov_id)
 
         # Hedef pozisyonunu çiz (büyük X işareti)
         if self.hedef_pozisyon:
@@ -1414,8 +1429,8 @@ class Harita:
                 # Doğrudan çapı (2 * rad) kullanıyoruz.
                 ada = patches.Ellipse(
                     (is_pos[0], is_pos[1]), 
-                    width=rad * 2.0,      # Tam çap (Görsel genişlikle birebir)
-                    height=rad * 1.8,     # Hafif perspektif için Y ekseni biraz basık olabilir
+                    width=rad * 4.0,      # Tam çap (Görsel genişlikle birebir)
+                    height=rad * 3.6,     # Hafif perspektif için Y ekseni biraz basık olabilir
                     facecolor='#8B5A3C', 
                     edgecolor='black', 
                     alpha=0.7, 
@@ -1808,7 +1823,7 @@ class Ortam:
                 # --- DÜZELTME BAŞLANGICI ---
                 # Görsel ölçeği hesapla
                 # Not: Görselin çok büyük olmaması için 0.8 ile çarpmıştınız, onu koruyoruz.
-                VISUAL_SCALE_REDUCTION = 0.4 
+                VISUAL_SCALE_REDUCTION = 1 
                 visual_scale_x = ref_visual_scale[0] * scale_multiplier * VISUAL_SCALE_REDUCTION
                 visual_scale_z = ref_visual_scale[2] * scale_multiplier * VISUAL_SCALE_REDUCTION
                 
