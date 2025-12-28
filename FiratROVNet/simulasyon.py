@@ -442,50 +442,17 @@ class ROV(Entity):
                     else:
                         s_x, s_y, s_z = 1.0, 1.0, 1.0
                     
-                    # Ada hitbox'ları için özel işleme (silindirik algılama)
-                    is_island_boundary = (hasattr(engel, 'model') and 
-                                         engel.model == 'cylinder' and
-                                         hasattr(engel, 'visible') and 
-                                         engel.visible == True)
+                    # Normal engel (küp, vb.) için basit mesafe hesaplama
+                    # Merkezden merkeze mesafe - engelin yarıçapı
+                    avg_scale = (s_x + s_z) / 2
+                    d = distance(self.position, engel.position) - (avg_scale / 2)
                     
-                    if is_island_boundary:
-                        # Ada sınır çizgisi için silindirik algılama
-                        yatay_yaricap = max(s_x, s_z) / 2
-                        dikey_yaricap = s_y / 2
-                        
-                        # Vektör hesaplamaları
-                        fark_vektoru = self.position - engel.position
-                        
-                        # Yatay uzaklık (X-Z düzlemi)
-                        yatay_uzaklik = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
-                        
-                        # Dikey uzaklık (Y ekseni)
-                        dy = abs(fark_vektoru.y)
-                        
-                        # Silindirik algılama: Y ekseni içindeyse ve yatay mesafe yarıçap içindeyse
-                        dikey_tolerans = 5.0
-                        
-                        if dy <= (dikey_yaricap + dikey_tolerans):
-                            duvara_mesafe = yatay_uzaklik - yatay_yaricap
-                            
-                            # İçindeyse mesafe 0
-                            if duvara_mesafe < 0:
-                                duvara_mesafe = 0
-                            
-                            if duvara_mesafe < min_dist:
-                                min_dist = duvara_mesafe
-                    else:
-                        # Normal engel (küp, vb.) için basit mesafe hesaplama
-                        # Merkezden merkeze mesafe - engelin yarıçapı
-                        avg_scale = (s_x + s_z) / 2
-                        d = distance(self.position, engel.position) - (avg_scale / 2)
-                        
-                        # Negatif mesafe olamaz (içindeyse 0)
-                        if d < 0:
-                            d = 0
-                        
-                        if d < min_dist:
-                            min_dist = d
+                    # Negatif mesafe olamaz (içindeyse 0)
+                    if d < 0:
+                        d = 0
+                    
+                    if d < min_dist:
+                        min_dist = d
             
             # 3. Sonuç: Eğer engel sonar mesafesindeyse mesafeyi döndür, değilse -1
             if min_dist < engel_mesafesi_limit:
@@ -610,56 +577,25 @@ class ROV(Entity):
                     else:
                         s_x, s_y, s_z = 1.0, 1.0, 1.0
                     
-                    # Ada hitbox'ları için özel işleme (sonar ile aynı)
-                    is_island_boundary = (hasattr(engel, 'model') and 
-                                         engel.model == 'cylinder' and
-                                         hasattr(engel, 'visible') and 
-                                         engel.visible == True)
+                    # Normal engel (küp, vb.) için basit mesafe hesaplama (sonar ile aynı)
+                    avg_scale = (s_x + s_z) / 2
+                    d = distance(self.position, engel.position) - (avg_scale / 2)
                     
-                    if is_island_boundary:
-                        yatay_yaricap = max(s_x, s_z) / 2
-                        dikey_yaricap = s_y / 2
-                        fark_vektoru = self.position - engel.position
-                        yatay_uzaklik = (fark_vektoru.x**2 + fark_vektoru.z**2)**0.5
-                        dy = abs(fark_vektoru.y)
-                        dikey_tolerans = 5.0
-                        
-                        if dy <= (dikey_yaricap + dikey_tolerans):
-                            duvara_mesafe = yatay_uzaklik - yatay_yaricap
-                            if duvara_mesafe < 0:
-                                duvara_mesafe = 0
-                            
-                            # Yön kontrolü
-                            if taraf is not None:
-                                if engel_yon_icinde_mi(engel.position, yon_vektoru):
-                                    if duvara_mesafe < min_dist:
-                                        min_dist = duvara_mesafe
-                            else:
-                                # Tüm yönler için kontrol
-                                for yon in [forward_vec, right_vec, left_vec]:
-                                    if engel_yon_icinde_mi(engel.position, yon):
-                                        if duvara_mesafe < min_dist:
-                                            min_dist = duvara_mesafe
+                    # Negatif mesafe olamaz (içindeyse 0)
+                    if d < 0:
+                        d = 0
+                    
+                    # Yön kontrolü
+                    if taraf is not None:
+                        if engel_yon_icinde_mi(engel.position, yon_vektoru) and d < lidar_menzil:
+                            if d < min_dist:
+                                min_dist = d
                     else:
-                        # Normal engel (küp, vb.) için basit mesafe hesaplama (sonar ile aynı)
-                        avg_scale = (s_x + s_z) / 2
-                        d = distance(self.position, engel.position) - (avg_scale / 2)
-                        
-                        # Negatif mesafe olamaz (içindeyse 0)
-                        if d < 0:
-                            d = 0
-                        
-                        # Yön kontrolü
-                        if taraf is not None:
-                            if engel_yon_icinde_mi(engel.position, yon_vektoru) and d < lidar_menzil:
+                        # Tüm yönler için kontrol
+                        for yon in [forward_vec, right_vec, left_vec]:
+                            if engel_yon_icinde_mi(engel.position, yon) and d < lidar_menzil:
                                 if d < min_dist:
                                     min_dist = d
-                        else:
-                            # Tüm yönler için kontrol
-                            for yon in [forward_vec, right_vec, left_vec]:
-                                if engel_yon_icinde_mi(engel.position, yon) and d < lidar_menzil:
-                                    if d < min_dist:
-                                        min_dist = d
             
             # 3. Sonuç: Eğer engel lidar menzilindeyse mesafeyi döndür, değilse -1 (sonar mantığı gibi)
             if min_dist < lidar_menzil:
@@ -1889,7 +1825,7 @@ class Ortam:
                 # Gerçek dünya yarıçapı = (Ham Boyut * Ölçek) / 2
                 gercek_yaricap = (MODEL_HAM_GENISLIK * max(visual_scale_x, visual_scale_z)) / 2
                 
-                # Haritaya ve hitbox mantığına bu gerçek yarıçapı gönderiyoruz
+                # Haritaya bu gerçek yarıçapı gönderiyoruz
                 island_radius = gercek_yaricap
                 # --- DÜZELTME BİTİŞİ ---
                 
@@ -1987,7 +1923,7 @@ class Ortam:
         # ROV ve engel listeleri
         self.rovs = []
         self.filo = None  # Filo referansı (main.py'den set edilecek)
-        # engeller listesi ada hitbox'ları eklendikten sonra oluşturuldu (ada varsa)
+        # engeller listesi oluşturuldu (ada varsa)
         # Eğer ada yoksa veya engeller listesi oluşturulmadıysa, şimdi oluştur
         if not hasattr(self, 'engeller'):
             self.engeller = []
