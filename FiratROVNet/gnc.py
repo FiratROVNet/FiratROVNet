@@ -1197,7 +1197,7 @@ class Filo:
                                         merkez_koordinat[2],
                                         ai=True
                                     )
-
+                        
                                 # Takipçi ROV'ları formasyon pozisyonlarına gönder
                                 for rov_id, pozisyon in enumerate(pozisyonlar):
                                     if rov_id >= len(self.sistemler):
@@ -2460,7 +2460,6 @@ class TemelGNC:
                         # Sonraki noktayı hedef olarak ata
                         self.hedef = Vec3(sonraki_nokta[0], sonraki_nokta[1], self.hedef.z)
                         # Konsolu rahatsız etmemek için print'i kaldır (arka plan işlemi)
-                        return
                     else:
                         # Tüm noktalar tamamlandı
                         # Listeyi temizle

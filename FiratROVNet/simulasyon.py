@@ -2075,17 +2075,61 @@ class Harita:
                 # Pencere kapatılmış veya hata - sessizce devam et
                 pass
     
-    def ekle(self, x_2d, y_2d, tip='engel'):
+    def ekle(self, x_2d, y_2d=None, tip='engel'):
         """
         Haritaya elle engel/nesne ekler.
         
         Args:
-            x_2d, y_2d: 2D düzlem koordinatları
+            x_2d: 2D düzlem X koordinatı VEYA dizi şeklinde noktalar [(x, y), ...] veya [(x, y, z), ...]
+            y_2d: 2D düzlem Y koordinatı (x_2d dizi ise None olabilir)
             tip: Nesne tipi ('engel', 'hedef', vb.)
         
         Returns:
             bool: Başarılı ise True
         """
+        # Dizi kontrolü: x_2d bir dizi/liste ise tüm noktaları işle
+        if isinstance(x_2d, (list, tuple, np.ndarray)):
+            noktalar = x_2d
+            basarili_sayisi = 0
+            
+            for nokta in noktalar:
+                # Her nokta 2D (x, y) veya 3D (x, y, z) olabilir
+                if isinstance(nokta, (list, tuple, np.ndarray)) and len(nokta) >= 2:
+                    x = float(nokta[0])
+                    y = float(nokta[1])
+                    # z varsa yok sayılır (harita 2D)
+                    
+                    # Tek nokta ekleme işlemi
+                    if tip == 'engel':
+                        # Engel listesine ekle
+                        self.manuel_engeller.append((x, y))
+                        
+                        # Ortam'a engel entity'si ekle
+                        if hasattr(self.ortam_ref, 'engeller'):
+                            # Engel entity'si oluştur (görünmez hitbox)
+                            engel = Entity(
+                                model='icosphere',
+                                position=sim_to_ursina(x, y, self.ortam_ref.SEA_FLOOR_Y),
+                                scale=(20, 20, 20),
+                                visible=False,
+                                collider='sphere',
+                                color=color.red,
+                                unlit=True
+                            )
+                            self.ortam_ref.engeller.append(engel)
+                        
+                        basarili_sayisi += 1
+            
+            # Haritayı güncelle (sadece görünürse ve pencere varsa)
+            if self.gorunur and self.fig is not None and basarili_sayisi > 0:
+                self._ciz()
+            
+            if basarili_sayisi > 0:
+                print(f"✅ {basarili_sayisi} nokta eklendi (toplam {len(noktalar)} nokta)")
+                return True
+            return False
+        
+        # Tek nokta ekleme (eski davranış)
         if tip == 'engel':
             # Engel listesine ekle
             self.manuel_engeller.append((x_2d, y_2d))
