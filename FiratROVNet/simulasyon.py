@@ -972,12 +972,9 @@ class ROV(Entity):
         if not self.environment_ref:
             return
         
-        # Kaçınma mesafesini sensör ayarlarından al
-        kacinma_mesafesi = self.sensor_config.get("kacinma_mesafesi", None)
-        if kacinma_mesafesi is None:
-            # Eğer kacinma_mesafesi yoksa, engel_mesafesi'nin bir kısmını kullan (Config'den katsayı)
-            engel_mesafesi = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
-            kacinma_mesafesi = engel_mesafesi * HareketAyarlari.KACINMA_MESAFESI_FALLBACK_KATSAYISI
+        # Kaçınma mesafesi = engel_mesafesi (ROV'lar engel mesafesi kadar yaklaştıklarında kaçınma yapar)
+        engel_mesafesi = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
+        kacinma_mesafesi = engel_mesafesi  # Engel mesafesi kadar yaklaştıklarında kaçınma yap
         
         uzaklasma_vektoru = Vec3(0, 0, 0)
         
@@ -1016,16 +1013,17 @@ class ROV(Entity):
         # Raycast origin
         raycast_origin = self.world_position + Vec3(0, 0.5, 0)
         
-        # Ön yönde raycast yap
+        # Ön yönde raycast yap (engel mesafesi kadar)
+        ignore_tuple = (self, self.safety_zone) if hasattr(self, 'safety_zone') and self.safety_zone else (self,)
         hit_info = raycast(
             raycast_origin,
             forward_vec,
             distance=kacinma_mesafesi,
-            ignore=(self, self.safety_zone)
+            ignore=ignore_tuple
         )
         
         if hit_info.hit and hasattr(hit_info, 'entity') and hit_info.entity:
-            # Engel tespit edildi - uzaklaş
+            # Engel tespit edildi - uzaklaş (engel mesafesi kadar yaklaştıysa)
             mesafe = hit_info.distance
             if mesafe > 0 and mesafe <= kacinma_mesafesi:
                 # Uzaklaşma yönü (raycast normal veya engelden uzaklaş)
@@ -1037,10 +1035,11 @@ class ROV(Entity):
                         uzaklasma_yonu = (self.position - hit_info.entity.position).normalized()
                     else:
                         uzaklasma_yonu = -forward_vec
-                    
-                    uzaklasma_gucu = (kacinma_mesafesi - mesafe) / kacinma_mesafesi
-                    uzaklasma_gucu *= HareketAyarlari.UZAKLASMA_GUC_KATSAYISI
-                    uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
+                
+                # Kaçınma gücü: Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
+                uzaklasma_gucu = (kacinma_mesafesi - mesafe) / kacinma_mesafesi
+                uzaklasma_gucu *= HareketAyarlari.UZAKLASMA_GUC_KATSAYISI
+                uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
         
         # Fallback: Eski yöntem (raycast çalışmazsa veya tüm engelleri kontrol etmek için)
         for engel in self.environment_ref.engeller:
@@ -1526,7 +1525,7 @@ class Harita:
                 ada_sekli = patches.Ellipse(
                     (ada_x, ada_y), 
                     width=rad * 4.0,
-                    height=rad * 3.6,
+                    height=rad * 4.0,
                     facecolor='#8B5A3C', 
                     edgecolor='black', 
                     linewidth=2,
@@ -2137,22 +2136,27 @@ class Harita:
             if threading.current_thread() is not threading.main_thread():
                 return  # Ana thread dışında çalışma
             
-            # Çizim performansı için sayaç mekanizması
+            # Çizim performansı için sayaç mekanizması - Her 30 frame'de bir güncelle
             if not hasattr(self, '_up_cnt'):
                 self._up_cnt = 0
+            if not hasattr(self, '_update_interval'):
+                self._update_interval = 30  # 30 frame'de bir güncelle
+            
             self._up_cnt += 1
             
             # Çizim güncellemesi - 30 karede bir (Performans)
-            if self._up_cnt >= 30:
+            if self._up_cnt >= self._update_interval:
                 self._up_cnt = 0
                 try:
                     # Havuz genişliğini güncelle (sim_olustur'da değişebilir)
                     self.havuz_genisligi = getattr(self.ortam_ref, 'havuz_genisligi', 200)
                     self._ciz()
                     
-                    # Çizimi güncelle (draw_idle - non-blocking)
+                    # Çizimi güncelle (her 30 frame'de bir - performans için)
                     try:
-                        self.fig.canvas.draw_idle()
+                        # draw_idle() non-blocking ama bazen yeterince hızlı güncellemez
+                        # Bu yüzden her 30 frame'de bir draw() kullanıyoruz
+                        self.fig.canvas.draw()
                     except Exception:
                         # Pencere kapatılmış olabilir
                         self.fig = None
@@ -2241,7 +2245,13 @@ class Harita:
             
             # Haritayı güncelle (sadece görünürse ve pencere varsa)
             if self.gorunur and self.fig is not None and basarili_sayisi > 0:
-                self._ciz()
+                try:
+                    self._ciz()
+                    # Çizimi hemen güncelle
+                    if self.fig is not None:
+                        self.fig.canvas.draw()
+                except Exception as e:
+                    print(f"⚠️ [HARITA] Ekleme sonrası çizim hatası: {e}")
             
             if basarili_sayisi > 0:
                 print(f"✅ {basarili_sayisi} nokta eklendi (toplam {len(noktalar)} nokta)")
@@ -2269,7 +2279,13 @@ class Harita:
             
             # Haritayı güncelle (sadece görünürse ve pencere varsa)
             if self.gorunur and self.fig is not None:
-                self._ciz()
+                try:
+                    self._ciz()
+                    # Çizimi hemen güncelle
+                    if self.fig is not None:
+                        self.fig.canvas.draw()
+                except Exception as e:
+                    print(f"⚠️ [HARITA] Ekleme sonrası çizim hatası: {e}")
             print(f"✅ Engel eklendi: ({x_2d:.1f}, {y_2d:.1f})")
             return True
         

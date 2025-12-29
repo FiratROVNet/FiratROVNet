@@ -318,7 +318,7 @@ class HullManager:
         
         return sanal_bariyer_noktalari
     
-    def hull(self, offset=20.0):
+    def hull(self, offset=40.0):
         """
         1. ROV'ları 20m dışarı iten noktaları alır.
         2. Yakındaki adaları 20m içeri (filoya doğru) çeken sanal noktaları alır.
@@ -336,7 +336,7 @@ class HullManager:
         """
         return self.guvenlik_hull_olustur(offset=offset)
     
-    def guvenlik_hull_olustur(self, offset=20.0):
+    def guvenlik_hull_olustur(self, offset=40.0):
         """
         1. ROV'ları 20m dışarı iten noktaları alır.
         2. Yakındaki adaları 20m içeri (filoya doğru) çeken sanal noktaları alır.

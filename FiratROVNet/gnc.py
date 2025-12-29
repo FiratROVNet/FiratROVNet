@@ -1353,7 +1353,7 @@ class Filo:
         """Wrapper: HullManager'a yönlendirir (geriye dönük uyumluluk için)."""
         return self.hull_manager.ada_engel_noktalari_pro(yakinlik_siniri=yakinlik_siniri, offset=offset)
     
-    def hull(self, offset=20.0):
+    def hull(self, offset=40.0):
         """
         Güvenlik hull oluşturur (Thread-safe).
         Ana thread'de değilse, komutu queue'ya ekler.
@@ -1381,7 +1381,7 @@ class Filo:
         """guvenlik_hull_olustur() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         return self.hull_manager.hull(offset=offset)
     
-    def ada_cevre(self, offset=10.0):
+    def ada_cevre(self, offset=15.0):
         """
         Simülasyondaki adaları tespit edip her ada için eşit çevrede 12 nokta döndürür.
         
@@ -1453,7 +1453,7 @@ class Filo:
         print(f"✅ [ADA_CEVRE] {len(self.ortam_ref.island_positions)} ada için {len(tum_noktalar)} nokta hesaplandı (offset={offset}m)")
         return tum_noktalar
     
-    def yeni_hull(self, yasakli_noktalar, offset=20.0, alpha=2.0, buffer_radius=20.0, channel_width=15.0):
+    def yeni_hull(self, yasakli_noktalar, offset=40.0, alpha=2.0, buffer_radius=20.0, channel_width=15.0):
             """
             Mevcut hull noktalarını alır, yasaklı bölgeleri kesip çıkarır.
             Hem harita çizimi hem de 'is_point_inside' kontrolü için uyumlu nesne döndürür.
