@@ -1494,24 +1494,143 @@ class Harita:
                                 edgecolor='black', alpha=0.8, linewidth=0.5),
                         zorder=12)
 
-    def _ciz_ada_sekli(self, x, y, boyut):
-        """Ada şeklinde çizim (ters koni/oval şekil)."""
-        from matplotlib.patches import Ellipse
-        ust_yaricap = boyut * 1.2
-        alt_yaricap = boyut * 0.6
-        ada_sekli = Ellipse((x, y), width=ust_yaricap*2, height=alt_yaricap*2, 
-                           angle=0, facecolor='#8B5A3C', edgecolor='black', 
-                           linewidth=2, zorder=4, alpha=0.8)
-        self.ax.add_patch(ada_sekli)
+    def _ciz_ada_sekli(self, ada_id):
+        """
+        Ada şeklini filo.ada_cevre() ve Ada.konum() bilgilerini kullanarak çizer.
         
-        # Ada üzerinde küçük detaylar (ağaç/tepe gibi) - sabit pozisyonlar
-        detay_positions = [
-            (0.3, 0.4), (-0.4, 0.2), (0.2, -0.3), (-0.3, -0.2), (0.0, 0.5)
-        ]
-        for dx, dy in detay_positions:
-            detay_x = x + dx * ust_yaricap * 0.6
-            detay_y = y + dy * alt_yaricap * 0.6
-            self.ax.plot(detay_x, detay_y, 'o', color='#654321', markersize=3, zorder=5)
+        Args:
+            ada_id: Ada ID'si
+        """
+        from matplotlib import patches
+        
+        # Ada merkez pozisyonunu al
+        if not hasattr(self, 'ortam_ref') or not self.ortam_ref:
+            return
+        
+        ada_konum = self.ortam_ref.Ada(ada_id)
+        if ada_konum is None:
+            return
+        
+        ada_x, ada_y = ada_konum
+        
+        # Ada çevre noktalarını al (filo.ada_cevre() ile)
+        if not self.filo_ref or not hasattr(self.filo_ref, 'ada_cevre'):
+            # Fallback: Dairesel çizim
+            if hasattr(self.ortam_ref, 'island_positions') and ada_id < len(self.ortam_ref.island_positions):
+                island_data = self.ortam_ref.island_positions[ada_id]
+                if len(island_data) >= 3:
+                    rad = island_data[2]
+                else:
+                    rad = self.havuz_genisligi * 0.08
+                
+                ada_sekli = patches.Ellipse(
+                    (ada_x, ada_y), 
+                    width=rad * 4.0,
+                    height=rad * 3.6,
+                    facecolor='#8B5A3C', 
+                    edgecolor='black', 
+                    linewidth=2,
+                    alpha=0.8, 
+                    zorder=4
+                )
+                self.ax.add_patch(ada_sekli)
+            return
+        
+        try:
+            # Ada çevre noktalarını al (offset=0 ile tam çevre)
+            ada_cevre_noktalari = self.filo_ref.ada_cevre(offset=0.0)
+            
+            if not ada_cevre_noktalari or len(ada_cevre_noktalari) == 0:
+                return
+            
+            # Her ada için 12 nokta var
+            nokta_sayisi_per_ada = 12
+            ada_sayisi = len(ada_cevre_noktalari) // nokta_sayisi_per_ada
+            
+            if ada_id >= ada_sayisi:
+                return
+            
+            # Bu ada için noktaları al
+            baslangic_idx = ada_id * nokta_sayisi_per_ada
+            bitis_idx = baslangic_idx + nokta_sayisi_per_ada
+            
+            if bitis_idx > len(ada_cevre_noktalari):
+                bitis_idx = len(ada_cevre_noktalari)
+            
+            ada_noktalari = ada_cevre_noktalari[baslangic_idx:bitis_idx]
+            
+            # Minimum 3 nokta gerekli (polygon için)
+            if len(ada_noktalari) >= 3:
+                # Polygon koordinatlarını hazırla
+                polygon_xy = []
+                for n in ada_noktalari:
+                    # Nokta formatı kontrolü: (x, y, z) veya (x, y)
+                    if isinstance(n, (list, tuple)) and len(n) >= 2:
+                        try:
+                            polygon_xy.append((float(n[0]), float(n[1])))
+                        except (ValueError, TypeError, IndexError):
+                            continue
+                
+                # Yeterli nokta varsa çiz
+                if len(polygon_xy) >= 3:
+                    # Kapalı polygon için ilk noktayı sona ekle
+                    polygon_xy.append(polygon_xy[0])
+                    
+                    # Ada şeklini polygon olarak çiz
+                    ada_polygon = patches.Polygon(
+                        polygon_xy,
+                        facecolor='#8B5A3C',
+                        edgecolor='black',
+                        linewidth=2,
+                        alpha=0.8,
+                        zorder=4
+                    )
+                    self.ax.add_patch(ada_polygon)
+                    
+                    # Ada üzerinde küçük detaylar (ağaç/tepe gibi)
+                    # Ada yarıçapını hesapla (noktaların merkeze uzaklığından)
+                    if hasattr(self.ortam_ref, 'island_positions') and ada_id < len(self.ortam_ref.island_positions):
+                        island_data = self.ortam_ref.island_positions[ada_id]
+                        if len(island_data) >= 3:
+                            rad = island_data[2]
+                        else:
+                            # Noktaların merkeze ortalama uzaklığından hesapla
+                            uzakliklar = []
+                            for px, py in polygon_xy[:-1]:  # Son nokta tekrar olduğu için atla
+                                uzaklik = ((px - ada_x)**2 + (py - ada_y)**2)**0.5
+                                uzakliklar.append(uzaklik)
+                            rad = sum(uzakliklar) / len(uzakliklar) if uzakliklar else 20.0
+                    else:
+                        rad = 20.0
+                    
+                    # Detay pozisyonları (ada merkezine göre)
+                    detay_positions = [
+                        (0.3, 0.4), (-0.4, 0.2), (0.2, -0.3), (-0.3, -0.2), (0.0, 0.5)
+                    ]
+                    for dx, dy in detay_positions:
+                        detay_x = ada_x + dx * rad * 0.6
+                        detay_y = ada_y + dy * rad * 0.6
+                        self.ax.plot(detay_x, detay_y, 'o', color='#654321', markersize=3, zorder=5)
+        except Exception as e:
+            # Hata durumunda fallback: dairesel çizim
+            if hasattr(self.ortam_ref, 'island_positions') and ada_id < len(self.ortam_ref.island_positions):
+                island_data = self.ortam_ref.island_positions[ada_id]
+                if len(island_data) >= 3:
+                    rad = island_data[2]
+                else:
+                    rad = self.havuz_genisligi * 0.08
+                
+                ada_sekli = patches.Ellipse(
+                    (ada_x, ada_y), 
+                    width=rad * 4.0,
+                    height=rad * 3.6,
+                    facecolor='#8B5A3C', 
+                    edgecolor='black', 
+                    linewidth=2,
+                    alpha=0.8, 
+                    zorder=4
+                )
+                self.ax.add_patch(ada_sekli)
     
     def _ciz(self):
         """Eksenleri temizle ve her şeyi yeniden çiz."""
