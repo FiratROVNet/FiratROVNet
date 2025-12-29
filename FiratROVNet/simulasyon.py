@@ -4,9 +4,10 @@ import matplotlib
 # TkAgg, Python thread'leri ile en uyumlu çalışan backend'dir
 # Hem Windows hem Linux'ta çökme riskini en aza indirir
 try:
-    matplotlib.use('TkAgg', force=False)
-except Exception:
-    pass  # Backend zaten ayarlanmışsa devam et
+    matplotlib.use('TkAgg', force=True)  # force=True ile kesin ayarla
+except Exception as e:
+    print(f"⚠️ [HARITA] Backend ayarlanamadı: {e}")
+    pass  # Fallback için devam et
 
 from ursina import *
 from ursina import Vec3  # Vec3'ü doğrudan import et
@@ -17,63 +18,32 @@ import code
 import torch
 from math import sin, cos, atan2, degrees, radians, pi
 import os
+from typing import Tuple, List, Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation
 import queue
-    
-from .config import cfg, SensorAyarlari, GATLimitleri, HareketAyarlari
 
-# ============================================================
-# KOORDİNAT SİSTEMİ TANIMI
-# ============================================================
-# Bu simülasyonda kullanılan koordinat sistemi:
-# - X ekseni: 2D düzlemde yatay (horizontal - birinci boyut)
-# - Y ekseni: 2D düzlemde dikey (horizontal - ikinci boyut)
-# - Z ekseni: Derinlik (depth) - pozitif değerler yüzeye yakın, negatif değerler derinlik
-#
-# Ursina engine'in kendi koordinat sistemi:
-# - Ursina X: horizontal (sağ-sol)
-# - Ursina Y: vertical (yukarı-aşağı)
-# - Ursina Z: depth (ileri-geri)
-#
-# Dönüşüm: Simülasyon (x_2d, y_2d, z_depth) -> Ursina (x_2d, z_depth, y_2d)
-# ============================================================
-
-def sim_to_ursina(x_2d, y_2d, z_depth):
-    """
-    Simülasyon koordinat sisteminden Ursina koordinat sistemine dönüşüm.
+# Global Interactive Mode - Bir kez aç (thread-safe)
+try:
+    plt.ion()
+except Exception:
+    pass  # Zaten açıksa devam et
     
-    Args:
-        x_2d: 2D düzlemde yatay (horizontal - birinci boyut)
-        y_2d: 2D düzlemde dikey (horizontal - ikinci boyut)
-        z_depth: Derinlik (depth)
-    
-    Returns:
-        (ursina_x, ursina_y, ursina_z): Ursina koordinatları
-    """
-    return (x_2d, z_depth, y_2d)
-
-def ursina_to_sim(ursina_x, ursina_y, ursina_z):
-    """
-    Ursina koordinat sisteminden simülasyon koordinat sistemine dönüşüm.
-    
-    Args:
-        ursina_x: Ursina X (horizontal)
-        ursina_y: Ursina Y (vertical)
-        ursina_z: Ursina Z (depth)
-    
-    Returns:
-        (x_2d, y_2d, z_depth): Simülasyon koordinatları
-    """
-    return (ursina_x, ursina_z, ursina_y)
-
-# --- FİZİK SABİTLERİ ---
-SURTUNME_KATSAYISI = 0.95
-HIZLANMA_CARPANI = 30  # Artırıldı: 0.5 -> 5.0 (daha hızlı hareket için)
-KALDIRMA_KUVVETI = 2.0
-BATARYA_SOMURME_KATSAYISI = 0.001  # Batarya sömürme katsayısı (gerçekçi değer: maksimum güçte ~66 saniye dayanır)
+from .config import (
+    cfg,
+    SensorAyarlari,
+    GATLimitleri,
+    HareketAyarlari,
+    FizikSabitleri,
+    SimulasyonSabitleri
+)
+from .simulasyon_yardimci import (
+    kayalari_olustur,
+    sim_to_ursina,
+    ursina_to_sim
+)
 
 
 
@@ -176,8 +146,8 @@ class ROV(Entity):
         # Manuel hareket kontrolü (sürekli hareket için)
         if self.manuel_hareket['yon'] is not None:
             if self.manuel_hareket['yon'] == 'dur':
-                self.velocity *= 0.7  # Yavaşça dur (momentum korunumu)
-                if self.velocity.length() < 0.1:
+                self.velocity *= FizikSabitleri.VELOCITY_DURMA_CARPANI  # Yavaşça dur (momentum korunumu)
+                if self.velocity.length() < FizikSabitleri.VELOCITY_DURMA_ESIGI:
                     self.velocity = Vec3(0, 0, 0)
                     self.manuel_hareket['yon'] = None
                     self.manuel_hareket['guc'] = 0.0
@@ -258,12 +228,12 @@ class ROV(Entity):
             collision = self.intersects(ignore=(self.safety_zone,))
             if collision.hit:
                 # Geri sekme efekti (daha güçlü)
-                self.velocity = -self.velocity * 0.7
+                self.velocity = -self.velocity * FizikSabitleri.CARPISMA_HIZ_YANSIMA
                 
                 # İç içe geçmeyi önlemek için pozisyonu daha güçlü it
                 if hasattr(collision, 'world_normal') and collision.world_normal:
                     # Normal vektörü kullanarak daha güçlü itme
-                    push_distance = 2.0  # Artırıldı: 0.2 -> 2.0
+                    push_distance = FizikSabitleri.CARPISMA_ITME_MESAFESI
                     self.position += collision.world_normal * push_distance
                 elif hasattr(collision, 'entity') and collision.entity:
                     # Engel varsa, engelden uzaklaş
@@ -271,15 +241,15 @@ class ROV(Entity):
                     mesafe = fark_vektoru.length()
                     if mesafe > 0.001:
                         fark_vektoru = fark_vektoru.normalized()
-                        push_distance = 2.0  # Artırıldı: 0.2 -> 2.0
+                        push_distance = FizikSabitleri.CARPISMA_ITME_MESAFESI
                         self.position += fark_vektoru * push_distance
                     else:
                         # Çok yakınsa rastgele yöne it
-                        push_distance = 2.0
+                        push_distance = FizikSabitleri.CARPISMA_ITME_MESAFESI
                         self.position += Vec3(1, 0, 0) * push_distance
                 
                 # Hızı sıfırla (çarpışma sonrası dur)
-                if self.velocity.length() < 0.5:
+                if self.velocity.length() < FizikSabitleri.CARPISMA_HIZ_SIFIRLAMA_ESIGI:
                     self.velocity = Vec3(0, 0, 0)
                 
                 if self.environment_ref and self.environment_ref.verbose:
@@ -291,41 +261,46 @@ class ROV(Entity):
         
         # Fizik
         self.position += self.velocity * time.dt
-        self.velocity *= SURTUNME_KATSAYISI
+        self.velocity *= FizikSabitleri.SURTUNME_KATSAYISI
         
         # Simülasyon sınır kontrolü (ROV'ların dışarı çıkmasını önle)
         # Sınırlar: +-havuz_genisligi (yani +-200 birim)
+        # 10 metre güvenlik mesafesi: ROV'lar sınırlardan 10 metre içeride kalmalı
+        HAVUZ_GUVENLIK_MESAFESI = 10.0  # Metre cinsinden güvenlik mesafesi
         if self.environment_ref:
             havuz_genisligi = getattr(self.environment_ref, 'havuz_genisligi', 200)
             havuz_sinir = havuz_genisligi  # +-havuz_genisligi
+            guvenli_sinir = havuz_sinir - HAVUZ_GUVENLIK_MESAFESI  # 10 metre içerideki sınır
             
-            # X ve Z sınırları
-            if abs(self.x) > havuz_sinir:
-                self.x = np.sign(self.x) * havuz_sinir
-                self.velocity.x = 0  # Sınırda durdur
+            # X ve Z sınırları (10 metre güvenlik mesafesi ile)
+            if abs(self.x) > guvenli_sinir:
+                self.x = np.sign(self.x) * guvenli_sinir
+                self.velocity.x = 0  # Güvenlik sınırında durdur
             
-            if abs(self.z) > havuz_sinir:
-                self.z = np.sign(self.z) * havuz_sinir
-                self.velocity.z = 0  # Sınırda durdur
+            if abs(self.z) > guvenli_sinir:
+                self.z = np.sign(self.z) * guvenli_sinir
+                self.velocity.z = 0  # Güvenlik sınırında durdur
         
         if self.role == 1: # Lider
             if self.y < 0:
-                self.velocity.y += KALDIRMA_KUVVETI * time.dt
-                if self.y > -0.5: self.velocity.y *= 0.5
-            if self.y < -2: self.y = -2
-            if self.y > 0.5: 
-                self.y = 0.5
+                self.velocity.y += FizikSabitleri.KALDIRMA_KUVVETI * time.dt
+                if self.y > FizikSabitleri.LIDER_YUZEY_YAKINLIK:
+                    self.velocity.y *= FizikSabitleri.LIDER_YUZEY_HIZ_CARPANI
+            if self.y < FizikSabitleri.LIDER_YUZEY_ALT_SINIR:
+                self.y = FizikSabitleri.LIDER_YUZEY_ALT_SINIR
+            if self.y > FizikSabitleri.LIDER_YUZEY_UST_SINIR: 
+                self.y = FizikSabitleri.LIDER_YUZEY_UST_SINIR
                 self.velocity.y = 0
         else: # Takipçi
-            if self.y > 0: 
-                self.y = 0
+            if self.y > FizikSabitleri.TAKIPCI_YUZEY_SINIRI: 
+                self.y = FizikSabitleri.TAKIPCI_YUZEY_SINIRI
                 self.velocity.y = 0
-            if self.y < -100: 
-                self.y = -100
+            if self.y < FizikSabitleri.TAKIPCI_MAX_DERINLIK: 
+                self.y = FizikSabitleri.TAKIPCI_MAX_DERINLIK
                 self.velocity.y = 0
 
         if self.velocity.length() > 0.01: 
-            self.battery -= BATARYA_SOMURME_KATSAYISI * time.dt
+            self.battery -= FizikSabitleri.BATARYA_SOMURME_KATSAYISI * time.dt
         
         # Yakınlaşma önleme (10 metre mesafede uzaklaşma)
         if self.environment_ref:
@@ -339,7 +314,7 @@ class ROV(Entity):
         # Batarya bitmişse hareket ettirme
         if self.battery <= 0:
             return
-        thrust = guc * HIZLANMA_CARPANI * time.dt
+        thrust = guc * FizikSabitleri.HIZLANMA_CARPANI * time.dt
 
         # ROV'un yaw rotasyonunu al (Y ekseni etrafında dönme açısı - derece)
         yaw_acisi = 0.0
@@ -509,7 +484,7 @@ class ROV(Entity):
         
         # Sonar verisini güncelle (8 yönlü tarama yerine en yakın engeli kullan)
         # _engel_tespiti() zaten en yakın engeli buluyor
-        if self.tespit_edilen_engel and self.engel_mesafesi < 999.0:
+        if self.tespit_edilen_engel and self.engel_mesafesi < SimulasyonSabitleri.ENGEL_TESPITI_MIN_MESAFE:
             if self.engel_mesafesi < engel_mesafesi_limit:
                 self.son_sonar_mesafesi = self.engel_mesafesi
             else:
@@ -543,7 +518,7 @@ class ROV(Entity):
             2: right_vec     # Sağ
         }
         
-        raycast_sayisi = 5  # Her yön için 5 raycast (koni taraması)
+        raycast_sayisi = SimulasyonSabitleri.LIDAR_RAYCAST_SAYISI  # Her yön için raycast (koni taraması)
         
         for yon_id, yon_temel in yonler.items():
             min_dist = -1
@@ -609,7 +584,7 @@ class ROV(Entity):
             return
         
         engel_mesafesi_limit = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
-        min_mesafe = 999.0
+        min_mesafe = SimulasyonSabitleri.ENGEL_TESPITI_MIN_MESAFE
         en_yakin_engel = None
         en_yakin_nokta = None  # Raycast hit noktası
         
@@ -619,7 +594,7 @@ class ROV(Entity):
         else:
             # Varsayılan yön (z ekseni pozitif yönü - ileri)
             forward_vec = Vec3(0, 0, 1)
-        
+            
         # Raycast origin: ROV'un kendi box collider'ından dışarı kaydır (segfault önleme)
         # ROV merkezinden 1.5 birim ileri kaydırıyoruz
         raycast_origin = self.world_position + Vec3(0, 0.5, 0) + (forward_vec * 1.5)
@@ -688,10 +663,10 @@ class ROV(Entity):
                 en_yakin_nokta = hit_info.world_point if hasattr(hit_info, 'world_point') else None
         
         # Havuz sınırlarını da kontrol et (fallback - raycast duvarları algılamazsa)
-        if hasattr(self.environment_ref, 'havuz_genisligi'):
-            havuz_genisligi = self.environment_ref.havuz_genisligi
-            havuz_sinir = havuz_genisligi
-            
+            if hasattr(self.environment_ref, 'havuz_genisligi'):
+                havuz_genisligi = self.environment_ref.havuz_genisligi
+                havuz_sinir = havuz_genisligi
+                
             x_mesafe_sag = havuz_sinir - self.position.x
             x_mesafe_sol = self.position.x - (-havuz_sinir)
             z_mesafe_on = havuz_sinir - self.position.z
@@ -723,7 +698,7 @@ class ROV(Entity):
                 self._kesikli_cizgi_ciz(en_yakin_nokta, min_mesafe)
         else:
             self.tespit_edilen_engel = None
-            self.engel_mesafesi = 999.0
+            self.engel_mesafesi = SimulasyonSabitleri.ENGEL_TESPITI_MIN_MESAFE
             if hasattr(self, 'engel_cizgi') and self.engel_cizgi:
                 destroy(self.engel_cizgi)
                 self.engel_cizgi = None
@@ -763,8 +738,8 @@ class ROV(Entity):
         yon = yon.normalized()
         
         # Parça ayarları
-        parca_uzunlugu = 2.0
-        bosluk_uzunlugu = 1.0
+        parca_uzunlugu = SimulasyonSabitleri.KESIKLI_CIZGI_PARCA_UZUNLUGU
+        bosluk_uzunlugu = SimulasyonSabitleri.KESIKLI_CIZGI_BOSLUK_UZUNLUGU
         
         self.engel_cizgi = Entity()
         
@@ -909,9 +884,9 @@ class ROV(Entity):
         yon = yon.normalized()
         toplam_mesafe = distance(baslangic, bitis)
         
-        # Kesikli çizgi parçaları (her 1.5 birimde bir parça, daha ince)
-        parca_uzunlugu = 1.5
-        bosluk_uzunlugu = 0.8
+        # Kesikli çizgi parçaları (iletişim çizgisi için)
+        parca_uzunlugu = SimulasyonSabitleri.ILETISIM_CIZGI_PARCA_UZUNLUGU
+        bosluk_uzunlugu = SimulasyonSabitleri.ILETISIM_CIZGI_BOSLUK_UZUNLUGU
         
         # Ana çizgi entity'si (parçaları tutmak için)
         cizgi_entity = Entity()
@@ -1017,7 +992,7 @@ class ROV(Entity):
                 
                 # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (2m içinde) kaçınma mekanizmasını devre dışı bırak
                 # Bu, ROV'ların birbirini sürekli itmesini önler
-                minimum_mesafe = 2.0  # 2 metre - çok yakınsa kaçınma yok
+                minimum_mesafe = FizikSabitleri.ROV_MINIMUM_MESAFE  # Minimum mesafe - çok yakınsa kaçınma yok
                 if mesafe < minimum_mesafe:
                     continue  # Çok yakınsa kaçınma yapma
                 
@@ -1062,10 +1037,10 @@ class ROV(Entity):
                         uzaklasma_yonu = (self.position - hit_info.entity.position).normalized()
                     else:
                         uzaklasma_yonu = -forward_vec
-                
-                uzaklasma_gucu = (kacinma_mesafesi - mesafe) / kacinma_mesafesi
-                uzaklasma_gucu *= HareketAyarlari.UZAKLASMA_GUC_KATSAYISI
-                uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
+                    
+                    uzaklasma_gucu = (kacinma_mesafesi - mesafe) / kacinma_mesafesi
+                    uzaklasma_gucu *= HareketAyarlari.UZAKLASMA_GUC_KATSAYISI
+                    uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
         
         # Fallback: Eski yöntem (raycast çalışmazsa veya tüm engelleri kontrol etmek için)
         for engel in self.environment_ref.engeller:
@@ -1085,22 +1060,25 @@ class ROV(Entity):
         
         # Havuz sınırlarından uzaklaşma (sanal engeller)
         # Sınırlar: +-havuz_genisligi (yani +-200 birim)
+        # 10 metre güvenlik mesafesi: ROV'lar sınırlardan 10 metre içeride kalmalı
+        HAVUZ_GUVENLIK_MESAFESI = 10.0  # Metre cinsinden güvenlik mesafesi
         if hasattr(self.environment_ref, 'havuz_genisligi'):
             havuz_genisligi = self.environment_ref.havuz_genisligi
             havuz_sinir = havuz_genisligi  # +-havuz_genisligi
+            guvenli_sinir = havuz_sinir - HAVUZ_GUVENLIK_MESAFESI  # 10 metre içerideki sınır
             
-            # X sınırları (sağ ve sol duvarlar)
-            x_mesafe_sag = havuz_sinir - self.position.x
-            x_mesafe_sol = self.position.x - (-havuz_sinir)
+            # X sınırları (sağ ve sol duvarlar) - 10 metre güvenlik mesafesi ile
+            x_mesafe_sag = guvenli_sinir - self.position.x
+            x_mesafe_sol = self.position.x - (-guvenli_sinir)
             
-            # Z sınırları (ön ve arka duvarlar)
-            z_mesafe_on = havuz_sinir - self.position.z
-            z_mesafe_arka = self.position.z - (-havuz_sinir)
+            # Z sınırları (ön ve arka duvarlar) - 10 metre güvenlik mesafesi ile
+            z_mesafe_on = guvenli_sinir - self.position.z
+            z_mesafe_arka = self.position.z - (-guvenli_sinir)
             
             # En yakın sınıra mesafe
             en_yakin_sinir_mesafe = min(x_mesafe_sag, x_mesafe_sol, z_mesafe_on, z_mesafe_arka)
             
-            # Kaçınma mesafesi içindeyse uzaklaş
+            # Kaçınma mesafesi içindeyse uzaklaş (10 metre güvenlik mesafesi dahil)
             if en_yakin_sinir_mesafe <= kacinma_mesafesi and en_yakin_sinir_mesafe > 0:
                 # Hangi sınıra yakın olduğunu belirle ve uzaklaşma yönünü hesapla
                 if en_yakin_sinir_mesafe == x_mesafe_sag:
@@ -1131,11 +1109,11 @@ class ROV(Entity):
             uzaklasma_gucu *= HareketAyarlari.YUMUSAKLIK_CARPANI
             
             # Hız vektörüne ekle (momentum korunumu için)
-            uzaklasma_hizi = uzaklasma_vektoru * uzaklasma_gucu * HIZLANMA_CARPANI * time.dt
+            uzaklasma_hizi = uzaklasma_vektoru * uzaklasma_gucu * FizikSabitleri.HIZLANMA_CARPANI * time.dt
             self.velocity += uzaklasma_hizi
             
             # Hız limiti (aşırı hızlanmayı önle)
-            max_hiz = 50.0
+            max_hiz = FizikSabitleri.MAX_HIZ
             if self.velocity.length() > max_hiz:
                 self.velocity = self.velocity.normalized() * max_hiz
     
@@ -1151,7 +1129,7 @@ class ROV(Entity):
             return
         
         # ROV kütlesi (basitleştirilmiş)
-        rov_kutlesi = 1.0
+        rov_kutlesi = FizikSabitleri.ROV_KUTLESI
         
         # Diğer ROV'larla çarpışma (intersects zaten kontrol ediyor, burada sadece momentum hesaplaması)
         for diger_rov in self.environment_ref.rovs:
@@ -1159,7 +1137,7 @@ class ROV(Entity):
                 continue
             
             mesafe = distance(self.position, diger_rov.position)
-            min_mesafe = 2.0  # ROV boyutlarına göre minimum mesafe
+            min_mesafe = FizikSabitleri.ROV_MINIMUM_MESAFE  # ROV boyutlarına göre minimum mesafe
             
             if mesafe < min_mesafe:
                 # Çarpışma tespit edildi - momentum korunumu hesapla
@@ -1168,7 +1146,7 @@ class ROV(Entity):
                 goreceli_hiz_buyuklugu = goreceli_hiz.length()
                 
                 if goreceli_hiz_buyuklugu > 0.1:
-                    diger_rov_kutlesi = 1.0
+                    diger_rov_kutlesi = FizikSabitleri.ROV_KUTLESI
                     nokta_carpim = goreceli_hiz.dot(carpisma_yonu)
                     
                     if nokta_carpim < 0:  # Birbirine yaklaşıyorlar
@@ -1183,7 +1161,7 @@ class ROV(Entity):
                         ayirma_mesafesi = (min_mesafe - mesafe) + 3.0  # Artırıldı: 2.0 -> 3.0
                         self.position += carpisma_yonu * ayirma_mesafesi
                         diger_rov.position -= carpisma_yonu * ayirma_mesafesi
-        
+                        
         # Ada entity'leri ile çarpışma kontrolü (manuel - mesh collider intersects() yapamaz)
         # Tüm adaları kontrol et
         if hasattr(self.environment_ref, 'island_entities') and self.environment_ref.island_entities:
@@ -1192,7 +1170,7 @@ class ROV(Entity):
                     continue
                 
                 # Ada yarıçapını bul
-                island_radius = 50.0  # Varsayılan
+                island_radius = SimulasyonSabitleri.ADA_VARSAYILAN_RADIUS / 2.0  # Varsayılan (yarıçap)
                 if hasattr(self.environment_ref, 'island_positions') and self.environment_ref.island_positions:
                     if island_idx < len(self.environment_ref.island_positions):
                         island_data = self.environment_ref.island_positions[island_idx]
@@ -1228,6 +1206,142 @@ class ROV(Entity):
                         self.velocity = Vec3(0, 0, 0)
 
 # ============================================================
+# MİNİMAP SİSTEMİ (Ursina UI - Ekran Üzerinde)
+# ============================================================
+from ursina import *
+import numpy as np
+
+
+class Minimap(Entity):
+    """
+    Profesyonel Navigasyon Sistemi - Chevron İkonları ve Teknik Grid
+    """
+    def __init__(self, ortam_ref, filo_ref=None, **kwargs):
+        super().__init__(
+            parent=camera.ui,
+            model='quad',
+            color=color.rgba(15, 15, 15, 200), # Yarı şeffaf modern koyu arka plan
+            scale=(0.35, 0.35),
+            position=(0.68, 0.30),
+            **kwargs
+        )
+        self.ortam_ref = ortam_ref
+        self.filo_ref = filo_ref
+        self.havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
+        
+        # 'cone' hatasını çözen özel OK (Chevron) Mesh'i
+        # Line mode kullanarak kapalı çokgen oluştur (triangle mode vertex sayısı sorunu çözüldü)
+        self.rov_mesh = Mesh(
+            vertices=[
+                (0, 0.5, 0),       # Burun
+                (-0.3, -0.4, 0),   # Sol kanat
+                (0, -0.15, 0),     # İç girinti
+                (0.3, -0.4, 0),    # Sağ kanat
+                (0, 0.5, 0)        # Kapanış (kapalı çokgen için)
+            ],
+            mode='line',
+            thickness=3,  # Kalın çizgi
+            static=True
+        )
+
+        self.rov_gostergeleri = {}
+        self.grid_gostergeleri = []
+        self.label_entities = []
+        
+        self.goster_a_star = False
+        self.goster_convex = False
+        
+        # İlk kurulum
+        self._setup_ui()
+        self.visible = False # Başlangıçta gizli
+
+    def _setup_ui(self):
+        """Grid hatlarını, sınırları ve koordinat yazılarını oluşturur."""
+        for e in self.grid_gostergeleri + self.label_entities:
+            destroy(e)
+        self.grid_gostergeleri = []
+        self.label_entities = []
+
+        # 1. Havuz Dış Çerçevesi (Modern Cam Göbeği)
+        border_color = color.cyan
+        thickness = 0.005
+        # Üst-Alt-Sağ-Sol Sınırlar
+        self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(1, thickness), position=(0, 0.5, -0.01), color=border_color))
+        self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(1, thickness), position=(0, -0.5, -0.01), color=border_color))
+        self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(thickness, 1), position=(0.5, 0, -0.01), color=border_color))
+        self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(thickness, 1), position=(-0.5, 0, -0.01), color=border_color))
+
+        # 2. Teknik Grid (Her 50 birimde bir)
+        step = 50
+        limit = int(self.havuz_genisligi)
+        grid_alpha = 40 # 0-255 arası şeffaflık
+        
+        for i in range(-limit, limit + 1, step):
+            pos = i / (self.havuz_genisligi * 2)
+            
+            # Dikey ve Yatay Grid Çizgileri
+            self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(0.002, 1), position=(pos, 0, -0.005), color=color.rgba(255,255,255,grid_alpha)))
+            self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(1, 0.002), position=(0, pos, -0.005), color=color.rgba(255,255,255,grid_alpha)))
+            
+            # Koordinat Etiketleri
+            if i % 100 == 0 or abs(i) == limit:
+                # X ekseni (Alt)
+                self.label_entities.append(Text(text=f"{i}", parent=self, position=(pos, -0.55), scale=0.6, color=color.gray, origin=(0,0)))
+                # Y ekseni (Sol)
+                self.label_entities.append(Text(text=f"{i}", parent=self, position=(-0.58, pos), scale=0.6, color=color.gray, origin=(0,0)))
+
+    def update(self):
+        if not self.visible or not self.ortam_ref:
+            return
+
+        # Havuz boyutu değişirse haritayı yeniden çiz
+        mevcut_limit = getattr(self.ortam_ref, 'havuz_genisligi', 200)
+        if mevcut_limit != self.havuz_genisligi:
+            self.havuz_genisligi = mevcut_limit
+            self._setup_ui()
+
+        # ROV'ları Güncelle
+        if hasattr(self.ortam_ref, 'rovs'):
+            active_ids = set()
+            for rov in self.ortam_ref.rovs:
+                rid = getattr(rov, 'id', id(rov))
+                active_ids.add(rid)
+                
+                # Dünya -> Harita dönüşümü (Ursina X, Z -> Harita X, Y)
+                map_x = rov.x / (self.havuz_genisligi * 2)
+                map_y = rov.z / (self.havuz_genisligi * 2) 
+                
+                if rid not in self.rov_gostergeleri:
+                    # Yeni ROV ikonu oluştur
+                    self.rov_gostergeleri[rid] = Entity(
+                        parent=self, 
+                        model=self.rov_mesh, 
+                        scale=0.06,
+                        color=rov.color if hasattr(rov, 'color') else color.orange,
+                        position=(map_x, map_y, -0.02)
+                    )
+                
+                # Pozisyon ve Yön güncelleme
+                self.rov_gostergeleri[rid].position = (map_x, map_y, -0.02)
+                # Ursina rotation_y (dünya) -> Harita rotation_z (2D)
+                # 180 derece ofset ROV'un burnunun doğru yöne bakmasını sağlar
+                self.rov_gostergeleri[rid].rotation_z = -rov.rotation_y + 180
+
+            # Silinen ROV'ları haritadan kaldır
+            for rid in list(self.rov_gostergeleri.keys()):
+                if rid not in active_ids:
+                    destroy(self.rov_gostergeleri[rid])
+                    del self.rov_gostergeleri[rid]
+
+    def goster(self, durum=True, convex=False, a_star=False):
+        """filo.minimap() tarafından çağrılan ana fonksiyon"""
+        self.visible = bool(durum)
+        self.goster_convex = bool(convex)
+        self.goster_a_star = bool(a_star)
+        
+        status = "AÇIK" if self.visible else "KAPALI"
+        print(f"📡 [RADAR] Sistem: {status} | Havuz: {self.havuz_genisligi}m")
+# ============================================================
 # HARİTA SİSTEMİ (Matplotlib - Ayrı Pencere)
 # ============================================================
 class Harita:
@@ -1235,14 +1349,16 @@ class Harita:
     Google Maps benzeri harita sistemi (Matplotlib ile ayrı pencerede).
     ROV'ları ok şeklinde, adaları ve engelleri gösterir.
     """
-    def __init__(self, ortam_ref, pencere_boyutu=(800, 800)):
+    def __init__(self, ortam_ref, pencere_boyutu=(800, 800), filo_ref=None):
         """
         Args:
             ortam_ref: Ortam sınıfı referansı
             pencere_boyutu: Harita penceresi boyutu (genişlik, yükseklik)
+            filo_ref: Filo referansı (A* için ada çevre noktalarını almak için)
         """
         self.hedef_pozisyon = None  # Hedef pozisyonu (x, y) formatında
         self.ortam_ref = ortam_ref
+        self.filo_ref = filo_ref  # Filo referansı (ada_cevre için)
         self.pencere_boyutu = pencere_boyutu
         self.manuel_engeller = []  # Elle eklenen engeller [(x_2d, y_2d), ...]
         
@@ -1259,6 +1375,10 @@ class Harita:
         self.convex_hull_data = None  # {'hull': ConvexHull, 'points': array, 'center': tuple}
         self.goster_convex = False  # Convex hull'u göster/gizle
         
+        # A* Yol Planlama
+        self.a_star_yolu = None  # [(x1, y1), (x2, y2), ...] formatında A* yolu
+        self.goster_a_star = False  # A* yolunu göster/gizle
+        
         # Havuz genişliği
         self.havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
         
@@ -1267,22 +1387,72 @@ class Harita:
     def _setup_figure(self):
         """Bu fonksiyon mutlaka ANA THREAD içinde çağrılmalıdır."""
         try:
-            plt.ion()
+            # Thread kontrolü - sadece ana thread'de çalış
+            import threading
+            if threading.current_thread() is not threading.main_thread():
+                print("⚠️ [HARITA] _setup_figure() ana thread dışında çağrıldı - atlanıyor")
+                return
+            
+            # Interactive mode'u doğrula (global seviyede zaten açıldı)
+            try:
+                if not plt.isinteractive():
+                    plt.ion()
+            except Exception:
+                pass
+            
+            # Eğer fig zaten varsa kapat
+            if self.fig is not None:
+                try:
+                    plt.close(self.fig)
+                except Exception:
+                    pass
+            
+            # Pencere boyutu kontrolü - minimum boyut garantisi
+            min_figsize = 6.0  # Minimum 6 inç
+            fig_width = max(self.pencere_boyutu[0]/100, min_figsize)
+            fig_height = max(self.pencere_boyutu[1]/100, min_figsize)
+            
             # Yeni pencere oluştur
-            self.fig, self.ax = plt.subplots(figsize=(self.pencere_boyutu[0]/100, self.pencere_boyutu[1]/100))
+            self.fig, self.ax = plt.subplots(figsize=(fig_width, fig_height))
             self.fig.canvas.manager.set_window_title('ROV Haritasi')
             
             # Pencere kapatıldığında algıla
-            self.fig.canvas.mpl_connect('close_event', self._on_close)
+            try:
+                self.fig.canvas.mpl_connect('close_event', self._on_close)
+            except Exception:
+                pass
             
-            # İlk çizimi yap
-            self._ciz()
+            # Pencereyi göster - ÖNCE GÖSTER, SONRA ÇİZ
+            try:
+                plt.show(block=False)
+            except Exception as e:
+                print(f"⚠️ [HARITA] plt.show() hatası: {e}")
+                return
             
-            # Non-blocking show (asla plt.pause() kullanma - GIL çakışmasına yol açar)
-            self.fig.canvas.draw_idle()
-            plt.show(block=False)
+            # İlk çizimi yap (pencere açıldıktan sonra)
+            try:
+                self._ciz()
+            except Exception as e:
+                print(f"⚠️ [HARITA] İlk çizim hatası: {e}")
+            
+            # Çizimi güncelle ve pencereyi öne getir
+            try:
+                # ÖNEMLİ: canvas.draw() çağrısı - pencereyi güncelle
+                self.fig.canvas.draw()
+                
+                # Pencereyi öne getir (TkAgg için)
+                if hasattr(self.fig.canvas, 'manager') and hasattr(self.fig.canvas.manager, 'window'):
+                    window = self.fig.canvas.manager.window
+                    try:
+                        window.lift()
+                        window.attributes('-topmost', True)
+                        window.after_idle(window.attributes, '-topmost', False)
+                    except Exception:
+                        pass
+            except Exception as win_e:
+                print(f"⚠️ [HARITA] Pencere güncellenirken hata: {win_e}")
         except Exception as e:
-            print(f"❌ Harita penceresi başlatılamadı: {e}")
+            print(f"❌ [HARITA] Harita penceresi başlatılamadı: {e}")
             import traceback
             traceback.print_exc()
 
@@ -1416,29 +1586,114 @@ class Harita:
             self.ax.add_patch(circle)
             self._hedef_label_cizildi = True
         
-        # Adaları Çiz (ölçek büyütüldü)
-        if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
-            from matplotlib import patches
-            # Adaları Çiz (DÜZELTİLMİŞ)
-            for is_pos in self.ortam_ref.island_positions:
-                if len(is_pos) == 3:
-                    # is_pos = (x, y, radius) -> radius artık görselle uyumlu gerçek yarıçap
-                    rad = is_pos[2]
-                else:
-                    rad = self.havuz_genisligi * 0.08  # Varsayılan boyut
+        # Adaları Çiz - ada_cevre() ile gerçek çevre noktalarını kullan
+        # Hata toleranslı: Eğer ada_cevre() başarısız olursa fallback (dairesel) çizim kullan
+        ada_cevre_basarili = False
+        if self.filo_ref and hasattr(self.filo_ref, 'ada_cevre'):
+            try:
+                # Ada çevre noktalarını al (offset=0 ile tam çevre)
+                ada_cevre_noktalari = self.filo_ref.ada_cevre(offset=0.0)
                 
-                # DÜZELTME: Keyfi çarpanları kaldırdık (3.2 gibi). 
-                # Doğrudan çapı (2 * rad) kullanıyoruz.
-                ada = patches.Ellipse(
-                    (is_pos[0], is_pos[1]), 
-                    width=rad * 4.0,      # Tam çap (Görsel genişlikle birebir)
-                    height=rad * 3.6,     # Hafif perspektif için Y ekseni biraz basık olabilir
-                    facecolor='#8B5A3C', 
-                    edgecolor='black', 
-                    alpha=0.7, 
-                    zorder=4
-                )
-                self.ax.add_patch(ada)
+                if ada_cevre_noktalari and len(ada_cevre_noktalari) > 0:
+                    from matplotlib import patches
+                    nokta_sayisi_per_ada = 12
+                    
+                    # Hata toleranslı hesaplama
+                    try:
+                        ada_sayisi = len(ada_cevre_noktalari) // nokta_sayisi_per_ada
+                    except (ZeroDivisionError, TypeError):
+                        ada_sayisi = 0
+                    
+                    # Her ada için çizim
+                    for ada_idx in range(ada_sayisi):
+                        try:
+                            baslangic_idx = ada_idx * nokta_sayisi_per_ada
+                            bitis_idx = baslangic_idx + nokta_sayisi_per_ada
+                            
+                            # Liste sınır kontrolü
+                            if bitis_idx > len(ada_cevre_noktalari):
+                                bitis_idx = len(ada_cevre_noktalari)
+                            
+                            ada_noktalari = ada_cevre_noktalari[baslangic_idx:bitis_idx]
+                            
+                            # Minimum 3 nokta gerekli (polygon için)
+                            if len(ada_noktalari) >= 3:
+                                try:
+                                    # Polygon olarak çiz (gerçek şekil)
+                                    polygon_xy = []
+                                    for n in ada_noktalari:
+                                        # Nokta formatı kontrolü
+                                        if isinstance(n, (list, tuple)) and len(n) >= 2:
+                                            try:
+                                                polygon_xy.append((float(n[0]), float(n[1])))
+                                            except (ValueError, TypeError, IndexError):
+                                                continue
+                                    
+                                    # Yeterli nokta varsa çiz
+                                    if len(polygon_xy) >= 3:
+                                        # Kapalı polygon için ilk noktayı sona ekle
+                                        polygon_xy.append(polygon_xy[0])
+                                        
+                                        ada_polygon = patches.Polygon(
+                                            polygon_xy,
+                                            facecolor='#8B5A3C',
+                                            edgecolor='black',
+                                            linewidth=1.5,
+                                            alpha=0.7,
+                                            zorder=4
+                                        )
+                                        self.ax.add_patch(ada_polygon)
+                                        ada_cevre_basarili = True
+                                except Exception as poly_e:
+                                    # Bu ada için polygon çizimi başarısız, devam et
+                                    continue
+                        except Exception as ada_e:
+                            # Bu ada için hata, devam et
+                            continue
+            except Exception as e:
+                print(f"⚠️ [HARITA] Ada çevre noktaları çizilirken hata: {e}")
+        
+        # Fallback: Eğer ada_cevre() başarısız olduysa veya hiç çizilmediyse dairesel çizim kullan
+        if not ada_cevre_basarili:
+            # Fallback: Eski yöntem (dairesel)
+            if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
+                    from matplotlib import patches
+                    for is_pos in self.ortam_ref.island_positions:
+                        if len(is_pos) == 3:
+                            rad = is_pos[2]
+                        else:
+                            rad = self.havuz_genisligi * 0.08
+                        
+                        ada = patches.Ellipse(
+                            (is_pos[0], is_pos[1]), 
+                            width=rad * 4.0,
+                            height=rad * 3.6,
+                            facecolor='#8B5A3C', 
+                            edgecolor='black', 
+                            alpha=0.7, 
+                            zorder=4
+                        )
+                        self.ax.add_patch(ada)
+        else:
+            # Fallback: Eski yöntem (dairesel)
+            if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
+                from matplotlib import patches
+                for is_pos in self.ortam_ref.island_positions:
+                    if len(is_pos) == 3:
+                        rad = is_pos[2]
+                    else:
+                        rad = self.havuz_genisligi * 0.08
+                    
+                    ada = patches.Ellipse(
+                        (is_pos[0], is_pos[1]), 
+                        width=rad * 4.0,
+                        height=rad * 3.6,
+                        facecolor='#8B5A3C', 
+                        edgecolor='black', 
+                        alpha=0.7, 
+                        zorder=4
+                    )
+                    self.ax.add_patch(ada)
 
         # Manuel Engeller
         if self.manuel_engeller:
@@ -1467,13 +1722,14 @@ class Harita:
                         if hull_dim == 2:
                             # 2D hull - (x, y) formatında
                             # Harita (x, y) kullanıyor, direkt çiz
-                            if hasattr(hull, 'vertices') and len(hull.vertices) > 0:
-                                hull_points_2d = points[hull.vertices]
+                            # Genişletilmiş points array'i kullan (her 5 metrede bir nokta içerir)
+                            # Points array'i zaten sıralı olmalı (kenarlar üzerinde interpolasyon yapıldı)
+                            if len(points) > 0:
+                                # Points array'i zaten sıralı ve genişletilmiş
                                 # Kapalı çokgen için ilk noktayı sona ekle
-                                if len(hull_points_2d) > 0:
-                                    hull_points_2d_closed = np.vstack([hull_points_2d, hull_points_2d[0]])
-                                    self.ax.plot(hull_points_2d_closed[:, 0], hull_points_2d_closed[:, 1], 
-                                               'b-', linewidth=2, alpha=0.7, label='Convex Hull', zorder=8)
+                                hull_points_2d_closed = np.vstack([points, points[0]])
+                                self.ax.plot(hull_points_2d_closed[:, 0], hull_points_2d_closed[:, 1], 
+                                           'b-', linewidth=2, alpha=0.7, label='Convex Hull', zorder=8)
                         elif hull_dim == 3:
                             # 3D hull - 2D projeksiyon (x-y düzlemi)
                             # Points: (x, y, z) formatında
@@ -1506,6 +1762,31 @@ class Harita:
                     import traceback
                     traceback.print_exc()
         
+        # A* Yolu Çizimi
+        if self.goster_a_star and self.a_star_yolu and len(self.a_star_yolu) > 0:
+            try:
+                # Yolu çiz (yeşil çizgi)
+                path_x = [p[0] for p in self.a_star_yolu]
+                path_y = [p[1] for p in self.a_star_yolu]
+                self.ax.plot(path_x, path_y, 'g-', linewidth=3, alpha=0.8, 
+                           label='A* Yolu', zorder=7)
+                
+                # Başlangıç noktasını işaretle (yeşil daire)
+                if len(self.a_star_yolu) > 0:
+                    self.ax.plot(path_x[0], path_y[0], 'go', markersize=10, 
+                               markeredgecolor='darkgreen', markeredgewidth=2, 
+                               label='Başlangıç', zorder=10)
+                
+                # Hedef noktasını işaretle (kırmızı daire)
+                if len(self.a_star_yolu) > 1:
+                    self.ax.plot(path_x[-1], path_y[-1], 'ro', markersize=10, 
+                               markeredgecolor='darkred', markeredgewidth=2, 
+                               label='Hedef', zorder=10)
+            except Exception as e:
+                print(f"⚠️ [HARITA] A* yolu çizilirken hata: {e}")
+                import traceback
+                traceback.print_exc()
+        
         # Legend (engeller ve convex hull için)
         legend_items = []
         if self.manuel_engeller:
@@ -1513,13 +1794,24 @@ class Harita:
         if self.goster_convex and self.convex_hull_data and self.convex_hull_data.get('hull') is not None:
             legend_items.append('Convex Hull')
             legend_items.append('Hull Merkezi')
+        if self.goster_a_star and self.a_star_yolu and len(self.a_star_yolu) > 0:
+            legend_items.append('A* Yolu')
+            legend_items.append('Başlangıç')
+            legend_items.append('Hedef')
         
         if legend_items:
             self.ax.legend(loc='upper right', fontsize=9)
 
-        self.fig.canvas.draw_idle()
+        # Thread-safe çizim
+        try:
+            import threading
+            if threading.current_thread() is threading.main_thread() and self.fig is not None:
+                self.fig.canvas.draw_idle()
+        except Exception:
+            # Hata durumunda sessizce devam et
+            pass
     
-    def goster(self, durum=None, convex=False):
+    def goster(self, durum=None, convex=False, a_star=False):
         """
         Konsoldan (Shell Thread) çağrılır. 
         Sadece istek bırakır, işlemi update() (Main Thread) yapar.
@@ -1527,6 +1819,7 @@ class Harita:
         Args:
             durum: True/False - Haritayı aç/kapat
             convex: True/False - Convex hull'u göster/gizle
+            a_star: True/False - A* yolunu göster/gizle
         """
         # Eğer sadece convex parametresi verilmişse
         if durum is None:
@@ -1556,7 +1849,129 @@ class Harita:
                 print(f"   Hull data mevcut: {self.convex_hull_data.get('hull') is not None}")
             else:
                 print(f"   ⚠️ Hull data henüz oluşturulmamış. formasyon_sec() veya guvenlik_hull_olustur() çağırın.")
+        
+        # A* yol görüntüleme ayarı
+        if isinstance(a_star, str):
+            a_star = a_star.lower() == "true"
+        self.goster_a_star = a_star
+        if a_star:
+            print(f"✅ [HARITA] A* yol görüntüleme aktif: {self.goster_a_star}")
+            if self.a_star_yolu:
+                print(f"   A* yolu mevcut: {len(self.a_star_yolu)} nokta")
+            else:
+                print(f"   ⚠️ A* yolu henüz hesaplanmamış. a_star_yolu_hesapla() çağırın.")
 
+    def a_star_yolu_hesapla(self, start: Tuple[float, float], goal: Tuple[float, float],
+                            safety_margin: float = 2.0) -> Optional[List[Tuple[float, float]]]:
+        """
+        A* algoritması kullanarak başlangıçtan hedefe yol hesaplar.
+        
+        Args:
+            start: (x, y) başlangıç koordinatları (metre)
+            goal: (x, y) hedef koordinatları (metre)
+            safety_margin: Engel etrafında güvenlik mesafesi (metre, varsayılan: 2.0)
+        
+        Returns:
+            Optional[List[Tuple[float, float]]]: Bulunan yol [(x1, y1), (x2, y2), ...] veya None
+        """
+        try:
+            from .a_star import AStarPlanner
+            
+            # Harita sınırlarını al
+            min_x = -self.havuz_genisligi
+            max_x = self.havuz_genisligi
+            min_y = -self.havuz_genisligi
+            max_y = self.havuz_genisligi
+            map_bounds = (min_x, max_x, min_y, max_y)
+            
+            # Engelleri topla
+            obstacles = []
+            
+            # Manuel engeller
+            for engel in self.manuel_engeller:
+                if len(engel) >= 2:
+                    # Engel formatı: (x, y) veya (x, y, radius)
+                    if len(engel) >= 3:
+                        obstacles.append((engel[0], engel[1], engel[2]))
+                    else:
+                        # Varsayılan yarıçap
+                        obstacles.append((engel[0], engel[1], 5.0))
+            
+            # Adalar - ada_cevre() fonksiyonunu kullanarak çevre noktalarını al
+            # Bu, adaların gerçek şeklini daha doğru temsil eder
+            polygon_obstacles = []  # Polygon engeller (ada çevre noktaları)
+            
+            if self.filo_ref and hasattr(self.filo_ref, 'ada_cevre'):
+                try:
+                    # Ada çevre noktalarını al (offset=0 ile tam çevre)
+                    ada_cevre_noktalari = self.filo_ref.ada_cevre(offset=0.0)
+                    
+                    # Her ada için çevre noktalarını polygon olarak ekle
+                    # ada_cevre() her ada için 12 nokta döndürür
+                    if ada_cevre_noktalari and len(ada_cevre_noktalari) > 0:
+                        nokta_sayisi_per_ada = 12
+                        ada_sayisi = len(ada_cevre_noktalari) // nokta_sayisi_per_ada
+                        
+                        for ada_idx in range(ada_sayisi):
+                            baslangic_idx = ada_idx * nokta_sayisi_per_ada
+                            bitis_idx = baslangic_idx + nokta_sayisi_per_ada
+                            ada_noktalari = ada_cevre_noktalari[baslangic_idx:bitis_idx]
+                            
+                            if len(ada_noktalari) >= 3:
+                                # Polygon olarak ekle (sadece x, y koordinatları)
+                                polygon = [(n[0], n[1]) for n in ada_noktalari]
+                                polygon_obstacles.append(polygon)
+                                
+                                # Ayrıca dairesel engel olarak da ekle (fallback için)
+                                # Ada konumunu al
+                                if hasattr(self.ortam_ref, 'Ada'):
+                                    try:
+                                        ada_konum = self.ortam_ref.Ada(ada_idx)
+                                        if ada_konum:
+                                            ada_x, ada_y = ada_konum
+                                            # Yarıçapı çevre noktalarından hesapla
+                                            import math
+                                            max_radius = 0.0
+                                            for nokta in ada_noktalari:
+                                                dist = math.sqrt((nokta[0] - ada_x)**2 + (nokta[1] - ada_y)**2)
+                                                max_radius = max(max_radius, dist)
+                                            obstacles.append((ada_x, ada_y, max_radius))
+                                    except:
+                                        pass
+                except Exception as e:
+                    print(f"⚠️ [HARITA] Ada çevre noktaları alınırken hata: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Fallback: Eski yöntem (sadece merkez ve yarıçap) - polygon yoksa
+            if not polygon_obstacles and hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
+                for is_pos in self.ortam_ref.island_positions:
+                    if len(is_pos) >= 3:
+                        # Güvenlik mesafesi ile genişletilmiş yarıçap
+                        obstacles.append((is_pos[0], is_pos[1], is_pos[2] + safety_margin))
+            
+            # A* planner oluştur
+            planner = AStarPlanner(grid_size=1.0)  # 1 metre grid çözünürlüğü
+            
+            # Yolu hesapla (polygon engelleri ile)
+            path = planner.find_path(start, goal, obstacles, map_bounds, safety_margin, 
+                                   polygon_obstacles=polygon_obstacles if polygon_obstacles else None)
+            
+            if path:
+                self.a_star_yolu = path
+                print(f"✅ [HARITA] A* yolu hesaplandı: {len(path)} nokta")
+                return path
+            else:
+                self.a_star_yolu = None
+                print(f"❌ [HARITA] A* yolu bulunamadı!")
+                return None
+                
+        except Exception as e:
+            print(f"❌ [HARITA] A* yolu hesaplanırken hata: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
     def update(self):
         """Ursina tarafından her karede (Main Thread) çağrılır."""
         
@@ -1574,38 +1989,91 @@ class Harita:
         if self._ac_istegi:
             self._ac_istegi = False
             if self.fig is None:
-                self._setup_figure()
-                self.gorunur = True
-                print("✅ Harita açıldı.")
+                try:
+                    self._setup_figure()
+                    self.gorunur = True
+                    print("✅ Harita açıldı.")
+                    # Pencereyi öne getir ve görünür yap
+                    if self.fig is not None:
+                        try:
+                            # TkAgg backend için pencereyi öne getir
+                            if hasattr(self.fig.canvas, 'manager') and hasattr(self.fig.canvas.manager, 'window'):
+                                window = self.fig.canvas.manager.window
+                                if hasattr(window, 'lift'):
+                                    window.lift()
+                                if hasattr(window, 'wm_attributes'):
+                                    window.wm_attributes('-topmost', True)
+                                    window.wm_attributes('-topmost', False)
+                        except Exception as e:
+                            print(f"⚠️ [HARITA] Pencere öne getirilemedi: {e}")
+                except Exception as e:
+                    print(f"❌ [HARITA] Harita açılırken hata: {e}")
+                    import traceback
+                    traceback.print_exc()
 
         # 3. Rutin Çizim Güncellemesi
         if self.gorunur and self.fig is not None:
+            # Thread kontrolü - sadece ana thread'de çalış
+            import threading
+            if threading.current_thread() is not threading.main_thread():
+                return  # Ana thread dışında çalışma
+            
+            # Çizim performansı için sayaç mekanizması
             if not hasattr(self, '_up_cnt'):
                 self._up_cnt = 0
             self._up_cnt += 1
             
-            if self._up_cnt >= 30:  # 30 karede bir (Performans)
+            # Çizim güncellemesi - 30 karede bir (Performans)
+            if self._up_cnt >= 30:
                 self._up_cnt = 0
                 try:
                     # Havuz genişliğini güncelle (sim_olustur'da değişebilir)
                     self.havuz_genisligi = getattr(self.ortam_ref, 'havuz_genisligi', 200)
                     self._ciz()
                     
-                    # Thread-safe çizim güncellemesi (Main Thread'de çalışıyor)
-                    # draw_idle() ve flush_events() kullan (plt.pause() yerine)
+                    # Çizimi güncelle (draw_idle - non-blocking)
                     try:
                         self.fig.canvas.draw_idle()
-                        self.fig.canvas.flush_events()
                     except Exception:
-                        # Pencere kapatılmış olabilir (Windows ve Linux'ta güvenli)
+                        # Pencere kapatılmış olabilir
                         self.fig = None
                         self.ax = None
                         self.gorunur = False
+                        return
+                    
+                    # Minimap'i senkronize et (eğer varsa ve görünürse)
+                    if hasattr(self.ortam_ref, 'minimap') and self.ortam_ref.minimap and self.ortam_ref.minimap.visible:
+                        try:
+                            # Convex hull'u güncelle
+                            if self.goster_convex and self.convex_hull_data:
+                                points = self.convex_hull_data.get('points')
+                                if points is not None and len(points) > 0:
+                                    if len(points.shape) > 1 and points.shape[1] == 2:
+                                        self.ortam_ref.minimap.update_hull(points)
+                                    elif len(points.shape) > 1 and points.shape[1] == 3:
+                                        points_2d = points[:, [0, 1]]
+                                        self.ortam_ref.minimap.update_hull(points_2d)
+                            
+                            # A* yolunu güncelle
+                            if self.goster_a_star and self.a_star_yolu:
+                                self.ortam_ref.minimap.update_path(self.a_star_yolu)
+                        except Exception:
+                            pass  # Minimap güncelleme hatası - sessizce devam et
                 except Exception:
                     # Pencere harici bir sebeple kapandıysa
                     self.fig = None
                     self.ax = None
                     self.gorunur = False
+                    return
+            
+            # ÖNEMLİ: flush_events() her karede çağrılmalı (pencere donmasını önlemek için)
+            # Bu, çizim güncellemesinden bağımsız olarak GUI olay döngüsünü canlı tutar
+            try:
+                if hasattr(self.fig.canvas, 'flush_events'):
+                    self.fig.canvas.flush_events()
+            except Exception:
+                # Pencere kapatılmış veya hata - sessizce devam et
+                pass
     
     def ekle(self, x_2d, y_2d, tip='engel'):
         """
@@ -1827,7 +2295,7 @@ class Ortam:
                 # --- DÜZELTME BAŞLANGICI ---
                 # Görsel ölçeği hesapla
                 # Ada boyutu 0.2 oranında küçültüldü (0.8 ile çarpıldı)
-                VISUAL_SCALE_REDUCTION = 0.8  # 0.2 oranında küçültme = 0.8 ile çarpma
+                VISUAL_SCALE_REDUCTION = 0.7  # 0.2 oranında küçültme = 0.8 ile çarpma
                 visual_scale_x = ref_visual_scale[0] * scale_multiplier * VISUAL_SCALE_REDUCTION
                 visual_scale_z = ref_visual_scale[2] * scale_multiplier * VISUAL_SCALE_REDUCTION
                 
@@ -1973,13 +2441,27 @@ class Ortam:
         
         # Harita sistemi (Matplotlib - ayrı pencere)
         try:
-            self.harita = Harita(ortam_ref=self, pencere_boyutu=(800, 800))
+            # Filo referansını al (varsa)
+            filo_ref = getattr(self, 'filo', None)
+            self.harita = Harita(ortam_ref=self, pencere_boyutu=(800, 800), filo_ref=filo_ref)
             print("✅ Harita sistemi başarıyla oluşturuldu (Matplotlib penceresi)")
         except Exception as e:
             print(f"❌ Harita oluşturulurken hata: {e}")
             import traceback
             traceback.print_exc()
             self.harita = None
+        
+        # Minimap sistemi (Ursina UI - ekran üzerinde)
+        try:
+            # Filo referansını al (varsa)
+            filo_ref = getattr(self, 'filo', None)
+            self.minimap = Minimap(ortam_ref=self, filo_ref=filo_ref, visible=False)
+            print("✅ Minimap sistemi başarıyla oluşturuldu")
+        except Exception as e:
+            print(f"❌ Minimap oluşturulurken hata: {e}")
+            import traceback
+            traceback.print_exc()
+            self.minimap = None
     
     # ============================================================
     # YARDIMCI FONKSİYONLAR: ADA OLUŞTURMA
@@ -2054,9 +2536,19 @@ class Ortam:
             random.choice([min_z + 20, max_z - 20])
         )
     
-    # --- Simülasyon Nesnelerini Oluştur ---
+    # ============================================================
+    # SİMÜLASYON OLUŞTURMA
+    # ============================================================
     def sim_olustur(self, n_rovs=3, n_engels=15, havuz_genisligi=200):
-        # Havuz genişliğini güncelle (ada oluşturma için)
+        """
+        Simülasyon ortamını oluşturur: ROV'lar, kayalar, havuz sınırları.
+        
+        Args:
+            n_rovs: Oluşturulacak ROV sayısı (varsayılan: 3)
+            n_engels: Oluşturulacak kaya sayısı (varsayılan: 15)
+            havuz_genisligi: Havuz genişliği (varsayılan: 200)
+        """
+        # Havuz genişliğini güncelle
         self.havuz_genisligi = havuz_genisligi
         
         # ============================================================
@@ -2112,57 +2604,36 @@ class Ortam:
         if ada_positions_backup:
             self.island_positions = ada_positions_backup
         
-        # Engeller (Kayalar)
-        # Kayalar su altında oluşmalı ve tabanları deniz tabanına değmeli
-        # Havuz sınırlarına göre dinamik oluşturma
-        havuz_sinir = self.havuz_genisligi  # +-havuz_genisligi
-        for _ in range(n_engels):
-            x = random.uniform(-havuz_sinir, havuz_sinir)
-            z = random.uniform(-havuz_sinir, havuz_sinir)
-            
-            # Kaya boyutları
-            s_x = random.uniform(15, 40)
-            s_y = random.uniform(15, 40)
-            s_z = random.uniform(15, 60)  # Z ekseni de pozitif olmalı (küre için)
-
-            # Kaya pozisyonu: Tabanı deniz tabanına değmeli, üstü su yüzeyinin altında olmalı
-            # Kaya merkez pozisyonu = deniz tabanı + (kaya yüksekliği / 2) ile su yüzeyi - (kaya yüksekliği / 2) arasında
-            kaya_alt_sinir = self.SEA_FLOOR_Y  # Kayanın alt kısmı deniz tabanında
-            kaya_ust_sinir = self.WATER_SURFACE_Y_BASE - (s_y / 2) - 2  # Kayanın üst kısmı su yüzeyinin 2 birim altında
-            
-            # Eğer kaya çok büyükse ve su yüzeyine sığmıyorsa, deniz tabanına yerleştir
-            if kaya_ust_sinir < kaya_alt_sinir:
-                y = self.SEA_FLOOR_Y + (s_y / 2)  # Tabanı deniz tabanında
-            else:
-                y = random.uniform(kaya_alt_sinir, kaya_ust_sinir)
-
-            gri = random.randint(80, 100)
-            kaya_rengi = color.rgb(gri, gri, gri)
-
-            engel = Entity(
-                model='icosphere',
-                color=kaya_rengi,
-                texture='noise',
-                scale=(s_x, s_y, s_z),
-                position=(x, self.SEA_FLOOR_Y, z),
-                rotation=(random.randint(0, 360), random.randint(0, 360), random.randint(0, 360)),
-                collider='sphere',  # Performans için küre collider yeterli
-                unlit=True
-            )
-            self.engeller.append(engel)
+        # ============================================================
+        # KAYA OLUŞTURMA (Güvenli Pozisyonlama)
+        # ============================================================
+        # Kayalar havuz sınırlarına değmeyecek şekilde pozisyonlanır
+        # Çaplarıyla orantılı olarak 8 metre güvenlik birimiyle içerde oluşur
+        self.engeller = kayalari_olustur(
+            n_engels=n_engels,
+            havuz_genisligi=self.havuz_genisligi,
+            sea_floor_y=self.SEA_FLOOR_Y,
+            water_surface_y_base=self.WATER_SURFACE_Y_BASE,
+            guvenlik_mesafesi=8.0,  # 8 metre güvenlik mesafesi
+            min_boyut=15,
+            max_boyut=40,
+            max_z_boyut=60
+        )
 
         # ============================================================
         # ROV YERLEŞTİRME (Adaların dışına - Ada radyuslarına göre)
         # ============================================================
         # Havuz sınırları: +-havuz_genisligi (yani +-200 birim)
+        # 10 metre güvenlik mesafesi: ROV'lar sınırlardan 10 metre içeride olmalı
+        HAVUZ_GUVENLIK_MESAFESI = 10.0  # Metre cinsinden güvenlik mesafesi
         havuz_sinir = self.havuz_genisligi  # +-havuz_genisligi
-        min_x = -havuz_sinir
-        max_x = havuz_sinir
-        min_z = -havuz_sinir
-        max_z = havuz_sinir
+        min_x = -havuz_sinir + HAVUZ_GUVENLIK_MESAFESI
+        max_x = havuz_sinir - HAVUZ_GUVENLIK_MESAFESI
+        min_z = -havuz_sinir + HAVUZ_GUVENLIK_MESAFESI
+        max_z = havuz_sinir - HAVUZ_GUVENLIK_MESAFESI
         
         # Güvenlik payı (ada radyusuna ek olarak bırakılacak minimum mesafe)
-        GUVENLIK_PAYI = 100.0  # birim
+        GUVENLIK_PAYI = SimulasyonSabitleri.ADA_GUVENLIK_PAYI
         
         # Ada pozisyonları ve radyusları kontrolü (eğer varsa)
         ada_bilgileri = []
@@ -2179,7 +2650,7 @@ class Ortam:
                 elif len(island_data) == 2:
                     # Geriye uyumluluk: Radyus yoksa varsayılan değer kullan
                     island_x_2d, island_y_2d = island_data
-                    varsayilan_radius = 100.0  # Güvenli varsayılan değer
+                    varsayilan_radius = SimulasyonSabitleri.ADA_VARSAYILAN_RADIUS  # Güvenli varsayılan değer
                     ada_bilgileri.append({
                         'x': island_x_2d,
                         'y': island_y_2d,
@@ -2187,9 +2658,17 @@ class Ortam:
                         'min_safe_distance': varsayilan_radius + GUVENLIK_PAYI
                     })
         
+        # Lider ROV ID'sini al (varsayılan: 0)
+        lider_id = 0
+        if hasattr(self, 'filo') and self.filo and hasattr(self.filo, 'orijinal_lider_id'):
+            lider_id = self.filo.orijinal_lider_id
+        
         for i in range(n_rovs):
-            max_attempts = 100  # Daha fazla deneme hakkı
+            max_attempts = SimulasyonSabitleri.ROV_YERLESTIRME_MAX_DENEME
             placed = False
+            
+            # Tüm ROV'lar (Lider veya Takipçi fark etmeksizin) -10m ile -20m arasında doğsun
+            z_depth = random.uniform(-20.0, -10.0)
             
             # Güvenli pozisyon bul (maksimum deneme sayısı kadar)
             for attempt in range(max_attempts):
@@ -2197,7 +2676,9 @@ class Ortam:
                 # Koordinat sistemi: (x_2d, y_2d, z_depth)
                 x_2d = random.uniform(min_x, max_x)
                 y_2d = random.uniform(min_z, max_z)  # Not: min_z/max_z aslında y_2d sınırları
-                z_depth = random.uniform(-20, -5)  # Su altında (derinlik negatif)
+                
+                # Derinlik zaten yukarıda belirlendi (-10 ile -20 metre arası)
+                # Her denemede aynı derinliği kullan (veya istersen her denemede değiştir)
                 
                 # Ada kontrolü: ROV'un adaların içinde olup olmadığını kontrol et
                 too_close_to_island = False
@@ -2218,10 +2699,10 @@ class Ortam:
                 # Güvenli pozisyon bulundu
                 if not too_close_to_island:
                     # Ursina'ya dönüştür: (x_2d, z_depth, y_2d)
-                    x, y, z = sim_to_ursina(x_2d, y_2d, z_depth)
+                    x, z, y = sim_to_ursina(x_2d, y_2d, z_depth)
                     new_rov = ROV(rov_id=i, position=(x, y, z))
                     new_rov.environment_ref = self
-                    if hasattr(self, 'filo'):
+                    if hasattr(self, 'filo'):   
                         new_rov.filo_ref = self.filo
                     self.rovs.append(new_rov)
                     placed = True
@@ -2263,7 +2744,8 @@ class Ortam:
                     x_2d = random.uniform(min_x, max_x)
                     y_2d = random.uniform(min_z, max_z)
                 
-                z_depth = random.uniform(-20, -5)
+                # Tüm ROV'lar (Lider dahil) -10 ile -20 metre arasında doğsun
+                z_depth = random.uniform(-20.0, -10.0)
                 x, y, z = sim_to_ursina(x_2d, y_2d, z_depth)
                 new_rov = ROV(rov_id=i, position=(x, y, z))
                 new_rov.environment_ref = self
@@ -2277,8 +2759,8 @@ class Ortam:
         # ============================================================
         # Raycast'in duvarları algılaması için görünmez boxlar eklemek en iyisidir
         havuz_sinir = self.havuz_genisligi
-        duvar_kalinligi = 1.0
-        duvar_yuksekligi = 500.0  # Yeterince yüksek
+        duvar_kalinligi = SimulasyonSabitleri.DUVAR_KALINLIGI
+        duvar_yuksekligi = SimulasyonSabitleri.DUVAR_YUKSEKLIGI
         
         # Sağ duvar (+X)
         Entity(
@@ -2319,7 +2801,7 @@ class Ortam:
             visible=False,
             color=color.clear
         )
-        
+
         print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {n_engels} Gri Kaya.")
     
     # --- Ada ve ROV Konum Yönetimi (Senaryo Modülü İçin) ---
