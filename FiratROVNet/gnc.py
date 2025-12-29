@@ -103,6 +103,11 @@ class Filo:
         # git() hedef takibi (ROV ID -> hedef_yaw açısı)
         self._git_hedef_yaw = {}  # git() ile gönderilen ROV'ların hedef yaw açıları (kademeli dönüş için)
         self._git_maksimum_yaw_donme_hizi = 90.0  # git() için maksimum yaw dönme hızı (derece/saniye)
+        
+        # Çoklu nokta takibi (ROV ID -> nokta listesi ve mevcut indeks)
+        self._git_nokta_listesi = {}  # {rov_id: [[x1, y1], [x2, y2], ...], ...}
+        self._git_mevcut_nokta_indeksi = {}  # {rov_id: 0, ...} - Hangi noktaya gidiyor
+        self._git_hedef_mesafe_toleransi = 2.0  # Hedefe ulaşma toleransı (metre)
     
     def _is_main_thread(self):
         """Şu anki thread'in ana thread olup olmadığını kontrol eder."""
@@ -116,8 +121,9 @@ class Filo:
     def _process_command_queue(self):
         """Ana thread'de çağrılmalı: Queue'daki komutları işler."""
         try:
-            # Her frame'de maksimum 10 komut işle (performans için)
-            max_commands = 10
+            # Her frame'de maksimum 1 komut işle (arka plan işlemleri için)
+            # Bu sayede konsolu rahatsız etmeden her frame'de bir işlem yapılır
+            max_commands = 1
             processed = 0
             while not self._command_queue.empty() and processed < max_commands:
                 cmd_type, args, kwargs = self._command_queue.get_nowait()
@@ -334,7 +340,7 @@ class Filo:
                 tum_modemler[i] = lider_modem
                 
                 # TemelGNC oluştur ve ekle (Lider için)
-                gnc = TemelGNC(rov, lider_modem)
+                gnc = TemelGNC(rov, lider_modem, filo_ref=self)
                 self.ekle(gnc)
                 
                 # Başlangıç hedefi varsa ata (hedef_atama ile)
@@ -362,7 +368,7 @@ class Filo:
                 tum_modemler[i] = modem
                 
                 # TemelGNC oluştur ve ekle (Takipçi için)
-                gnc = TemelGNC(rov, modem)
+                gnc = TemelGNC(rov, modem, filo_ref=self)
                 self.ekle(gnc)
                 
                 # Başlangıç hedefi varsa ata (hedef_atama ile)
@@ -1046,7 +1052,7 @@ class Filo:
                 yasakli_noktalar=yasakli_noktalar,
                 offset=offset,
                 alpha=2.0,
-                buffer_radius=15.0,  # Ada çevresinden 15 metre güvenli mesafe
+                buffer_radius=10.0,  # Ada çevresinden 15 metre güvenli mesafe
                 channel_width=10.0   # Kanal genişliği 10 metre
             )
 
@@ -1740,15 +1746,17 @@ class Filo:
             wireframe=True
         )
 
-    def git(self, rov_id, x, y, z=None, ai=True):
+    def git(self, rov_id, x, y=None, z=None, ai=True):
         """
         ROV'a hedef koordinatı atar ve otomatik moda geçirir (Thread-safe).
         Tüm girişler Simülasyon formatındadır: (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
+        
+        Çoklu nokta desteği: Eğer x bir liste ise, ROV bu noktaları sırayla ziyaret eder.
 
         Args:
             rov_id: ROV ID (0, 1, 2, ...)
-            x: X koordinatı (Sağ-Sol)
-            y: Y koordinatı (İleri-Geri)
+            x: X koordinatı (Sağ-Sol) veya nokta listesi [[x1, y1], [x2, y2], ...]
+            y: Y koordinatı (İleri-Geri) - x liste ise kullanılmaz
             z: Z koordinatı (Derinlik, opsiyonel)
                 - None ise mevcut derinlik korunur
             ai: AI aktif/pasif (varsayılan: True)
@@ -1756,24 +1764,83 @@ class Filo:
                 - False: Kör Mod (GAT tahminleri görmezden gelinir)
 
         Örnekler:
+            # Tek nokta
             filo.git(0, 40, 60, 20)           # ROV-0: X=40 (sağ), Y=60 (ileri), Z=20 (derinlik), AI açık
             filo.git(1, 50, 50, -10, ai=False)  # ROV-1: X=50, Y=50, Z=-10, AI kapalı
             filo.git(2, 30, 40)               # ROV-2: X=30, Y=40, mevcut derinlik, AI açık
+            
+            # Çoklu nokta (gidilecek_noktalar listesi)
+            gidilecek_n = [[150.5, 10.5], [142.5, 2.5], [134.5, -5.5]]
+            filo.git(0, gidilecek_n)  # ROV-0 bu noktaları sırayla ziyaret eder
         """
+        # Eğer x bir liste ise, çoklu nokta modu
+        if isinstance(x, (list, tuple)) and len(x) > 0:
+            # İlk elemanın formatını kontrol et
+            if isinstance(x[0], (list, tuple)) and len(x[0]) >= 2:
+                # Çoklu nokta listesi: [[x1, y1], [x2, y2], ...]
+                nokta_listesi = [[float(n[0]), float(n[1])] for n in x if len(n) >= 2]
+                
+                if len(nokta_listesi) == 0:
+                    print(f"❌ [FİLO] Geçersiz nokta listesi: {x}")
+                    return
+                
+                # Nokta listesini kaydet
+                self._git_nokta_listesi[rov_id] = nokta_listesi
+                self._git_mevcut_nokta_indeksi[rov_id] = 0
+                
+                # İlk noktaya git (arka plan işlemi - konsolu rahatsız etme)
+                ilk_nokta = nokta_listesi[0]
+                # Print'i kaldır - arka plan işlemi
+                
+                # Thread-safe çağrı - her frame'de bir işlem için queue kullan
+                # Ana thread'de olsak bile queue'ya ekle ki her frame'de bir işlem yapılsın
+                self._command_queue.put(('git', (rov_id, ilk_nokta[0], ilk_nokta[1], z, ai), {}))
+                return
+            else:
+                # Tek nokta ama tuple/list formatında: (x, y) veya [x, y]
+                if len(x) >= 2:
+                    x_val, y_val = float(x[0]), float(x[1])
+                    z_val = float(x[2]) if len(x) >= 3 else z
+                else:
+                    print(f"❌ [FİLO] Geçersiz koordinat formatı: {x}")
+                    return
+        else:
+            # Normal tek nokta modu
+            x_val, y_val = float(x), float(y) if y is not None else None
+            z_val = z
+        
+        # Y parametresi kontrolü
+        if y_val is None:
+            print(f"❌ [FİLO] Y koordinatı gerekli! (x liste değilse)")
+            return
+        
         # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
         if not self._is_main_thread():
             try:
                 # Ursina'nın invoke mekanizmasını kullan (varsa)
                 from ursina import invoke
-                invoke(self._git_impl, rov_id, x, y, z, ai)
+                invoke(self._git_impl, rov_id, x_val, y_val, z_val, ai)
                 return
             except (ImportError, AttributeError):
                 # Ursina invoke yoksa, queue kullan
-                self._command_queue.put(('git', (rov_id, x, y, z, ai), {}))
+                self._command_queue.put(('git', (rov_id, x_val, y_val, z_val, ai), {}))
                 return
         
         # Ana thread'deyiz, direkt çalıştır
-        self._git_impl(rov_id, x, y, z, ai)
+        self._git_impl(rov_id, x_val, y_val, z_val, ai)
+
+    def git_path(self, rov_id, hedef, ai=True):
+        """
+        ROV'a bir yol atar ve otomatik moda geçirir (Thread-safe).
+        """
+        path=self.a_star(rov_id,hedef)
+        if not isinstance(path, list) or len(path) == 0:
+            print(f"❌ [FİLO] Geçersiz yol listesi: {path}")
+            return
+        
+        
+        gidilecek_n=self.gidilecek_noktalar(path)
+        self.git(rov_id,gidilecek_n,ai)
     
     def _git_impl(self, rov_id, x, y, z=None, ai=True):
         """git() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
@@ -1980,13 +2047,16 @@ class Filo:
             
             # Havuz sınır kontrolü (hareket öncesi)
             # Sınırlar: +-havuz_genisligi (yani +-200 birim)
+            # 10 metre güvenlik mesafesi: ROV'lar sınırlardan 10 metre içeride kalmalı
+            HAVUZ_GUVENLIK_MESAFESI = 10.0  # Metre cinsinden güvenlik mesafesi
             if hasattr(rov, 'environment_ref') and rov.environment_ref:
                 havuz_genisligi = getattr(rov.environment_ref, 'havuz_genisligi', 200)
                 havuz_sinir = havuz_genisligi  # +-havuz_genisligi
+                guvenli_sinir = havuz_sinir - HAVUZ_GUVENLIK_MESAFESI  # 10 metre içerideki sınır
                 
-                # Sınırda mı kontrol et
-                sinirda_x = abs(rov.x) >= havuz_sinir * 0.95
-                sinirda_z = abs(rov.z) >= havuz_sinir * 0.95
+                # Güvenlik sınırında mı kontrol et (10 metre içeride)
+                sinirda_x = abs(rov.x) >= guvenli_sinir * 0.95
+                sinirda_z = abs(rov.z) >= guvenli_sinir * 0.95
                 sinirda_y_ust = rov.y >= 0.3
                 sinirda_y_alt = rov.y <= -95
                 
@@ -2085,13 +2155,210 @@ class Filo:
             import traceback
             traceback.print_exc()
 
+    def harita(self, goster=True, convex=True, a_star=True):
+        """Harita penceresini açar, kapatır veya görünürlük ayarlarını yapar."""
+        if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
+            self.ortam_ref.harita.goster(goster, convex, a_star)
+    
+    def minimap(self, durum=True, convex=True, a_star=True):
+        """
+        Minimap'i açar, kapatır veya durumunu döndürür.
+        Harita fonksiyonunun tüm işlevlerine sahiptir.
+        
+        Args:
+            durum: True/False - Minimap'i aç/kapat (None ise toggle)
+            convex: True/False - Convex hull'u göster/gizle
+            a_star: True/False - A* yolunu göster/gizle
+        
+        Örnekler:
+            filo.minimap()  # Toggle (aç/kapat)
+            filo.minimap(True)  # Aç
+            filo.minimap(False)  # Kapat
+            filo.minimap(True, convex=True, a_star=True)  # Aç ve her şeyi göster
+        """
+        if self.ortam_ref and hasattr(self.ortam_ref, 'minimap') and self.ortam_ref.minimap:
+            # Filo referansını minimap'e ver
+            if not hasattr(self.ortam_ref.minimap, 'filo_ref') or self.ortam_ref.minimap.filo_ref != self:
+                self.ortam_ref.minimap.filo_ref = self
+            
+            if durum is None:
+                # Toggle
+                self.ortam_ref.minimap.visible = not self.ortam_ref.minimap.visible
+                status = "AÇIK" if self.ortam_ref.minimap.visible else "KAPALI"
+                print(f"🗺️ [MİNİMAP] Minimap şu an {status}")
+            else:
+                # Görünürlük ve ayarları güncelle
+                self.ortam_ref.minimap.goster(durum, convex, a_star)
+        else:
+            print("❌ [MİNİMAP] Minimap sistemi bulunamadı!") 
+
+    def a_star(self, start=None, goal=None, safety_margin=10.0, **kwargs):
+        """
+        A* algoritması kullanarak başlangıçtan hedefe yol hesaplar.
+        
+        Args:
+            start: (x, y) başlangıç koordinatları (metre), ROV ID (int), veya kwargs'tan alınır
+                - Eğer int ise: ROV ID olarak yorumlanır ve GPS bilgisi çekilir
+                - Eğer tuple/list ise: Doğrudan (x, y) koordinatları olarak kullanılır
+            goal: (x, y) hedef koordinatları (metre) veya kwargs'tan alınır
+            safety_margin: Engel etrafında güvenlik mesafesi (metre, varsayılan: 8.0)
+            **kwargs: Alternatif parametre geçişi için
+        
+        Returns:
+            Optional[List[Tuple[float, float]]]: Bulunan yol [(x1, y1), (x2, y2), ...] veya None
+        
+        Örnekler:
+            # ROV ID ile başlangıç
+            yol = filo.a_star(start=0, goal=(100, 100))  # ROV-0'ın GPS'inden başla
+            
+            # Doğrudan koordinatlar
+            yol = filo.a_star(start=(-100, -100), goal=(100, 100), safety_margin=2.0)
+            
+            # kwargs ile
+            yol = filo.a_star(start=(-100, -100), goal=(100, 100))
+        """
+        # kwargs'tan parametreleri al (eğer doğrudan verilmemişse)
+        if start is None:
+            start = kwargs.get('start')
+        if goal is None:
+            goal = kwargs.get('goal')
+        if safety_margin == 8.0:  # Varsayılan değer, kwargs'tan kontrol et
+            safety_margin = kwargs.get('safety_margin', 8.0)
+        
+        # Start parametresi ROV ID ise GPS bilgisini çek
+        if isinstance(start, int):
+            rov_id = start  # ROV ID'yi sakla
+            try:
+                gps_bilgisi = self.get(rov_id, 'gps')
+                if gps_bilgisi is None:
+                    print(f"❌ [FİLO] ROV-{rov_id} için GPS bilgisi alınamadı!")
+                    return None
+                
+                # GPS formatı: (x, y, z) -> (x, y) olarak al
+                if isinstance(gps_bilgisi, (tuple, list)) and len(gps_bilgisi) >= 2:
+                    start = (float(gps_bilgisi[0]), float(gps_bilgisi[1]))
+                    print(f"✅ [FİLO] ROV-{rov_id}'ın GPS'inden başlangıç: {start}")
+                else:
+                    print(f"❌ [FİLO] ROV-{rov_id} için geçersiz GPS formatı: {gps_bilgisi}")
+                    return None
+            except Exception as e:
+                print(f"❌ [FİLO] ROV-{rov_id} GPS bilgisi alınırken hata: {e}")
+                return None
+        
+        # Parametre kontrolü
+        if start is None or goal is None:
+            print("❌ [FİLO] A* için start ve goal parametreleri gerekli!")
+            print("   Kullanım: filo.a_star(start=(x1, y1), goal=(x2, y2), safety_margin=2.0)")
+            print("   veya: filo.a_star(start=rov_id, goal=(x2, y2))  # ROV ID ile başlangıç")
+            return None
+        
+        # Start'ın tuple/list formatında olduğunu kontrol et
+        if not isinstance(start, (tuple, list)) or len(start) < 2:
+            print(f"❌ [FİLO] Start parametresi geçersiz format: {start}")
+            print("   Format: (x, y) tuple veya [x, y] list olmalı")
+            return None
+        
+        # Harita referansını kontrol et
+        if not self.ortam_ref or not hasattr(self.ortam_ref, 'harita') or self.ortam_ref.harita is None:
+            print("❌ [FİLO] Harita sistemi bulunamadı!")
+            return None
+        
+        # Harita'nın a_star_yolu_hesapla metodunu çağır
+        try:
+            return self.ortam_ref.harita.a_star_yolu_hesapla(
+                start=start,
+                goal=goal,
+                safety_margin=safety_margin
+            )
+        except Exception as e:
+            print(f"❌ [FİLO] A* yolu hesaplanırken hata: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def gidilecek_noktalar(self, path=None, r=12, derece_threshold=20):
+        """
+        A* yolu üzerinden gidilecek noktaları filtreler.
+        Mesafe ve eğim açısına göre gereksiz noktaları çıkarır.
+        
+        Args:
+            path: [(x1, y1), (x2, y2), ...] şeklindeki orijinal yol (None ise haritadaki A* yolunu kullanır)
+            r: Örnekleme mesafesi (yarıçap, metre, varsayılan: 10)
+            derece_threshold: Kabul edilen minimum eğim açısı (derece, varsayılan: 15)
+        
+        Returns:
+            List[List[float, float]]: [[x, y], [x, y], ...] şeklinde filtrelenmiş koordinat dizisi
+        
+        Örnekler:
+            # Haritadaki A* yolunu kullan
+            noktalar = filo.gidilecek_noktalar()
+            
+            # Özel yol ile
+            noktalar = filo.gidilecek_noktalar(path=[(100, 50), (150, 60), (200, 70)])
+            
+            # Özel parametrelerle
+            noktalar = filo.gidilecek_noktalar(r=15, derece_threshold=20)
+        """
+        # Eğer path verilmemişse, haritadaki A* yolunu kullan
+        if path is None:
+            if not self.ortam_ref or not hasattr(self.ortam_ref, 'harita') or self.ortam_ref.harita is None:
+                print("❌ [FİLO] Harita sistemi bulunamadı!")
+                return []
+            
+            if not hasattr(self.ortam_ref.harita, 'a_star_yolu') or self.ortam_ref.harita.a_star_yolu is None:
+                print("⚠️ [FİLO] A* yolu henüz hesaplanmamış!")
+                print("   Önce filo.a_star(start=(x1, y1), goal=(x2, y2)) çağırın.")
+                return []
+            
+            path = self.ortam_ref.harita.a_star_yolu
+        
+        # Path boşsa boş liste döndür
+        if len(path) == 0:
+            return []
+        
+        gidilecek_noktalar = []
+        
+        # Başlangıç referans noktası
+        x_baslangic, y_baslangic = path[0]
+        
+        # İlk noktayı ekle (başlangıç noktası)
+        gidilecek_noktalar.append([x_baslangic, y_baslangic])
+        
+        for i in range(1, len(path)):
+            x_son, y_son = path[i]
+            
+            # İki nokta arasındaki mesafe hesabı
+            mesafe = np.sqrt((x_son - x_baslangic)**2 + (y_son - y_baslangic)**2)
+            
+            if mesafe >= r:
+                # arctan2 kullanarak eğim açısını (radyan) hesapla, sonra dereceye çevir
+                # arctan2(dy, dx) dikey hatlarda hata vermez.
+                aci_radyan = np.arctan2(y_son - y_baslangic, x_son - x_baslangic)
+                derece = np.degrees(aci_radyan)
+                
+                # Eğim açısının mutlak değeri eşik değerden büyükse listeye ekle
+                if abs(derece) >= derece_threshold:
+                    gidilecek_noktalar.append([x_son, y_son])
+                    
+                    # Referans noktasını son bulunan noktaya güncelle
+                    x_baslangic, y_baslangic = x_son, y_son
+        
+        # Son noktayı da ekle (hedef noktası)
+        if len(path) > 1:
+            son_nokta = path[-1]
+            if son_nokta not in gidilecek_noktalar:
+                gidilecek_noktalar.append([son_nokta[0], son_nokta[1]])
+        
+        return gidilecek_noktalar
+
 # ==========================================
 # 2. TEMEL GNC SINIFI
 # ==========================================
 class TemelGNC:
-    def __init__(self, rov_entity, modem):
+    def __init__(self, rov_entity, modem, filo_ref=None):
         self.rov = rov_entity
         self.modem = modem
+        self.filo_ref = filo_ref  # Filo referansı (çoklu nokta takibi için)
         self.hedef = None 
         self.hiz_limiti = 100.0 
         self.manuel_kontrol = False
@@ -2119,8 +2386,8 @@ class TemelGNC:
         # Hedef yoksa işlem yapma
         if self.hedef is None:
             # Hedef yoksa motorları durdur
-            if self.rov.velocity.length() > 0.1:
-                self.rov.velocity *= 0.8  # Momentumu yumuşatarak durdur
+            if self.rov.velocity.length() > 1:
+                self.rov.velocity *= 0.4  # Momentumu yumuşatarak durdur
             return
         
         # 1. Mevcut pozisyonu Ursina'dan alıp Simülasyona çevir
@@ -2130,12 +2397,87 @@ class TemelGNC:
         fark = self.hedef - current_sim_pos
         mevcut_mesafe = fark.length()
 
-        # HEDEF KONTROLÜ: Hedefe ulaşıldıysa dur
-        if mevcut_mesafe <= 0.1:
-            # Hedefe ulaşıldı, dur
-            if self.rov.velocity.length() > 0.1:
-                self.rov.velocity *= 0.8  # Momentumu yumuşatarak durdur
+        # HEDEF KONTROLÜ: Hedefe ulaşıldıysa dur veya sonraki noktaya geç
+        # Salınım önleme: Hedefe çok yakınsa (0.5m) motorları durdur ve yaw açısını hedefe doğru ayarla
+        if mevcut_mesafe <= 0.5:
+            # Hedefe çok yakın - motorları durdur ve yaw açısını hedefe doğru ayarla
+            self.rov.velocity *= 0.1  # Çok agresif durdurma (salınım önleme)
+            
+            # Yaw açısını hedefe doğru ayarla (stabilite için)
+            if hasattr(self, 'filo_ref') and self.filo_ref:
+                rov_id = None
+                for idx, gnc in enumerate(self.filo_ref.sistemler):
+                    if gnc == self:
+                        rov_id = idx
+                        break
+                
+                if rov_id is not None:
+                    # Hedefe doğru yaw açısını hesapla
+                    dx = fark.x
+                    dy = fark.y
+                    if abs(dx) > 0.01 or abs(dy) > 0.01:
+                        yaw_rad = math.atan2(dx, dy)
+                        yaw_deg = math.degrees(yaw_rad)
+                        # Normalize et
+                        while yaw_deg >= 360:
+                            yaw_deg -= 360
+                        while yaw_deg < 0:
+                            yaw_deg += 360
+                        # Yaw açısını direkt ayarla (kademeli değil, hedefe doğru dön)
+                        if hasattr(self.rov, 'rotation_y'):
+                            # Kademeli dönüş yerine direkt hedefe dön (daha stabil)
+                            mevcut_yaw = self.rov.rotation_y
+                            yaw_farki = yaw_deg - mevcut_yaw
+                            # En kısa yolu bul (-180 ile 180 arası)
+                            if yaw_farki > 180:
+                                yaw_farki -= 360
+                            elif yaw_farki < -180:
+                                yaw_farki += 360
+                            # Hızlı dönüş (her frame'de maksimum 5 derece)
+                            max_donme = 5.0
+                            if abs(yaw_farki) > max_donme:
+                                yaw_farki = max_donme if yaw_farki > 0 else -max_donme
+                            self.rov.rotation_y = mevcut_yaw + yaw_farki
+            
+            # Çoklu nokta takibi: Sonraki noktaya geç (0.5m tolerans ile)
+            if mevcut_mesafe <= 0.5 and hasattr(self, 'filo_ref') and self.filo_ref:
+                rov_id = None
+                # ROV ID'yi bul
+                for idx, gnc in enumerate(self.filo_ref.sistemler):
+                    if gnc == self:
+                        rov_id = idx
+                        break
+                
+                if rov_id is not None and rov_id in self.filo_ref._git_nokta_listesi:
+                    nokta_listesi = self.filo_ref._git_nokta_listesi[rov_id]
+                    mevcut_indeks = self.filo_ref._git_mevcut_nokta_indeksi.get(rov_id, 0)
+                    
+                    # Sonraki noktaya geç
+                    if mevcut_indeks + 1 < len(nokta_listesi):
+                        sonraki_nokta = nokta_listesi[mevcut_indeks + 1]
+                        self.filo_ref._git_mevcut_nokta_indeksi[rov_id] = mevcut_indeks + 1
+                        
+                        # Sonraki noktayı hedef olarak ata
+                        self.hedef = Vec3(sonraki_nokta[0], sonraki_nokta[1], self.hedef.z)
+                        # Konsolu rahatsız etmemek için print'i kaldır (arka plan işlemi)
+                        return
+                    else:
+                        # Tüm noktalar tamamlandı
+                        # Listeyi temizle
+                        if rov_id in self.filo_ref._git_nokta_listesi:
+                            del self.filo_ref._git_nokta_listesi[rov_id]
+                        if rov_id in self.filo_ref._git_mevcut_nokta_indeksi:
+                            del self.filo_ref._git_mevcut_nokta_indeksi[rov_id]
+            
             return
+        
+        # Hedefe yaklaşırken hızı azalt (salınım önleme)
+        if mevcut_mesafe < 2.0:
+            # Hedefe yaklaşırken hızı azalt
+            hiz_carpani = mevcut_mesafe / 2.0  # 2m'de 1.0, 0.5m'de 0.25
+            hiz_carpani = max(0.2, min(1.0, hiz_carpani))  # Minimum 0.2, maksimum 1.0
+        else:
+            hiz_carpani = 1.0
 
         # 3. Hareket vektörünü normalize et
         if mevcut_mesafe > 0.01:
@@ -2143,14 +2485,51 @@ class TemelGNC:
         else:
             hareket_vektoru = Vec3(0, 0, 0)
         
-        # 4. Hareket vektörünü motor komutlarına haritala
+        # 4. Yaw açısını hedefe doğru ayarla (her zaman hedefe dön)
+        if hasattr(self, 'filo_ref') and self.filo_ref:
+            rov_id = None
+            for idx, gnc in enumerate(self.filo_ref.sistemler):
+                if gnc == self:
+                    rov_id = idx
+                    break
+            
+            if rov_id is not None:
+                # Hedefe doğru yaw açısını hesapla
+                dx = fark.x
+                dy = fark.y
+                if abs(dx) > 0.01 or abs(dy) > 0.01:
+                    yaw_rad = math.atan2(dx, dy)
+                    yaw_deg = math.degrees(yaw_rad)
+                    # Normalize et
+                    while yaw_deg >= 360:
+                        yaw_deg -= 360
+                    while yaw_deg < 0:
+                        yaw_deg += 360
+                    
+                    # Yaw açısını direkt ayarla (her zaman hedefe dön)
+                    if hasattr(self.rov, 'rotation_y'):
+                        mevcut_yaw = self.rov.rotation_y
+                        yaw_farki = yaw_deg - mevcut_yaw
+                        # En kısa yolu bul (-180 ile 180 arası)
+                        if yaw_farki > 180:
+                            yaw_farki -= 360
+                        elif yaw_farki < -180:
+                            yaw_farki += 360
+                        # Hızlı dönüş (her frame'de maksimum 5 derece)
+                        max_donme = 5.0
+                        if abs(yaw_farki) > max_donme:
+                            yaw_farki = max_donme if yaw_farki > 0 else -max_donme
+                        self.rov.rotation_y = mevcut_yaw + yaw_farki
+        
+        # 5. Hareket vektörünü motor komutlarına haritala
         # hareket_vektoru.x -> Sağ/Sol
         # hareket_vektoru.y -> İleri/Geri (Simülasyonda Y ileridir)
         # hareket_vektoru.z -> Çık/Bat (Simülasyonda Z derinliktir)
-        # Hızı 0.5 ile çarp (yarı hız)
-        self.vektor_to_motor_sim(hareket_vektoru, guc=0.5)
+        # Hızı hiz_carpani ile çarp (yaklaşırken yavaşla)
+        guc_degeri = 0.4 * hiz_carpani if 'hiz_carpani' in locals() else 0.4
+        self.vektor_to_motor_sim(hareket_vektoru, guc=guc_degeri)
 
-    def vektor_to_motor_sim(self, v_sim, guc=1.0):
+    def vektor_to_motor_sim(self, v_sim, guc=0.4):
         """
         Vektörü Simülasyon eksenlerinden Ursina motor komutlarına çevirir.
         Global koordinatlara göre direkt hareket eder (yaw açısından bağımsız).

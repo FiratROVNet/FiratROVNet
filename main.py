@@ -10,7 +10,7 @@ import os
 # 1. KURULUM
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
-app.sim_olustur(n_rovs=6, n_engels=35)
+app.sim_olustur(n_rovs=6, n_engels=15)
 
 try: 
     beyin = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
