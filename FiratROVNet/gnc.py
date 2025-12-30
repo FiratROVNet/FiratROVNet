@@ -1197,7 +1197,7 @@ class Filo:
                                         merkez_koordinat[2],
                                         ai=True
                                     )
-
+                        
                                 # Takipçi ROV'ları formasyon pozisyonlarına gönder
                                 for rov_id, pozisyon in enumerate(pozisyonlar):
                                     if rov_id >= len(self.sistemler):
@@ -1353,7 +1353,7 @@ class Filo:
         """Wrapper: HullManager'a yönlendirir (geriye dönük uyumluluk için)."""
         return self.hull_manager.ada_engel_noktalari_pro(yakinlik_siniri=yakinlik_siniri, offset=offset)
     
-    def hull(self, offset=20.0):
+    def hull(self, offset=40.0):
         """
         Güvenlik hull oluşturur (Thread-safe).
         Ana thread'de değilse, komutu queue'ya ekler.
@@ -1381,7 +1381,7 @@ class Filo:
         """guvenlik_hull_olustur() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         return self.hull_manager.hull(offset=offset)
     
-    def ada_cevre(self, offset=10.0):
+    def ada_cevre(self, offset=15.0):
         """
         Simülasyondaki adaları tespit edip her ada için eşit çevrede 12 nokta döndürür.
         
@@ -1453,7 +1453,7 @@ class Filo:
         print(f"✅ [ADA_CEVRE] {len(self.ortam_ref.island_positions)} ada için {len(tum_noktalar)} nokta hesaplandı (offset={offset}m)")
         return tum_noktalar
     
-    def yeni_hull(self, yasakli_noktalar, offset=20.0, alpha=2.0, buffer_radius=20.0, channel_width=15.0):
+    def yeni_hull(self, yasakli_noktalar, offset=40.0, alpha=2.0, buffer_radius=20.0, channel_width=15.0):
             """
             Mevcut hull noktalarını alır, yasaklı bölgeleri kesip çıkarır.
             Hem harita çizimi hem de 'is_point_inside' kontrolü için uyumlu nesne döndürür.
@@ -2276,80 +2276,88 @@ class Filo:
             traceback.print_exc()
             return None
     
-    def gidilecek_noktalar(self, path=None, r=12, derece_threshold=20):
+
+    def gidilecek_noktalar(self, path=None, r=10, derece_threshold=15):
         """
         A* yolu üzerinden gidilecek noktaları filtreler.
         Mesafe ve eğim açısına göre gereksiz noktaları çıkarır.
-        
+
         Args:
-            path: [(x1, y1), (x2, y2), ...] şeklindeki orijinal yol (None ise haritadaki A* yolunu kullanır)
+            path: [(x1, y1), (x2, y2), ...] şeklindeki orijinal yol
+                (None ise haritadaki A* yolunu kullanır)
             r: Örnekleme mesafesi (yarıçap, metre, varsayılan: 10)
-            derece_threshold: Kabul edilen minimum eğim açısı (derece, varsayılan: 15)
-        
+            derece_threshold: Kabul edilen minimum eğim açısı
+                            (derece, varsayılan: 15)
+
         Returns:
-            List[List[float, float]]: [[x, y], [x, y], ...] şeklinde filtrelenmiş koordinat dizisi
-        
-        Örnekler:
-            # Haritadaki A* yolunu kullan
-            noktalar = filo.gidilecek_noktalar()
-            
-            # Özel yol ile
-            noktalar = filo.gidilecek_noktalar(path=[(100, 50), (150, 60), (200, 70)])
-            
-            # Özel parametrelerle
-            noktalar = filo.gidilecek_noktalar(r=15, derece_threshold=20)
+            List[List[float, float]]: [[x, y], [x, y], ...]
+            şeklinde filtrelenmiş koordinat dizisi
         """
+
         # Eğer path verilmemişse, haritadaki A* yolunu kullan
         if path is None:
             if not self.ortam_ref or not hasattr(self.ortam_ref, 'harita') or self.ortam_ref.harita is None:
                 print("❌ [FİLO] Harita sistemi bulunamadı!")
                 return []
-            
+
             if not hasattr(self.ortam_ref.harita, 'a_star_yolu') or self.ortam_ref.harita.a_star_yolu is None:
                 print("⚠️ [FİLO] A* yolu henüz hesaplanmamış!")
                 print("   Önce filo.a_star(start=(x1, y1), goal=(x2, y2)) çağırın.")
                 return []
-            
+
             path = self.ortam_ref.harita.a_star_yolu
-        
+
         # Path boşsa boş liste döndür
         if len(path) == 0:
             return []
-        
+
         gidilecek_noktalar = []
-        
+
         # Başlangıç referans noktası
         x_baslangic, y_baslangic = path[0]
-        
+
         # İlk noktayı ekle (başlangıç noktası)
         gidilecek_noktalar.append([x_baslangic, y_baslangic])
-        
+
+        aci_radyan = np.arctan2(y_baslangic, x_baslangic)
+        ilk_derece = np.degrees(aci_radyan)
+
         for i in range(1, len(path)):
             x_son, y_son = path[i]
-            
+
             # İki nokta arasındaki mesafe hesabı
-            mesafe = np.sqrt((x_son - x_baslangic)**2 + (y_son - y_baslangic)**2)
-            
+            mesafe = np.sqrt(
+                (x_son - x_baslangic) ** 2 +
+                (y_son - y_baslangic) ** 2
+            )
+
             if mesafe >= r:
-                # arctan2 kullanarak eğim açısını (radyan) hesapla, sonra dereceye çevir
-                # arctan2(dy, dx) dikey hatlarda hata vermez.
-                aci_radyan = np.arctan2(y_son - y_baslangic, x_son - x_baslangic)
-                derece = np.degrees(aci_radyan)
-                
-                # Eğim açısının mutlak değeri eşik değerden büyükse listeye ekle
-                if abs(derece) >= derece_threshold:
+                # arctan2 kullanarak eğim açısını (radyan) hesapla
+                aci_radyan = np.arctan2(
+                    y_son - y_baslangic,
+                    x_son - x_baslangic
+                )
+                son_derece = np.degrees(aci_radyan)
+
+                fark = ilk_derece - son_derece
+
+                # Eğim açısı eşik değeri geçiyorsa ekle
+                if abs(fark) >= derece_threshold:
+                    ilk_derece = son_derece
                     gidilecek_noktalar.append([x_son, y_son])
-                    
-                    # Referans noktasını son bulunan noktaya güncelle
+
+                    # Referans noktasını güncelle
                     x_baslangic, y_baslangic = x_son, y_son
-        
-        # Son noktayı da ekle (hedef noktası)
+
+        # Son noktayı da ekle (hedef)
         if len(path) > 1:
             son_nokta = path[-1]
             if son_nokta not in gidilecek_noktalar:
                 gidilecek_noktalar.append([son_nokta[0], son_nokta[1]])
-        
+
         return gidilecek_noktalar
+
+
 
 # ==========================================
 # 2. TEMEL GNC SINIFI
@@ -2460,7 +2468,6 @@ class TemelGNC:
                         # Sonraki noktayı hedef olarak ata
                         self.hedef = Vec3(sonraki_nokta[0], sonraki_nokta[1], self.hedef.z)
                         # Konsolu rahatsız etmemek için print'i kaldır (arka plan işlemi)
-                        return
                     else:
                         # Tüm noktalar tamamlandı
                         # Listeyi temizle
