@@ -30,6 +30,7 @@ from FiratROVNet.simulasyon import Ortam, ROV
 from FiratROVNet.gnc import Filo
 import numpy as np
 import random
+import networkx as nx
 
 # Global senaryo instance
 _senaryo_instance = None
@@ -167,8 +168,9 @@ class Senaryo:
                 if pos:
                     yeni_x, yeni_z = pos
                     # Ada metodunu kullanarak taşı (hitbox'ları da otomatik güncellenir)
-                    if hasattr(self.ortam, 'Ada'):
-                        self.ortam.Ada(i, yeni_x, yeni_z)
+                    # Ada() metodu: Ada(ada_id, x, y) formatında - y parametresi aslında z koordinatı
+                    if hasattr(self.ortam, 'Ada') and callable(getattr(self.ortam, 'Ada', None)):
+                        self.ortam.Ada(i, yeni_x, yeni_z)  # y parametresi aslında z koordinatı
                     else:
                         # Fallback: Manuel güncelleme
                         self.ortam.island_positions[i] = [yeni_x, yeni_z, radius]
@@ -572,11 +574,13 @@ class Senaryo:
             self.filo.otomatik_kurulum(
                 rovs=self.ortam.rovs,
                 lider_id=0,
+                ortam_ref=self.ortam,
                 modem_ayarlari=modem_ayarlari,
                 baslangic_hedefleri={},  # Boş dict = formasyon hesaplaması yapılmasın
                 sensor_ayarlari=sensor_ayarlari
             )
             self.ortam.filo = self.filo
+            self.filo.ortam_ref = self.ortam  # Filo'ya ortam referansını ekle
         
         # 6. Aktif durumu
         self.aktif = True

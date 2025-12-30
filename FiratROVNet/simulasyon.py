@@ -1381,6 +1381,12 @@ class Harita:
                 zorder=4
             )
             self.ax.add_patch(ada_sekli)
+            # Ada ID'sini ada üzerine yaz
+            self.ax.text(ada_x, ada_y, f'Ada-{ada_id}', 
+                        fontsize=10, fontweight='bold', 
+                        color='white', ha='center', va='center',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.6, edgecolor='white', linewidth=1),
+                        zorder=6)
             return
         
         try:
@@ -1483,6 +1489,13 @@ class Harita:
                             uzaklik = math.sqrt((px - ada_x)**2 + (py - ada_y)**2)
                             uzakliklar.append(uzaklik)
                         ada_radius = sum(uzakliklar) / len(uzakliklar) if uzakliklar else 20.0
+                    
+                    # Ada ID'sini ada üzerine yaz
+                    self.ax.text(ada_x, ada_y, f'Ada-{ada_id}', 
+                                fontsize=10, fontweight='bold', 
+                                color='white', ha='center', va='center',
+                                bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.6, edgecolor='white', linewidth=1),
+                                zorder=6)
                     
                     # Ada üzerinde küçük detaylar (ağaç/tepe gibi)
                     detay_positions = [
@@ -2696,6 +2709,32 @@ class Ortam:
         # ============================================================
         # ROV YERLEŞTİRME (Adaların dışına - Ada radyuslarına göre)
         # ============================================================
+        # ROV listesini temizle (eski ROV'ları sil)
+        # #region agent log
+        eski_rov_sayisi = len(self.rovs) if hasattr(self, 'rovs') and self.rovs else 0
+        with open('/home/celik/github/ROV/.cursor/debug.log', 'a') as f:
+            f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"simulasyon.py:2712","message":"ROV listesi temizlenmeden önce","data":{{"eski_rov_sayisi":{eski_rov_sayisi},"hedef_rov_sayisi":{n_rovs}}},"timestamp":{int(__import__("time").time()*1000)}}}\n')
+        # #endregion
+        
+        # Eski ROV'ları destroy et (Entity oldukları için)
+        if hasattr(self, 'rovs') and self.rovs:
+            for rov in self.rovs:
+                try:
+                    if hasattr(rov, 'destroy'):
+                        rov.destroy()
+                    elif hasattr(rov, '__del__'):
+                        del rov
+                except:
+                    pass
+        
+        # ROV listesini sıfırla
+        self.rovs = []
+        
+        # #region agent log
+        with open('/home/celik/github/ROV/.cursor/debug.log', 'a') as f:
+            f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"simulasyon.py:2730","message":"ROV listesi temizlendikten sonra","data":{{"yeni_rov_sayisi":{len(self.rovs)},"hedef_rov_sayisi":{n_rovs}}},"timestamp":{int(__import__("time").time()*1000)}}}\n')
+        # #endregion
+        
         # Havuz sınırları: +-havuz_genisligi (yani +-200 birim)
         # 10 metre güvenlik mesafesi: ROV'lar sınırlardan 10 metre içeride olmalı
         HAVUZ_GUVENLIK_MESAFESI = 10.0  # Metre cinsinden güvenlik mesafesi
@@ -2881,18 +2920,19 @@ class Ortam:
     def Ada(self, ada_id, x=None, y=None):
         """
         Ada pozisyonunu değiştirir veya konumunu döndürür.
+        Z (derinlik) değeri mevcut değerinden korunur, değiştirilmez.
         
         Args:
             ada_id: Ada ID'si
-            x: Yeni X koordinatı (None ise mevcut konumu döndürür)
-            y: Yeni Y koordinatı (Z ekseni, None ise mevcut konumu döndürür)
+            x: Yeni X koordinatı (Simülasyon koordinat sistemi, None ise mevcut konumu döndürür)
+            y: Yeni Y koordinatı (Simülasyon koordinat sistemi - İleri-Geri, None ise mevcut konumu döndürür)
         
         Returns:
             tuple: (x, y) koordinatları veya None
         
         Örnek:
-            # Ada konumunu değiştir
-            app.Ada(0, 50, 60)
+            # Ada konumunu değiştir (z değeri korunur)
+            app.Ada(0, 50, 60)  # X=50, Y=60, Z değeri mevcut değerinden korunur
             
             # Ada konumunu al
             konum = app.Ada(0)  # (x, y) tuple döner
@@ -2908,11 +2948,54 @@ class Ortam:
         
         # Konum değiştirme
         if x is not None and y is not None:
-            # Ada pozisyonunu güncelle
+            # Ada pozisyonunu güncelle (z değerini koru)
             radius = self.island_positions[ada_id][2] if len(self.island_positions[ada_id]) > 2 else 50.0
             old_pos = self.island_positions[ada_id]
+            # Mevcut z değerini entity'den al (eğer varsa), yoksa 0 kullan
+            z = 0  # Varsayılan
+            if hasattr(self, 'island_entities') and ada_id < len(self.island_entities):
+                island_entity = self.island_entities[ada_id]
+                if hasattr(island_entity, 'position') and hasattr(island_entity.position, 'y'):
+                    # Ursina koordinat sisteminden simülasyon koordinat sistemine dönüştür
+                    # Ursina: (x, y_up, z_forward) -> Sim: (x, z_forward, y_up)
+                    # z değeri Ursina'da y ekseninde (y_up), Sim'de z ekseninde (z_depth)
+                    _, _, z = ursina_to_sim(island_entity.position.x, island_entity.position.y, island_entity.position.z)
+                elif hasattr(island_entity, 'y'):
+                    # Ursina koordinat sisteminden simülasyon koordinat sistemine dönüştür
+                    _, _, z = ursina_to_sim(island_entity.x, island_entity.y, island_entity.z)
+            
+            # island_positions formatı: (x, y, radius) - z bilgisi entity'de saklanıyor
             self.island_positions[ada_id] = (x, y, radius)
             
+            # Ada entity'sini güncelle (Ursina koordinat sistemine dönüştür)
+            # Sim: (x, y, z) -> Ursina: (x, z, y)
+            if hasattr(self, 'island_entities') and ada_id < len(self.island_entities):
+                island_entity = self.island_entities[ada_id]
+                # Simülasyon koordinat sisteminden Ursina'ya dönüştür
+                # Sim: (x, y_forward, z_depth) -> Ursina: (x, z_depth, y_forward)
+                ursina_x, ursina_y, ursina_z = sim_to_ursina(x, y, z)
+                
+                if hasattr(island_entity, 'position'):
+                    island_entity.position = Vec3(ursina_x, ursina_y, ursina_z)
+                elif hasattr(island_entity, 'x'):
+                    island_entity.x = ursina_x
+                    island_entity.y = ursina_y
+                    island_entity.z = ursina_z
+            
+            # Ada hitbox'larını güncelle (eğer varsa)
+            if hasattr(self, 'island_hitboxes') and self.island_hitboxes:
+                # Her ada için 5 hitbox var (varsayılan)
+                ada_hitbox_start = ada_id * 5
+                # Simülasyon koordinat sisteminden Ursina'ya dönüştür
+                ursina_x, ursina_y, ursina_z = sim_to_ursina(x, y, z)
+                for hitbox_idx in range(ada_hitbox_start, min(ada_hitbox_start + 5, len(self.island_hitboxes))):
+                    hitbox = self.island_hitboxes[hitbox_idx]
+                    if hasattr(hitbox, 'position'):
+                        hitbox.position = Vec3(ursina_x, ursina_y, ursina_z)
+                    elif hasattr(hitbox, 'x'):
+                        hitbox.x = ursina_x
+                        hitbox.y = ursina_y
+                        hitbox.z = ursina_z
             
             # Verbose kontrolü için ortam referansı gerekli
             verbose = False
@@ -2922,7 +3005,7 @@ class Ortam:
                 verbose = self.verbose
             
             if verbose:
-                print(f"✅ Ada-{ada_id} pozisyonu güncellendi: ({x}, {y})")
+                print(f"✅ Ada-{ada_id} pozisyonu güncellendi: ({x}, {y}, z=0)")
             return (x, y)
         else:
             # Mevcut konumu döndür
