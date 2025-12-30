@@ -2192,7 +2192,7 @@ class Filo:
         else:
             print("❌ [MİNİMAP] Minimap sistemi bulunamadı!") 
 
-    def a_star(self, start=None, goal=None, safety_margin=10.0, **kwargs):
+    def a_star(self, start=None, goal=None, safety_margin=20.0, **kwargs):
         """
         A* algoritması kullanarak başlangıçtan hedefe yol hesaplar.
         
@@ -2275,7 +2275,6 @@ class Filo:
             import traceback
             traceback.print_exc()
             return None
-    
 
     def gidilecek_noktalar(self, path=None, r=10, derece_threshold=15):
         """
@@ -2356,8 +2355,6 @@ class Filo:
                 gidilecek_noktalar.append([son_nokta[0], son_nokta[1]])
 
         return gidilecek_noktalar
-
-
 
 # ==========================================
 # 2. TEMEL GNC SINIFI
