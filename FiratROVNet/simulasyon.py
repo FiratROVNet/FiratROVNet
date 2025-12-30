@@ -302,10 +302,6 @@ class ROV(Entity):
         if self.velocity.length() > 0.01: 
             self.battery -= FizikSabitleri.BATARYA_SOMURME_KATSAYISI * time.dt
         
-        # Yakınlaşma önleme (10 metre mesafede uzaklaşma)
-        if self.environment_ref:
-            self._yaklasma_onleme()
-        
         # Çarpışma kontrolü
         if self.environment_ref:
             self._carpisma_kontrolu()
@@ -964,158 +960,6 @@ class ROV(Entity):
             else:
                 self.lider_ile_iletisim = mesafe < iletisim_menzili
     
-    def _yaklasma_onleme(self):
-        """
-        Sensör mesafesine göre ROV'lar ve engellerden uzaklaşma.
-        Çarpışmayı önlemek için proaktif kaçınma davranışı.
-        """
-        if not self.environment_ref:
-            return
-        
-        # Kaçınma mesafesi = engel_mesafesi (ROV'lar engel mesafesi kadar yaklaştıklarında kaçınma yapar)
-        engel_mesafesi = self.sensor_config.get("engel_mesafesi", SensorAyarlari.VARSAYILAN["engel_mesafesi"])
-        kacinma_mesafesi = engel_mesafesi  # Engel mesafesi kadar yaklaştıklarında kaçınma yap
-        
-        uzaklasma_vektoru = Vec3(0, 0, 0)
-        
-        # Diğer ROV'lardan uzaklaşma
-        # ÖNEMLİ: Lider takipçilerden uzaklaşmaz - hedefe gitmek için sürüden ayrılabilir
-        if self.role != 1:  # Sadece takipçiler diğer ROV'lardan uzaklaşır
-            for diger_rov in self.environment_ref.rovs:
-                if diger_rov.id == self.id:
-                    continue
-                
-                mesafe = distance(self.position, diger_rov.position)
-                
-                # ÖNEMLİ: ROV'lar birbirine çok yakın olduğunda (2m içinde) kaçınma mekanizmasını devre dışı bırak
-                # Bu, ROV'ların birbirini sürekli itmesini önler
-                minimum_mesafe = FizikSabitleri.ROV_MINIMUM_MESAFE  # Minimum mesafe - çok yakınsa kaçınma yok
-                if mesafe < minimum_mesafe:
-                    continue  # Çok yakınsa kaçınma yapma
-                
-                # Kaçınma mesafesi veya daha küçük mesafede uzaklaş
-                if mesafe <= kacinma_mesafesi and mesafe > 0:
-                    # Uzaklaşma yönü (bu ROV'dan diğer ROV'a)
-                    uzaklasma_yonu = (self.position - diger_rov.position).normalized()
-                    # Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
-                    # Ancak gücü daha da yumuşat (çok agresif olmasın)
-                    uzaklasma_gucu = (kacinma_mesafesi - mesafe) / kacinma_mesafesi
-                    uzaklasma_gucu *= 0.3  # Gücü %30'a indir (daha yumuşak)
-                    uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
-        
-        # Engellerden uzaklaşma (Raycast kullanarak)
-        # ROV'un yönünü al
-        if hasattr(self, 'forward') and self.forward:
-            forward_vec = Vec3(self.forward.x, 0, self.forward.z).normalized()
-        else:
-            forward_vec = Vec3(0, 0, 1)
-        
-        # Raycast origin
-        raycast_origin = self.world_position + Vec3(0, 0.5, 0)
-        
-        # Ön yönde raycast yap (engel mesafesi kadar)
-        ignore_tuple = (self, self.safety_zone) if hasattr(self, 'safety_zone') and self.safety_zone else (self,)
-        hit_info = raycast(
-            raycast_origin,
-            forward_vec,
-            distance=kacinma_mesafesi,
-            ignore=ignore_tuple
-        )
-        
-        if hit_info.hit and hasattr(hit_info, 'entity') and hit_info.entity:
-            # Engel tespit edildi - uzaklaş (engel mesafesi kadar yaklaştıysa)
-            mesafe = hit_info.distance
-            if mesafe > 0 and mesafe <= kacinma_mesafesi:
-                # Uzaklaşma yönü (raycast normal veya engelden uzaklaş)
-                if hasattr(hit_info, 'world_normal') and hit_info.world_normal:
-                    uzaklasma_yonu = hit_info.world_normal.normalized()
-                else:
-                    # Fallback: Engelden uzaklaş
-                    if hasattr(hit_info.entity, 'position'):
-                        uzaklasma_yonu = (self.position - hit_info.entity.position).normalized()
-                    else:
-                        uzaklasma_yonu = -forward_vec
-                
-                # Kaçınma gücü: Mesafe ne kadar küçükse, o kadar güçlü uzaklaş
-                uzaklasma_gucu = (kacinma_mesafesi - mesafe) / kacinma_mesafesi
-                uzaklasma_gucu *= HareketAyarlari.UZAKLASMA_GUC_KATSAYISI
-                uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
-        
-        # Fallback: Eski yöntem (raycast çalışmazsa veya tüm engelleri kontrol etmek için)
-        for engel in self.environment_ref.engeller:
-            mesafe = distance(self.position, engel.position)
-            engel_yari_cap = max(engel.scale_x, engel.scale_y, engel.scale_z) / 2
-            gercek_mesafe = mesafe - engel_yari_cap
-            
-            minimum_engel_mesafe = engel_yari_cap + 1.0
-            if gercek_mesafe < minimum_engel_mesafe:
-                continue
-            
-            if gercek_mesafe <= kacinma_mesafesi and gercek_mesafe > 0:
-                uzaklasma_yonu = (self.position - engel.position).normalized()
-                uzaklasma_gucu = (kacinma_mesafesi - gercek_mesafe) / kacinma_mesafesi
-                uzaklasma_gucu *= HareketAyarlari.UZAKLASMA_GUC_KATSAYISI
-                uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
-        
-        # Havuz sınırlarından uzaklaşma (sanal engeller)
-        # Sınırlar: +-havuz_genisligi (yani +-200 birim)
-        # 10 metre güvenlik mesafesi: ROV'lar sınırlardan 10 metre içeride kalmalı
-        HAVUZ_GUVENLIK_MESAFESI = 10.0  # Metre cinsinden güvenlik mesafesi
-        if hasattr(self.environment_ref, 'havuz_genisligi'):
-            havuz_genisligi = self.environment_ref.havuz_genisligi
-            havuz_sinir = havuz_genisligi  # +-havuz_genisligi
-            guvenli_sinir = havuz_sinir - HAVUZ_GUVENLIK_MESAFESI  # 10 metre içerideki sınır
-            
-            # X sınırları (sağ ve sol duvarlar) - 10 metre güvenlik mesafesi ile
-            x_mesafe_sag = guvenli_sinir - self.position.x
-            x_mesafe_sol = self.position.x - (-guvenli_sinir)
-            
-            # Z sınırları (ön ve arka duvarlar) - 10 metre güvenlik mesafesi ile
-            z_mesafe_on = guvenli_sinir - self.position.z
-            z_mesafe_arka = self.position.z - (-guvenli_sinir)
-            
-            # En yakın sınıra mesafe
-            en_yakin_sinir_mesafe = min(x_mesafe_sag, x_mesafe_sol, z_mesafe_on, z_mesafe_arka)
-            
-            # Kaçınma mesafesi içindeyse uzaklaş (10 metre güvenlik mesafesi dahil)
-            if en_yakin_sinir_mesafe <= kacinma_mesafesi and en_yakin_sinir_mesafe > 0:
-                # Hangi sınıra yakın olduğunu belirle ve uzaklaşma yönünü hesapla
-                if en_yakin_sinir_mesafe == x_mesafe_sag:
-                    # Sağ duvar - sola doğru uzaklaş
-                    uzaklasma_yonu = Vec3(-1, 0, 0)
-                elif en_yakin_sinir_mesafe == x_mesafe_sol:
-                    # Sol duvar - sağa doğru uzaklaş
-                    uzaklasma_yonu = Vec3(1, 0, 0)
-                elif en_yakin_sinir_mesafe == z_mesafe_on:
-                    # Ön duvar - geriye doğru uzaklaş
-                    uzaklasma_yonu = Vec3(0, 0, -1)
-                else:
-                    # Arka duvar - ileriye doğru uzaklaş
-                    uzaklasma_yonu = Vec3(0, 0, 1)
-                
-                # Uzaklaşma gücü
-                uzaklasma_gucu = (kacinma_mesafesi - en_yakin_sinir_mesafe) / kacinma_mesafesi
-                uzaklasma_gucu *= 0.3  # Gücü %30'a indir (daha yumuşak)
-                uzaklasma_vektoru += uzaklasma_yonu * uzaklasma_gucu
-        
-        # Uzaklaşma vektörünü uygula
-        if uzaklasma_vektoru.length() > 0:
-            # Normalize et ve güç uygula
-            uzaklasma_vektoru = uzaklasma_vektoru.normalized()
-            uzaklasma_gucu = min(uzaklasma_vektoru.length(), 1.0)  # Maksimum %100 güç
-            
-            # Daha yumuşak uzaklaşma için gücü azalt (Config'den yumuşaklık çarpanı)
-            uzaklasma_gucu *= HareketAyarlari.YUMUSAKLIK_CARPANI
-            
-            # Hız vektörüne ekle (momentum korunumu için)
-            uzaklasma_hizi = uzaklasma_vektoru * uzaklasma_gucu * FizikSabitleri.HIZLANMA_CARPANI * time.dt
-            self.velocity += uzaklasma_hizi
-            
-            # Hız limiti (aşırı hızlanmayı önle)
-            max_hiz = FizikSabitleri.MAX_HIZ
-            if self.velocity.length() > max_hiz:
-                self.velocity = self.velocity.normalized() * max_hiz
-    
     def _carpisma_kontrolu(self):
         """
         FİZİK MOTORU TABANLI: Intersects kullanarak çarpışma kontrolü yapar.
@@ -1495,7 +1339,8 @@ class Harita:
 
     def _ciz_ada_sekli(self, ada_id):
         """
-        Ada şeklini filo.ada_cevre() ve Ada.konum() bilgilerini kullanarak çizer.
+        Ada şeklini filo.ada_cevre() ve Ada() bilgilerini kullanarak dinamik olarak çizer.
+        Gerçek ada konumu ve yarıçapını kullanır.
         
         Args:
             ada_id: Ada ID'si
@@ -1512,27 +1357,30 @@ class Harita:
         
         ada_x, ada_y = ada_konum
         
+        # Ada yarıçapını island_positions'dan al (gerçek değer)
+        ada_radius = None
+        if hasattr(self.ortam_ref, 'island_positions') and ada_id < len(self.ortam_ref.island_positions):
+            island_data = self.ortam_ref.island_positions[ada_id]
+            if len(island_data) >= 3:
+                ada_radius = float(island_data[2])
+        
         # Ada çevre noktalarını al (filo.ada_cevre() ile)
         if not self.filo_ref or not hasattr(self.filo_ref, 'ada_cevre'):
             # Fallback: Dairesel çizim
-            if hasattr(self.ortam_ref, 'island_positions') and ada_id < len(self.ortam_ref.island_positions):
-                island_data = self.ortam_ref.island_positions[ada_id]
-                if len(island_data) >= 3:
-                    rad = island_data[2]
-                else:
-                    rad = self.havuz_genisligi * 0.08
-                
-                ada_sekli = patches.Ellipse(
-                    (ada_x, ada_y), 
-                    width=rad * 4.0,
-                    height=rad * 4.0,
-                    facecolor='#8B5A3C', 
-                    edgecolor='black', 
-                    linewidth=2,
-                    alpha=0.8, 
-                    zorder=4
-                )
-                self.ax.add_patch(ada_sekli)
+            if ada_radius is None:
+                ada_radius = self.havuz_genisligi * 0.08
+            
+            ada_sekli = patches.Ellipse(
+                (ada_x, ada_y), 
+                width=ada_radius * 2.0,
+                height=ada_radius * 2.0,
+                facecolor='#8B5A3C', 
+                edgecolor='black', 
+                linewidth=2,
+                alpha=0.8, 
+                zorder=4
+            )
+            self.ax.add_patch(ada_sekli)
             return
         
         try:
@@ -1540,13 +1388,53 @@ class Harita:
             ada_cevre_noktalari = self.filo_ref.ada_cevre(offset=0.0)
             
             if not ada_cevre_noktalari or len(ada_cevre_noktalari) == 0:
+                # Fallback: Dairesel çizim
+                if ada_radius is None:
+                    ada_radius = self.havuz_genisligi * 0.08
+                
+                ada_sekli = patches.Ellipse(
+                    (ada_x, ada_y), 
+                    width=ada_radius * 2.0,
+                    height=ada_radius * 2.0,
+                    facecolor='#8B5A3C', 
+                    edgecolor='black', 
+                    linewidth=2,
+                    alpha=0.8, 
+                    zorder=4
+                )
+                self.ax.add_patch(ada_sekli)
                 return
             
-            # Her ada için 12 nokta var
-            nokta_sayisi_per_ada = 12
+            # Her ada için nokta sayısını dinamik olarak hesapla
+            # ada_cevre() her ada için 12 nokta döndürüyor (30° aralıklarla 0-330°)
+            if len(ada_cevre_noktalari) > 0:
+                # Ada sayısını island_positions'dan al
+                if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
+                    gercek_ada_sayisi = len(self.ortam_ref.island_positions)
+                    nokta_sayisi_per_ada = len(ada_cevre_noktalari) // gercek_ada_sayisi
+                else:
+                    # Fallback: 12 nokta varsay (ada_cevre() varsayılanı)
+                    nokta_sayisi_per_ada = 36
+            else:
+                nokta_sayisi_per_ada = 36
             ada_sayisi = len(ada_cevre_noktalari) // nokta_sayisi_per_ada
             
             if ada_id >= ada_sayisi:
+                # Fallback: Dairesel çizim
+                if ada_radius is None:
+                    ada_radius = self.havuz_genisligi * 0.1
+                
+                ada_sekli = patches.Ellipse(
+                    (ada_x, ada_y), 
+                    width=ada_radius * 2.0,
+                    height=ada_radius * 2.0,
+                    facecolor='#8B5A3C', 
+                    edgecolor='black', 
+                    linewidth=2,
+                    alpha=0.8, 
+                    zorder=4
+                )
+                self.ax.add_patch(ada_sekli)
                 return
             
             # Bu ada için noktaları al
@@ -1586,43 +1474,33 @@ class Harita:
                     )
                     self.ax.add_patch(ada_polygon)
                     
-                    # Ada üzerinde küçük detaylar (ağaç/tepe gibi)
-                    # Ada yarıçapını hesapla (noktaların merkeze uzaklığından)
-                    if hasattr(self.ortam_ref, 'island_positions') and ada_id < len(self.ortam_ref.island_positions):
-                        island_data = self.ortam_ref.island_positions[ada_id]
-                        if len(island_data) >= 3:
-                            rad = island_data[2]
-                        else:
-                            # Noktaların merkeze ortalama uzaklığından hesapla
-                            uzakliklar = []
-                            for px, py in polygon_xy[:-1]:  # Son nokta tekrar olduğu için atla
-                                uzaklik = ((px - ada_x)**2 + (py - ada_y)**2)**0.5
-                                uzakliklar.append(uzaklik)
-                            rad = sum(uzakliklar) / len(uzakliklar) if uzakliklar else 20.0
-                    else:
-                        rad = 20.0
+                    # Ada yarıçapını hesapla (eğer island_positions'dan alınamadıysa)
+                    if ada_radius is None:
+                        # Noktaların merkeze ortalama uzaklığından hesapla
+                        import math
+                        uzakliklar = []
+                        for px, py in polygon_xy[:-1]:  # Son nokta tekrar olduğu için atla
+                            uzaklik = math.sqrt((px - ada_x)**2 + (py - ada_y)**2)
+                            uzakliklar.append(uzaklik)
+                        ada_radius = sum(uzakliklar) / len(uzakliklar) if uzakliklar else 20.0
                     
-                    # Detay pozisyonları (ada merkezine göre)
+                    # Ada üzerinde küçük detaylar (ağaç/tepe gibi)
                     detay_positions = [
                         (0.3, 0.4), (-0.4, 0.2), (0.2, -0.3), (-0.3, -0.2), (0.0, 0.5)
                     ]
                     for dx, dy in detay_positions:
-                        detay_x = ada_x + dx * rad * 0.6
-                        detay_y = ada_y + dy * rad * 0.6
+                        detay_x = ada_x + dx * ada_radius * 0.6
+                        detay_y = ada_y + dy * ada_radius * 0.6
                         self.ax.plot(detay_x, detay_y, 'o', color='#654321', markersize=3, zorder=5)
-        except Exception as e:
-            # Hata durumunda fallback: dairesel çizim
-            if hasattr(self.ortam_ref, 'island_positions') and ada_id < len(self.ortam_ref.island_positions):
-                island_data = self.ortam_ref.island_positions[ada_id]
-                if len(island_data) >= 3:
-                    rad = island_data[2]
-                else:
-                    rad = self.havuz_genisligi * 0.08
+            else:
+                # Yeterli nokta yoksa dairesel çizim
+                if ada_radius is None:
+                    ada_radius = self.havuz_genisligi * 0.08
                 
                 ada_sekli = patches.Ellipse(
                     (ada_x, ada_y), 
-                    width=rad * 4.0,
-                    height=rad * 3.6,
+                    width=ada_radius * 2.0,
+                    height=ada_radius * 2.0,
                     facecolor='#8B5A3C', 
                     edgecolor='black', 
                     linewidth=2,
@@ -1630,6 +1508,22 @@ class Harita:
                     zorder=4
                 )
                 self.ax.add_patch(ada_sekli)
+        except Exception as e:
+            # Hata durumunda fallback: dairesel çizim
+            if ada_radius is None:
+                ada_radius = self.havuz_genisligi * 0.1
+            
+            ada_sekli = patches.Ellipse(
+                (ada_x, ada_y), 
+                width=ada_radius * 2.0,
+                height=ada_radius * 2.0,
+                facecolor='#8B5A3C', 
+                edgecolor='black', 
+                linewidth=2,
+                alpha=0.8, 
+                zorder=4
+            )
+            self.ax.add_patch(ada_sekli)
     
     def _ciz(self):
         """Eksenleri temizle ve her şeyi yeniden çiz."""
@@ -2426,8 +2320,11 @@ class Ortam:
         island_model_path = "./Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
         island_texture_path = "./Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
         
-        # Referans ölçekler (orijinal ada)
-        ref_visual_scale = (0.3, 0.8, 0.3)
+        # =============================
+        # ADA BOYUT AYARLARI (TEK YER)
+        # =============================
+        ISLAND_BASE_SCALE = 0.25      # Genel ada boyutu
+        ISLAND_SCALE_RANDOM = (0.7, 1.1)  # Random çeşitlilik
         
         # Ada pozisyonlarını sakla (ROV yerleştirme için)
         self.island_positions = []
@@ -2468,43 +2365,24 @@ class Ortam:
             # HER ADA İÇİN OLUŞTURMA DÖNGÜSÜ
             # ============================================================
             for island_idx in range(n_islands):
-                # --- 1. ÖLÇEK HESAPLAMA ---
-                scale_multiplier = random.uniform(0.5, 1)
+                # --- 1. ÖLÇEK HESAPLAMA (TEK PARAMETRE) ---
+                scale_factor = ISLAND_BASE_SCALE * random.uniform(*ISLAND_SCALE_RANDOM)
+                visual_scale = (scale_factor, scale_factor, scale_factor)
                 
-                # --- DÜZELTME BAŞLANGICI ---
-                # Görsel ölçeği hesapla
-                # Ada boyutu 0.2 oranında küçültüldü (0.8 ile çarpıldı)
-                VISUAL_SCALE_REDUCTION = 0.7  # 0.2 oranında küçültme = 0.8 ile çarpma
-                visual_scale_x = ref_visual_scale[0] * scale_multiplier * VISUAL_SCALE_REDUCTION
-                visual_scale_z = ref_visual_scale[2] * scale_multiplier * VISUAL_SCALE_REDUCTION
+                # Tahmini yarıçap (pozisyon hesaplamak için, sonra gerçek değerle güncellenecek)
+                # Varsayılan model genişliği 140 birim (fallback)
+                estimated_radius = (140.0 * scale_factor) / 2
                 
-                visual_scale = (
-                    visual_scale_x,
-                    ref_visual_scale[1] * scale_multiplier * VISUAL_SCALE_REDUCTION,
-                    visual_scale_z
-                )
-                
-                # KRİTİK AYAR: Modelin ham genişliği (scale=1 iken)
-                # Ursina'daki 'island1_design2_c4d.obj' modeli yaklaşık 140 birim genişliğindedir.
-                MODEL_HAM_GENISLIK = 140.0 
-                
-                # Gerçek dünya yarıçapı = (Ham Boyut * Ölçek) / 2
-                gercek_yaricap = (MODEL_HAM_GENISLIK * max(visual_scale_x, visual_scale_z)) / 2
-                
-                # Haritaya bu gerçek yarıçapı gönderiyoruz
-                island_radius = gercek_yaricap
-                # --- DÜZELTME BİTİŞİ ---
-                
-                # Minimum mesafe (2.5 kat güvenlik payı ile)
-                min_distance_between_islands = island_radius
+                # Minimum mesafe (tahmini ada yarıçapı kadar)
+                min_distance_between_islands = estimated_radius
                 
                 # --- 2. GÜVENLİ POZİSYON BULMA (X ve Z random, Y sabit) ---
                 # Ada yarıçapını hesaba katarak havuz sınırlarını daralt
                 # Ada kenarlarının havuz sınırları içinde kalması için
-                min_x_safe = min_x + island_radius
-                max_x_safe = max_x - island_radius
-                min_z_safe = min_z + island_radius
-                max_z_safe = max_z - island_radius
+                min_x_safe = min_x + estimated_radius
+                max_x_safe = max_x - estimated_radius
+                min_z_safe = min_z + estimated_radius
+                max_z_safe = max_z - estimated_radius
                 
                 # Eğer ada çok büyükse ve havuz sınırlarına sığmıyorsa, merkeze yerleştir
                 if min_x_safe >= max_x_safe or min_z_safe >= max_z_safe:
@@ -2522,12 +2400,13 @@ class Ortam:
                         max_attempts=100
                     )
                 
+                # --- 3. ADA ENTITY OLUŞTUR ---
                 island = Entity(
                     model=island_model_path,
-                    position=(island_x, island_y_position, island_z),  # X ve Z random
+                    position=(island_x, island_y_position, island_z),
                     scale=visual_scale,
                     texture=island_texture_path if os.path.exists(island_texture_path) else None,
-                    collider='box',  # Görsel model için mesh collider
+                    collider='box',
                     unlit=False,
                     double_sided=True, 
                     color=color.white,
@@ -2535,6 +2414,21 @@ class Ortam:
                     transparent=True,
                     render_queue=0
                 )
+                
+                # --- 4. GERÇEK YARIÇAP HESAPLAMA (Modelden otomatik) ---
+                try:
+                    # Model bounds'u al
+                    if hasattr(island.model, 'bounds') and island.model.bounds:
+                        min_b, max_b = island.model.bounds
+                        model_size = max_b - min_b
+                        # X-Z düzleminde yarıçap (world_scale kullanarak parent scale varsa da doğru çıkar)
+                        island_radius = max(model_size.x, model_size.z) * island.world_scale.x / 2
+                    else:
+                        # Fallback: Tahmini değeri kullan
+                        island_radius = estimated_radius
+                except Exception:
+                    # Hata durumunda tahmini değeri kullan
+                    island_radius = estimated_radius
  
   
                 
