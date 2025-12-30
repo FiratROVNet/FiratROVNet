@@ -2441,7 +2441,7 @@ class Ortam:
             # ============================================================
             # ADA OLUŞTURMA AYARLARI
             # ============================================================
-            n_islands = random.randint(1, 7)  # 1-7 arası random ada sayısı
+            n_islands = random.randint(3, 10)  # 1-7 arası random ada sayısı
             
             # Engel listesini hazırla (eğer yoksa oluştur)
             if not hasattr(self, 'engeller'):
@@ -2469,7 +2469,7 @@ class Ortam:
             # ============================================================
             for island_idx in range(n_islands):
                 # --- 1. ÖLÇEK HESAPLAMA ---
-                scale_multiplier = random.uniform(0.5, 1.5)
+                scale_multiplier = random.uniform(0.5, 1)
                 
                 # --- DÜZELTME BAŞLANGICI ---
                 # Görsel ölçeği hesapla
