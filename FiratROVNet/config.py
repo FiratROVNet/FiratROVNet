@@ -22,9 +22,9 @@ class GATLimitleri:
     Bu limitler ortam.py (eğitim) ve gnc.py/simulasyon.py (kullanım) tarafından kullanılır.
     """
     # GAT Kod Limitleri (metre cinsinden)
-    CARPISMA = 8.0    # Kod 2: Çarpışma riski mesafesi
-    ENGEL = 20.0      # Kod 1: Engel yakınlığı mesafesi
-    KOPMA = 35.0      # Kod 3: Bağlantı kopması mesafesi
+    CARPISMA = 5.0    # Kod 2: Çarpışma riski mesafesi
+    ENGEL = 10.0      # Kod 1: Engel yakınlığı mesafesi
+    KOPMA = 40.0      # Kod 3: Bağlantı kopması mesafesi
     UZAK = 60.0       # Kod 5: Liderden uzaklık mesafesi
     
     @classmethod
@@ -48,26 +48,26 @@ class SensorAyarlari:
     """
     # Lider ROV için varsayılan ayarlar
     LIDER = {
-        'engel_mesafesi': 20.0,      # GATLimitleri.ENGEL ile aynı
-        'iletisim_menzili': 50.0,     # GATLimitleri.KOPMA ile aynı
+        'engel_mesafesi': GATLimitleri.ENGEL,       # GATLimitleri.ENGEL ile aynı
+        'iletisim_menzili': GATLimitleri.UZAK,     # GATLimitleri.KOPMA ile aynı
         'min_pil_uyarisi': 0.2,       # Normalize edilmiş (0.0-1.0)
-        'kacinma_mesafesi': 5.0       # GATLimitleri.CARPISMA ile aynı
+        'kacinma_mesafesi': GATLimitleri.CARPISMA,       # GATLimitleri.CARPISMA ile aynı
     }
     
     # Takipçi ROV için varsayılan ayarlar
     TAKIPCI = {
-        'engel_mesafesi': 20.0,       # GATLimitleri.ENGEL ile aynı
-        'iletisim_menzili': 50.0,     # GATLimitleri.KOPMA ile aynı
+        'engel_mesafesi': GATLimitleri.ENGEL,       # GATLimitleri.ENGEL ile aynı
+        'iletisim_menzili': GATLimitleri.UZAK,     # GATLimitleri.KOPMA ile aynı
         'min_pil_uyarisi': 0.15,      # Normalize edilmiş (0.0-1.0)
-        'kacinma_mesafesi': 5.0       # GATLimitleri.CARPISMA ile aynı
+        'kacinma_mesafesi': GATLimitleri.CARPISMA,       # GATLimitleri.CARPISMA ile aynı
     }
     
     # Genel varsayılan ayarlar (fallback için)
     VARSAYILAN = {
-        'engel_mesafesi': 20.0,
-        'iletisim_menzili': 50.0,
+        'engel_mesafesi': GATLimitleri.ENGEL,
+        'iletisim_menzili': GATLimitleri.UZAK,
         'min_pil_uyarisi': 0.2,
-        'kacinma_mesafesi': 5.0
+        'kacinma_mesafesi': GATLimitleri.CARPISMA
     }
 
 
@@ -80,7 +80,7 @@ class HareketAyarlari:
     HISTERESIS_KATSAYISI = 0.9         # Aktif moddan pasif moda geçiş toleransı
     
     # Hedef toleransları (metre)
-    HEDEF_TOLERANS_LIDER = 0.5         # Lider için hedef toleransı
+    HEDEF_TOLERANS_LIDER = 1         # Lider için hedef toleransı
     HEDEF_TOLERANS_TAKIPCI = 2.0       # Takipçi için hedef toleransı
     
     # Formasyon ayarları
@@ -89,7 +89,7 @@ class HareketAyarlari:
     
     # Kaçınma ayarları
     KACINMA_MESAFESI_FALLBACK_KATSAYISI = 0.2  # Engel mesafesinin %20'si (fallback)
-    MINIMUM_MESAFE_KACINMA = 2.0       # Minimum mesafe (çok yakınsa kaçınma yok)
+    MINIMUM_MESAFE_KACINMA = 5.0       # Minimum mesafe (çok yakınsa kaçınma yok)
     YAKIN_MESAFE_ESIGI = 15.0          # Yakın mesafe eşiği (iletişim kopmasını önleme)
     
     # Dikey toleranslar (metre)
@@ -97,14 +97,14 @@ class HareketAyarlari:
     DIKEY_TOLERANS_ADA = 5.0            # Ada algılama için dikey tolerans
     
     # Vektör birleştirme katsayıları (0.0-1.0)
-    VEKTOR_BIRLESTIRME_NORMAL_KACINMA = 0.5      # Normal durumda kaçınma ağırlığı
+    VEKTOR_BIRLESTIRME_NORMAL_KACINMA = 0.8      # Normal durumda kaçınma ağırlığı
     VEKTOR_BIRLESTIRME_TAKIPCI_KACINMA = 0.8      # Takipçi için kaçınma ağırlığı
     VEKTOR_BIRLESTIRME_TAKIPCI_HEDEF = 0.2        # Takipçi için hedef ağırlığı
     
     # Güç ayarları (0.0-1.0)
     GUC_ENGEL = 0.5                    # Engel durumunda motor gücü
-    GUC_PASIF_MOD = 0.1                # Pasif modda motor gücü
-    GUC_UZAK = 1.5                     # Uzak durumda motor gücü (takipçi)
+    GUC_PASIF_MOD = 0.5                # Pasif modda motor gücü
+    GUC_UZAK = 1.0                     # Uzak durumda motor gücü (takipçi)
     
     # Hedef görselleştirme
     HEDEF_X_BOYUTU = 10.0              # Hedef X işareti boyutu
@@ -133,6 +133,69 @@ class HareketAyarlari:
     PASIF_MOD_MIN_HAREKET_MESAFESI = 5.0  # Pasif modda minimal hareket mesafesi (metre)
     VELOCITY_THRESHOLD = 0.1              # Hız eşiği (normalize edilmiş)
     MOTOR_GUC_KATSAYISI = 0.5              # Manuel hareket güç katsayısı
+
+
+class FizikSabitleri:
+    """
+    Fizik simülasyonu için sabitler - ROV hareketi ve fizik motoru ayarları.
+    """
+    # Sürtünme ve hareket
+    SURTUNME_KATSAYISI = 0.95            # Sürtünme katsayısı (0.0-1.0)
+    HIZLANMA_CARPANI = 30.0              # Hızlanma çarpanı (hareket gücü)
+    KALDIRMA_KUVVETI = 2.0               # Kaldırma kuvveti (lider için yüzeye çıkma)
+    BATARYA_SOMURME_KATSAYISI = 0.001    # Batarya sömürme katsayısı (maksimum güçte ~66 saniye dayanır)
+    
+    # Hız ve momentum limitleri
+    MAX_HIZ = 50.0                       # Maksimum hız limiti (aşırı hızlanmayı önle)
+    VELOCITY_DURMA_ESIGI = 0.1           # Hız durma eşiği (momentum korunumu için)
+    VELOCITY_DURMA_CARPANI = 0.7         # Durma sırasında hız çarpanı
+    
+    # Çarpışma ve itme
+    CARPISMA_ITME_MESAFESI = 2.0         # Çarpışma sonrası itme mesafesi
+    CARPISMA_HIZ_YANSIMA = 0.7           # Çarpışma sonrası hız yansıma katsayısı
+    CARPISMA_HIZ_SIFIRLAMA_ESIGI = 0.5   # Çarpışma sonrası hız sıfırlama eşiği
+    
+    # ROV kütlesi ve boyutları
+    ROV_KUTLESI = 1.0                    # ROV kütlesi (basitleştirilmiş)
+    ROV_MINIMUM_MESAFE = 2.0             # ROV'lar arası minimum mesafe (çarpışma önleme)
+    
+    # Lider yüzey kontrolü
+    LIDER_YUZEY_ALT_SINIR = -2.0         # Lider için alt derinlik sınırı
+    LIDER_YUZEY_UST_SINIR = 0.5          # Lider için üst yüzey sınırı
+    LIDER_YUZEY_YAKINLIK = -0.5           # Lider yüzeye yakınlık eşiği
+    LIDER_YUZEY_HIZ_CARPANI = 0.5        # Lider yüzeye yakınken hız çarpanı
+    
+    # Takipçi derinlik kontrolü
+    TAKIPCI_YUZEY_SINIRI = 0.0           # Takipçi için yüzey sınırı
+    TAKIPCI_MAX_DERINLIK = -100.0        # Takipçi için maksimum derinlik
+
+
+class SimulasyonSabitleri:
+    """
+    Simülasyon ortamı oluşturma ve yerleştirme sabitleri.
+    """
+    # ROV yerleştirme
+    ROV_YERLESTIRME_MAX_DENEME = 500     # ROV yerleştirme için maksimum deneme sayısı
+    ROV_YERLESTIRME_DERINLIK_MIN = -20.0 # ROV yerleştirme minimum derinlik
+    ROV_YERLESTIRME_DERINLIK_MAX = -5.0  # ROV yerleştirme maksimum derinlik
+    
+    # Ada ve güvenlik
+    ADA_GUVENLIK_PAYI = 100.0            # Ada radyusuna ek güvenlik payı (birim)
+    ADA_VARSAYILAN_RADIUS = 100.0        # Ada varsayılan radyusu (geriye uyumluluk)
+    
+    # Havuz sınırları (görünmez duvarlar)
+    DUVAR_KALINLIGI = 1.0                # Havuz duvar kalınlığı
+    DUVAR_YUKSEKLIGI = 500.0             # Havuz duvar yüksekliği
+    
+    # Görselleştirme
+    KESIKLI_CIZGI_PARCA_UZUNLUGU = 2.0   # Kesikli çizgi parça uzunluğu (engel tespiti)
+    KESIKLI_CIZGI_BOSLUK_UZUNLUGU = 1.0  # Kesikli çizgi boşluk uzunluğu (engel tespiti)
+    ILETISIM_CIZGI_PARCA_UZUNLUGU = 1.5  # İletişim çizgisi parça uzunluğu
+    ILETISIM_CIZGI_BOSLUK_UZUNLUGU = 0.8 # İletişim çizgisi boşluk uzunluğu
+    
+    # Sensör ayarları
+    LIDAR_RAYCAST_SAYISI = 5             # Lidar için raycast sayısı (her yön için)
+    ENGEL_TESPITI_MIN_MESAFE = 999.0    # Engel tespiti için başlangıç minimum mesafesi
 
 
 class ModemAyarlari:

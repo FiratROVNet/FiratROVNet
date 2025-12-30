@@ -318,7 +318,7 @@ class HullManager:
         
         return sanal_bariyer_noktalari
     
-    def hull(self, offset=20.0):
+    def hull(self, offset=40.0):
         """
         1. ROV'ları 20m dışarı iten noktaları alır.
         2. Yakındaki adaları 20m içeri (filoya doğru) çeken sanal noktaları alır.
@@ -336,7 +336,7 @@ class HullManager:
         """
         return self.guvenlik_hull_olustur(offset=offset)
     
-    def guvenlik_hull_olustur(self, offset=20.0):
+    def guvenlik_hull_olustur(self, offset=40.0):
         """
         1. ROV'ları 20m dışarı iten noktaları alır.
         2. Yakındaki adaları 20m içeri (filoya doğru) çeken sanal noktaları alır.
@@ -384,12 +384,17 @@ class HullManager:
             # Hull Hesaplama
             hull_2d = ConvexHull(points_2d, qhull_options='QJ')
             
-            center_2d = np.mean(points_2d, axis=0)
+            # Convex hull çizgisi üzerinde her 5 metrede bir nokta ekle
+            points_2d_genisletilmis = self._hull_kenarlarina_nokta_ekle(
+                hull_2d, points_2d, nokta_araligi=5.0
+            )
+            
+            center_2d = np.mean(points_2d_genisletilmis, axis=0)
             z_avg = np.mean([p[2] for p in tum_noktalar])
 
             hull_data = {
                 'hull': hull_2d, 
-                'points': points_2d, 
+                'points': points_2d_genisletilmis,  # Genişletilmiş noktalar
                 'center': (center_2d[0], center_2d[1], z_avg)
             }
 
@@ -527,4 +532,101 @@ class HullManager:
             import traceback
             traceback.print_exc()
             return False
+    
+    def _hull_kenarlarina_nokta_ekle(self, hull, points_2d, nokta_araligi=5.0):
+        """
+        Convex hull çizgisi üzerinde belirli aralıklarla noktalar ekler.
+        
+        Args:
+            hull: ConvexHull objesi
+            points_2d: numpy array - Hull vertex noktaları (Nx2)
+            nokta_araligi: float - Noktalar arası mesafe (metre, varsayılan: 5.0)
+        
+        Returns:
+            numpy array: Genişletilmiş noktalar (orijinal vertex'ler + interpolasyon noktaları)
+        """
+        if hull is None or points_2d is None or len(points_2d) == 0:
+            return points_2d
+        
+        try:
+            # Yeni noktalar listesi
+            yeni_noktalar = []
+            
+            # Hull'un kenarlarını (edges) al
+            # hull.vertices sıralı vertex'leri içerir (CCW veya CW)
+            vertices = hull.vertices
+            n_vertices = len(vertices)
+            
+            # Her kenar için interpolasyon yap
+            for i in range(n_vertices):
+                # Mevcut ve sonraki vertex'i al
+                curr_idx = vertices[i]
+                next_idx = vertices[(i + 1) % n_vertices]
+                
+                p1 = points_2d[curr_idx]
+                p2 = points_2d[next_idx]
+                
+                # Kenar uzunluğunu hesapla
+                kenar_uzunlugu = np.linalg.norm(p2 - p1)
+                
+                # Başlangıç vertex'ini ekle (sadece ilk iterasyonda)
+                if i == 0:
+                    yeni_noktalar.append(p1.copy())
+                
+                # Eğer kenar uzunluğu nokta_araligi'ndan büyükse, interpolasyon yap
+                if kenar_uzunlugu > nokta_araligi:
+                    # Kaç nokta ekleyeceğimizi hesapla
+                    n_ek_nokta = int(kenar_uzunlugu / nokta_araligi)
+                    
+                    # Kenar üzerinde interpolasyon noktaları ekle
+                    for j in range(1, n_ek_nokta + 1):
+                        t = j * nokta_araligi / kenar_uzunlugu
+                        # t değeri 1.0'ı geçmemeli (son vertex'i ayrı ekleyeceğiz)
+                        if t < 1.0:
+                            interpolasyon_noktasi = p1 + t * (p2 - p1)
+                            yeni_noktalar.append(interpolasyon_noktasi)
+                
+                # Son vertex'i ekle (kapalı çizgi için gerekli)
+                # Not: Son kenar için son vertex, ilk vertex ile aynı olacak ama unique() ile tekrar kaldırılacak
+                yeni_noktalar.append(p2.copy())
+            
+            # Eğer hiç nokta eklenmediyse, orijinal noktaları döndür
+            if len(yeni_noktalar) == 0:
+                return points_2d
+            
+            # Numpy array'e çevir
+            yeni_noktalar_array = np.array(yeni_noktalar)
+            
+            # Tekrarları kaldır ama sıralamayı koru (her kenar için eklenen noktalar sıralı)
+            # Basit yaklaşım: İlk görünen noktayı tut
+            seen = set()
+            yeni_noktalar_sirali = []
+            for nokta in yeni_noktalar_array:
+                nokta_tuple = tuple(np.round(nokta, 3))
+                if nokta_tuple not in seen:
+                    seen.add(nokta_tuple)
+                    yeni_noktalar_sirali.append(nokta)
+            
+            yeni_noktalar_array = np.array(yeni_noktalar_sirali)
+            
+            # Noktaları convex hull kenarlarına göre açısal sırala (merkezden)
+            # Bu, harita çizimi için doğru sıralamayı sağlar
+            if len(yeni_noktalar_array) > 0:
+                # Merkezi hesapla
+                merkez = np.mean(yeni_noktalar_array, axis=0)
+                # Her nokta için açı hesapla (atan2: -pi ile pi arası)
+                noktalar_merkezden = yeni_noktalar_array - merkez
+                acilar = np.arctan2(noktalar_merkezden[:, 1], noktalar_merkezden[:, 0])
+                # Açıya göre sırala (counter-clockwise)
+                siralama_indeksleri = np.argsort(acilar)
+                yeni_noktalar_array = yeni_noktalar_array[siralama_indeksleri]
+            
+            return yeni_noktalar_array
+            
+        except Exception as e:
+            print(f"⚠️ [UYARI] Hull kenarlarına nokta eklenirken hata: {e}")
+            import traceback
+            traceback.print_exc()
+            # Hata durumunda orijinal noktaları döndür
+            return points_2d
 
