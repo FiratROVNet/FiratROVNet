@@ -33,6 +33,67 @@ Fırat-GNC, çoklu **Sualtı Otonom Araçları (ROV/AUV)** ve **Su Üstü Araçl
 
 ---
 
+## 📸 Ekran Görüntüleri
+
+Sistemin farklı özelliklerini ve kullanım senaryolarını gösteren ekran görüntüleri:
+
+### 🚀 İlk Kurulum ve Genel Bakış
+
+![İlk Kurulum](./Pictures/01-initial-setup.png)
+*Sistemin ilk başlatılması ve temel arayüz görünümü*
+
+![Simülasyon Genel Bakış 1](./Pictures/02-simulation-overview-1.png)
+*3D simülasyon ortamının genel görünümü - ROV'ların sualtı konumları ve hareketleri*
+
+![Simülasyon Genel Bakış 2](./Pictures/03-simulation-overview-2.png)
+*Farklı açıdan simülasyon görünümü - Detaylı çevre ve araç konumları*
+
+### 💻 Konsol Arayüzü
+
+![Konsol Arayüzü 1](./Pictures/04-console-interface-1.png)
+*Canlı konsol arayüzü - Terminal üzerinden Python komutları ile sistem kontrolü*
+
+![Konsol Arayüzü 2](./Pictures/05-console-interface-2.png)
+*Gelişmiş konsol görünümü - Parametre ayarları ve gerçek zamanlı veri takibi*
+
+### ⚓ Formasyon Yönetimi
+
+![Formasyon Görünümü 1](./Pictures/06-formation-view-1.png)
+*ROV sürüsünün formasyon görünümü - Çoklu araç koordinasyonu*
+
+![Formasyon Görünümü 2](./Pictures/09-formation-view-2.png)
+*Farklı formasyon tipinin görünümü - Dinamik sürü davranışları*
+
+### 🗺️ Harita ve Navigasyon
+
+![Harita Görünümü 1](./Pictures/07-map-view-1.png)
+*2D harita görünümü - ROV'ların konumları ve hareket yolları*
+
+![Harita Görünümü 2](./Pictures/08-map-view-2.png)
+*Detaylı harita görünümü - Convex hull ve güvenlik alanları*
+
+![Yol Bulma (Pathfinding)](./Pictures/11-pathfinding.png)
+*A* algoritması ile otomatik yol planlama - Engel kaçınma ve optimal rota hesaplama*
+
+![Navigasyon Görünümü 1](./Pictures/12-navigation-1.png)
+*Navigasyon görünümü - Hedef takibi ve otonom hareket*
+
+![Navigasyon Görünümü 2](./Pictures/13-navigation-2.png)
+*Gelişmiş navigasyon - Çoklu hedef yönetimi*
+
+![Navigasyon Görünümü 3](./Pictures/14-navigation-3.png)
+*Dinamik navigasyon senaryosu - Gerçek zamanlı karar alma*
+
+### 🎮 3D Simülasyon ve Final Görünüm
+
+![3D Simülasyon Görünümü](./Pictures/10-3d-simulation-view.png)
+*3D simülasyon ortamının detaylı görünümü - Fizik motoru ve görselleştirme*
+
+![Final Genel Bakış](./Pictures/15-final-overview.png)
+*Sistemin tam özellikli final görünümü - Tüm bileşenlerin entegre çalışması*
+
+---
+
 ## 📂 Proje Yapısı
 
 ```text
