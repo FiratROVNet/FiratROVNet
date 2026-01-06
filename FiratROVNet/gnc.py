@@ -1190,6 +1190,8 @@ class Filo:
 
                                 # Eğer formasyon Lider GPS dışında bir noktada bulunduysa (ara nokta veya Hull Merkezi), lideri oraya gönder
                                 if nokta_adi != "Lider GPS":
+                                    self.git_path(lider_rov_id, merkez_koordinat)
+                                    """
                                     self.git(
                                         lider_rov_id,
                                         merkez_koordinat[0],
@@ -1197,6 +1199,7 @@ class Filo:
                                         merkez_koordinat[2],
                                         ai=True
                                     )
+                                    """
                         
                                 # Takipçi ROV'ları formasyon pozisyonlarına gönder
                                 for rov_id, pozisyon in enumerate(pozisyonlar):

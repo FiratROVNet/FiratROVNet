@@ -2338,7 +2338,7 @@ class Ortam:
             # ============================================================
             # ADA OLUŞTURMA AYARLARI
             # ============================================================
-            n_islands = random.randint(3, 10)  # 1-7 arası random ada sayısı
+            n_islands = random.randint(3, 5)  # 1-7 arası random ada sayısı
             
             # Engel listesini hazırla (eğer yoksa oluştur)
             if not hasattr(self, 'engeller'):
