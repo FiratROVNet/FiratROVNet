@@ -45,11 +45,11 @@ Sistemin farklı özelliklerini ve kullanım senaryolarını gösteren ekran gö
 
 Şekil 1'de sistemin ilk başlatılması sırasında görülen temel arayüz görüntülenmektedir. Ekranda simülasyon ortamının başlangıç durumu, ROV'ların (Sualtı Otonom Araçları) başlangıç konumları ve temel kontrol paneli görülebilir. Şekil 1, kullanıcıya sistemin başarıyla yüklendiğini ve simülasyonun başlamaya hazır olduğunu gösterir. Arayüzde yer alan şekiller ve göstergeler, sistemin farklı bileşenlerinin durumunu ve simülasyon ortamının temel parametrelerini yansıtmaktadır.
 
-**Şekil 2: 3D Simülasyon Ortamı Genel Görünümü**
+**Şekil 2: Convex Hull ile Güvenlik Çevresi Oluşturma**
 
-![Şekil 2: 3D Simülasyon Ortamı Genel Görünümü](./Pictures/02-simulation-overview-1.png)
+![Şekil 2: Convex Hull ile Güvenlik Çevresi Oluşturma](./Pictures/02-simulation-overview-1.png)
 
-Şekil 2'de Ursina Engine tabanlı 3D simülasyon ortamının genel bakışı sunulmaktadır. Şekilde sualtı ortamı, ROV'ların (küp veya küresel şekillerle temsil edilen araçlar) konumları, su yüzeyi ve çevresel öğeler görülebilir. ROV'lar farklı renklerle kodlanmış durumları göstermektedir: kırmızı lider araçları, turuncu normal seyir halindeki araçları, sarı kopuk araçları temsil eder. Şekil 2'de görünen çizgiler ve bağlantılar, ROV'lar arasındaki iletişim bağlantılarını ve formasyon yapısını gösterir. Bu şekil, sistemin fizik motorunun ve görselleştirme bileşenlerinin başarıyla çalıştığını gösterir.
+Şekil 2'de ROV sürüsünün convex hull algoritması kullanarak güvenlik çevresi oluşturması görülmektedir. Sistem, ROV'ların konumlarını tespit ederek otomatik olarak bir convex hull (dışbükey örtü) hesaplar ve bu hull'un etrafında yaklaşık 40 metre offset ile bir güvenlik çevresi oluşturur. Şekil 2'de görünen çokgen şekil, ROV sürüsünün kapladığı alanı gösterirken, bu çokgenin etrafındaki güvenlik bandı, engeller olmadığında sürünün güvenli hareket alanını tanımlar. Bu yaklaşım sayesinde ROV'lar, birbirlerine ve çevreye belirli bir güvenlik mesafesi koruyarak hareket eder. Şekil 2, sistemin otomatik güvenlik çevresi oluşturma yeteneğini ve convex hull tabanlı formasyon yönetimini gösterir.
 
 **Şekil 3: Simülasyon Ortamı Alternatif Kamera Açısı**
 
@@ -59,25 +59,25 @@ Sistemin farklı özelliklerini ve kullanım senaryolarını gösteren ekran gö
 
 ### 💻 Konsol Arayüzü
 
-**Şekil 4: Canlı Konsol Arayüzü**
+**Şekil 4: Convex Hull Güvenlik Çevresi Görselleştirmesi**
 
-![Şekil 4: Canlı Konsol Arayüzü](./Pictures/04-console-interface-1.png)
+![Şekil 4: Convex Hull Güvenlik Çevresi Görselleştirmesi](./Pictures/04-console-interface-1.png)
 
-Şekil 4'te sistemin "Human-in-the-Loop" özelliğini gösteren canlı konsol arayüzü görüntülenmektedir. Terminal penceresinde Python interaktif kabuğu (>>>) görülebilir ve kullanıcı simülasyon çalışırken gerçek zamanlı olarak komutlar girebilmektedir. Şekil 4'te görünen komutlar ve çıktılar, ROV'lara görev atama (`git` fonksiyonu), sistem parametrelerini değiştirme (`cfg` nesnesi) ve manuel kontrol işlemlerini göstermektedir. Bu arayüz sayesinde kullanıcı, simülasyonu durdurmadan dinamik olarak sistem davranışını değiştirebilir, görevler atayabilir ve parametreleri ayarlayabilir. Konsol çıktıları, komutların başarıyla uygulandığını ve sistemin yanıt verdiğini gösterir.
+Şekil 4'te convex hull fonksiyonu kullanılarak ROV sürüsü etrafında oluşturulan güvenlik çevresinin görselleştirmesi gösterilmektedir. Sistem, ROV'ların konumlarını tespit edip otomatik olarak bir convex hull hesaplar ve bu hull'un etrafında 40 metre offset ile bir güvenlik bandı oluşturur. Şekil 4'te görünen çokgen yapı, ROV'ların kapladığı alanı gösterirken, bu yapının etrafındaki güvenlik çevresi, sürünün güvenli hareket alanını tanımlar. Bu yaklaşım, ROV'ların birbirlerine ve çevresel engellere belirli bir mesafe koruyarak hareket etmesini sağlar. Şekil 4, sistemin dinamik güvenlik çevresi oluşturma yeteneğini ve convex hull tabanlı koordinasyon mekanizmasını gösterir.
 
-**Şekil 5: Gelişmiş Konsol Kontrol Paneli**
+**Şekil 5: Convex Hull ile Dinamik Güvenlik Alanı**
 
-![Şekil 5: Gelişmiş Konsol Kontrol Paneli](./Pictures/05-console-interface-2.png)
+![Şekil 5: Convex Hull ile Dinamik Güvenlik Alanı](./Pictures/05-console-interface-2.png)
 
-Şekil 5'te konsol arayüzünün daha gelişmiş kullanım senaryoları gösterilmektedir. Terminalde görünen komutlar ve çıktılar, sistem parametrelerinin (`cfg` nesnesi üzerinden) değiştirilmesini, ROV nesnelerine (`rovs` listesi) doğrudan erişimi ve gerçek zamanlı veri takibini içermektedir. Kullanıcı bu arayüz üzerinden modem görünürlüğünü (`goster_modem`), GNC görünürlüğünü (`goster_gnc`) ve AI aktiflik durumunu (`ai_aktif`) kontrol edebilir. Ayrıca, ROV'ların renklerini değiştirme, hareket komutları verme ve parametre ayarlama gibi gelişmiş işlemler gerçekleştirilebilir. Şekil 5, sistemin esnek ve dinamik kontrol yeteneklerini vurgular.
+Şekil 5'te convex hull algoritması kullanılarak ROV sürüsü etrafında dinamik olarak oluşturulan güvenlik alanı gösterilmektedir. Sistem, ROV'ların gerçek zamanlı konumlarını analiz ederek sürekli güncellenen bir convex hull hesaplar ve bu hull'un etrafında 40 metre offset ile bir güvenlik çevresi oluşturur. Şekil 5'te görünen çokgen yapı, ROV'ların mevcut formasyonunu ve kapladıkları alanı gösterirken, etrafındaki güvenlik bandı, sürünün güvenli hareket sınırlarını tanımlar. Bu dinamik yaklaşım sayesinde, ROV'lar hareket ettikçe güvenlik çevresi de otomatik olarak güncellenir ve sürü her zaman belirli bir güvenlik mesafesi korur. Şekil 5, sistemin adaptif güvenlik çevresi oluşturma yeteneğini gösterir.
 
 ### ⚓ Formasyon Yönetimi
 
-**Şekil 6: ROV Formasyon Yapısı**
+**Şekil 6: Formasyon Bazlı Convex Hull Güvenlik Çevresi**
 
-![Şekil 6: ROV Formasyon Yapısı](./Pictures/06-formation-view-1.png)
+![Şekil 6: Formasyon Bazlı Convex Hull Güvenlik Çevresi](./Pictures/06-formation-view-1.png)
 
-Şekil 6'da ROV sürüsünün belirli bir formasyon yapısında hareket ettiği görülmektedir. Şekilde görünen geometrik şekiller (küpler veya küreler) ROV'ları temsil ederken, bunları birleştiren çizgiler araçlar arasındaki iletişim bağlantılarını ve formasyon yapısını gösterir. Renk kodlaması sayesinde lider araç (kırmızı), normal seyir halindeki araçlar (turuncu) ve diğer durumlar ayırt edilebilir. Formasyon yapısı, ROV'ların birbirlerine göre konumlarını ve mesafelerini gösterir. Şekil 6, sistemin çoklu araç koordinasyonu yeteneğini ve Graph Attention Network (GAT) tabanlı dağıtık karar alma mekanizmasının çalışmasını gösterir. Formasyon koruma algoritması, araçların belirli bir düzen içinde hareket etmesini sağlar.
+Şekil 6'da ROV sürüsünün formasyon yapısına göre oluşturulan convex hull ve güvenlik çevresi gösterilmektedir. Sistem, ROV'ların formasyon içindeki konumlarını tespit ederek bir convex hull hesaplar ve bu hull'un etrafında 40 metre offset ile bir güvenlik çevresi oluşturur. Şekil 6'da görünen çokgen yapı, ROV'ların formasyon düzenini ve kapladıkları alanı gösterirken, etrafındaki güvenlik bandı, sürünün güvenli hareket alanını tanımlar. Renk kodlaması sayesinde lider araç (kırmızı), normal seyir halindeki araçlar (turuncu) ve diğer durumlar ayırt edilebilir. Şekil 6, sistemin formasyon bazlı güvenlik çevresi oluşturma yeteneğini ve convex hull tabanlı koordinasyon mekanizmasını gösterir. Bu yaklaşım, ROV'ların formasyon içinde güvenli bir şekilde hareket etmesini sağlar.
 
 **Şekil 7: Dinamik Formasyon Geçişi**
 
@@ -105,23 +105,23 @@ Sistemin farklı özelliklerini ve kullanım senaryolarını gösteren ekran gö
 
 Şekil 10'da sistemin A* (A-star) algoritması kullanarak otomatik yol planlama özelliği gösterilmektedir. Harita üzerinde görünen yeşil veya mavi çizgiler, ROV'un başlangıç noktasından hedef noktaya kadar hesaplanan optimal rotayı temsil eder. Kırmızı veya gri şekiller engelleri gösterirken, grid yapısı veya noktalar arama algoritmasının çalışma alanını gösterir. A* algoritması, her bir grid hücresinin maliyetini hesaplayarak en kısa ve güvenli yolu bulur. Şekil 10, sistemin engel kaçınma yeteneğini ve otomatik navigasyon planlamasını gösterir. ROV'lar, bu algoritma sayesinde karmaşık ortamlarda bile hedeflerine güvenli bir şekilde ulaşabilir.
 
-**Şekil 11: GNC Modülü Navigasyon Görünümü**
+**Şekil 11: A* Algoritması ile Engelli Ortamda Güvenli Navigasyon**
 
-![Şekil 11: GNC Modülü Navigasyon Görünümü](./Pictures/12-navigation-1.png)
+![Şekil 11: A* Algoritması ile Engelli Ortamda Güvenli Navigasyon](./Pictures/12-navigation-1.png)
 
-Şekil 11'de sistemin GNC (Guidance, Navigation, Control) modülünün çalışması gösterilmektedir. Şekilde görünen şekiller ve çizgiler, ROV'un hedef noktasına doğru hareketini ve navigasyon planını gösterir. Hedef nokta genellikle farklı bir renkle (örneğin yeşil veya mavi) işaretlenirken, ROV'un mevcut konumu ve yönü oklarla veya çizgilerle gösterilir. Navigasyon görünümünde, ROV'un hedefe olan mesafesi, yönü ve hızı görselleştirilebilir. Şekil 11, sistemin otonom navigasyon yeteneğini ve hedef takip algoritmasının çalışmasını gösterir. ROV, hedefe ulaşmak için gereken kontrol komutlarını otomatik olarak hesaplar ve uygular.
+Şekil 11'de sistemin A* algoritması entegrasyonu ile engellerin bulunduğu ortamda güvenli rota planlaması gösterilmektedir. Şekilde görünen çizgiler, ROV'un başlangıç noktasından hedef noktaya kadar A* algoritması tarafından hesaplanan optimal ve güvenli rotayı temsil eder. Sistem, engelleri tespit ederek bu engellerin etrafından geçen güvenli bir yol hesaplar. Şekil 11'de görünen kırmızı veya gri şekiller engelleri gösterirken, yeşil veya mavi çizgi optimal rotayı gösterir. A* algoritması, her bir grid hücresinin maliyetini hesaplayarak hem en kısa hem de en güvenli yolu bulur. Şekil 11, sistemin engel kaçınma yeteneğini ve A* tabanlı güvenli navigasyon planlamasını gösterir. ROV, bu algoritma sayesinde karmaşık ve engelli ortamlarda bile hedeflerine güvenli bir şekilde ulaşabilir.
 
-**Şekil 12: Çoklu Hedef Navigasyon Yönetimi**
+**Şekil 12: A* ile Çoklu Hedef ve Engelli Ortam Navigasyonu**
 
-![Şekil 12: Çoklu Hedef Navigasyon Yönetimi](./Pictures/13-navigation-2.png)
+![Şekil 12: A* ile Çoklu Hedef ve Engelli Ortam Navigasyonu](./Pictures/13-navigation-2.png)
 
-Şekil 12'de sistemin çoklu hedef yönetimi ve gelişmiş navigasyon özellikleri gösterilmektedir. Şekilde birden fazla hedef noktası görülebilir ve ROV'lar bu hedeflere sırayla veya paralel olarak hareket edebilir. Harita üzerinde görünen farklı renkli şekiller farklı hedefleri, görevleri veya öncelik seviyelerini temsil edebilir. Navigasyon planı, çoklu hedefleri optimize ederek en verimli rotayı hesaplar. Şekil 12, sistemin karmaşık görev senaryolarını yönetme yeteneğini ve çoklu hedef optimizasyonunu gösterir. ROV'lar, görev gereksinimlerine göre hedefleri önceliklendirir ve en uygun sırayla ziyaret eder.
+Şekil 12'de sistemin A* algoritması kullanarak çoklu hedef yönetimi ve engelli ortamda güvenli navigasyon özellikleri gösterilmektedir. Şekilde birden fazla hedef noktası görülebilir ve ROV'lar bu hedeflere A* algoritması ile hesaplanan güvenli rotalar üzerinden sırayla veya paralel olarak hareket edebilir. Harita üzerinde görünen farklı renkli şekiller farklı hedefleri, görevleri veya öncelik seviyelerini temsil ederken, engeller kırmızı veya gri renklerle gösterilir. A* algoritması, her hedef için engelleri dikkate alarak optimal ve güvenli rotalar hesaplar. Şekil 12, sistemin karmaşık görev senaryolarını yönetme yeteneğini ve A* tabanlı çoklu hedef optimizasyonunu gösterir. ROV'lar, görev gereksinimlerine göre hedefleri önceliklendirir ve engelli ortamlarda güvenli bir şekilde en uygun sırayla ziyaret eder.
 
-**Şekil 13: Dinamik Navigasyon ve Adaptif Rota Planlama**
+**Şekil 13: A* ile Dinamik Adaptif Rota Planlama**
 
-![Şekil 13: Dinamik Navigasyon ve Adaptif Rota Planlama](./Pictures/14-navigation-3.png)
+![Şekil 13: A* ile Dinamik Adaptif Rota Planlama](./Pictures/14-navigation-3.png)
 
-Şekil 13'te sistemin dinamik navigasyon senaryosu ve gerçek zamanlı karar alma mekanizması gösterilmektedir. Şekilde görünen şekiller ve çizgiler, ROV'un değişen ortam koşullarına göre navigasyon planını güncellediğini gösterir. Yeni engellerin ortaya çıkması, hedef konumlarının değişmesi veya formasyon gereksinimlerinin güncellenmesi durumunda sistem otomatik olarak yeni bir rota hesaplar. Şekil 13, sistemin adaptif navigasyon yeteneğini ve gerçek zamanlı karar alma mekanizmasını gösterir. ROV, çevresel değişiklikleri algılayarak navigasyon planını dinamik olarak günceller ve en güvenli rotayı seçer. Bu özellik, sistemin gerçek dünya uygulamalarında güvenilir çalışmasını sağlar.
+Şekil 13'te sistemin A* algoritması kullanarak dinamik navigasyon senaryosu ve gerçek zamanlı adaptif rota planlama mekanizması gösterilmektedir. Şekilde görünen şekiller ve çizgiler, ROV'un değişen ortam koşullarına göre A* algoritması ile navigasyon planını güncellediğini gösterir. Yeni engellerin ortaya çıkması, hedef konumlarının değişmesi veya formasyon gereksinimlerinin güncellenmesi durumunda sistem otomatik olarak A* algoritmasını yeniden çalıştırarak yeni bir güvenli rota hesaplar. Şekil 13, sistemin adaptif navigasyon yeteneğini ve A* tabanlı gerçek zamanlı karar alma mekanizmasını gösterir. ROV, çevresel değişiklikleri algılayarak navigasyon planını dinamik olarak günceller ve engelli ortamlarda en güvenli rotayı seçer. Bu özellik, sistemin gerçek dünya uygulamalarında güvenilir çalışmasını sağlar.
 
 ### 🎮 3D Simülasyon ve Final Görünüm
 
@@ -131,11 +131,23 @@ Sistemin farklı özelliklerini ve kullanım senaryolarını gösteren ekran gö
 
 Şekil 14'te Ursina Engine tabanlı 3D simülasyon ortamının detaylı görünümü gösterilmektedir. Şekilde görünen üç boyutlu şekiller (küpler, küreler, düzlemler) ROV'ları, engelleri ve çevresel öğeleri temsil eder. Su yüzeyi, sualtı ortamı ve aydınlatma efektleri fiziksel gerçekçiliği artırır. ROV'ların renkleri durumlarını gösterirken, araçlar arasındaki bağlantı çizgileri iletişim ağını gösterir. Şekil 14, sistemin fizik motorunun (sürtünme, kaldırma kuvveti, motor itki dinamikleri) ve görselleştirme bileşenlerinin entegre çalışmasını gösterir. 3D simülasyon, kullanıcıya sistemin gerçek dünya davranışını anlamak için zengin bir görsel deneyim sunar.
 
-**Şekil 15: Entegre Sistem Final Görünümü**
+**Şekil 15: A* Entegrasyonu ile Entegre Sistem Final Görünümü**
 
-![Şekil 15: Entegre Sistem Final Görünümü](./Pictures/15-final-overview.png)
+![Şekil 15: A* Entegrasyonu ile Entegre Sistem Final Görünümü](./Pictures/15-final-overview.png)
 
-Şekil 15'te sistemin tüm bileşenlerinin entegre çalıştığı tam özellikli final görünümü gösterilmektedir. Şekilde 3D simülasyon ortamı, harita görünümü, formasyon yapısı, navigasyon planları ve konsol çıktıları birlikte görülebilir. ROV'lar farklı renklerle durumlarını gösterirken, iletişim bağlantıları, convex hull yapısı ve hareket yolları görselleştirilmiştir. Şekil 15, sistemin tüm modüllerinin (GAT yapay zeka, GNC navigasyon, fizik motoru, iletişim simülatörü) birlikte çalıştığını ve karmaşık görev senaryolarını başarıyla yönetebildiğini gösterir. Sistem, çoklu ROV koordinasyonu, otonom navigasyon, engel kaçınma ve formasyon yönetimi gibi tüm özelliklerini entegre bir şekilde sunar. Şekil 15, Fırat-GNC sisteminin tam kapasitesini ve gerçek dünya uygulamalarına hazır olduğunu gösterir.
+Şekil 15'te sistemin tüm bileşenlerinin entegre çalıştığı tam özellikli final görünümü gösterilmektedir. Şekilde 3D simülasyon ortamı, harita görünümü, formasyon yapısı, A* algoritması ile hesaplanan navigasyon planları ve konsol çıktıları birlikte görülebilir. ROV'lar farklı renklerle durumlarını gösterirken, iletişim bağlantıları, convex hull yapısı ve A* algoritması ile hesaplanan güvenli hareket yolları görselleştirilmiştir. Şekil 15, sistemin tüm modüllerinin (GAT yapay zeka, GNC navigasyon, A* yol planlama, fizik motoru, iletişim simülatörü) birlikte çalıştığını ve karmaşık görev senaryolarını başarıyla yönetebildiğini gösterir. Sistem, çoklu ROV koordinasyonu, A* tabanlı otonom navigasyon, engel kaçınma ve formasyon yönetimi gibi tüm özelliklerini entegre bir şekilde sunar. Şekil 15, Fırat-GNC sisteminin tam kapasitesini ve gerçek dünya uygulamalarına hazır olduğunu gösterir.
+
+**Şekil 16: Convex Hull ile Güvenlik Çevresi Oluşturma**
+
+![Şekil 16: Convex Hull ile Güvenlik Çevresi Oluşturma](./Pictures/16_concavhull.png)
+
+Şekil 16'da ROV sürüsünün convex hull algoritması kullanılarak güvenlik çevresi oluşturması detaylı bir şekilde gösterilmektedir. Sistem, ROV'ların konumlarını tespit ederek otomatik olarak bir convex hull (dışbükey örtü) hesaplar ve bu hull'un etrafında yaklaşık 40 metre offset ile bir güvenlik çevresi oluşturur. Şekil 16'da görünen çokgen yapı, ROV sürüsünün kapladığı alanı gösterirken, bu çokgenin etrafındaki güvenlik bandı, engeller olmadığında sürünün güvenli hareket alanını tanımlar. Bu yaklaşım sayesinde ROV'lar, birbirlerine ve çevreye belirli bir güvenlik mesafesi koruyarak hareket eder. Şekil 16, sistemin otomatik güvenlik çevresi oluşturma fonksiyonunun çalışmasını ve convex hull tabanlı formasyon yönetimini detaylı bir şekilde gösterir.
+
+**Şekil 17: Engeller Tespit Edildiğinde Convex Hull Adaptasyonu**
+
+![Şekil 17: Engeller Tespit Edildiğinde Convex Hull Adaptasyonu](./Pictures/17_concavhullengellercikarildi.png)
+
+Şekil 17'de sistemin engeller tespit edildiğinde convex hull'un nasıl adapte olduğu ve engelleri dışarda bırakarak büküldüğü gösterilmektedir. Sistem, ROV'ların konumlarını ve çevredeki engelleri tespit ederek convex hull hesaplamasını dinamik olarak günceller. Şekil 17'de görüldüğü gibi, convex hull yapısı engellerin etrafından bükülerek engelleri dışarda bırakır ve sadece ROV'ların bulunduğu güvenli alanları içerir. Bu adaptif yaklaşım sayesinde, güvenlik çevresi engellerin etrafından geçerek ROV'ların güvenli hareket alanını doğru bir şekilde tanımlar. Şekil 17, sistemin engel tespiti sonrası convex hull adaptasyonu yeteneğini ve dinamik güvenlik çevresi oluşturma mekanizmasını gösterir. Bu özellik, sistemin gerçek dünya uygulamalarında engelli ortamlarda güvenilir çalışmasını sağlar.
 
 ---
 
