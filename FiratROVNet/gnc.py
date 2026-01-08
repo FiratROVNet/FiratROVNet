@@ -1847,7 +1847,7 @@ class Filo:
         else:
             print("❌ [MİNİMAP] Minimap sistemi bulunamadı!") 
 
-    def a_star(self, start=None, goal=None, safety_margin=10.0, **kwargs):
+    def a_star(self, start=None, goal=None, safety_margin=15.0, **kwargs):
         """
         A* algoritması kullanarak başlangıçtan hedefe yol hesaplar.
         
