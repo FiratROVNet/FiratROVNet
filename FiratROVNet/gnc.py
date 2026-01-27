@@ -1458,10 +1458,10 @@ class Filo:
         return self.helper.ada_cevre(offset)
     
     def yeni_hull(self, yasakli_noktalar, offset=40.0, alpha=2.0, buffer_radius=20.0, channel_width=15.0):
-        \"\"\"
+        """
         Mevcut hull noktalarını alır, yasaklı bölgeleri kesip çıkarır.
         Hem harita çizimi hem de 'is_point_inside' kontrolü için uyumlu nesne döndürür.
-        \"\"\"
+        """
         return self.helper.yeni_hull(yasakli_noktalar, offset, alpha, buffer_radius, channel_width)
 
     def yeniden_ciz(self, noktalar, yasakli_noktalar, alpha=2.0, buffer_radius=15.0, channel_width=10.0):
