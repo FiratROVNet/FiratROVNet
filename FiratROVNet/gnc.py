@@ -1109,8 +1109,6 @@ class Filo:
             traceback.print_exc()
             return None
 
-
-
     def get_100_samples(self, hull_output=None, sample_count=100):
         """
         yeni_hull çıktısındaki noktaları alır ve çevre uzunluğu üzerinden 
@@ -1262,6 +1260,9 @@ class Filo:
                 traceback.print_exc()
                 senaryo.temizle()
                 return None
+    # ============================================================
+    # FORMATION LOGIC - Helper Methods
+    # ============================================================
     
     def _prepare_forbidden_points(self) -> list:
         """Ada çevre noktalarını yasaklı nokta listesine dönüştürür."""
@@ -1457,12 +1458,12 @@ class Filo:
         return self.helper.ada_cevre(offset)
     
     def yeni_hull(self, yasakli_noktalar, offset=40.0, alpha=2.0, buffer_radius=20.0, channel_width=15.0):
-        """
+        \"\"\"
         Mevcut hull noktalarını alır, yasaklı bölgeleri kesip çıkarır.
         Hem harita çizimi hem de 'is_point_inside' kontrolü için uyumlu nesne döndürür.
-        """
+        \"\"\"
         return self.helper.yeni_hull(yasakli_noktalar, offset, alpha, buffer_radius, channel_width)
-    
+
     def yeniden_ciz(self, noktalar, yasakli_noktalar, alpha=2.0, buffer_radius=15.0, channel_width=10.0):
         """
         Verilen nokta kümesini saran, ancak yasaklı noktaları dışarıda bırakacak şekilde
@@ -2082,7 +2083,6 @@ class Filo:
             traceback.print_exc()
             return None
     
-    
     def gidilecek_noktalar(self, path=None, r=10, derece_threshold=15):
         """
         A* yolu üzerinden gidilecek noktaları filtreler.
@@ -2126,7 +2126,7 @@ class Filo:
         gidilecek_noktalar.append([x_baslangic, y_baslangic])
         
         aci_radyan = np.arctan2(y_baslangic, x_baslangic)
-        ilk_derece = np.degrees(aci_radyan)      
+        ilk_derece = np.degrees(aci_radyan)
 
         for i in range(1, len(path)):
             x_son, y_son = path[i]
@@ -2154,7 +2154,6 @@ class Filo:
                     
                     # Referans noktasını güncelle
                     x_baslangic, y_baslangic = x_son, y_son
-        
         # Son noktayı da ekle (hedef)
         if len(path) > 1:
             son_nokta = path[-1]
@@ -2227,7 +2226,7 @@ class TemelGNC:
         if mesafe <= self.HEDEF_TOLERANSI:
             self._hedefe_varis_islemleri(fark)
             return
-        
+
         # Hareket Mantığı - Temel hedef vektörü
         hiz_carpani = self.helper.hiz_hesapla(mesafe)
         hareket_vektoru = fark / mesafe if mesafe > 0.01 else Vec3(0, 0, 0)
@@ -2397,7 +2396,6 @@ class GATManevraYoneticisi:
             final_vektor = geri_vektor + kirma + yukari_vektor
             final_vektor = final_vektor.normalized() if final_vektor.length() > 0.01 else geri_vektor
 
-
         # GAT Kodu 4: UZAK (Liderden uzaklaşma, hızı artır)
         elif gat_kodu == 40:
             manevra_adi = "UZAK_HIZLI"
@@ -2447,6 +2445,3 @@ class GATManevraYoneticisi:
             final_vektor = hedef_vektoru
 
         return final_vektor, hiz_carpani, manevra_adi
-
-
-

@@ -1489,14 +1489,12 @@ class Harita:
                             uzaklik = math.sqrt((px - ada_x)**2 + (py - ada_y)**2)
                             uzakliklar.append(uzaklik)
                         ada_radius = sum(uzakliklar) / len(uzakliklar) if uzakliklar else 20.0
-                    
                     # Ada ID'sini ada üzerine yaz
                     self.ax.text(ada_x, ada_y, f'Ada-{ada_id}', 
                                 fontsize=10, fontweight='bold', 
                                 color='white', ha='center', va='center',
                                 bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.6, edgecolor='white', linewidth=1),
                                 zorder=6)
-                    
                     # Ada üzerinde küçük detaylar (ağaç/tepe gibi)
                     detay_positions = [
                         (0.3, 0.4), (-0.4, 0.2), (0.2, -0.3), (-0.3, -0.2), (0.0, 0.5)
