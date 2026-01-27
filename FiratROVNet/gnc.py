@@ -2087,7 +2087,7 @@ class Filo:
         """
         A* yolu üzerinden gidilecek noktaları filtreler.
         Mesafe ve eğim açısına göre gereksiz noktaları çıkarır.
-        
+
         Args:
             path: [(x1, y1), (x2, y2), ...] şeklindeki orijinal yol
                 (None ise haritadaki A* yolunu kullanır)
@@ -2105,23 +2105,23 @@ class Filo:
             if not self.ortam_ref or not hasattr(self.ortam_ref, 'harita') or self.ortam_ref.harita is None:
                 print("❌ [FİLO] Harita sistemi bulunamadı!")
                 return []
-            
+
             if not hasattr(self.ortam_ref.harita, 'a_star_yolu') or self.ortam_ref.harita.a_star_yolu is None:
                 print("⚠️ [FİLO] A* yolu henüz hesaplanmamış!")
                 print("   Önce filo.a_star(start=(x1, y1), goal=(x2, y2)) çağırın.")
                 return []
-            
+
             path = self.ortam_ref.harita.a_star_yolu
-        
+
         # Path boşsa boş liste döndür
         if len(path) == 0:
             return []
-        
+
         gidilecek_noktalar = []
-        
+
         # Başlangıç referans noktası
         x_baslangic, y_baslangic = path[0]
-        
+
         # İlk noktayı ekle (başlangıç noktası)
         gidilecek_noktalar.append([x_baslangic, y_baslangic])
         
@@ -2130,7 +2130,7 @@ class Filo:
 
         for i in range(1, len(path)):
             x_son, y_son = path[i]
-            
+
             # İki nokta arasındaki mesafe hesabı
             mesafe = np.sqrt(
                 (x_son - x_baslangic) ** 2 +
@@ -2160,7 +2160,7 @@ class Filo:
             son_nokta = path[-1]
             if son_nokta not in gidilecek_noktalar:
                 gidilecek_noktalar.append([son_nokta[0], son_nokta[1]])
-        
+
         return gidilecek_noktalar
 
 
