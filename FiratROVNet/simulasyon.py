@@ -2710,8 +2710,13 @@ class Ortam:
         # ROV listesini temizle (eski ROV'ları sil)
         # #region agent log
         eski_rov_sayisi = len(self.rovs) if hasattr(self, 'rovs') and self.rovs else 0
-        with open('/home/celik/github/ROV/.cursor/debug.log', 'a') as f:
-            f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"simulasyon.py:2712","message":"ROV listesi temizlenmeden önce","data":{{"eski_rov_sayisi":{eski_rov_sayisi},"hedef_rov_sayisi":{n_rovs}}},"timestamp":{int(__import__("time").time()*1000)}}}\n')
+        debug_log_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".cursor", "debug.log"))
+        try:
+            os.makedirs(os.path.dirname(debug_log_path), exist_ok=True)
+            with open(debug_log_path, 'a', encoding='utf-8') as f:
+                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"simulasyon.py:2712","message":"ROV listesi temizlenmeden önce","data":{{"eski_rov_sayisi":{eski_rov_sayisi},"hedef_rov_sayisi":{n_rovs}}},"timestamp":{int(__import__("time").time()*1000)}}}\n')
+        except OSError:
+            pass
         # #endregion
         
         # Eski ROV'ları destroy et (Entity oldukları için)
@@ -2729,8 +2734,12 @@ class Ortam:
         self.rovs = []
         
         # #region agent log
-        with open('/home/celik/github/ROV/.cursor/debug.log', 'a') as f:
-            f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"simulasyon.py:2730","message":"ROV listesi temizlendikten sonra","data":{{"yeni_rov_sayisi":{len(self.rovs)},"hedef_rov_sayisi":{n_rovs}}},"timestamp":{int(__import__("time").time()*1000)}}}\n')
+        try:
+            os.makedirs(os.path.dirname(debug_log_path), exist_ok=True)
+            with open(debug_log_path, 'a', encoding='utf-8') as f:
+                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"simulasyon.py:2730","message":"ROV listesi temizlendikten sonra","data":{{"yeni_rov_sayisi":{len(self.rovs)},"hedef_rov_sayisi":{n_rovs}}},"timestamp":{int(__import__("time").time()*1000)}}}\n')
+        except OSError:
+            pass
         # #endregion
         
         # Havuz sınırları: +-havuz_genisligi (yani +-200 birim)
