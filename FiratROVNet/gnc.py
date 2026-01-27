@@ -1353,6 +1353,64 @@ class Filo:
                 traceback.print_exc()
                 senaryo.temizle()
                 return None
+
+    def lider_sec_veri_uret(self):
+            """
+            RL eğitimi için lider seçim verisi üretir.
+            Matematiksel liderlik formülünü 'Label' olarak kullanır.
+            """
+            from . import senaryo
+            import random
+            import numpy as np
+
+            try:
+                # 1. Senaryoyu Rastgele Kur (4, 6, 8 ROV)
+                n_rov_list = [4, 6, 8]
+                secilen_n = random.choice(n_rov_list)
+                # Safe position algoritması ile adalar ve ROV'lar asla çakışmaz
+                senaryo.uret(n_rovs=secilen_n, n_engels=random.randint(10, 20), havuz_genisligi=200)
+                
+                if not senaryo.filo: return None
+
+                # 2. Girdileri Hazırla (State)
+                hedef = self.asil_hedef if self.asil_hedef else Vec3(random.randint(-100,100), random.randint(-100,100), 0)
+                
+                # 8 slotluk sabit veri yapısı (Maskeleme: 400.0)
+                rov_data = [] # [batarya, x, y, z] x 8
+                rov_list_for_calc = [] # Matematiksel hesaplama modülü için
+
+                for i in range(8):
+                    if i < secilen_n:
+                        bat = senaryo.get(i, "batarya") * 100.0
+                        gps = senaryo.get(i, "gps")
+                        rov_data.append([bat, gps[0], gps[1], gps[2]])
+                        rov_list_for_calc.append({'id': i, 'batarya': bat, 'konum': gps})
+                    else:
+                        # Olmayan ROV'lar için absürt değerler
+                        rov_data.append([0.0, 400.0, 400.0, 400.0])
+
+                # 3. Matematiksel Lideri Hesapla (Ground Truth / Label)
+                from lider_sec import LiderSecimModulu
+                lider_modulu = LiderSecimModulu()
+                dogru_lider_id, dogru_skor = lider_modulu.lideri_belirle_ve_yazdir(rov_list_for_calc, [hedef.x, hedef.y, hedef.z])
+
+                # 4. RL Giriş Vektörünü Oluştur (Flatten)
+                # Girdi: [hedef_x, hedef_y, hedef_z] + [bat1, x1, y1, z1, bat2, x2, y2, z2...]
+                state = np.array([hedef.x, hedef.y, hedef.z] + list(np.array(rov_data).flatten()), dtype=np.float32)
+
+                # 5. Temizlik
+                senaryo.temizle()
+
+                return {
+                    "state": state,             # RL Girişi (3 + 32 = 35 birimlik vektör)
+                    "target_id": dogru_lider_id, # Çıktı 1 (Sınıflandırma: 0-7 arası index)
+                    "target_skor": dogru_skor    # Çıktı 2 (Regresyon: float değer)
+                }
+
+            except Exception as e:
+                print(f"❌ Lider veri üretim hatası: {e}")
+                senaryo.temizle()
+                return None
     
     def _prepare_forbidden_points(self) -> list:
         """Ada çevre noktalarını yasaklı nokta listesine dönüştürür."""
