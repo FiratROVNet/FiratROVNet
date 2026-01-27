@@ -17,7 +17,7 @@ def train_lider_secim():
 
     print("🚀 Lider Seçim Eğitimi Başlıyor...")
 
-    for epoch in range(100):  # 10000 iterasyon
+    for epoch in range(1000):  # 10000 iterasyon
         # Veri Üret
         data = filo.lider_sec_veri_uret()
         if data is None:

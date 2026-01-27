@@ -32,7 +32,7 @@ def test_model():
             continue
 
         # Girdiyi Tensor formatına getir
-        state_tensor = torch.FloatTensor(data["input_state"]).unsqueeze(0)
+        state_tensor = torch.FloatTensor(data["state"]).unsqueeze(0)
 
         # 3. Model Tahmini (Inference)
         with torch.no_grad():
@@ -43,11 +43,10 @@ def test_model():
             tahmin_skor = score_pred.item()
 
         # 4. Sonuçları Karşılaştır
-        gercek_id = data["target_lider_id"]
+        gercek_id = data["target_id"]
         gercek_skor = data["target_skor"]
-        n_rovs = data["n_rovs"]
 
-        print(f"Deney {i+1} ({n_rovs} ROV aktif):")
+        print(f"Deney {i+1}:")
         print(f"  🎯 Matematiksel Lider ID : {gercek_id} (Skor: {gercek_skor:.6f})")
         print(f"  🤖 Yapay Zeka Tahmin ID  : {tahmin_id} (Skor: {tahmin_skor:.6f})")
 
