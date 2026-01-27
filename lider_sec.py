@@ -18,79 +18,203 @@ modem=filo.otomatik_kurulum(rovs,3)
 # Filo referansını Ortam'a ekle
 app.filo = filo
 
+
+try: 
+    beyin = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
+except: 
+    print("⚠️ Model yüklenemedi, AI devre dışı."); 
+    beyin = None
 #filo.set(rov_id,"rol",1) rov_id li rovu lider yapar, 0 ise takipci yapar
 
   
   
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-#kod satır bitiş
-  
+  # Kod başlangıcı
 
-# 2. VERİ TOPLAMA FONKSİYONU
-def simden_veriye():
-    """Fiziksel dünyayı Matematiksel matrise çevirir (GAT Girdisi)"""
-    rovs = app.rovs
-    engeller = app.engeller
-    n = len(rovs)
-    x = torch.zeros((n, 7), dtype=torch.float)
-    positions = [r.position for r in rovs]
-    sources, targets = [], []
+import math
 
-    L = {'LEADER': 60.0, 'DISCONNECT': 35.0, 'OBSTACLE': 20.0, 'COLLISION': 8.0}
+# --- 1. LİDER SEÇİM SINIFI (Algoritma) ---
+class LiderSecimModulu:
+    def _init_(self):
+        pass
 
-    for i in range(n):
-        code = 0
-        if i != 0 and distance(positions[i], positions[0]) > L['LEADER']: 
-            code = 5
-        dists = [distance(positions[i], positions[j]) for j in range(n) if i != j]
-        if dists and min(dists) > L['DISCONNECT']: 
-            code = 3
+    def mesafe_hesapla(self, pos1, pos2):
+        """İki nokta arası Öklid mesafesi"""
+        return math.sqrt((pos1[0]-pos2[0])**2 + (pos1[1]-pos2[1])**2 + (pos1[2]-pos2[2])**2)
+
+    def a_star_simulasyonu(self, baslangic, hedef):
+        """
+        Simülasyon amaçlı A* mesafesi (Kuş uçuşu * 1.2)
+        """
+        kus_bakisi = self.mesafe_hesapla(baslangic, hedef)
+        return kus_bakisi * 1.2 
+
+    def deger_duzenle(self, deger):
+        """
+        KURAL: Değer 1'den küçükse 1'e yuvarla. Değilse olduğu gibi bırak.
+        Bölenin 0 olmasını veya sonucun aşırı büyümesini engeller.
+        """
+        if deger < 1:
+            return 1.0
+        return deger
+
+    def lideri_belirle_ve_yazdir(self, rov_listesi, hedef_konum):
+        lider_skorlari = []
+        detayli_sonuclar = []
         
-        min_engel = 999
-        for engel in engeller:
-            d = distance(positions[i], engel.position) - 6 
-            if d < min_engel: 
-                min_engel = d
-        if min_engel < L['OBSTACLE']: 
-            code = 1
+        # --- P4 İÇİN MERKEZ HESABI ---
+        merkez_uzakliklari = []
+        for i in range(len(rov_listesi)):
+            toplam_mesafe = 0
+            for j in range(len(rov_listesi)):
+                if i == j: continue 
+                dist = self.mesafe_hesapla(rov_listesi[i]['konum'], rov_listesi[j]['konum'])
+                toplam_mesafe += dist
+            merkez_uzakliklari.append(toplam_mesafe)
+
+        # --- HESAPLAMA DÖNGÜSÜ ---
+        for i, rov in enumerate(rov_listesi):
+            # P1: Batarya (0-1 arası normalize edilir)
+            p1 = rov['batarya'] / 100.0
+            
+            # P2: Derinlik (Mutlak değer, Min 1)
+            ham_derinlik = abs(rov['konum'][2]) 
+            p2 = self.deger_duzenle(ham_derinlik)
+            
+            # P3: Hedef Mesafe (Min 1)
+            ham_mesafe = self.a_star_simulasyonu(rov['konum'], hedef_konum)
+            p3 = self.deger_duzenle(ham_mesafe)
+            
+            # P4: Merkezilik (Min 1)
+            ham_merkez = merkez_uzakliklari[i]
+            p4 = self.deger_duzenle(ham_merkez)
+            
+            # FORMÜL: P1 / (P2 * P3 * P4)
+            # Batarya yüksek olsun; derinlik, mesafe ve merkeze uzaklık az olsun.
+            payda = p2 * p3 * p4
+            skor = p1 / payda
+            
+            lider_skorlari.append(skor)
+            
+            detayli_sonuclar.append({
+                'id': rov['id'],
+                'p1': p1,
+                'p2': p2,
+                'p3': p3,
+                'p4': p4,
+                'skor': skor
+            })
+
+        # En yüksek skoru ve lideri bul
+        if not lider_skorlari:
+            print("HATA: ROV listesi boş!")
+            return -1, 0
+
+        max_skor = max(lider_skorlari)
+        lider_index = lider_skorlari.index(max_skor)
+        secilen_rov_id = rov_listesi[lider_index]['id']
         
-        for j in range(n):
-            if i != j and distance(positions[i], positions[j]) < L['COLLISION']:
-                code = 2
-                break
+        #print(f" >>> SEÇİLEN LİDER: ROV #{secilen_rov_id} (Skor: {max_skor:.8f})")
+        #print("="*85 + "\n")
         
-        x[i][0] = code / 5.0
-        x[i][1] = rovs[i].battery / 100.0
-        x[i][2] = 0.9
-        x[i][3] = abs(rovs[i].y) / 100.0
-        x[i][4] = rovs[i].velocity.x
-        x[i][5] = rovs[i].velocity.z
-        x[i][6] = rovs[i].role
+        return secilen_rov_id, max_skor
 
-        for j in range(n):
-            if i != j and distance(positions[i], positions[j]) < L['DISCONNECT']:
-                sources.append(i)
-                targets.append(j)
+# --- 2. ENTEGRASYON VE ÇALIŞTIRMA KISMI ---
 
-    edge_index = torch.tensor([sources, targets], dtype=torch.long)
-    class MiniData:
-        def __init__(self, x, edge_index): 
-            self.x, self.edge_index = x, edge_index
-    return MiniData(x, edge_index)
+def liderlik_secimini_baslat(filo_nesnesi,hedef_konum):
+    """
+    Bu fonksiyonu ana döngünüzün (main loop) içinde çağırabilirsiniz.
+    """
+    
+    # A. Hazırlık
+    rovlar_listesi = []
+    # Hedef Konum: [x, y, z]. Z ekseni derinliktir.
+    
+    
+    # B. Dinamik Veri Toplama (Sizin yazdığınız kısım)
+    # range(len(...)) kullanarak 0'dan başlayıp tüm araçları geziyoruz.
+    try:
+        sistem_sayisi = len(filo_nesnesi.sistemler)
+        
+        for rid in range(sistem_sayisi):
+            # Batarya 0-1 arasındaysa 100 ile çarpıp 0-100 formatına getiriyoruz
+            bat = filo_nesnesi.get(rid, "batarya") * 100 
+            
+            # GPS verisi [x, y, z] döner
+            gps = filo_nesnesi.get(rid, "gps")
+            
+            # Listeyi oluşturuyoruz
+            rovlar_listesi.append({
+                'id': rid,
+                'batarya': bat,
+                'konum': gps
+            })
+            
+    except Exception as e:
+        print(f"Veri çekme sırasında hata oluştu: {e}")
+        return
 
-# 3. ANA DÖNGÜ
+    # C. Lider Seçim Modülünü Çalıştırma
+    lider_modulu = LiderSecimModulu()
+    secilen_id, skor = lider_modulu.lideri_belirle_ve_yazdir(rovlar_listesi, hedef_konum)
+    
+    return secilen_id,skor
+
+# --- 3. KULLANIM ÖRNEĞİ ---
+# Not: Bu kısım 'filo' nesneniz kodda tanımlıysa çalışacaktır.
+# Eğer kodu bir fonksiyon içinde kullanacaksanız sadece yukarıdaki class'ı ve 
+# liderlik_secimini_baslat fonksiyonunu almanız yeterli.
+
+# Örnek Kullanım:
+# lider_id = liderlik_secimini_baslat(filo)
+# print(f"Ana kodda kullanılacak lider ID: {lider_id}")
+
+
+
+# kod bitis
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
+app.konsola_ekle("filo",filo)
+def takipci_yap(lider_olacak):
+    for i in range(len(filo.sistemler)):
+        if i != lider_olacak:
+            filo.set(i,"rol",0)
+            x,y,z=filo.get(i,"gps")
+            filo.git(i,x,y,-10)
+            
+def lider_kim():
+    for i in range(len(filo.sistemler)):
+        rol=filo.get(i,"rol")
+        if rol==1:
+            return i
+# 2. ANA DÖNGÜ
 def update():
     try:
-        veri = simden_veriye()
+        
+        
+        lider_id,skor=liderlik_secimini_baslat(filo,filo.asil_hedef)
+        onceki_lider=lider_kim()
+        
+        
+        if lider_id != onceki_lider:
+            
+            filo.set(lider_id,"rol",1)
+            takipci_yap(lider_id)
+            
+        
+        
+        
+        # Thread-safe komut kuyruğunu işle (konsoldan gelen komutlar için)
+        filo.execute_queued_commands()
+        
+        veri = app.simden_veriye()
         
         ai_aktif = getattr(cfg, 'ai_aktif', True)
         if ai_aktif and beyin:
@@ -105,15 +229,48 @@ def update():
         durum_txts = ["OK", "ENGEL", "CARPISMA", "KOPUK", "-", "UZAK"]
         
         for i, gat_kodu in enumerate(tahminler):
+            # GAT kodunu ROV'a kaydet
+            app.rovs[i].gat_kodu = gat_kodu
+            
             if app.rovs[i].role == 1: 
                 app.rovs[i].color = color.red
             else: 
+                # GAT koduna göre renk değiştir (FBX model için de çalışır)
                 app.rovs[i].color = kod_renkleri.get(gat_kodu, color.white)
             
+            # FBX model kullanılıyorsa, GAT kodunu görünür kılmak için color'ı blend et
+            # (FBX model texture kullanıyorsa color değişimi daha az görünür olabilir)
+            if hasattr(app.rovs[i], 'model') and isinstance(app.rovs[i].model, str) and app.rovs[i].model.endswith('.fbx'):
+                # FBX model için color'ı daha belirgin yapmak için alpha veya tint kullan
+                # Ursina'da color direkt olarak texture ile blend edilir
+                pass  # Color zaten ayarlandı, Ursina otomatik blend eder
+            
+            # Label scale'ini büyüt (uzaktan okunabilir) - GAT kodu için daha büyük
+            app.rovs[i].label.scale = 6000  # Sabit büyük scale
+            app.rovs[i].label.y = 300  # Y eksenini artır (ROV'un üstünde daha yüksekte)
+            app.rovs[i].label.color = app.rovs[i].color 
+            app.rovs[i].label.background = False  # Arka plan ekle (daha görünür)
+            
             ek = "" if ai_aktif else "\n[AI OFF]"
-            app.rovs[i].label.text = f"R{i}\n{durum_txts[gat_kodu]}{ek}"
+            # GAT kodunu label'da büyük ve görünür şekilde göster
+            # gat_kodu bir integer, liste indexi olarak kullanılmalı
+            gat_kodu = app.rovs[i].gat_kodu
+            if 0 <= gat_kodu < len(durum_txts):
+                app.rovs[i].label.text = durum_txts[gat_kodu]+str(i)
+            else:
+                app.rovs[i].label.text = f"GAT:{gat_kodu}+{str(i)}"
         
         filo.guncelle_hepsi(tahminler)
+        
+        # Harita güncelle (Matplotlib penceresi) - Throttled içeride yapılıyor
+        if hasattr(app, 'harita') and app.harita is not None:
+            try:
+                # Matplotlib penceresini güncelle (throttled, non-blocking)
+                app.harita.update()
+                # plt.pause() kaldırıldı - harita.update() içinde throttle var
+            except Exception as e:
+                # Harita güncelleme hatası (sessizce geç, simülasyon devam etsin)
+                pass
         
     except Exception as e: 
         pass

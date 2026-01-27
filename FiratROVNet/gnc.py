@@ -328,7 +328,7 @@ class Filo:
                             rov.set(key, value)
             
             if i == lider_id:
-                # Lider ROV
+                # Lider ROVa
                 rov.set("rol", 1)
                 lider_modem = AkustikModem(
                     rov_id=i,
