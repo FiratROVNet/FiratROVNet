@@ -1,3 +1,4 @@
+from typing_extensions import Self
 import numpy as np
 from ursina import Vec3, time, distance
 from .config import cfg, GATLimitleri, SensorAyarlari, ModemAyarlari, HareketAyarlari, Formasyon
@@ -1108,9 +1109,159 @@ class Filo:
             traceback.print_exc()
             return None
 
+
+
+    def get_100_samples(self, hull_output=None, sample_count=100):
+        """
+        yeni_hull çıktısındaki noktaları alır ve çevre uzunluğu üzerinden 
+        sabit sayıda (sample_count) örnek nokta döndürür.
+        
+        Args:
+            hull_output (dict): {'hull': ..., 'points': np.array, 'center': ...}
+            sample_count (int): Hedeflenen sabit nokta sayısı (Varsayılan: 100)
+            
+        Returns:
+            np.ndarray: (sample_count, 2) boyutunda örneklenmiş noktalar
+
+        """
+        if hull_output is None:
+            hull_output = self.yeni_hull(self.ada_cevre())
+            
+        points = hull_output.get('points')
+        
+        if points is None or len(points) < 2:
+            print("⚠️ [SAMPLED] Örnekleme için yetersiz nokta!")
+            return None
+
+        # 1. Noktaların kapalı bir döngü olduğundan emin ol (ilk ve son nokta aynı olmalı)
+        if not np.allclose(points[0], points[-1]):
+            points = np.vstack([points, points[0]])
+
+        # 2. Her segmentin uzunluğunu hesapla
+        diffs = np.diff(points, axis=0)
+        segment_lengths = np.sqrt((diffs**2).sum(axis=1))
+        
+        # 3. Kümülatif (birikimli) mesafeyi hesapla (Çevre üzerindeki konumlar)
+        cumulative_dist = np.concatenate(([0], np.cumsum(segment_lengths)))
+        total_perimeter = cumulative_dist[-1]
+        
+        if total_perimeter == 0:
+            return np.tile(points[0], (sample_count, 1))
+
+        # 4. Sabit adımlarla hedef mesafeleri belirle (adım = çevre / örneklem_sayısı)
+        # endpoint=False yapıyoruz çünkü kapalı döngüde son nokta ilk noktanın aynısıdır.
+        target_dists = np.linspace(0, total_perimeter, sample_count, endpoint=False)
+
+        # 5. X ve Y koordinatları için ayrı ayrı doğrusal interpolasyon yap
+        new_x = np.interp(target_dists, cumulative_dist, points[:, 0])
+        new_y = np.interp(target_dists, cumulative_dist, points[:, 1])
+
+        # 6. Noktaları birleştir (100, 2)
+        sampled_points = np.column_stack((new_x, new_y))
+        
+        # print(f"✅ [SAMPLED] {len(points)} noktadan {sample_count} sabit örnek üretildi. Çevre: {total_perimeter:.2f}m")
+        
+        return sampled_points
+
+    # --- KULLANIM ÖRNEĞİ ---
+    # hull_sonuc = filo.yeni_hull(filo.ada_cevre())
+    # sabit_100_nokta = get_100_samples(hull_sonuc, 100)
+
+    # Artık 'sabit_100_nokta' değişkenini RL modeline input olarak verebilirsin.
+    # Boyutu her zaman (100, 2) olacaktır.
     # ============================================================
     # FORMATION LOGIC - Helper Methods
     # ============================================================
+
+    def uret_rl_egitim_verisi(self):
+            """
+            RL eğitimi için hızlı senaryo üretir ve sabit boyutlu verileri döner.
+            
+            Dönüş Formatı:
+            - lider_pozisyon: [x, y, z] (3,)
+            - lider_yaw: float (1,)
+            - rov_filo_gps: 8 adet ROV için [x, y, z] (8, 3) - Olmayanlar 400.0
+            - hull_merkez: [x, y] (2,) - Yoksa 400.0
+            - hull_noktalar: 100 adet [x, y] (100, 2) - Yoksa 400.0
+            """
+            from . import senaryo # Fonksiyon içinde import ederek dairesel bağımlılığı önleriz
+            import random
+            import numpy as np
+
+            try:
+                # 1. Senaryo Parametrelerini Hazırla
+                n_rov_secenekleri = [4, 6, 8]
+                secilen_n = random.choice(n_rov_secenekleri)
+                n_engels = random.randint(12, 22)
+                
+                # 2. Senaryoyu Üret (Headless/Hızlı)
+                # Not: senaryo.uret içindeki Safe Position algoritması adaların çakışmamasını sağlar.
+                senaryo.uret(n_rovs=secilen_n, n_engels=n_engels, havuz_genisligi=200)
+                
+                # Senaryo sonrası oluşan filo referansına eriş
+                aktif_filo = senaryo.filo 
+                if not aktif_filo:
+                    return None
+
+                # 3. Lider Bilgilerini Al (ID: 0 her zaman lider kabul edilir)
+                lider_id = 0
+                # senaryo.get simülasyon formatında (x, y, z) döner
+                lider_gps = senaryo.get(lider_id, "gps") 
+                lider_yaw = senaryo.get(lider_id, "yaw")
+                
+                if lider_gps is None: lider_gps = np.array([400.0, 400.0, 400.0])
+                if lider_yaw is None: lider_yaw = 0.0
+
+                # 4. Tüm ROV Koordinatlarını Topla (Sabit 8 slot)
+                rov_filo_gps = []
+                for i in range(8):
+                    if i < secilen_n:
+                        pos = senaryo.get(i, "gps")
+                        rov_filo_gps.append(pos if pos is not None else [400.0, 400.0, 400.0])
+                    else:
+                        # Olmayan ROV'lar için absürt değer (Maskeleme)
+                        rov_filo_gps.append([400.0, 400.0, 400.0])
+                
+                rov_filo_gps = np.array(rov_filo_gps) # Shape: (8, 3)
+
+                # 5. Convex Hull Verilerini Hazırla (Sabit 100 Nokta)
+                hull_merkez = np.array([400.0, 400.0])
+                hull_noktalar = np.full((100, 2), 400.0)
+
+                # Ada çevrelerinden Hull hesapla
+                ada_cevreleri = aktif_filo.ada_cevre(offset=15.0)
+                hull_dict = aktif_filo.yeni_hull(ada_cevreleri)
+
+                if hull_dict and hull_dict.get('points') is not None:
+                    # Merkez koordinatları (x, y)
+                    center = hull_dict.get('center')
+                    if center:
+                        hull_merkez = np.array([center[0], center[1]])
+                    
+                    # 100 Nokta Örneklemesi (Sınıf içindeki metodunuzu çağırır)
+                    samples = self.get_100_samples(hull_dict, 100)
+                    if samples is not None:
+                        hull_noktalar = samples
+
+                # 6. Temizlik (Bir sonraki iterasyon için)
+                senaryo.temizle()
+
+                # 7. RL Veri Paketini Döndür
+                return {
+                    "n_rovs": secilen_n,
+                    "lider_pozisyon": lider_gps,   # (3,)
+                    "lider_yaw": lider_yaw,        # float
+                    "rov_filo_gps": rov_filo_gps,  # (8, 3)
+                    "hull_merkez": hull_merkez,    # (2,)
+                    "hull_noktalar": hull_noktalar # (100, 2)
+                }
+
+            except Exception as e:
+                print(f"❌ [RL_DATA] Veri üretimi sırasında hata: {e}")
+                import traceback
+                traceback.print_exc()
+                senaryo.temizle()
+                return None
     
     def _prepare_forbidden_points(self) -> list:
         """Ada çevre noktalarını yasaklı nokta listesine dönüştürür."""
@@ -2296,3 +2447,6 @@ class GATManevraYoneticisi:
             final_vektor = hedef_vektoru
 
         return final_vektor, hiz_carpani, manevra_adi
+
+
+
