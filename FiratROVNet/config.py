@@ -22,9 +22,9 @@ class GATLimitleri:
     Bu limitler ortam.py (eğitim) ve gnc.py/simulasyon.py (kullanım) tarafından kullanılır.
     """
     # GAT Kod Limitleri (metre cinsinden)
-    CARPISMA = 8.0    # Kod 2: Çarpışma riski mesafesi
-    ENGEL = 20.0      # Kod 1: Engel yakınlığı mesafesi
-    KOPMA = 35.0      # Kod 3: Bağlantı kopması mesafesi
+    CARPISMA = 5.0    # Kod 2: Çarpışma riski mesafesi
+    ENGEL = 10.0      # Kod 1: Engel yakınlığı mesafesi
+    KOPMA = 40.0      # Kod 3: Bağlantı kopması mesafesi
     UZAK = 60.0       # Kod 5: Liderden uzaklık mesafesi
     
     @classmethod
@@ -48,26 +48,26 @@ class SensorAyarlari:
     """
     # Lider ROV için varsayılan ayarlar
     LIDER = {
-        'engel_mesafesi': 40.0,      # GATLimitleri.ENGEL ile aynı
-        'iletisim_menzili': 80.0,     # GATLimitleri.KOPMA ile aynı
+        'engel_mesafesi': GATLimitleri.ENGEL,       # GATLimitleri.ENGEL ile aynı
+        'iletisim_menzili': GATLimitleri.UZAK,     # GATLimitleri.KOPMA ile aynı
         'min_pil_uyarisi': 0.2,       # Normalize edilmiş (0.0-1.0)
-        'kacinma_mesafesi': 10.0       # GATLimitleri.CARPISMA ile aynı
+        'kacinma_mesafesi': GATLimitleri.CARPISMA,       # GATLimitleri.CARPISMA ile aynı
     }
     
     # Takipçi ROV için varsayılan ayarlar
     TAKIPCI = {
-        'engel_mesafesi': 40.0,       # GATLimitleri.ENGEL ile aynı
-        'iletisim_menzili': 80.0,     # GATLimitleri.KOPMA ile aynı
+        'engel_mesafesi': GATLimitleri.ENGEL,       # GATLimitleri.ENGEL ile aynı
+        'iletisim_menzili': GATLimitleri.UZAK,     # GATLimitleri.KOPMA ile aynı
         'min_pil_uyarisi': 0.15,      # Normalize edilmiş (0.0-1.0)
-        'kacinma_mesafesi': 10.0       # GATLimitleri.CARPISMA ile aynı
+        'kacinma_mesafesi': GATLimitleri.CARPISMA,       # GATLimitleri.CARPISMA ile aynı
     }
     
     # Genel varsayılan ayarlar (fallback için)
     VARSAYILAN = {
-        'engel_mesafesi': 40.0,
-        'iletisim_menzili': 80.0,
+        'engel_mesafesi': GATLimitleri.ENGEL,
+        'iletisim_menzili': GATLimitleri.UZAK,
         'min_pil_uyarisi': 0.2,
-        'kacinma_mesafesi': 10.0
+        'kacinma_mesafesi': GATLimitleri.CARPISMA
     }
 
 
