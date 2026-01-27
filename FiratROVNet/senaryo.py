@@ -30,6 +30,7 @@ from FiratROVNet.simulasyon import Ortam, ROV
 from FiratROVNet.gnc import Filo
 import numpy as np
 import random
+import networkx as nx
 
 # Global senaryo instance
 _senaryo_instance = None

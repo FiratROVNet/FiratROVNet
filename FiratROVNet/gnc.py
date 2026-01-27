@@ -1,8 +1,10 @@
+from typing_extensions import Self
 import numpy as np
 from ursina import Vec3, time, distance
 from .config import cfg, GATLimitleri, SensorAyarlari, ModemAyarlari, HareketAyarlari, Formasyon
 from .iletisim import AkustikModem
 from .hull import HullManager
+from helper.gnc_helper import FiloHelper, TemelGNCHelper
 import math
 import random
 import threading
@@ -83,6 +85,10 @@ class Koordinator:
 # 1. FİLO (ROV FİLO YÖNETİCİSİ)
 # ==========================================
 class Filo:
+    """
+    ROV filo yönetim sistemi.
+    Thread-safe komut işleme, formasyon yönetimi ve hareket kontrolü sağlar.
+    """
     def __init__(self):
         self.sistemler = [] 
         self.asil_hedef = None  # Asıl hedef (orijinal liderin hedefi)
@@ -108,6 +114,13 @@ class Filo:
         self._git_nokta_listesi = {}  # {rov_id: [[x1, y1], [x2, y2], ...], ...}
         self._git_mevcut_nokta_indeksi = {}  # {rov_id: 0, ...} - Hangi noktaya gidiyor
         self._git_hedef_mesafe_toleransi = 2.0  # Hedefe ulaşma toleransı (metre)
+        
+        # Helper instance for complex calculations
+        self.helper = FiloHelper(self)
+    
+    # ============================================================
+    # THREAD MANAGEMENT
+    # ============================================================
     
     def _is_main_thread(self):
         """Şu anki thread'in ana thread olup olmadığını kontrol eder."""
@@ -171,6 +184,10 @@ class Filo:
             self._formasyon_id_pool_olustur()
         # Pool'dan bir ID pop et
         return self._formasyon_id_pool.pop(0)
+    
+    # ============================================================
+    # SYSTEM MANAGEMENT
+    # ============================================================
     
     @property
     def rovs(self):
@@ -441,167 +458,154 @@ class Filo:
         else:
             print(f"🤖 [FİLO] Tüm ROV'lar otomatik moda döndürüldü.")
 
+    # ============================================================
+    # MOVEMENT LOGIC
+    # ============================================================
+
     def guncelle_hepsi(self, tahminler):
+        """Tüm GNC sistemlerini günceller ve yaw senkronizasyonu yapar."""
         # Ana thread'de queue'daki komutları işle (thread-safe)
         self._process_command_queue()
         
         # Lider ROV'u bul
-        lider_rov_id = None
-        lider_gnc = None
-        lider_rov = None
-        for i, gnc in enumerate(self.sistemler):
-            if hasattr(gnc, 'rov') and gnc.rov.role == 1:
-                lider_rov_id = i
-                lider_gnc = gnc
-                lider_rov = gnc.rov
-                break
+        lider_rov_id, lider_gnc, lider_rov = self._find_leader()
         
         # Tüm GNC sistemlerini güncelle
         for i, gnc in enumerate(self.sistemler):
             if i < len(tahminler):
                 gnc.guncelle(tahminler[i])
         
-        # Formasyon yaw senkronizasyonu: Takipçi ROV'lar hedefe yaklaştığında liderin yaw açısına göre yönlenir
-        # Kademeli dönme: Maksimum 90 derece/saniye dönme hızı ile yumuşak dönüş
+        # Formasyon yaw senkronizasyonu
         if lider_rov_id is not None and len(self._formasyon_hedefleri) > 0:
             lider_yaw = self.get(lider_rov_id, 'yaw')
             if lider_yaw is not None:
-                # Frame süresini al (saniye cinsinden)
-                dt = time.dt if hasattr(time, 'dt') else 0.016  # Varsayılan: 60 FPS
-                
-                for rov_id, hedef_bilgisi in list(self._formasyon_hedefleri.items()):
-                    # Sadece takipçi ROV'lar için kontrol et
-                    if rov_id >= len(self.sistemler) or rov_id == lider_rov_id:
-                        continue
-                    
-                    if hasattr(self.sistemler[rov_id], 'rov'):
-                        takipci_rov = self.sistemler[rov_id].rov
-                        # Takipçi ROV'un mevcut pozisyonunu al (Sim formatında)
-                        mevcut_sim_pos = Koordinator.ursina_to_sim(
-                            takipci_rov.x,
-                            takipci_rov.y,
-                            takipci_rov.z
-                        )
-                        mevcut_x, mevcut_y, mevcut_z = mevcut_sim_pos
-                        
-                        # Hedef bilgisini al (dict formatında)
-                        if isinstance(hedef_bilgisi, dict):
-                            hedef_pozisyon = hedef_bilgisi.get('pozisyon')
-                            hedef_yaw = hedef_bilgisi.get('hedef_yaw', lider_yaw)
-                        else:
-                            # Geriye dönük uyumluluk: Eski format (sadece pozisyon tuple'ı)
-                            hedef_pozisyon = hedef_bilgisi
-                            hedef_yaw = lider_yaw
-                            # Yeni formata dönüştür
-                            self._formasyon_hedefleri[rov_id] = {
-                                'pozisyon': hedef_pozisyon,
-                                'hedef_yaw': hedef_yaw
-                            }
-                        
-                        if hedef_pozisyon is None:
-                            continue
-                        
-                        hedef_x, hedef_y, hedef_z = hedef_pozisyon
-                        
-                        # 2D mesafe hesapla (X-Y düzleminde, Z'yi yok say)
-                        dx = hedef_x - mevcut_x
-                        dy = hedef_y - mevcut_y
-                        mesafe_2d = math.sqrt(dx**2 + dy**2)
-                        
-                        # Eğer hedefe yaklaştıysa (mesafe eşiğinin altındaysa), liderin yaw açısına göre yönlen
-                        if mesafe_2d <= self._formasyon_yaw_senkronizasyon_mesafesi:
-                            # Takipçinin mevcut yaw açısını al
-                            mevcut_yaw = self.get(rov_id, 'yaw')
-                            if mevcut_yaw is not None:
-                                # Hedef yaw açısını güncelle (liderin yaw açısı değişmiş olabilir)
-                                hedef_yaw = lider_yaw
-                                self._formasyon_hedefleri[rov_id]['hedef_yaw'] = hedef_yaw
-                                
-                                # Yaw açıları arasındaki farkı hesapla
-                                yaw_farki = hedef_yaw - mevcut_yaw
-                                # Açı farkını -180 ile +180 arasına normalize et
-                                while yaw_farki > 180:
-                                    yaw_farki -= 360
-                                while yaw_farki < -180:
-                                    yaw_farki += 360
-                                
-                                # Eğer açı farkı önemliyse (1 dereceden fazla), kademeli olarak döndür
-                                if abs(yaw_farki) > 1.0:
-                                    # Maksimum dönme hızına göre bu frame'de döndürülecek açı
-                                    maksimum_donme_acisi = self._maksimum_yaw_donme_hizi * dt
-                                    
-                                    # Eğer kalan açı farkı maksimum dönme açısından küçükse, direkt hedefe git
-                                    if abs(yaw_farki) <= maksimum_donme_acisi:
-                                        yeni_yaw = hedef_yaw
-                                        # Hedefi kaldır (artık yaw senkronize edildi)
-                                        if rov_id in self._formasyon_hedefleri:
-                                            del self._formasyon_hedefleri[rov_id]
-                                    else:
-                                        # Kademeli dönme: Maksimum dönme hızına göre döndür
-                                        donme_yonu = 1 if yaw_farki > 0 else -1
-                                        yeni_yaw = mevcut_yaw + (donme_yonu * maksimum_donme_acisi)
-                                        # Yaw açısını 0-360 aralığına normalize et
-                                        while yeni_yaw >= 360:
-                                            yeni_yaw -= 360
-                                        while yeni_yaw < 0:
-                                            yeni_yaw += 360
-                                    
-                                    # Yaw açısını güncelle
-                                    self.set(rov_id, 'yaw', yeni_yaw)
+                self._formasyon_yaw_senkronizasyonu(lider_rov_id, lider_yaw)
         
-        # git() yaw senkronizasyonu: git() ile gönderilen ROV'ların yaw açıları kademeli olarak güncellenir
+        # git() yaw senkronizasyonu
         if len(self._git_hedef_yaw) > 0:
-            # Frame süresini al (saniye cinsinden)
-            dt = time.dt if hasattr(time, 'dt') else 0.016  # Varsayılan: 60 FPS
-            
-            for rov_id, hedef_yaw in list(self._git_hedef_yaw.items()):
-                # ROV ID geçerliliği kontrolü
-                if rov_id >= len(self.sistemler):
-                    if rov_id in self._git_hedef_yaw:
-                        del self._git_hedef_yaw[rov_id]
-                    continue
-                
-                if hasattr(self.sistemler[rov_id], 'rov'):
-                    # Mevcut yaw açısını al
-                    mevcut_yaw = self.get(rov_id, 'yaw')
-                    if mevcut_yaw is not None:
-                        # Yaw açıları arasındaki farkı hesapla
-                        yaw_farki = hedef_yaw - mevcut_yaw
-                        # Açı farkını -180 ile +180 arasına normalize et
-                        while yaw_farki > 180:
-                            yaw_farki -= 360
-                        while yaw_farki < -180:
-                            yaw_farki += 360
-                        
-                        # Eğer açı farkı önemliyse (1 dereceden fazla), kademeli olarak döndür
-                        if abs(yaw_farki) > 1.0:
-                            # git() için maksimum dönme hızına göre bu frame'de döndürülecek açı (90 derece/saniye)
-                            maksimum_donme_acisi = self._git_maksimum_yaw_donme_hizi * dt
-                            
-                            # Eğer kalan açı farkı maksimum dönme açısından küçükse, direkt hedefe git
-                            if abs(yaw_farki) <= maksimum_donme_acisi:
-                                yeni_yaw = hedef_yaw
-                                # Hedefi kaldır (artık yaw hedefine ulaşıldı)
-                                if rov_id in self._git_hedef_yaw:
-                                    del self._git_hedef_yaw[rov_id]
-                            else:
-                                # Kademeli dönme: Maksimum dönme hızına göre döndür
-                                donme_yonu = 1 if yaw_farki > 0 else -1
-                                yeni_yaw = mevcut_yaw + (donme_yonu * maksimum_donme_acisi)
-                                # Yaw açısını 0-360 aralığına normalize et
-                                while yeni_yaw >= 360:
-                                    yeni_yaw -= 360
-                                while yeni_yaw < 0:
-                                    yeni_yaw += 360
-                            
-                            # Yaw açısını güncelle
-                            self.set(rov_id, 'yaw', yeni_yaw)
-                        else:
-                            # Açı farkı çok küçük, hedefe ulaşıldı
-                            if rov_id in self._git_hedef_yaw:
-                                del self._git_hedef_yaw[rov_id]
+            self._git_yaw_senkronizasyonu()
     
-    def set(self, rov_id, ayar_adi, deger):
+    def _find_leader(self) -> tuple:
+        """Lider ROV'u bulur ve bilgilerini döndürür."""
+        for i, gnc in enumerate(self.sistemler):
+            if hasattr(gnc, 'rov') and gnc.rov.role == 1:
+                return i, gnc, gnc.rov
+        return None, None, None
+    
+    def _formasyon_yaw_senkronizasyonu(self, lider_rov_id: int, lider_yaw: float) -> None:
+        """Formasyon yaw senkronizasyonu: Takipçi ROV'lar hedefe yaklaştığında liderin yaw açısına göre yönlenir."""
+        dt = time.dt if hasattr(time, 'dt') else 0.016
+        
+        for rov_id, hedef_bilgisi in list(self._formasyon_hedefleri.items()):
+            if rov_id >= len(self.sistemler) or rov_id == lider_rov_id:
+                continue
+            
+            if not hasattr(self.sistemler[rov_id], 'rov'):
+                continue
+            
+            takipci_rov = self.sistemler[rov_id].rov
+            mevcut_sim_pos = Koordinator.ursina_to_sim(takipci_rov.x, takipci_rov.y, takipci_rov.z)
+            mevcut_x, mevcut_y, mevcut_z = mevcut_sim_pos
+            
+            # Hedef bilgisini al ve normalize et
+            if isinstance(hedef_bilgisi, dict):
+                hedef_pozisyon = hedef_bilgisi.get('pozisyon')
+                hedef_yaw = hedef_bilgisi.get('hedef_yaw', lider_yaw)
+            else:
+                hedef_pozisyon = hedef_bilgisi
+                hedef_yaw = lider_yaw
+                self._formasyon_hedefleri[rov_id] = {
+                    'pozisyon': hedef_pozisyon,
+                    'hedef_yaw': hedef_yaw
+                }
+            
+            if hedef_pozisyon is None:
+                continue
+            
+            hedef_x, hedef_y, hedef_z = hedef_pozisyon
+            dx = hedef_x - mevcut_x
+            dy = hedef_y - mevcut_y
+            mesafe_2d = math.sqrt(dx**2 + dy**2)
+            
+            # Eğer hedefe yaklaştıysa, liderin yaw açısına göre yönlen
+            if mesafe_2d <= self._formasyon_yaw_senkronizasyon_mesafesi:
+                hedef_yaw = lider_yaw
+                self._formasyon_hedefleri[rov_id]['hedef_yaw'] = hedef_yaw
+                
+            # Yaw senkronizasyonu yap
+            if self._yaw_senkronizasyon(rov_id, hedef_yaw, self._maksimum_yaw_donme_hizi, dt):
+                # Hedefi kaldır (artık yaw senkronize edildi)
+                if rov_id in self._formasyon_hedefleri:
+                    del self._formasyon_hedefleri[rov_id]
+    
+    def _git_yaw_senkronizasyonu(self) -> None:
+        """git() yaw senkronizasyonu: git() ile gönderilen ROV'ların yaw açıları kademeli olarak güncellenir."""
+        dt = time.dt if hasattr(time, 'dt') else 0.016
+        
+        for rov_id, hedef_yaw in list(self._git_hedef_yaw.items()):
+            if rov_id >= len(self.sistemler):
+                if rov_id in self._git_hedef_yaw:
+                    del self._git_hedef_yaw[rov_id]
+                continue
+            
+            if not hasattr(self.sistemler[rov_id], 'rov'):
+                continue
+            
+            # Yaw senkronizasyonu yap
+            if self._yaw_senkronizasyon(rov_id, hedef_yaw, self._git_maksimum_yaw_donme_hizi, dt):
+                # Hedefi kaldır (artık yaw hedefine ulaşıldı)
+                if rov_id in self._git_hedef_yaw:
+                    del self._git_hedef_yaw[rov_id]
+    
+    def _yaw_senkronizasyon(self, rov_id: int, hedef_yaw: float, maksimum_donme_hizi: float, dt: float) -> bool:
+        """
+        Yaw senkronizasyonu yapar (ortak helper method).
+        
+        Args:
+            rov_id: ROV ID
+            hedef_yaw: Hedef yaw açısı (derece)
+            maksimum_donme_hizi: Maksimum dönme hızı (derece/saniye)
+            dt: Frame süresi (saniye)
+        
+        Returns:
+            bool: True eğer hedefe ulaşıldıysa (hedef kaldırılabilir), False aksi halde
+        """
+        mevcut_yaw = self.get(rov_id, 'yaw')
+        if mevcut_yaw is None:
+            return False
+        
+        # Yaw açıları arasındaki farkı hesapla ve normalize et
+        yaw_farki = hedef_yaw - mevcut_yaw
+        while yaw_farki > 180:
+            yaw_farki -= 360
+        while yaw_farki < -180:
+            yaw_farki += 360
+        
+        # Eğer açı farkı çok küçükse (1 dereceden az), hedefe ulaşıldı
+        if abs(yaw_farki) <= 1.0:
+            return True
+        
+        # Kademeli dönme
+        maksimum_donme_acisi = maksimum_donme_hizi * dt
+        
+        if abs(yaw_farki) <= maksimum_donme_acisi:
+            # Direkt hedefe git
+            yeni_yaw = hedef_yaw
+        else:
+            # Kademeli dönme: Maksimum dönme hızına göre döndür
+            donme_yonu = 1 if yaw_farki > 0 else -1
+            yeni_yaw = mevcut_yaw + (donme_yonu * maksimum_donme_acisi)
+            # Yaw açısını 0-360 aralığına normalize et
+            while yeni_yaw >= 360:
+                yeni_yaw -= 360
+            while yeni_yaw < 0:
+                yeni_yaw += 360
+        
+        # Yaw açısını güncelle
+        self.set(rov_id, 'yaw', yeni_yaw)
+        return False
+    
+    def set(self, rov_id: int, ayar_adi: str, deger) -> bool:
         """
         ROV ayarlarını değiştirir (Thread-safe).
         
@@ -618,23 +622,25 @@ class Filo:
             filo.set(0, 'yaw', 90.0)  # ROV-0'ı 90 dereceye döndür
             filo.set(1, 'yaw', 180)  # ROV-1'i 180 dereceye döndür
         """
-        # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
+        # ============================================================
+        # THREAD MANAGEMENT
+        # ============================================================
         if not self._is_main_thread():
             self._command_queue.put(('set', (rov_id, ayar_adi, deger), {}))
-            return True  # Queue'ya eklendi, başarılı kabul et
+            return True
         
-        # Ana thread'deyiz, direkt çalıştır
         return self._set_impl(rov_id, ayar_adi, deger)
     
-    def _set_impl(self, rov_id, ayar_adi, deger):
+    def _set_impl(self, rov_id: int, ayar_adi: str, deger) -> bool:
         """set() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
-        # Sistemler listesi boş mu kontrol et
+        # ============================================================
+        # GUARD CLAUSES - Erken Çıkışlar
+        # ============================================================
         if len(self.sistemler) == 0:
             print(f"❌ [HATA] GNC sistemleri henüz kurulmamış!")
             print(f"   💡 Çözüm: filo.ekle() ile GNC sistemleri ekleyin")
             return False
         
-        # ROV ID geçerliliği kontrolü
         if not isinstance(rov_id, int) or rov_id < 0:
             print(f"❌ [HATA] Geçersiz ROV ID: {rov_id} (pozitif tam sayı olmalı)")
             print(f"   Mevcut ROV sayısı: {len(self.sistemler)} (0-{len(self.sistemler)-1} arası)")
@@ -658,7 +664,7 @@ class Filo:
             traceback.print_exc()
             return False
 
-    def get(self, rov_id=None, veri_tipi=None, taraf=None):
+    def get(self, rov_id: int = None, veri_tipi: str = None, taraf: int = None):
         """
         ROV bilgilerini alır.
         
@@ -693,16 +699,16 @@ class Filo:
             en_yakin = filo.get(0, 'lidar')  # Tüm yönlerden en yakın
             engeller = filo.get(0, 'engels')  # Tüm tespit edilen engellerin koordinatları [(x,y,z), ...]
         """
-        # Parametre verilmediyse tüm ROV'ların koordinatlarını döndür
+        # ============================================================
+        # GUARD CLAUSES - Erken Çıkışlar
+        # ============================================================
         if rov_id is None and veri_tipi is None:
             return self._get_all_rovs_positions()
         
-        # Sistemler listesi boş mu kontrol et
         if len(self.sistemler) == 0:
             print(f"❌ [HATA] GNC sistemleri henüz kurulmamış!")
             return None
         
-        # ROV ID geçerliliği kontrolü
         if rov_id is not None and (not isinstance(rov_id, int) or rov_id < 0):
             print(f"❌ [HATA] Geçersiz ROV ID: {rov_id} (pozitif tam sayı olmalı)")
             print(f"   Mevcut ROV sayısı: {len(self.sistemler)} (0-{len(self.sistemler)-1} arası)")
@@ -713,11 +719,11 @@ class Filo:
             print(f"   Mevcut ROV sayısı: {len(self.sistemler)} (0-{len(self.sistemler)-1} arası)")
             return None
         
-        try:
-            # rov_id None kontrolü
             if rov_id is None:
                 print(f"❌ [HATA] ROV ID belirtilmedi!")
                 return None
+        
+        try:
             
             rov = self.sistemler[rov_id].rov
             # Lidar için özel işleme
@@ -1018,7 +1024,7 @@ class Filo:
         # Ana thread'deyiz, direkt çalıştır
         return self._formasyon_sec_impl(margin, is_3d, offset)
     
-    def _formasyon_sec_impl(self, margin=30, is_3d=False, offset=20.0):
+    def _formasyon_sec_impl(self, margin: float = 30, is_3d: bool = False, offset: float = 20.0):
         """
         formasyon_sec() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır).
         
@@ -1035,25 +1041,19 @@ class Filo:
                 - koordinat (tuple): Seçilen formasyon koordinatı (x, y, z) - Lider pozisyonu
         """
         try:
-            # Eski formasyon hedeflerini temizle (yeni formasyon için)
+            # ============================================================
+            # FORMATION LOGIC - Hazırlık
+            # ============================================================
             self._formasyon_hedefleri.clear()
-            # 1. Ada çevre noktalarını al (yasaklı noktalar olarak kullanılacak)
-            ada_cevre_noktalari = self.ada_cevre()
             
-            # Ada çevre noktalarını 2D formatına çevir (sadece x, y)
-            yasakli_noktalar = []
-            if ada_cevre_noktalari:
-                for nokta in ada_cevre_noktalari:
-                    if len(nokta) >= 2:
-                        yasakli_noktalar.append([float(nokta[0]), float(nokta[1])])
-            
-            # 2. Yeni hull oluştur (yasaklı noktaları çıkararak)
+            # Güvenlik hull oluştur
+            yasakli_noktalar = self._prepare_forbidden_points()
             guvenlik_hull_dict = self.yeni_hull(
                 yasakli_noktalar=yasakli_noktalar,
                 offset=offset,
                 alpha=2.0,
-                buffer_radius=10.0,  # Ada çevresinden 15 metre güvenli mesafe
-                channel_width=10.0   # Kanal genişliği 10 metre
+                buffer_radius=10.0,
+                channel_width=10.0
             )
 
             hull = guvenlik_hull_dict.get("hull")
@@ -1062,190 +1062,234 @@ class Filo:
             if hull is None or hull_merkez is None:
                 return None
 
-            # Hull merkezini Sim formatına dönüştür (z=0 yap)
-            hull_merkez_liste = list(hull_merkez)
-            hull_merkez_liste[2] = 0
-            hull_merkez = tuple(hull_merkez_liste)
-
-            # 2. Lider ROV'u bul ve GPS koordinatını al
-            lider_rov_id = None
-            lider_gps = None
-            for rov_id in range(len(self.sistemler)):
-                if self.get(rov_id, "rol") == 1:
-                    lider_rov_id = rov_id
-                    gps = self.get(rov_id, "gps")
-                    if gps:
-                        # GPS koordinatını Sim formatında al (Config.py'deki değişikliğe uygun)
-                        lider_gps = (float(gps[0]), float(gps[1]), float(gps[2]))
-                    break
-
+            hull_merkez = self._normalize_hull_center(hull_merkez)
+            
+            # Lider bilgilerini al
+            lider_rov_id, lider_gps = self._find_leader_info()
             if lider_rov_id is None:
                 return None
 
             if lider_gps is None:
                 lider_gps = hull_merkez
 
-            # 3. Formasyon aralığı parametreleri
+            # Arama parametrelerini hazırla
             min_aralik = margin * 0.2
             baslangic_aralik = margin * 0.6
-            adim = 1.0  # metre
-
-            # 4. Yaw açıları (0, 90, 180, 270 derece)
+            adim = 1.0
             yaw_acilari = [0, 90, 180, 270]
 
-            # 5. HİYERARŞİK ARAMA: Nokta Döngüsü -> Yaw Döngüsü -> Formasyon Tipi Döngüsü -> Aralık Döngüsü
-            # Adım A: Lider GPS koordinatı
-            # Adım B: Lider GPS'ten Hull Merkezi'ne kadar 20 metre dilimlerle ara noktalar
-            # Adım C: Hull Merkezi (eğer lider GPS'te bulunamazsa)
-            arama_noktalari = [("Lider GPS", lider_gps)]
-            
-            # Lider GPS'ten Hull Merkezi'ne kadar 20 metre dilimlerle ara noktalar oluştur
-            lider_x, lider_y, lider_z = lider_gps
-            hull_x, hull_y, hull_z = hull_merkez
-            
-            # 2D mesafe hesapla (X-Y düzleminde, Z'yi yok say)
-            dx = hull_x - lider_x
-            dy = hull_y - lider_y
-            mesafe_2d = math.sqrt(dx**2 + dy**2)
-            
-            # Eğer mesafe 20 metreden fazlaysa, ara noktalar oluştur
-            if mesafe_2d > 10.0:
-                # Normalize edilmiş yön vektörü
-                if mesafe_2d > 0.001:  # Sıfıra bölme kontrolü
-                    yon_x = dx / mesafe_2d
-                    yon_y = dy / mesafe_2d
-                    
-                    # 20 metre dilimlerle ara noktalar oluştur
-                    dilim_boyutu = 10.0
-                    mevcut_mesafe = dilim_boyutu
-                    
-                    while mevcut_mesafe < mesafe_2d:
-                        # Ara nokta koordinatları
-                        ara_x = lider_x + (yon_x * mevcut_mesafe)
-                        ara_y = lider_y + (yon_y * mevcut_mesafe)
-                        ara_z = lider_z  # Z koordinatını lider ile aynı tut
-                        
-                        # Ara noktayı listeye ekle
-                        arama_noktalari.append((f"Ara Nokta ({mevcut_mesafe:.1f}m)", (ara_x, ara_y, ara_z)))
-                        
-                        mevcut_mesafe += dilim_boyutu
-            
-            # Hull Merkezi'ni en sona ekle
-            arama_noktalari.append(("Hull Merkezi", hull_merkez))
+            # Arama noktalarını oluştur
+            arama_noktalari = self._generate_search_points(lider_gps, hull_merkez)
 
+            # ============================================================
+            # FORMATION LOGIC - Hiyerarşik Arama
+            # ============================================================
             for nokta_adi, merkez_koordinat in arama_noktalari:
-                # Yaw Döngüsü: 0, 90, 180, 270 derece
                 for deneme_yaw in yaw_acilari:
-
-                    # Formasyon Tipi Döngüsü - Pool'dan random ID'leri sırayla dene
-                    # Bu arama için tüm formasyon ID'lerini random sırayla al
-                    # (Pool'dan çıkarılmadan önce kopyala)
-                    denenecek_formasyon_idleri = []
-                    # Pool'dan mevcut ID'leri al
-                    pool_kopyasi = self._formasyon_id_pool.copy()
-                    while len(denenecek_formasyon_idleri) < len(Formasyon.TIPLER) and len(pool_kopyasi) > 0:
-                        denenecek_formasyon_idleri.append(pool_kopyasi.pop(0))
-                    # Eğer pool boşaldıysa, kalan ID'leri ekle ve shuffle et
-                    if len(denenecek_formasyon_idleri) < len(Formasyon.TIPLER):
-                        kalan_idler = [i for i in range(len(Formasyon.TIPLER)) if i not in denenecek_formasyon_idleri]
-                        random.shuffle(kalan_idler)
-                        denenecek_formasyon_idleri.extend(kalan_idler)
+                    denenecek_formasyon_idleri = self._get_formation_ids_to_try()
                     
                     for i in denenecek_formasyon_idleri:
-                        formasyon_tipi = Formasyon.TIPLER[i]
                         aralik = baslangic_aralik
 
-                        # Aralık Döngüsü
                         while aralik >= min_aralik:
-                            # Formasyon pozisyonlarını hesapla (yaw açısı ile)
-                            formasyon_obj = Formasyon(self)
-                            pozisyonlar = formasyon_obj.pozisyonlar(
-                                i,
-                                aralik=aralik,
-                                is_3d=is_3d,
-                                lider_koordinat=merkez_koordinat,
-                                yaw=deneme_yaw
-                            )
-
-                            if not pozisyonlar:
-                                aralik -= adim
-                                continue
-
-                            # Pozisyonları Ursina formatına dönüştür (test için)
-                            ursina_positions = []
-                            for pozisyon in pozisyonlar:
-                                config_x, config_y, config_z = pozisyon
-                                # Config (x, y, z) -> Ursina (x, z, y)
-                                ursina_x = config_x
-                                ursina_z = config_y
-                                ursina_y = config_z
-                                ursina_positions.append((ursina_x, ursina_z, ursina_y))
-
-                            # Formasyon geçerliliğini kontrol et
-                            if self._formasyon_gecerli_mi(ursina_positions, hull, aralik):
-                                # Başarılı formasyon bulundu! Uygula
-                                
-                                # Liderin yaw açısını set et
-                                self.set(lider_rov_id, 'yaw', float(deneme_yaw))
-
-                                # Eğer formasyon Lider GPS dışında bir noktada bulunduysa (ara nokta veya Hull Merkezi), lideri oraya gönder
-                                if nokta_adi != "Lider GPS":
-                                    self.git_path(lider_rov_id, merkez_koordinat)
-                                    """
-                                    self.git(
-                                        lider_rov_id,
-                                        merkez_koordinat[0],
-                                        merkez_koordinat[1],
-                                        merkez_koordinat[2],
-                                        ai=True
-                                    )
-                                    """
-                        
-                                # Takipçi ROV'ları formasyon pozisyonlarına gönder
-                                for rov_id, pozisyon in enumerate(pozisyonlar):
-                                    if rov_id >= len(self.sistemler):
-                                        break
-                                    
-                                    # Lider'i atla (zaten işlendi)
-                                    if rov_id == lider_rov_id:
-                                        continue
-                                    
-                                    # Config formatı = Sim formatı: (x, y, z)
-                                    sim_x, sim_y, sim_z = pozisyon
-                                    
-                                    # Eğer yüzeydeyse (z >= 0), su altına gönder
-                                    if sim_z >= 0:
-                                        sim_z = -10.0
-                                    
-                                    # Takipçi ROV'un formasyon hedefini kaydet (yaw senkronizasyonu için)
-                                    # Liderin yaw açısını hedef yaw olarak kaydet
-                                    self._formasyon_hedefleri[rov_id] = {
-                                        'pozisyon': (sim_x, sim_y, sim_z),
-                                        'hedef_yaw': deneme_yaw  # Liderin yaw açısı
-                                    }
-                                    
-                                    # Takipçi ROV'u formasyon pozisyonuna gönder
-                                    self.git(rov_id, sim_x, sim_y, sim_z, ai=True)
-
+                            if self._try_formation_fit(i, aralik, is_3d, merkez_koordinat, 
+                                                      deneme_yaw, hull, lider_rov_id, nokta_adi):
                                 # Formasyon bulundu, pool'dan bu ID'yi çıkar
                                 if i in self._formasyon_id_pool:
                                     self._formasyon_id_pool.remove(i)
                                 
-                                # Seçilen formasyon koordinatı (lider pozisyonu)
-                                secilen_koordinat = merkez_koordinat
-                                
-                                # Formasyon bilgilerini döndür: (formasyon_id, aralik, yaw, koordinat)
-                                return (i, aralik, deneme_yaw, secilen_koordinat)
+                                return (i, aralik, deneme_yaw, merkez_koordinat)
 
                             aralik -= adim
 
-            # Hiçbir formasyon geçerli değil
             return None
 
         except Exception as e:
             import traceback
             traceback.print_exc()
             return None
+
+
+
+    def get_100_samples(self, hull_output=None, sample_count=100):
+        """
+        yeni_hull çıktısındaki noktaları alır ve çevre uzunluğu üzerinden 
+        sabit sayıda (sample_count) örnek nokta döndürür.
+        
+        Args:
+            hull_output (dict): {'hull': ..., 'points': np.array, 'center': ...}
+            sample_count (int): Hedeflenen sabit nokta sayısı (Varsayılan: 100)
+            
+        Returns:
+            np.ndarray: (sample_count, 2) boyutunda örneklenmiş noktalar
+
+        """
+        if hull_output is None:
+            hull_output = self.yeni_hull(self.ada_cevre())
+            
+        points = hull_output.get('points')
+        
+        if points is None or len(points) < 2:
+            print("⚠️ [SAMPLED] Örnekleme için yetersiz nokta!")
+            return None
+
+        # 1. Noktaların kapalı bir döngü olduğundan emin ol (ilk ve son nokta aynı olmalı)
+        if not np.allclose(points[0], points[-1]):
+            points = np.vstack([points, points[0]])
+
+        # 2. Her segmentin uzunluğunu hesapla
+        diffs = np.diff(points, axis=0)
+        segment_lengths = np.sqrt((diffs**2).sum(axis=1))
+        
+        # 3. Kümülatif (birikimli) mesafeyi hesapla (Çevre üzerindeki konumlar)
+        cumulative_dist = np.concatenate(([0], np.cumsum(segment_lengths)))
+        total_perimeter = cumulative_dist[-1]
+        
+        if total_perimeter == 0:
+            return np.tile(points[0], (sample_count, 1))
+
+        # 4. Sabit adımlarla hedef mesafeleri belirle (adım = çevre / örneklem_sayısı)
+        # endpoint=False yapıyoruz çünkü kapalı döngüde son nokta ilk noktanın aynısıdır.
+        target_dists = np.linspace(0, total_perimeter, sample_count, endpoint=False)
+
+        # 5. X ve Y koordinatları için ayrı ayrı doğrusal interpolasyon yap
+        new_x = np.interp(target_dists, cumulative_dist, points[:, 0])
+        new_y = np.interp(target_dists, cumulative_dist, points[:, 1])
+
+        # 6. Noktaları birleştir (100, 2)
+        sampled_points = np.column_stack((new_x, new_y))
+        
+        # print(f"✅ [SAMPLED] {len(points)} noktadan {sample_count} sabit örnek üretildi. Çevre: {total_perimeter:.2f}m")
+        
+        return sampled_points
+
+    # --- KULLANIM ÖRNEĞİ ---
+    # hull_sonuc = filo.yeni_hull(filo.ada_cevre())
+    # sabit_100_nokta = get_100_samples(hull_sonuc, 100)
+
+    # Artık 'sabit_100_nokta' değişkenini RL modeline input olarak verebilirsin.
+    # Boyutu her zaman (100, 2) olacaktır.
+    # ============================================================
+    # FORMATION LOGIC - Helper Methods
+    # ============================================================
+
+    def uret_rl_egitim_verisi(self):
+            """
+            RL eğitimi için hızlı senaryo üretir ve sabit boyutlu verileri döner.
+            
+            Dönüş Formatı:
+            - lider_pozisyon: [x, y, z] (3,)
+            - lider_yaw: float (1,)
+            - rov_filo_gps: 8 adet ROV için [x, y, z] (8, 3) - Olmayanlar 400.0
+            - hull_merkez: [x, y] (2,) - Yoksa 400.0
+            - hull_noktalar: 100 adet [x, y] (100, 2) - Yoksa 400.0
+            """
+            from . import senaryo # Fonksiyon içinde import ederek dairesel bağımlılığı önleriz
+            import random
+            import numpy as np
+
+            try:
+                # 1. Senaryo Parametrelerini Hazırla
+                n_rov_secenekleri = [4, 6, 8]
+                secilen_n = random.choice(n_rov_secenekleri)
+                n_engels = random.randint(12, 22)
+                
+                # 2. Senaryoyu Üret (Headless/Hızlı)
+                # Not: senaryo.uret içindeki Safe Position algoritması adaların çakışmamasını sağlar.
+                senaryo.uret(n_rovs=secilen_n, n_engels=n_engels, havuz_genisligi=200)
+                
+                # Senaryo sonrası oluşan filo referansına eriş
+                aktif_filo = senaryo.filo 
+                if not aktif_filo:
+                    return None
+
+                # 3. Lider Bilgilerini Al (ID: 0 her zaman lider kabul edilir)
+                lider_id = 0
+                # senaryo.get simülasyon formatında (x, y, z) döner
+                lider_gps = senaryo.get(lider_id, "gps") 
+                lider_yaw = senaryo.get(lider_id, "yaw")
+                
+                if lider_gps is None: lider_gps = np.array([400.0, 400.0, 400.0])
+                if lider_yaw is None: lider_yaw = 0.0
+
+                # 4. Tüm ROV Koordinatlarını Topla (Sabit 8 slot)
+                rov_filo_gps = []
+                for i in range(8):
+                    if i < secilen_n:
+                        pos = senaryo.get(i, "gps")
+                        rov_filo_gps.append(pos if pos is not None else [400.0, 400.0, 400.0])
+                    else:
+                        # Olmayan ROV'lar için absürt değer (Maskeleme)
+                        rov_filo_gps.append([400.0, 400.0, 400.0])
+                
+                rov_filo_gps = np.array(rov_filo_gps) # Shape: (8, 3)
+
+                # 5. Convex Hull Verilerini Hazırla (Sabit 100 Nokta)
+                hull_merkez = np.array([400.0, 400.0])
+                hull_noktalar = np.full((100, 2), 400.0)
+
+                # Ada çevrelerinden Hull hesapla
+                ada_cevreleri = aktif_filo.ada_cevre(offset=15.0)
+                hull_dict = aktif_filo.yeni_hull(ada_cevreleri)
+
+                if hull_dict and hull_dict.get('points') is not None:
+                    # Merkez koordinatları (x, y)
+                    center = hull_dict.get('center')
+                    if center:
+                        hull_merkez = np.array([center[0], center[1]])
+                    
+                    # 100 Nokta Örneklemesi (Sınıf içindeki metodunuzu çağırır)
+                    samples = self.get_100_samples(hull_dict, 100)
+                    if samples is not None:
+                        hull_noktalar = samples
+
+                # 6. Temizlik (Bir sonraki iterasyon için)
+                senaryo.temizle()
+
+                # 7. RL Veri Paketini Döndür
+                return {
+                    "n_rovs": secilen_n,
+                    "lider_pozisyon": lider_gps,   # (3,)
+                    "lider_yaw": lider_yaw,        # float
+                    "rov_filo_gps": rov_filo_gps,  # (8, 3)
+                    "hull_merkez": hull_merkez,    # (2,)
+                    "hull_noktalar": hull_noktalar # (100, 2)
+                }
+
+            except Exception as e:
+                print(f"❌ [RL_DATA] Veri üretimi sırasında hata: {e}")
+                import traceback
+                traceback.print_exc()
+                senaryo.temizle()
+                return None
+    
+    def _prepare_forbidden_points(self) -> list:
+        """Ada çevre noktalarını yasaklı nokta listesine dönüştürür."""
+        return self.helper.prepare_forbidden_points()
+    
+    def _normalize_hull_center(self, hull_merkez) -> tuple:
+        """Hull merkezini Sim formatına dönüştürür (z=0 yapar)."""
+        return self.helper.normalize_hull_center(hull_merkez)
+    
+    def _find_leader_info(self) -> tuple:
+        """Lider ROV ID ve GPS koordinatını bulur."""
+        return self.helper.find_leader_info()
+    
+    def _generate_search_points(self, lider_gps: tuple, hull_merkez: tuple) -> list:
+        """Lider GPS'ten hull merkezine kadar ara noktalar oluşturur."""
+        return self.helper.generate_search_points(lider_gps, hull_merkez)
+    
+    def _get_formation_ids_to_try(self) -> list:
+        """Denenecek formasyon ID'lerini pool'dan alır."""
+        return self.helper.get_formation_ids_to_try()
+    
+    def _try_formation_fit(self, formasyon_id: int, aralik: float, is_3d: bool, 
+                          merkez_koordinat: tuple, deneme_yaw: float, hull, 
+                          lider_rov_id: int, nokta_adi: str) -> bool:
+        """Formasyonun geçerli olup olmadığını kontrol eder ve uygular."""
+        return self.helper.try_formation_fit(formasyon_id, aralik, is_3d,
+                                            merkez_koordinat, deneme_yaw, hull,
+                                            lider_rov_id, nokta_adi)
 
     
 
@@ -1392,7 +1436,7 @@ class Filo:
         Noktalar ada yarıçapından belirli bir mesafe uzakta olur (offset parametresi).
         
         Args:
-            offset (float): Ada yarıçapından uzaklık (metre, varsayılan: 10.0)
+            offset (float): Ada yarıçapından uzaklık (metre, varsayılan: 15.0)
                 - Noktalar ada merkezinden (radius + offset) mesafede olur
         
         Returns:
@@ -1410,265 +1454,21 @@ class Filo:
             # Özel offset ile
             noktalar = filo.ada_cevre(offset=15.0)  # Ada yarıçapından 15 metre uzakta
         """
-        if not self.ortam_ref:
-            print("⚠️ [UYARI] Ortam referansı bulunamadı!")
-            return []
-        
-        # Ada pozisyonlarını al
-        if not hasattr(self.ortam_ref, 'island_positions') or not self.ortam_ref.island_positions:
-            print("⚠️ [UYARI] Simülasyonda ada bulunamadı!")
-            return []
-        
-        tum_noktalar = []
-        
-        # Her ada için 12 nokta hesapla
-        for island_data in self.ortam_ref.island_positions:
-            if len(island_data) < 3:
-                continue
-            
-            # Ada bilgileri: (island_x, island_z, island_radius)
-            island_x = float(island_data[0])  # X koordinatı (sağ-sol)
-            island_z = float(island_data[1])  # Z koordinatı (ileri-geri) - Simülasyon formatında Y
-            island_radius = float(island_data[2])  # Ada yarıçapı
-            
-            # Çevre mesafesi: Ada yarıçapı + offset
-            cevre_mesafesi = island_radius + offset
-            
-            # 12 nokta hesapla (30° aralıklarla: 0°, 30°, 60°, 90°, 120°, 150°, 180°, 210°, 240°, 270°, 300°, 330°)
-            # Simülasyon sistemi: X=Sağ-Sol, Y=İleri-Geri
-            # 0° = Kuzey (+Y), 90° = Doğu (+X), 180° = Güney (-Y), 270° = Batı (-X)
-            acilar = [i * 30 for i in range(12)]  # 0°, 30°, 60°, ..., 330° (12 nokta)
-            
-            for aci in acilar:
-                # Açıyı radyana çevir
-                aci_rad = math.radians(aci)
-                
-                # Nokta koordinatları (Simülasyon formatı)
-                # X = island_x + mesafe * sin(aci)
-                # Y = island_z + mesafe * cos(aci)
-                # Z = 0 (yüzey, derinlik yok)
-                nokta_x = island_x + cevre_mesafesi * math.sin(aci_rad)
-                nokta_y = island_z + cevre_mesafesi * math.cos(aci_rad)
-                nokta_z = 0.0  # Yüzey (derinlik yok)
-                
-                tum_noktalar.append((nokta_x, nokta_y, nokta_z))
-        
-        print(f"✅ [ADA_CEVRE] {len(self.ortam_ref.island_positions)} ada için {len(tum_noktalar)} nokta hesaplandı (offset={offset}m)")
-        return tum_noktalar
+        return self.helper.ada_cevre(offset)
     
     def yeni_hull(self, yasakli_noktalar, offset=40.0, alpha=2.0, buffer_radius=20.0, channel_width=15.0):
-            """
-            Mevcut hull noktalarını alır, yasaklı bölgeleri kesip çıkarır.
-            Hem harita çizimi hem de 'is_point_inside' kontrolü için uyumlu nesne döndürür.
-            """
-            try:
-                # 1. Kütüphane kontrolü
-                if not SHAPELY_AVAILABLE:
-                    return {'hull': None, 'points': None, 'center': None}
-                    
-                from shapely.geometry import Point, Polygon
-                
-                # --- 1. Mevcut Hull'ı Al ---
-                guvenlik_hull_dict = self.hull_manager.hull(offset=offset)
-                hull_noktalari = guvenlik_hull_dict.get("points")
-                eski_hull_merkez = guvenlik_hull_dict.get("center")
-                
-                if hull_noktalari is None:
-                    return {'hull': None, 'points': None, 'center': None}
-                
-                # --- 2. Noktaları Hazırla ---
-                hull_noktalari_2d = []
-                if isinstance(hull_noktalari, np.ndarray):
-                    hull_noktalari_2d = [[float(p[0]), float(p[1])] for p in hull_noktalari]
-                else:
-                    hull_noktalari_2d = [[float(p[0]), float(p[1])] for p in hull_noktalari if len(p) >= 2]
-                
-                yasakli_noktalar_2d = []
-                if yasakli_noktalar:
-                    for nokta in yasakli_noktalar:
-                        if len(nokta) >= 2:
-                            yasakli_noktalar_2d.append([float(nokta[0]), float(nokta[1])])
-                
-                # --- 3. Yeniden Çiz ---
-                if yasakli_noktalar_2d:
-                    yeni_kontur_noktalari = self.yeniden_ciz(
-                        noktalar=hull_noktalari_2d,
-                        yasakli_noktalar=yasakli_noktalar_2d,
-                        alpha=alpha,
-                        buffer_radius=buffer_radius,
-                        channel_width=channel_width
-                    )
-                else:
-                    yeni_kontur_noktalari = hull_noktalari_2d
-
-                # --- 4. Sonuçları Paketle ---
-                if yeni_kontur_noktalari and len(yeni_kontur_noktalari) >= 3:
-                    kontur_noktalari_np = np.array(yeni_kontur_noktalari)
-                    
-                    # Polygon nesnesi oluştur (Geometrik kontrol için şart)
-                    yeni_poly = Polygon(yeni_kontur_noktalari)
-                    if not yeni_poly.is_valid:
-                        yeni_poly = yeni_poly.buffer(0)
-                    
-                    # Merkez hesapla (Eski merkez güvenli mi?)
-                    eski_merkez_2d = (eski_hull_merkez[0], eski_hull_merkez[1])
-                    if yeni_poly.contains(Point(eski_merkez_2d)):
-                        final_merkez_2d = eski_merkez_2d
-                    else:
-                        guvenli_nokta = yeni_poly.representative_point()
-                        final_merkez_2d = (guvenli_nokta.x, guvenli_nokta.y)
-
-                    eski_z = eski_hull_merkez[2] if eski_hull_merkez and len(eski_hull_merkez) >= 3 else 0.0
-                    yeni_hull_merkez = (float(final_merkez_2d[0]), float(final_merkez_2d[1]), float(eski_z))
-                    
-                    # --- SAHTE HULL (GÜNCELLENDİ) ---
-                    class SahteHull:
-                        def __init__(self, points, polygon_obj):
-                            self.points = points
-                            self.polygon = polygon_obj  # <-- KRİTİK EKLEME: Polygon nesnesini sakla
-                            self.vertices = np.arange(len(points))
-                            self.simplices = []
-                            for i in range(len(points)):
-                                self.simplices.append([i, (i + 1) % len(points)])
-                            self.simplices = np.array(self.simplices)
-                            # equations özelliği YOK, bu yüzden hull.py'de bunu kontrol edeceğiz
-
-                    custom_hull = SahteHull(kontur_noktalari_np, yeni_poly)
-                    
-                    # Haritaya gönder
-                    if self.ortam_ref and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
-                        hull_data = {
-                            'hull': custom_hull,
-                            'points': kontur_noktalari_np,
-                            'center': yeni_hull_merkez
-                        }
-                        self.ortam_ref.harita.convex_hull_data = hull_data
-                        self.ortam_ref.harita.goster(True, True)
-                    
-                    return {
-                        'hull': custom_hull,
-                        'points': kontur_noktalari_np,
-                        'center': yeni_hull_merkez
-                    }
-                else:
-                    return {'hull': None, 'points': None, 'center': None}
-            
-            except Exception as e:
-                print(f"❌ [HATA] Yeni hull oluşturulurken hata: {e}")
-                import traceback
-                traceback.print_exc()
-                return {'hull': None, 'points': None, 'center': None}
+        """
+        Mevcut hull noktalarını alır, yasaklı bölgeleri kesip çıkarır.
+        Hem harita çizimi hem de 'is_point_inside' kontrolü için uyumlu nesne döndürür.
+        """
+        return self.helper.yeni_hull(yasakli_noktalar, offset, alpha, buffer_radius, channel_width)
     
     def yeniden_ciz(self, noktalar, yasakli_noktalar, alpha=2.0, buffer_radius=15.0, channel_width=10.0):
-            """
-            Verilen nokta kümesini saran, ancak yasaklı noktaları dışarıda bırakacak şekilde
-            içeri bükülmüş sınırın koordinatlarını döndürür.
-            """
-            # 1. Kütüphane kontrolü
-            if not SHAPELY_AVAILABLE:
-                print("❌ [HATA] shapely kütüphanesi bulunamadı!")
-                return []
-                
-            # Global importları kullan
-            try:
-                from shapely.geometry import Point, LineString, Polygon, MultiPolygon
-                from shapely.ops import unary_union, nearest_points
-                from scipy.spatial import ConvexHull
-            except ImportError as e:
-                print(f"❌ [HATA] Gerekli kütüphaneler eksik: {e}")
-                return []
-
-            try:
-                # 2. Giriş verisini düzenle
-                points_cloud = []
-                for p in noktalar:
-                    if len(p) >= 2:
-                        points_cloud.append((float(p[0]), float(p[1])))
-                
-                if len(points_cloud) < 3:
-                    print("⚠️ [UYARI] Yeterli nokta yok (en az 3 nokta gerekli)")
-                    return []
-                
-                # ==========================================================
-                # ADIM A: TEMEL ŞEKLİ (CONVEX HULL) OLUŞTUR
-                # ==========================================================
-                # Alpha shape yerine ConvexHull kullanıyoruz. 
-                # Çünkü "Güvenlik Hull"ı her zaman en dıştan sarmalıdır.
-                try:
-                    points_np = np.array(points_cloud)
-                    hull = ConvexHull(points_np) 
-                    # Convex Hull noktalarını sıraya diz (önemli!)
-                    hull_points = points_np[hull.vertices]
-                    base_shape = Polygon(hull_points)
-                except Exception as e:
-                    print(f"❌ [HATA] Başlangıç Hull oluşturulamadı: {e}")
-                    return []
-
-                # Şekil temizliği
-                if not base_shape.is_valid:
-                    base_shape = base_shape.buffer(0)
-
-                final_shape = base_shape
-                kesilen_nokta_sayisi = 0
-
-                # ==========================================================
-                # ADIM B: YASAKLI NOKTALARI KESİP ÇIKAR
-                # ==========================================================
-                if yasakli_noktalar:
-                    print(f"🔍 [YENIDEN_CIZ] Kontrol edilecek yasaklı nokta: {len(yasakli_noktalar)}")
-                    
-                    for i, fp in enumerate(yasakli_noktalar):
-                        if len(fp) < 2: continue
-                        
-                        p_obj = Point(float(fp[0]), float(fp[1]))
-                        
-                        # Eğer nokta zaten şeklin dışındaysa işlem yapma
-                        if not final_shape.contains(p_obj):
-                            # print(f"   -> Nokta {i} zaten dışarıda.")
-                            continue
-                        
-                        # Buraya geldiyse nokta içeride demektir, kesip atacağız
-                        kesilen_nokta_sayisi += 1
-                        # print(f"   ✂️  Nokta {i} ({fp[0]:.1f}, {fp[1]:.1f}) içeride! Kesiliyor...")
-                        
-                        # 1. Yasaklı Bölge (Güvenlik Çemberi)
-                        forbidden_zone = p_obj.buffer(buffer_radius)
-                        
-                        # 2. Kanal Açma (En kısa yoldan dışarı tünel)
-                        exterior_line = final_shape.exterior
-                        p1, p2 = nearest_points(forbidden_zone, exterior_line)
-                        
-                        channel_line = LineString([p_obj, p2])
-                        # Kanal genişliği en az buffer kadar olmalı ki darboğaz olmasın
-                        channel_poly = channel_line.buffer(max(channel_width, buffer_radius * 0.5))
-                        
-                        # 3. Kesme işlemi
-                        cut_area = unary_union([forbidden_zone, channel_poly])
-                        final_shape = final_shape.difference(cut_area)
-                        
-                        # 4. Parçalanma kontrolü
-                        if isinstance(final_shape, MultiPolygon):
-                            if not final_shape.is_empty:
-                                final_shape = max(final_shape.geoms, key=lambda a: a.area)
-                            else:
-                                final_shape = base_shape # Hata durumunda geri al
-
-                print(f"✅ [YENIDEN_CIZ] İşlem tamam. Kesilen engel sayısı: {kesilen_nokta_sayisi}")
-
-                # ==========================================================
-                # ADIM C: SONUÇ KOORDİNATLARINI DÖNDÜR
-                # ==========================================================
-                if isinstance(final_shape, Polygon):
-                    return list(final_shape.exterior.coords)
-                else:
-                    print("⚠️ [UYARI] Sonuç bir Polygon değil.")
-                    return []
-            
-            except Exception as e:
-                print(f"❌ [HATA] Kontur hesaplama genel hatası: {e}")
-                import traceback
-                traceback.print_exc()
-                return []
+        """
+        Verilen nokta kümesini saran, ancak yasaklı noktaları dışarıda bırakacak şekilde
+        içeri bükülmüş sınırın koordinatlarını döndürür.
+        """
+        return self.helper.yeniden_ciz(noktalar, yasakli_noktalar, alpha, buffer_radius, channel_width)
     
     def _hedef_gorsel_olustur(self, x, y, z):
         """
@@ -1749,7 +1549,7 @@ class Filo:
             wireframe=True
         )
 
-    def git(self, rov_id, x, y=None, z=None, ai=True):
+    def git(self, rov_id: int, x, y: float = None, z: float = None, ai: bool = True) -> None:
         """
         ROV'a hedef koordinatı atar ve otomatik moda geçirir (Thread-safe).
         Tüm girişler Simülasyon formatındadır: (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
@@ -1776,7 +1576,9 @@ class Filo:
             gidilecek_n = [[150.5, 10.5], [142.5, 2.5], [134.5, -5.5]]
             filo.git(0, gidilecek_n)  # ROV-0 bu noktaları sırayla ziyaret eder
         """
-        # Eğer x bir liste ise, çoklu nokta modu
+        # ============================================================
+        # ÇOKLU NOKTA MODU
+        # ============================================================
         if isinstance(x, (list, tuple)) and len(x) > 0:
             # İlk elemanın formatını kontrol et
             if isinstance(x[0], (list, tuple)) and len(x[0]) >= 2:
@@ -1812,24 +1614,25 @@ class Filo:
             x_val, y_val = float(x), float(y) if y is not None else None
             z_val = z
         
-        # Y parametresi kontrolü
+        # ============================================================
+        # GUARD CLAUSES - Erken Çıkışlar
+        # ============================================================
         if y_val is None:
             print(f"❌ [FİLO] Y koordinatı gerekli! (x liste değilse)")
             return
         
-        # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
+        # ============================================================
+        # THREAD MANAGEMENT
+        # ============================================================
         if not self._is_main_thread():
             try:
-                # Ursina'nın invoke mekanizmasını kullan (varsa)
                 from ursina import invoke
                 invoke(self._git_impl, rov_id, x_val, y_val, z_val, ai)
                 return
             except (ImportError, AttributeError):
-                # Ursina invoke yoksa, queue kullan
                 self._command_queue.put(('git', (rov_id, x_val, y_val, z_val, ai), {}))
                 return
         
-        # Ana thread'deyiz, direkt çalıştır
         self._git_impl(rov_id, x_val, y_val, z_val, ai)
 
     def git_path(self, rov_id, hedef, ai=True):
@@ -1845,15 +1648,16 @@ class Filo:
         gidilecek_n=self.gidilecek_noktalar(path)
         self.git(rov_id,gidilecek_n,ai)
     
-    def _git_impl(self, rov_id, x, y, z=None, ai=True):
+    def _git_impl(self, rov_id: int, x: float, y: float, z: float = None, ai: bool = True) -> None:
         """git() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
-        # Sistemler listesi boş mu kontrol et
+        # ============================================================
+        # GUARD CLAUSES - Erken Çıkışlar
+        # ============================================================
         if len(self.sistemler) == 0:
             print(f"❌ [HATA] GNC sistemleri henüz kurulmamış!")
             print(f"   💡 Çözüm: filo.ekle() ile GNC sistemleri ekleyin")
             return
         
-        # ROV ID geçerliliği kontrolü
         if not isinstance(rov_id, int) or rov_id < 0:
             print(f"❌ [HATA] Geçersiz ROV ID: {rov_id} (pozitif tam sayı olmalı)")
             print(f"   Mevcut ROV sayısı: {len(self.sistemler)} (0-{len(self.sistemler)-1} arası)")
@@ -1916,7 +1720,7 @@ class Filo:
             import traceback
             traceback.print_exc()
 
-    def move(self, rov_id, yon, guc=1.0):
+    def move(self, rov_id: int, yon: str, guc: float = 1.0) -> None:
         """
         ROV'a güç bazlı hareket komutu verir (gerçek dünya gibi, gerçekçi fizik ile).
         
@@ -1938,13 +1742,14 @@ class Filo:
             filo.move(0, 'yaw', 1.0)     # ROV-0 saat yönünün tersine döndürme
             filo.move(0, 'yaw', -1.0)    # ROV-0 saat yönünde döndürme
         """
-        # Sistemler listesi boş mu kontrol et
+        # ============================================================
+        # GUARD CLAUSES - Erken Çıkışlar
+        # ============================================================
         if len(self.sistemler) == 0:
             print(f"❌ [HATA] GNC sistemleri henüz kurulmamış!")
             print(f"   💡 Çözüm: filo.ekle() ile GNC sistemleri ekleyin")
             return
         
-        # ROV ID geçerliliği kontrolü
         if not isinstance(rov_id, int) or rov_id < 0:
             print(f"❌ [HATA] Geçersiz ROV ID: {rov_id} (pozitif tam sayı olmalı)")
             print(f"   Mevcut ROV sayısı: {len(self.sistemler)} (0-{len(self.sistemler)-1} arası)")
@@ -1956,14 +1761,12 @@ class Filo:
             print(f"   💡 Çözüm: filo.ekle() ile daha fazla GNC sistemi ekleyin")
             return
         
-        # Yön geçerliliği kontrolü
         gecerli_yonler = ['ileri', 'geri', 'sag', 'sol', 'cik', 'bat', 'dur', 'yaw']
         if yon not in gecerli_yonler:
             print(f"❌ [HATA] Geçersiz hareket yönü: '{yon}'")
             print(f"   Geçerli yönler: {', '.join(gecerli_yonler)}")
             return
         
-        # Güç değerini kontrol et
         if not isinstance(guc, (int, float)):
             print(f"❌ [HATA] Güç değeri sayı olmalı: {guc}")
             return
@@ -2195,7 +1998,7 @@ class Filo:
         else:
             print("❌ [MİNİMAP] Minimap sistemi bulunamadı!") 
 
-    def a_star(self, start=None, goal=None, safety_margin=20.0, **kwargs):
+    def a_star(self, start=None, goal=None, safety_margin=15.0, **kwargs):
         """
         A* algoritması kullanarak başlangıçtan hedefe yol hesaplar.
         
@@ -2278,7 +2081,8 @@ class Filo:
             import traceback
             traceback.print_exc()
             return None
-
+    
+    
     def gidilecek_noktalar(self, path=None, r=10, derece_threshold=15):
         """
         A* yolu üzerinden gidilecek noktaları filtreler.
@@ -2290,7 +2094,7 @@ class Filo:
             r: Örnekleme mesafesi (yarıçap, metre, varsayılan: 10)
             derece_threshold: Kabul edilen minimum eğim açısı
                             (derece, varsayılan: 15)
-
+        
         Returns:
             List[List[float, float]]: [[x, y], [x, y], ...]
             şeklinde filtrelenmiş koordinat dizisi
@@ -2320,9 +2124,9 @@ class Filo:
 
         # İlk noktayı ekle (başlangıç noktası)
         gidilecek_noktalar.append([x_baslangic, y_baslangic])
-
+        
         aci_radyan = np.arctan2(y_baslangic, x_baslangic)
-        ilk_derece = np.degrees(aci_radyan)
+        ilk_derece = np.degrees(aci_radyan)      
 
         for i in range(1, len(path)):
             x_son, y_son = path[i]
@@ -2332,7 +2136,7 @@ class Filo:
                 (x_son - x_baslangic) ** 2 +
                 (y_son - y_baslangic) ** 2
             )
-
+            
             if mesafe >= r:
                 # arctan2 kullanarak eğim açısını (radyan) hesapla
                 aci_radyan = np.arctan2(
@@ -2340,17 +2144,17 @@ class Filo:
                     x_son - x_baslangic
                 )
                 son_derece = np.degrees(aci_radyan)
-
+                
                 fark = ilk_derece - son_derece
 
                 # Eğim açısı eşik değeri geçiyorsa ekle
                 if abs(fark) >= derece_threshold:
                     ilk_derece = son_derece
                     gidilecek_noktalar.append([x_son, y_son])
-
+                    
                     # Referans noktasını güncelle
                     x_baslangic, y_baslangic = x_son, y_son
-
+        
         # Son noktayı da ekle (hedef)
         if len(path) > 1:
             son_nokta = path[-1]
@@ -2359,226 +2163,290 @@ class Filo:
 
         return gidilecek_noktalar
 
+
+
+# ==========================================
+# 2. TEMEL GNC SINIFI
+# ==========================================
 # ==========================================
 # 2. TEMEL GNC SINIFI
 # ==========================================
 class TemelGNC:
+    """
+    ROV için Temel Güdüm, Navigasyon ve Kontrol (GNC) sınıfı.
+    Modernize edilmiş yapı.
+    """
+    # Sabitler (Eski kodun davranışını koruyacak şekilde)
+    HEDEF_TOLERANSI = 0.5
+    YAVASLAMA_MESAFESI = 2.0
+    
     def __init__(self, rov_entity, modem, filo_ref=None):
         self.rov = rov_entity
         self.modem = modem
-        self.filo_ref = filo_ref  # Filo referansı (çoklu nokta takibi için)
+        self.filo_ref = filo_ref
         self.hedef = None 
         self.hiz_limiti = 100.0 
         self.manuel_kontrol = False
-        
-        # YENİ: Bireysel AI Anahtarı
         self.ai_aktif = True 
+        
+        # Helper instance for complex calculations
+        self.helper = TemelGNCHelper(rov_entity, filo_ref)
+        
+        # GAT Manevra Yöneticisi - Filo referansı ile initialize et
+        # ROV ID dinamik olarak guncelle() içinde bulunacak
+        self.gat_manevra = GATManevraYoneticisi(filo_ref, None) if filo_ref else None 
 
     def hedef_atama(self, x, y, z):
         self.hedef = Vec3(x, y, z)
 
     def rehber_guncelle(self, rehber):
-        if self.modem: self.modem.rehber_guncelle(rehber)
+        if self.modem: 
+            self.modem.rehber_guncelle(rehber)
     
-    def guncelle(self, gat_kodu):
+    def guncelle(self, gat_kodu=None):
         """
         GNC Güncelleme: Hedef varsa ve manuel kontrol kapalıysa hedefe git.
-        - Rol ayrımı gözetmeksizin, tüm ROV'lar hedef varsa hedefe gider.
-        - Hedefe yaklaşma toleransı: 0.1 metre
-        - Hedefe ulaşıldığında veya hedef yoksa motorları durdur.
+        GAT kodlarına göre manevra yapılır.
+        Sensör verilerine göre GAT kodu otomatik belirlenir.
+        Modernize edilmiş versiyon.
         """
-        # Manuel kontrol durumunda hareket koduna girmeden çık
         if self.manuel_kontrol:
             return
 
-        # Hedef yoksa işlem yapma
         if self.hedef is None:
-            # Hedef yoksa motorları durdur
-            if self.rov.velocity.length() > 1:
-                self.rov.velocity *= 0.4  # Momentumu yumuşatarak durdur
+            if self.rov.velocity.length() > 1: 
+                self.rov.velocity *= 0.4
             return
         
-        # 1. Mevcut pozisyonu Ursina'dan alıp Simülasyona çevir
+        # Koordinat Dönüşümü
         current_sim_pos = Vec3(*Koordinator.ursina_to_sim(self.rov.x, self.rov.y, self.rov.z))
-        
-        # 2. Farkı Simülasyon dünyasında hesapla
         fark = self.hedef - current_sim_pos
-        mevcut_mesafe = fark.length()
+        mesafe = fark.length()
 
-        # HEDEF KONTROLÜ: Hedefe ulaşıldıysa dur veya sonraki noktaya geç
-        # Salınım önleme: Hedefe çok yakınsa (0.5m) motorları durdur ve yaw açısını hedefe doğru ayarla
-        if mevcut_mesafe <= 0.5:
-            # Hedefe çok yakın - motorları durdur ve yaw açısını hedefe doğru ayarla
-            self.rov.velocity *= 0.1  # Çok agresif durdurma (salınım önleme)
-            
-            # Yaw açısını hedefe doğru ayarla (stabilite için)
-            if hasattr(self, 'filo_ref') and self.filo_ref:
-                rov_id = None
-                for idx, gnc in enumerate(self.filo_ref.sistemler):
-                    if gnc == self:
-                        rov_id = idx
-                        break
-                
-                if rov_id is not None:
-                    # Hedefe doğru yaw açısını hesapla
-                    dx = fark.x
-                    dy = fark.y
-                    if abs(dx) > 0.01 or abs(dy) > 0.01:
-                        yaw_rad = math.atan2(dx, dy)
-                        yaw_deg = math.degrees(yaw_rad)
-                        # Normalize et
-                        while yaw_deg >= 360:
-                            yaw_deg -= 360
-                        while yaw_deg < 0:
-                            yaw_deg += 360
-                        # Yaw açısını direkt ayarla (kademeli değil, hedefe doğru dön)
-                        if hasattr(self.rov, 'rotation_y'):
-                            # Kademeli dönüş yerine direkt hedefe dön (daha stabil)
-                            mevcut_yaw = self.rov.rotation_y
-                            yaw_farki = yaw_deg - mevcut_yaw
-                            # En kısa yolu bul (-180 ile 180 arası)
-                            if yaw_farki > 180:
-                                yaw_farki -= 360
-                            elif yaw_farki < -180:
-                                yaw_farki += 360
-                            # Hızlı dönüş (her frame'de maksimum 5 derece)
-                            max_donme = 5.0
-                            if abs(yaw_farki) > max_donme:
-                                yaw_farki = max_donme if yaw_farki > 0 else -max_donme
-                            self.rov.rotation_y = mevcut_yaw + yaw_farki
-            
-            # Çoklu nokta takibi: Sonraki noktaya geç (0.5m tolerans ile)
-            if mevcut_mesafe <= 0.5 and hasattr(self, 'filo_ref') and self.filo_ref:
-                rov_id = None
-                # ROV ID'yi bul
-                for idx, gnc in enumerate(self.filo_ref.sistemler):
-                    if gnc == self:
-                        rov_id = idx
-                        break
-                
-                if rov_id is not None and rov_id in self.filo_ref._git_nokta_listesi:
-                    nokta_listesi = self.filo_ref._git_nokta_listesi[rov_id]
-                    mevcut_indeks = self.filo_ref._git_mevcut_nokta_indeksi.get(rov_id, 0)
-                    
-                    # Sonraki noktaya geç
-                    if mevcut_indeks + 1 < len(nokta_listesi):
-                        sonraki_nokta = nokta_listesi[mevcut_indeks + 1]
-                        self.filo_ref._git_mevcut_nokta_indeksi[rov_id] = mevcut_indeks + 1
-                        
-                        # Sonraki noktayı hedef olarak ata
-                        self.hedef = Vec3(sonraki_nokta[0], sonraki_nokta[1], self.hedef.z)
-                        # Konsolu rahatsız etmemek için print'i kaldır (arka plan işlemi)
-                    else:
-                        # Tüm noktalar tamamlandı
-                        # Listeyi temizle
-                        if rov_id in self.filo_ref._git_nokta_listesi:
-                            del self.filo_ref._git_nokta_listesi[rov_id]
-                        if rov_id in self.filo_ref._git_mevcut_nokta_indeksi:
-                            del self.filo_ref._git_mevcut_nokta_indeksi[rov_id]
-            
+        # Varış Kontrolü
+        if mesafe <= self.HEDEF_TOLERANSI:
+            self._hedefe_varis_islemleri(fark)
             return
         
-        # Hedefe yaklaşırken hızı azalt (salınım önleme)
-        if mevcut_mesafe < 2.0:
-            # Hedefe yaklaşırken hızı azalt
-            hiz_carpani = mevcut_mesafe / 2.0  # 2m'de 1.0, 0.5m'de 0.25
-            hiz_carpani = max(0.2, min(1.0, hiz_carpani))  # Minimum 0.2, maksimum 1.0
-        else:
-            hiz_carpani = 1.0
-
-        # 3. Hareket vektörünü normalize et
-        if mevcut_mesafe > 0.01:
-            hareket_vektoru = fark / mevcut_mesafe
-        else:
-            hareket_vektoru = Vec3(0, 0, 0)
+        # Hareket Mantığı - Temel hedef vektörü
+        hiz_carpani = self.helper.hiz_hesapla(mesafe)
+        hareket_vektoru = fark / mesafe if mesafe > 0.01 else Vec3(0, 0, 0)
         
-        # 4. Yaw açısını hedefe doğru ayarla (her zaman hedefe dön)
-        if hasattr(self, 'filo_ref') and self.filo_ref:
-            rov_id = None
-            for idx, gnc in enumerate(self.filo_ref.sistemler):
-                if gnc == self:
-                    rov_id = idx
-                    break
+        # GAT Manevra Yöneticisi - GAT koduna göre manevra hesapla (TÜM kodlar için)
+        # GAT kodu None ise 0 (OK) olarak kabul et
+        if gat_kodu is None:
+            gat_kodu = 0
+        
+        if self.gat_manevra:
+            # ROV ID'yi dinamik olarak bul ve güncelle
+            if self.filo_ref and self.gat_manevra.rov_id is None:
+                try:
+                    self.gat_manevra.rov_id = self.filo_ref.sistemler.index(self)
+                except (ValueError, AttributeError):
+                    pass
             
-            if rov_id is not None:
-                # Hedefe doğru yaw açısını hesapla
-                dx = fark.x
-                dy = fark.y
-                if abs(dx) > 0.01 or abs(dy) > 0.01:
-                    yaw_rad = math.atan2(dx, dy)
-                    yaw_deg = math.degrees(yaw_rad)
-                    # Normalize et
-                    while yaw_deg >= 360:
-                        yaw_deg -= 360
-                    while yaw_deg < 0:
-                        yaw_deg += 360
-                    
-                    # Yaw açısını direkt ayarla (her zaman hedefe dön)
-                    if hasattr(self.rov, 'rotation_y'):
-                        mevcut_yaw = self.rov.rotation_y
-                        yaw_farki = yaw_deg - mevcut_yaw
-                        # En kısa yolu bul (-180 ile 180 arası)
-                        if yaw_farki > 180:
-                            yaw_farki -= 360
-                        elif yaw_farki < -180:
-                            yaw_farki += 360
-                        # Hızlı dönüş (her frame'de maksimum 5 derece)
-                        max_donme = 5.0
-                        if abs(yaw_farki) > max_donme:
-                            yaw_farki = max_donme if yaw_farki > 0 else -max_donme
-                        self.rov.rotation_y = mevcut_yaw + yaw_farki
+            # Tüm GAT kodları için manevra hesapla (ROV ID None olsa bile kod 0, 1, 2, 3 için çalışır)
+            # Kod 4 için lider takibi gerektiğinden ROV ID kontrolü yapılır
+            if gat_kodu != 4 or self.gat_manevra.rov_id is not None:
+                final_vektor, gat_hiz_carpani, manevra_adi = self.gat_manevra.manevra_hesapla(gat_kodu, hareket_vektoru)
+                hareket_vektoru = final_vektor
+                hiz_carpani *= gat_hiz_carpani  # GAT hız çarpanını temel hız çarpanıyla çarp
         
-        # 5. Hareket vektörünü motor komutlarına haritala
-        # hareket_vektoru.x -> Sağ/Sol
-        # hareket_vektoru.y -> İleri/Geri (Simülasyonda Y ileridir)
-        # hareket_vektoru.z -> Çık/Bat (Simülasyonda Z derinliktir)
-        # Hızı hiz_carpani ile çarp (yaklaşırken yavaşla)
-        guc_degeri = 0.4 * hiz_carpani if 'hiz_carpani' in locals() else 0.4
-        self.vektor_to_motor_sim(hareket_vektoru, guc=guc_degeri)
+        # Yaw Ayarı (hedefe doğru, GAT manevrasından sonra)
+        self.helper.yaw_ayarla(hareket_vektoru, ani=False)
+        
+        # Motor Sürüşü
+        guc = 0.4 * hiz_carpani
+        self.helper.vektor_to_motor_sim(hareket_vektoru, guc=guc)
 
-    def vektor_to_motor_sim(self, v_sim, guc=0.4):
+    def _hedefe_varis_islemleri(self, fark):
+        """Hedefe ulaşıldığında yapılacak işlemler."""
+        self.rov.velocity *= 0.1
+        self.helper.yaw_ayarla(fark, ani=True)  # Son düzeltme
+        
+        # Çoklu nokta geçiş mantığı (Filo ref üzerinden)
+        if self.filo_ref:
+            self._siradaki_noktaya_gec()
+
+    def _siradaki_noktaya_gec(self):
+        """Çoklu nokta takibinde sonraki noktaya geçer."""
+        try:
+            my_id = self.filo_ref.sistemler.index(self)
+            nokta_listesi = self.filo_ref._git_nokta_listesi.get(my_id)
+            mevcut_indeks = self.filo_ref._git_mevcut_nokta_indeksi.get(my_id, 0)
+            
+            if nokta_listesi and mevcut_indeks + 1 < len(nokta_listesi):
+                yeni_indeks = mevcut_indeks + 1
+                nxt = nokta_listesi[yeni_indeks]
+                self.filo_ref._git_mevcut_nokta_indeksi[my_id] = yeni_indeks
+                self.hedef = Vec3(nxt[0], nxt[1], self.hedef.z)
+            elif nokta_listesi:
+                # Liste bitti
+                self.filo_ref._git_nokta_listesi.pop(my_id, None)
+        except:
+            pass
+
+    def _hiz_hesapla(self, mesafe: float) -> float:
+        """Hedefe yaklaşırken hızı azaltır (wrapper for helper)."""
+        return self.helper.hiz_hesapla(mesafe)
+
+    def _yaw_ayarla(self, fark_vektoru: Vec3, ani: bool = False):
+        """Yaw açısını hedefe doğru ayarlar (wrapper for helper)."""
+        self.helper.yaw_ayarla(fark_vektoru, ani=ani)
+
+    def vektor_to_motor_sim(self, v_sim: Vec3, guc: float = 0.4):
         """
         Vektörü Simülasyon eksenlerinden Ursina motor komutlarına çevirir.
         Global koordinatlara göre direkt hareket eder (yaw açısından bağımsız).
         
         Args:
             v_sim: Simülasyon formatında vektör (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
-            guc: Güç çarpanı (varsayılan: 1.0)
+            guc: Güç çarpanı (varsayılan: 0.4)
         """
-        if v_sim.length() < 0.01:
-            return
+        self.helper.vektor_to_motor_sim(v_sim, guc=guc)
+
+
+# ==========================================
+# YENİ SINIF: GAT MANEVRA YÖNETİCİSİ (KACIN)
+# ==========================================
+class GATManevraYoneticisi:
+    """
+    GAT (AI) tahminlerine göre özel kaçınma manevraları ve vektörleri üretir.
+    
+    GAT Kodları:
+    0: OK -> Normal Seyir (Hedefe doğru normal hızda git)
+    1: ENGEL -> Yumuşak Kaçınma (Hızı azalt, yanlamasına git, lidar'a göre yön seç)
+    2: CARPISMA -> Acil Durum (Tam geri, sert dönüş, rastgele sağ/sol kırma)
+    3: KOPUK -> İletişim Kopması (Dur, yukarı çık, iletişimi yeniden kurmaya çalış)
+    4: UZAK -> Liderden Uzaklaşma (Hızı artır, lideri yakalamaya çalış)
+    """
+    def __init__(self, filo_ref, rov_id):
+        """
+        Initialize GAT Manevra Yöneticisi.
         
-        # Güç çarpanını normalize et
-        guc = max(0.0, min(2.0, guc))
+        Args:
+            filo_ref: Filo referansı (lidar verilerine erişim için)
+            rov_id: ROV ID (lidar verilerini almak için)
+        """
+        self.filo_ref = filo_ref
+        self.rov_id = rov_id
+    
+    def manevra_hesapla(self, gat_kodu, hedef_vektoru):
+        """
+        GAT koduna göre nihai hareket vektörünü ve hız çarpanını döndürür.
         
-        # Vektörü normalize et
-        v = v_sim.normalized()
+        Args:
+            gat_kodu: GAT tahmin kodu (0=OK, 1=ENGEL, 2=CARPISMA, 3=KOPUK, 4=UZAK)
+            hedef_vektoru: Hedefe doğru hareket vektörü (Sim formatında)
         
-        # Direkt global koordinatlara göre velocity ayarla (yaw açısından bağımsız)
-        # Sim formatından Ursina formatına dönüştür
-        from .config import HareketAyarlari
-        from ursina import time
-        
-        # Hız çarpanı
-        max_guc = 100.0 * guc
-        thrust = max_guc * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
-        
-        # X: Sağ-Sol (Sim ve Ursina'da aynı)
-        if abs(v.x) > 0.01:
-            self.rov.velocity.x += v.x * thrust
-        
-        # Y: İleri-Geri (Simülasyon Y = Ursina Z)
-        if abs(v.y) > 0.01:
-            self.rov.velocity.z += v.y * thrust
+        Returns:
+            tuple: (final_vektor, hiz_carpani, manevra_adi)
+        """
+        # Varsayılan değerler (Normal Seyir - Kod 0)
+        final_vektor = hedef_vektoru
+        hiz_carpani = 1.0
+        manevra_adi = "NORMAL"
+
+        # GAT Kodu 0: OK (Normal Seyir)
+        if gat_kodu == 0:
+            manevra_adi = "NORMAL"
+            hiz_carpani = 1.0
+            final_vektor = hedef_vektoru
+
+        # GAT Kodu 1: ENGEL (Yakınlarda engel var, dikkatli ol)
+        elif gat_kodu == 10:
+            manevra_adi = "YUMUSAK_KACIS"
+            hiz_carpani = 0.6  # Hızı %60'a düşür
             
-        # Z: Derinlik (Simülasyon Z = Ursina Y)
-        # Ursina'da Y yukarı (+), Simülasyonda Z derinlik (+) ise:
-        # v_sim.z > 0 (daha derine git) -> Ursina Y negatif
-        if abs(v.z) > 0.01:
-            self.rov.velocity.y += v.z * thrust  # Sim Z+ (derinlik) -> Ursina Y+ (yukarı)
-        
-        # Hız limiti
-        if self.rov.velocity.length() > max_guc:
-            self.rov.velocity = self.rov.velocity.normalized() * max_guc
+            # Lidar verilerine bakıp boş tarafa yönelme
+            if self.filo_ref and self.rov_id is not None:
+                lidar_sag = self.filo_ref.get(self.rov_id, 'lidar', taraf=1) or 100
+                lidar_sol = self.filo_ref.get(self.rov_id, 'lidar', taraf=2) or 100
+            else:
+                lidar_sag = 100
+                lidar_sol = 100
+            
+            # Boş olan tarafa ek vektör ekle (sağ=+X, sol=-X)
+            kacis_yonu = 1 if lidar_sol > lidar_sag else -1
+            ek_vektor = Vec3(kacis_yonu * 1.5, 0, 0)  # Yana doğru it
+            
+            # Hedefle kaçışı harmanla (%40 hedef, %60 kaçış)
+            final_vektor = (hedef_vektoru * 0.4) + (ek_vektor * 0.6)
+            
+            # Biraz yukarı çık (engelden uzaklaşmak için)
+            # Sim formatında: Z=derinlik, yukarı çıkmak için Z'yi azalt (negatif)
+            final_vektor.z -= 0.3
+            final_vektor = final_vektor.normalized() if final_vektor.length() > 0.01 else hedef_vektoru
+
+        # GAT Kodu 2: CARPISMA (Çok kritik, hemen uzaklaş)
+        elif gat_kodu == 20:
+            manevra_adi = "ACIL_GERI"
+            hiz_carpani = 0.8  # Kaçarken hızlı olmalı ama kontrollü
+            
+            # Tam geri vektörü (Y ekseni tersi - Sim formatında Y=ileri, -Y=geri)
+            geri_vektor = Vec3(0, -2.0, 0) 
+            
+            # Rastgele sağ/sol kırarak gerile (Sıkışmayı önler)
+            kirma = Vec3(random.uniform(-1, 1), 0, 0)
+            
+            # Yukarı çık (engelden uzaklaşmak için)
+            # Sim formatında: Z=derinlik, yukarı çıkmak için Z'yi azalt (negatif)
+            yukari_vektor = Vec3(0, 0, -0.5)  # Sim formatında Z=derinlik, yukarı için negatif
+            
+            # Hedefi tamamen yok say, sadece kaç
+            final_vektor = geri_vektor + kirma + yukari_vektor
+            final_vektor = final_vektor.normalized() if final_vektor.length() > 0.01 else geri_vektor
+
+
+        # GAT Kodu 4: UZAK (Liderden uzaklaşma, hızı artır)
+        elif gat_kodu == 40:
+            manevra_adi = "UZAK_HIZLI"
+            hiz_carpani = 1.3  # Hızı %30 artır (lideri yakalamak için)
+            
+            # Hedefe doğru daha hızlı git
+            final_vektor = hedef_vektoru
+            
+            # Eğer lider varsa ve çok uzaksa, direkt lider yönüne git
+            if self.filo_ref and self.rov_id is not None:
+                try:
+                    # Lider ROV'u bul
+                    lider_id = None
+                    for i, gnc in enumerate(self.filo_ref.sistemler):
+                        if hasattr(gnc, 'rov') and gnc.rov.role == 1:
+                            lider_id = i
+                            break
+                    
+                    if lider_id is not None and lider_id != self.rov_id:
+                        lider_gps = self.filo_ref.get(lider_id, 'gps')
+                        mevcut_gps = self.filo_ref.get(self.rov_id, 'gps')
+                        
+                        if lider_gps is not None and mevcut_gps is not None:
+                            # GPS koordinatları Ursina formatında, Sim formatına dönüştür
+                            lider_sim = Koordinator.ursina_to_sim(lider_gps[0], lider_gps[1], lider_gps[2])
+                            mevcut_sim = Koordinator.ursina_to_sim(mevcut_gps[0], mevcut_gps[1], mevcut_gps[2])
+                            
+                            # Lider yönüne doğru vektör hesapla (Sim formatında)
+                            lider_vektor_sim = Vec3(
+                                lider_sim[0] - mevcut_sim[0],
+                                lider_sim[1] - mevcut_sim[1],
+                                lider_sim[2] - mevcut_sim[2]
+                            )
+                            
+                            if lider_vektor_sim.length() > 0.01:
+                                # Lider yönüne öncelik ver (%70 lider, %30 hedef)
+                                final_vektor = (lider_vektor_sim.normalized() * 0.7) + (hedef_vektoru * 0.3)
+                                final_vektor = final_vektor.normalized() if final_vektor.length() > 0.01 else hedef_vektoru
+                except Exception:
+                    # Hata durumunda normal hedef vektörünü kullan
+                    pass
+
+        # Bilinmeyen kod (varsayılan davranış)
+        else:
+            manevra_adi = "BILINMEYEN"
+            hiz_carpani = 1.0
+            final_vektor = hedef_vektoru
+
+        return final_vektor, hiz_carpani, manevra_adi
+
 
 
