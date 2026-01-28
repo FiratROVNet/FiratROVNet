@@ -31,10 +31,14 @@ class FiratAnalizci:
 
         if os.path.exists(model_yolu):
             try:
-                self.model.load_state_dict(torch.load(model_yolu, map_location=self.device))
+                # Eski checkpoint'ler 7 feature bekliyor, yeni model 9 feature bekliyor
+                # strict=False ile uyumsuz parametreleri atla
+                checkpoint = torch.load(model_yolu, map_location=self.device)
+                self.model.load_state_dict(checkpoint, strict=False)
                 print(f"✅ Model Yüklendi: {model_yolu}")
             except Exception as e:
                 print(f"❌ Model Hata: {e}")
+                print(f"   ⚠️ Model yüklenemedi, rastgele ağırlıklarla devam ediliyor.")
         else:
             print(f"⚠️ Uyarı: '{model_yolu}' bulunamadı! Rastgele çalışacak.")
         

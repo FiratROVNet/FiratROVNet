@@ -898,8 +898,8 @@ class Senaryo:
         if rov_id >= len(self.ortam.rovs) or (self.ortam.rovs[rov_id] is None):
             return None
         
-        # Filo üzerinden veri al
-        veri = self.filo.get(rov_id, veri_tipi)
+        # Filo üzerinden veri al (sessiz mod - RL eğitimi için)
+        veri = self.filo.get(rov_id, veri_tipi, sessiz=True)
         
         # Eğer filo None döndürdüyse, direkt ROV'tan al (fallback)
         if veri is None and rov_id < len(self.ortam.rovs):
