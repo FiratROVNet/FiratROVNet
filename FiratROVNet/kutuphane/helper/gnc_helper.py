@@ -28,43 +28,58 @@ try:
 except ImportError:
     SCIPY_AVAILABLE = False
 
-# Import from parent package (FiratROVNet.config)
+# Import from FiratROVNet.config
 try:
-    from ...config import Formasyon
+    from FiratROVNet.config import Formasyon, HareketAyarlari
 except ImportError:
-    # Fallback: try absolute import
-    from FiratROVNet.config import Formasyon
+    # Fallback: try relative import if running from within package
+    try:
+        from ..FiratROVNet.config import Formasyon, HareketAyarlari
+    except ImportError:
+        # Last resort: try direct import
+        import sys
+        import os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+        from FiratROVNet.config import Formasyon, HareketAyarlari
 
 
 class FiloHelper:
     """
     Helper class for Filo complex calculations and geometric operations.
     Contains heavy mathematical logic extracted from Filo class.
+    Initialized with Filo instance to access self.sistemler and self.ortam_ref.
     """
     
-    @staticmethod
-    def ada_cevre(ortam_ref, offset: float = 15.0) -> list:
+    def __init__(self, filo_ref):
+        """
+        Initialize helper with Filo instance reference.
+        
+        Args:
+            filo_ref: Reference to Filo instance (self)
+        """
+        self.filo = filo_ref
+    
+    def ada_cevre(self, offset: float = 15.0) -> list:
         """
         Simülasyondaki adaları tespit edip her ada için eşit çevrede 12 nokta döndürür.
         
         Args:
-            ortam_ref: Ortam referansı (island_positions'a erişim için)
             offset: Ada yarıçapından uzaklık (metre, varsayılan: 15.0)
         
         Returns:
             list: [(x1, y1, z1), (x2, y2, z2), ...] - Ada çevresi noktaları (Simülasyon formatı)
         """
-        if not ortam_ref:
+        if not self.filo.ortam_ref:
             print("⚠️ [UYARI] Ortam referansı bulunamadı!")
             return []
         
-        if not hasattr(ortam_ref, 'island_positions') or not ortam_ref.island_positions:
+        if not hasattr(self.filo.ortam_ref, 'island_positions') or not self.filo.ortam_ref.island_positions:
             print("⚠️ [UYARI] Simülasyonda ada bulunamadı!")
             return []
         
         tum_noktalar = []
         
-        for island_data in ortam_ref.island_positions:
+        for island_data in self.filo.ortam_ref.island_positions:
             if len(island_data) < 3:
                 continue
             
@@ -82,11 +97,10 @@ class FiloHelper:
                 nokta_z = 0.0
                 tum_noktalar.append((nokta_x, nokta_y, nokta_z))
         
-        print(f"✅ [ADA_CEVRE] {len(ortam_ref.island_positions)} ada için {len(tum_noktalar)} nokta hesaplandı (offset={offset}m)")
+        print(f"✅ [ADA_CEVRE] {len(self.filo.ortam_ref.island_positions)} ada için {len(tum_noktalar)} nokta hesaplandı (offset={offset}m)")
         return tum_noktalar
     
-    @staticmethod
-    def yeniden_ciz(noktalar: list, yasakli_noktalar: list, alpha: float = 2.0, 
+    def yeniden_ciz(self, noktalar: list, yasakli_noktalar: list, alpha: float = 2.0, 
                    buffer_radius: float = 15.0, channel_width: float = 10.0) -> list:
         """
         Verilen nokta kümesini saran, ancak yasaklı noktaları dışarıda bırakacak şekilde
@@ -192,14 +206,12 @@ class FiloHelper:
             traceback.print_exc()
             return []
     
-    @staticmethod
-    def yeni_hull(filo_ref, yasakli_noktalar: list, offset: float = 40.0, alpha: float = 2.0,
+    def yeni_hull(self, yasakli_noktalar: list, offset: float = 40.0, alpha: float = 2.0,
                   buffer_radius: float = 20.0, channel_width: float = 15.0) -> dict:
         """
         Mevcut hull noktalarını alır, yasaklı bölgeleri kesip çıkarır.
         
         Args:
-            filo_ref: Filo referansı (hull_manager ve ortam_ref'e erişim için)
             yasakli_noktalar: Yasaklı nokta listesi
             offset: ROV hull genişletme mesafesi
             alpha: Alpha shape parametresi
@@ -216,7 +228,7 @@ class FiloHelper:
             from shapely.geometry import Point, Polygon
             
             # Mevcut Hull'ı Al
-            guvenlik_hull_dict = filo_ref.hull_manager.hull(offset=offset)
+            guvenlik_hull_dict = self.filo.hull_manager.hull(offset=offset)
             hull_noktalari = guvenlik_hull_dict.get("points")
             eski_hull_merkez = guvenlik_hull_dict.get("center")
             
@@ -238,7 +250,7 @@ class FiloHelper:
             
             # Yeniden Çiz
             if yasakli_noktalar_2d:
-                yeni_kontur_noktalari = FiloHelper.yeniden_ciz(
+                yeni_kontur_noktalari = self.yeniden_ciz(
                     noktalar=hull_noktalari_2d,
                     yasakli_noktalar=yasakli_noktalar_2d,
                     alpha=alpha,
@@ -281,14 +293,14 @@ class FiloHelper:
                 custom_hull = SahteHull(kontur_noktalari_np, yeni_poly)
                 
                 # Haritaya gönder
-                if filo_ref.ortam_ref and hasattr(filo_ref.ortam_ref, 'harita') and filo_ref.ortam_ref.harita:
+                if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'harita') and self.filo.ortam_ref.harita:
                     hull_data = {
                         'hull': custom_hull,
                         'points': kontur_noktalari_np,
                         'center': yeni_hull_merkez
                     }
-                    filo_ref.ortam_ref.harita.convex_hull_data = hull_data
-                    filo_ref.ortam_ref.harita.goster(True, True)
+                    self.filo.ortam_ref.harita.convex_hull_data = hull_data
+                    self.filo.ortam_ref.harita.goster(True, True)
                 
                 return {
                     'hull': custom_hull,
@@ -304,10 +316,9 @@ class FiloHelper:
             traceback.print_exc()
             return {'hull': None, 'points': None, 'center': None}
     
-    @staticmethod
-    def prepare_forbidden_points(filo_ref) -> list:
+    def prepare_forbidden_points(self) -> list:
         """Ada çevre noktalarını yasaklı nokta listesine dönüştürür."""
-        ada_cevre_noktalari = FiloHelper.ada_cevre(filo_ref.ortam_ref)
+        ada_cevre_noktalari = self.ada_cevre()
         yasakli_noktalar = []
         if ada_cevre_noktalari:
             for nokta in ada_cevre_noktalari:
@@ -315,29 +326,26 @@ class FiloHelper:
                     yasakli_noktalar.append([float(nokta[0]), float(nokta[1])])
         return yasakli_noktalar
     
-    @staticmethod
-    def normalize_hull_center(hull_merkez) -> tuple:
+    def normalize_hull_center(self, hull_merkez) -> tuple:
         """Hull merkezini Sim formatına dönüştürür (z=0 yapar)."""
         hull_merkez_liste = list(hull_merkez)
         hull_merkez_liste[2] = 0
         return tuple(hull_merkez_liste)
     
-    @staticmethod
-    def find_leader_info(filo_ref) -> tuple:
+    def find_leader_info(self) -> tuple:
         """Lider ROV ID ve GPS koordinatını bulur."""
         lider_rov_id = None
         lider_gps = None
-        for rov_id in range(len(filo_ref.sistemler)):
-            if filo_ref.get(rov_id, "rol") == 1:
+        for rov_id in range(len(self.filo.sistemler)):
+            if self.filo.get(rov_id, "rol") == 1:
                 lider_rov_id = rov_id
-                gps = filo_ref.get(rov_id, "gps")
+                gps = self.filo.get(rov_id, "gps")
                 if gps:
                     lider_gps = (float(gps[0]), float(gps[1]), float(gps[2]))
                 break
         return lider_rov_id, lider_gps
     
-    @staticmethod
-    def generate_search_points(lider_gps: tuple, hull_merkez: tuple) -> list:
+    def generate_search_points(self, lider_gps: tuple, hull_merkez: tuple) -> list:
         """Lider GPS'ten hull merkezine kadar ara noktalar oluşturur."""
         arama_noktalari = [("Lider GPS", lider_gps)]
         
@@ -366,11 +374,10 @@ class FiloHelper:
         arama_noktalari.append(("Hull Merkezi", hull_merkez))
         return arama_noktalari
     
-    @staticmethod
-    def get_formation_ids_to_try(formasyon_id_pool: list) -> list:
+    def get_formation_ids_to_try(self) -> list:
         """Denenecek formasyon ID'lerini pool'dan alır."""
         denenecek_formasyon_idleri = []
-        pool_kopyasi = formasyon_id_pool.copy()
+        pool_kopyasi = self.filo._formasyon_id_pool.copy()
         
         while len(denenecek_formasyon_idleri) < len(Formasyon.TIPLER) and len(pool_kopyasi) > 0:
             denenecek_formasyon_idleri.append(pool_kopyasi.pop(0))
@@ -382,12 +389,11 @@ class FiloHelper:
         
         return denenecek_formasyon_idleri
     
-    @staticmethod
-    def try_formation_fit(filo_ref, formasyon_id: int, aralik: float, is_3d: bool,
+    def try_formation_fit(self, formasyon_id: int, aralik: float, is_3d: bool,
                           merkez_koordinat: tuple, deneme_yaw: float, hull,
-                          lider_rov_id: int, nokta_adi: str, formasyon_hedefleri: dict) -> bool:
+                          lider_rov_id: int, nokta_adi: str) -> bool:
         """Formasyonun geçerli olup olmadığını kontrol eder ve uygular."""
-        formasyon_obj = Formasyon(filo_ref)
+        formasyon_obj = Formasyon(self.filo)
         pozisyonlar = formasyon_obj.pozisyonlar(
             formasyon_id,
             aralik=aralik,
@@ -405,19 +411,19 @@ class FiloHelper:
             config_x, config_y, config_z = pozisyon
             ursina_positions.append((config_x, config_z, config_y))
         
-        if not filo_ref._formasyon_gecerli_mi(ursina_positions, hull, aralik):
+        if not self.filo._formasyon_gecerli_mi(ursina_positions, hull, aralik):
             return False
         
         # Başarılı formasyon bulundu! Uygula
-        filo_ref.set(lider_rov_id, 'yaw', float(deneme_yaw))
+        self.filo.set(lider_rov_id, 'yaw', float(deneme_yaw))
         
         if nokta_adi != "Lider GPS":
-            filo_ref.git(lider_rov_id, merkez_koordinat[0], merkez_koordinat[1],
+            self.filo.git(lider_rov_id, merkez_koordinat[0], merkez_koordinat[1],
                         merkez_koordinat[2], ai=True)
         
         # Takipçi ROV'ları formasyon pozisyonlarına gönder
         for rov_id, pozisyon in enumerate(pozisyonlar):
-            if rov_id >= len(filo_ref.sistemler):
+            if rov_id >= len(self.filo.sistemler):
                 break
             
             if rov_id == lider_rov_id:
@@ -428,12 +434,12 @@ class FiloHelper:
             if sim_z >= 0:
                 sim_z = -10.0
             
-            formasyon_hedefleri[rov_id] = {
+            self.filo._formasyon_hedefleri[rov_id] = {
                 'pozisyon': (sim_x, sim_y, sim_z),
                 'hedef_yaw': deneme_yaw
             }
             
-            filo_ref.git(rov_id, sim_x, sim_y, sim_z, ai=True)
+            self.filo.git(rov_id, sim_x, sim_y, sim_z, ai=True)
         
         return True
 
@@ -442,14 +448,25 @@ class TemelGNCHelper:
     """
     Helper class for TemelGNC physics and calculation logic.
     Contains mathematical operations extracted from TemelGNC class.
+    Initialized with ROV entity and optional Filo reference.
     """
     
     # Sabitler
     HEDEF_TOLERANSI = 0.5
     YAVASLAMA_MESAFESI = 2.0
     
-    @staticmethod
-    def hiz_hesapla(mesafe: float) -> float:
+    def __init__(self, rov_entity, filo_ref=None):
+        """
+        Initialize helper with ROV entity and optional Filo reference.
+        
+        Args:
+            rov_entity: ROV entity (for velocity and rotation access)
+            filo_ref: Optional Filo reference (for future use)
+        """
+        self.rov = rov_entity
+        self.filo_ref = filo_ref
+    
+    def hiz_hesapla(self, mesafe: float) -> float:
         """
         Hedefe yaklaşırken hızı azaltır.
         
@@ -459,20 +476,17 @@ class TemelGNCHelper:
         Returns:
             float: Hız çarpanı (0.2 - 1.0 arası)
         """
-        if mesafe < TemelGNCHelper.YAVASLAMA_MESAFESI:
-            return max(0.2, min(1.0, mesafe / TemelGNCHelper.YAVASLAMA_MESAFESI))
+        if mesafe < self.YAVASLAMA_MESAFESI:
+            return max(0.2, min(1.0, mesafe / self.YAVASLAMA_MESAFESI))
         return 1.0
     
-    @staticmethod
-    def yaw_ayarla(rov_entity, fark_vektoru: Vec3, ani: bool = False, filo_ref=None):
+    def yaw_ayarla(self, fark_vektoru: Vec3, ani: bool = False):
         """
         Yaw açısını hedefe doğru ayarlar.
         
         Args:
-            rov_entity: ROV entity (rotation_y'ye erişim için)
             fark_vektoru: Hedefe olan fark vektörü (Sim formatında)
             ani: Ani dönüş yapılsın mı (varsayılan: False - kademeli)
-            filo_ref: Filo referansı (opsiyonel, şu an kullanılmıyor)
         """
         dx, dy = fark_vektoru.x, fark_vektoru.y
         if abs(dx) < 0.01 and abs(dy) < 0.01:
@@ -480,25 +494,23 @@ class TemelGNCHelper:
         
         hedef_yaw = math.degrees(math.atan2(dx, dy)) % 360
         
-        if hasattr(rov_entity, 'rotation_y'):
-            mevcut = rov_entity.rotation_y
+        if hasattr(self.rov, 'rotation_y'):
+            mevcut = self.rov.rotation_y
             delta = (hedef_yaw - mevcut + 180) % 360 - 180
             
             if ani:
-                rov_entity.rotation_y = mevcut + delta
+                self.rov.rotation_y = mevcut + delta
             else:
                 max_step = 5.0
                 step = max(-max_step, min(max_step, delta))
-                rov_entity.rotation_y = mevcut + step
+                self.rov.rotation_y = mevcut + step
     
-    @staticmethod
-    def vektor_to_motor_sim(rov_entity, v_sim: Vec3, guc: float = 0.4):
+    def vektor_to_motor_sim(self, v_sim: Vec3, guc: float = 0.4):
         """
         Vektörü Simülasyon eksenlerinden Ursina motor komutlarına çevirir.
         Global koordinatlara göre direkt hareket eder (yaw açısından bağımsız).
         
         Args:
-            rov_entity: ROV entity (velocity'ye erişim için)
             v_sim: Simülasyon formatında vektör (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
             guc: Güç çarpanı (varsayılan: 0.4)
         """
@@ -508,23 +520,16 @@ class TemelGNCHelper:
         guc = max(0.0, min(2.0, guc))
         v = v_sim.normalized()
         
-        # Import from parent package (FiratROVNet.config)
-        try:
-            from ...config import HareketAyarlari
-        except ImportError:
-            # Fallback: try absolute import
-            from FiratROVNet.config import HareketAyarlari
-        
         thrust = (guc * 100.0) * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
         
         if abs(v.x) > 0.01:
-            rov_entity.velocity.x += v.x * thrust
+            self.rov.velocity.x += v.x * thrust
         if abs(v.y) > 0.01:
-            rov_entity.velocity.z += v.y * thrust
+            self.rov.velocity.z += v.y * thrust
         if abs(v.z) > 0.01:
-            rov_entity.velocity.y += v.z * thrust  # Sim Z -> Ursina Y
+            self.rov.velocity.y += v.z * thrust  # Sim Z -> Ursina Y
         
         limit = guc * 100.0
-        if rov_entity.velocity.length() > limit:
-            rov_entity.velocity = rov_entity.velocity.normalized() * limit
+        if self.rov.velocity.length() > limit:
+            self.rov.velocity = self.rov.velocity.normalized() * limit
 

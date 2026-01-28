@@ -4,7 +4,7 @@ from ursina import Vec3, time, distance
 from .config import cfg, GATLimitleri, SensorAyarlari, ModemAyarlari, HareketAyarlari, Formasyon
 from .iletisim import AkustikModem
 from .hull import HullManager
-from helper.gnc_helper import FiloHelper, TemelGNCHelper
+from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper
 import math
 import random
 import threading
