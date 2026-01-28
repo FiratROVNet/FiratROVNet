@@ -7,6 +7,7 @@ if REPO_ROOT not in sys.path:
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from FiratROVNet.gnc import Filo
 from RL_PPO.lider_sec.lider_sec_model import LiderSecimAgi
 
@@ -20,6 +21,13 @@ def train_lider_secim():
     # Kayıp Fonksiyonları
     criterion_id = nn.CrossEntropyLoss()  # Sınıflandırma için
     criterion_score = nn.MSELoss()  # Regresyon için (Skor)
+
+    # RL Metrikleri için değişkenler
+    episode_rewards = []  # Her episode için reward
+    avg_reward_window = 100  # Son N episode için ortalama
+    policy_losses = []  # Policy loss'ları
+    value_losses = []  # Value loss'ları
+    entropy_losses = []  # Entropy loss'ları
 
     print("🚀 Lider Seçim Eğitimi Başlıyor...")
 
@@ -45,10 +53,35 @@ def train_lider_secim():
         # Toplam Kayıp (Ağırlıklı birleştirilebilir)
         total_loss = loss_id + loss_score
 
-        # Accuracy (sınıflandırma)
+        # RL Metrikleri Hesaplama
         with torch.no_grad():
+            # Policy Loss (CrossEntropyLoss)
+            policy_loss = loss_id.item()
+            
+            # Value Loss (MSELoss)
+            value_loss = loss_score.item()
+            
+            # Entropy Loss (Logits'lerden entropy hesapla)
+            probs = F.softmax(id_logits, dim=1)
+            log_probs = F.log_softmax(id_logits, dim=1)
+            entropy = -(probs * log_probs).sum(dim=1).mean()
+            entropy_loss = entropy.item()
+            
+            # Reward Hesaplama (Accuracy ve skor hatasına göre)
             pred_id = torch.argmax(id_logits, dim=1)
             accuracy = (pred_id == target_id).float().mean().item()
+            # Reward: Accuracy yüksek, loss düşük olmalı
+            # Reward = accuracy * 100 - total_loss (normalize edilmiş)
+            episode_reward = accuracy * 100.0 - total_loss.item() * 10.0
+            
+            # Metrikleri kaydet
+            episode_rewards.append(episode_reward)
+            policy_losses.append(policy_loss)
+            value_losses.append(value_loss)
+            entropy_losses.append(entropy_loss)
+            
+            # Ortalama reward (son N episode)
+            avg_reward = sum(episode_rewards[-avg_reward_window:]) / min(len(episode_rewards), avg_reward_window)
 
         # Backward Pass
         total_loss.backward()
@@ -58,7 +91,9 @@ def train_lider_secim():
             print(
                 "Epoch: {epoch} | Total: {loss:.6f} | Loss(id): {loss_id:.6f} | "
                 "Loss(score): {loss_score:.6f} | Acc: {acc:.4f} | "
-                "Pred Score: {pred:.6f} | Real: {real:.6f}".format(
+                "Pred Score: {pred:.6f} | Real: {real:.6f} | "
+                "Reward: {reward:.2f} | Avg Reward: {avg_reward:.2f} | "
+                "Policy Loss: {policy_loss:.6f} | Value Loss: {value_loss:.6f} | Entropy: {entropy:.6f}".format(
                     epoch=epoch,
                     loss=total_loss.item(),
                     loss_id=loss_id.item(),
@@ -66,6 +101,11 @@ def train_lider_secim():
                     acc=accuracy,
                     pred=score_pred.item(),
                     real=data["target_skor"],
+                    reward=episode_reward,
+                    avg_reward=avg_reward,
+                    policy_loss=policy_loss,
+                    value_loss=value_loss,
+                    entropy=entropy_loss,
                 )
             )
 
