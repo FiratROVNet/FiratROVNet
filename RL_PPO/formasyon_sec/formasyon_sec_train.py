@@ -1,3 +1,9 @@
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -20,7 +26,7 @@ def train_formasyon_secim():
 
     print("🚀 Formasyon Seçim Eğitimi Başlıyor...")
 
-    for epoch in range(1000):  # 1000 iterasyon
+    for epoch in range(100):  # 1000 iterasyon
         # Veri üret
         data = filo.uret_rl_egitim_verisi()
         if data is None:
@@ -100,8 +106,9 @@ def train_formasyon_secim():
             )
 
     # Modeli Kaydet
-    torch.save(model.state_dict(), "formasyon_secim_modeli.pth")
-    print("✅ Model kaydedildi: formasyon_secim_modeli.pth")
+    model_path = os.path.join(REPO_ROOT, "RL_PPO", "formasyon_sec", "formasyon_secim_modeli.pth")
+    torch.save(model.state_dict(), model_path)
+    print(f"✅ Model kaydedildi: {model_path}")
 
 
 if __name__ == "__main__":

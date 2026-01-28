@@ -7,6 +7,12 @@ Bu modül, RL kullanarak ROV filosunda en uygun lideri belirler.
 - Action: Lider adayı seçimi
 - Reward: Başarılı lider seçimi ve görev tamamlama
 """
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import torch

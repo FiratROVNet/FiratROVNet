@@ -1,8 +1,14 @@
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 import torch
 import numpy as np
 from FiratROVNet.gnc import Filo
 from FiratROVNet import senaryo
-from lider_sec_model import LiderSecimAgi  # Model mimarisinin olduğu dosya
+from RL_PPO.lider_sec.lider_sec_model import LiderSecimAgi  # Model mimarisinin olduğu dosya
 
 
 def test_model():
@@ -11,7 +17,7 @@ def test_model():
     model = LiderSecimAgi(input_dim=35, num_rovs=8)
 
     # Model ağırlıklarını yükle
-    model_yolu = "lider_secim_modeli.pth"
+    model_yolu = os.path.join(REPO_ROOT, "RL_PPO", "lider_sec", "lider_secim_modeli.pth")
     try:
         model.load_state_dict(torch.load(model_yolu))
         model.eval()  # Test modu (deaktif dropout/batchnorm)

@@ -5,6 +5,12 @@ Bu script, senaryo verilerini kullanarak GAT modelini eğitir.
 500 epoch'ta bir yeni ortam oluşturur, diğer epoch'larda pozisyonları random olarak günceller.
 Tüm ayarlar config.py'den alınır.
 """
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from FiratROVNet.gat import Train
 from FiratROVNet.ortam import veri_uret
@@ -395,4 +401,5 @@ if __name__ == "__main__":
             pass
     
     print("\n✅ Eğitim tamamlandı!")
-    print(f"📁 Model kaydedildi: rov_modeli_multi.pth")
+    model_path = os.path.join(REPO_ROOT, "rov_modeli_multi.pth")
+    print(f"📁 Model kaydedildi: {model_path}")

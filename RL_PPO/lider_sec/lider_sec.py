@@ -1,3 +1,9 @@
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 from FiratROVNet.simulasyon import Ortam
 from FiratROVNet.gnc import Filo
 from FiratROVNet.gat import FiratAnalizci
@@ -20,7 +26,8 @@ app.filo = filo
 
 
 try: 
-    beyin = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
+    model_yolu = os.path.join(REPO_ROOT, "rov_modeli_multi.pth")
+    beyin = FiratAnalizci(model_yolu=model_yolu)
 except: 
     print("⚠️ Model yüklenemedi, AI devre dışı."); 
     beyin = None

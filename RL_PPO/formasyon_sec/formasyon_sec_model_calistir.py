@@ -1,3 +1,9 @@
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 import torch
 import numpy as np
 from FiratROVNet.gnc import Filo
@@ -11,7 +17,7 @@ def test_formasyon_model():
     model = FormasyonSecimAgi(input_dim=230, num_formations=20)
 
     # Model ağırlıklarını yükle
-    model_yolu = "formasyon_secim_modeli.pth"
+    model_yolu = os.path.join(REPO_ROOT, "RL_PPO", "formasyon_sec", "formasyon_secim_modeli.pth")
     try:
         model.load_state_dict(torch.load(model_yolu))
         model.eval()  # Test modu

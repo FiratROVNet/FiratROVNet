@@ -6,6 +6,13 @@ Bu script, senaryo verilerini kullanarak GAT modelini eğitir.
 25 epoch'ta bir yeni ortam oluşturur, diğer epoch'larda pozisyonları random olarak günceller.
 Tüm ayarlar config.py'den alınır.
 """
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+MODEL_PATH = os.path.join(REPO_ROOT, "rov_modeli_multi.pth")
 
 import sys
 import os
@@ -457,7 +464,7 @@ def main():
         print("=" * 80)
         print(f"   ⏱️  Toplam süre: {toplam_sure / 60:.2f} dakika ({toplam_sure:.2f} saniye)")
         print(f"   📉 En düşük loss: {best_loss:.4f}")
-        print(f"   💾 Model dosyası: rov_modeli_multi.pth")
+        print(f"   💾 Model dosyası: {MODEL_PATH}")
         print(f"   📊 Ortalama epoch süresi: {toplam_sure / 500:.3f} saniye")
         print()
         print("🎯 Model kullanıma hazır!")
@@ -468,7 +475,7 @@ def main():
         print("\n\n" + "=" * 80)
         print("⚠️ EĞİTİM KULLANICI TARAFINDAN İPTAL EDİLDİ")
         print("=" * 80)
-        print("   Mevcut model kaydedilmiş olabilir: rov_modeli_multi.pth")
+        print(f"   Mevcut model kaydedilmiş olabilir: {MODEL_PATH}")
         print("   Eğitime devam etmek için scripti tekrar çalıştırabilirsiniz.")
         print("=" * 80)
         print()

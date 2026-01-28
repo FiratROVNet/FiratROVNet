@@ -7,6 +7,12 @@ Bu modül, RL kullanarak Convex Hull ve formasyon seçimini entegre eder.
 - Action: Formasyon seçimi ve parametre optimizasyonu
 - Reward: Formasyon uygunluğu ve güvenlik
 """
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import torch

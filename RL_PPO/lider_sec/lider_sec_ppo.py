@@ -1,11 +1,17 @@
 """
-Formation with Proximal Policy Optimization (PPO)
-================================================
+Lider Seçimi (Leader Selection) with PPO
+======================================
 
-Bu modül, PPO algoritmasını kullanarak ROV filo formasyonlarını optimize eder.
-- Actor: Formasyon tipi politikası
-- Critic: Formasyon kalitesi değerlendirmesi
+Bu modül, PPO kullanarak ROV filosunda en uygun lideri belirler.
+- Actor: Lider seçim politikası
+- Critic: Lider adaylarını değerlendirme
 """
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import torch
@@ -13,14 +19,14 @@ import torch.nn as nn
 from torch.distributions import Categorical
 from collections import deque
 import math
-from typing import List, Tuple, Optional
+from typing import List, Dict, Tuple
 
 
-class FormasyonPPOActor(nn.Module):
-    """PPO Actor - Formasyon tipi seçimi"""
+class LiderSecPPOActor(nn.Module):
+    """PPO Actor - Lider seçimi"""
     
-    def __init__(self, state_size: int = 32, action_size: int = 20, hidden_size: int = 256):
-        super(FormasyonPPOActor, self).__init__()
+    def __init__(self, state_size: int = 30, action_size: int = 6, hidden_size: int = 128):
+        super(LiderSecPPOActor, self).__init__()
         self.fc1 = nn.Linear(state_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.policy_head = nn.Linear(hidden_size, action_size)
@@ -35,11 +41,11 @@ class FormasyonPPOActor(nn.Module):
         return action_probs
 
 
-class FormasyonPPOCritic(nn.Module):
-    """PPO Critic - Formasyon kalitesi değerlendirmesi"""
+class LiderSecPPOCritic(nn.Module):
+    """PPO Critic - Lider seçim değerlendirmesi"""
     
-    def __init__(self, state_size: int = 32, hidden_size: int = 256):
-        super(FormasyonPPOCritic, self).__init__()
+    def __init__(self, state_size: int = 30, hidden_size: int = 128):
+        super(LiderSecPPOCritic, self).__init__()
         self.fc1 = nn.Linear(state_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.value_head = nn.Linear(hidden_size, 1)
@@ -53,8 +59,8 @@ class FormasyonPPOCritic(nn.Module):
         return value
 
 
-class FormasyonPPO:
-    """PPO tabanlı formasyon seçimi ve optimizasyonu"""
+class LiderSecPPO:
+    """PPO tabanlı lider seçimi"""
     
     def __init__(self, num_rovs: int = 6, learning_rate: float = 0.0003,
                  gamma: float = 0.99, gae_lambda: float = 0.95,
@@ -75,9 +81,9 @@ class FormasyonPPO:
         self.num_rovs = num_rovs
         
         # Actor-Critic Networks
-        state_size = num_rovs * 3 + 6
-        self.actor = FormasyonPPOActor(state_size=state_size, action_size=20).to(self.device)
-        self.critic = FormasyonPPOCritic(state_size=state_size).to(self.device)
+        state_size = num_rovs * 5
+        self.actor = LiderSecPPOActor(state_size=state_size, action_size=num_rovs).to(self.device)
+        self.critic = LiderSecPPOCritic(state_size=state_size).to(self.device)
         
         # Optimizer
         self.optimizer = torch.optim.Adam([
@@ -103,59 +109,43 @@ class FormasyonPPO:
             'log_probs': [],
             'dones': []
         }
-        
-        # Formasyon tipleri
-        self.formasyon_types = [
-            "LINE", "V_SHAPE", "DIAMOND", "TRIANGLE",
-            "WEDGE", "X_SHAPE", "CIRCLE", "GRID_2x3",
-            "GRID_3x2", "SPIRAL", "RANDOM_COMPACT", "RANDOM_LOOSE",
-            "FORMATION_12", "FORMATION_13", "FORMATION_14",
-            "FORMATION_15", "FORMATION_16", "FORMATION_17",
-            "FORMATION_18", "FORMATION_19"
-        ]
     
-    def extract_state(self, rov_positions: List[Tuple[float, float, float]],
-                     leader_id: int, target_position: Tuple[float, float, float]) -> np.ndarray:
+    def extract_state(self, rovs_info: List[Dict]) -> np.ndarray:
         """
         State vektörünü oluştur
         
         Args:
-            rov_positions: [[x, y, z], ...] - Tüm ROV pozisyonları
-            leader_id: Lider ROV ID
-            target_position: Hedef pozisyonu (x, y, z)
-            
+            rovs_info: Her ROV hakkında:
+                {
+                    'id': int,
+                    'batarya': float (0-100),
+                    'konum': (x, y, z),
+                    'hedef_mesafesi': float,
+                    'merkezilik': float
+                }
+        
         Returns:
             State vektörü
         """
         state_list = []
         
-        # Her ROV'un normalizlenmiş pozisyonunu ekle
-        for pos in rov_positions:
-            state_list.extend([pos[0] / 500.0, pos[1] / 500.0, pos[2] / 500.0])
-        
-        # Lider pozisyonu
-        leader_pos = rov_positions[leader_id]
-        state_list.extend([leader_pos[0] / 500.0, leader_pos[1] / 500.0, leader_pos[2] / 500.0])
-        
-        # Hedef pozisyonu
-        state_list.extend([target_position[0] / 500.0, target_position[1] / 500.0])
-        
-        # Standart sapma (formasyon yoğunluğu)
-        positions = np.array(rov_positions)
-        stdev = np.std(positions)
-        state_list.append(stdev / 100.0)
-        
-        # Lider-hedef mesafesi
-        dist_to_target = np.sqrt(
-            (leader_pos[0] - target_position[0])**2 +
-            (leader_pos[1] - target_position[1])**2
-        )
-        state_list.append(dist_to_target / 500.0)
+        for rov_info in rovs_info:
+            # Batarya
+            state_list.append(rov_info['batarya'] / 100.0)
+            
+            # Konum
+            x, y, z = rov_info['konum']
+            state_list.append(x / 500.0)
+            state_list.append(y / 500.0)
+            state_list.append(z / 500.0)
+            
+            # Hedef mesafesi
+            state_list.append(rov_info['hedef_mesafesi'] / 500.0)
         
         state = np.array(state_list, dtype=np.float32)
         
         # Padding
-        state_size = self.num_rovs * 3 + 6
+        state_size = self.num_rovs * 5
         if len(state) < state_size:
             state = np.pad(state, (0, state_size - len(state)), mode='constant')
         
@@ -163,7 +153,7 @@ class FormasyonPPO:
     
     def select_action(self, state: np.ndarray) -> Tuple[int, float, float]:
         """
-        Aksiyon seçimi (formasyon tipi)
+        Aksiyon seçimi (lider seçimi)
         
         Args:
             state: State vektörü
@@ -184,19 +174,9 @@ class FormasyonPPO:
         
         return action, log_prob, value
     
-    def calculate_gae(self, rewards: List[float], values: List[float], 
+    def calculate_gae(self, rewards: List[float], values: List[float],
                      dones: List[bool]) -> Tuple:
-        """
-        Generalized Advantage Estimation hesapla
-        
-        Args:
-            rewards: Reward listesi
-            values: Value estimatları
-            dones: Done flagları
-            
-        Returns:
-            (advantages, returns)
-        """
+        """Generalized Advantage Estimation hesapla"""
         advantages = []
         gae = 0
         next_value = 0
@@ -218,27 +198,14 @@ class FormasyonPPO:
         
         return advantages, returns
     
-    def calculate_reward(self, rov_distances: np.ndarray, energy_efficiency: float,
-                        goal_aligned: bool = False) -> float:
-        """
-        Reward hesaplama
+    def calculate_reward(self, mission_success: bool, battery_level: float,
+                        time_efficiency: float) -> float:
+        """Reward hesaplama"""
+        mission_bonus = 100.0 if mission_success else -50.0
+        battery_reward = (battery_level / 100.0) * 30.0
+        efficiency_reward = time_efficiency * 20.0
         
-        Args:
-            rov_distances: ROV'lar arası mesafeler
-            energy_efficiency: Enerji verimliliği
-            goal_aligned: Hedef yönü uyumlu mu?
-            
-        Returns:
-            Reward değeri
-        """
-        formation_consistency = 1.0 - (np.std(rov_distances) / (np.mean(rov_distances) + 1e-6))
-        formation_reward = formation_consistency * 50.0
-        
-        energy_reward = energy_efficiency * 30.0
-        goal_bonus = 20.0 if goal_aligned else 0.0
-        collision_penalty = -100.0 if np.any(rov_distances < 10.0) else 0.0
-        
-        return formation_reward + energy_reward + goal_bonus + collision_penalty
+        return mission_bonus + battery_reward + efficiency_reward
     
     def remember(self, state: np.ndarray, action: int, reward: float,
                 log_prob: float, value: float, done: bool):
@@ -326,45 +293,42 @@ class FormasyonPPO:
             'dones': []
         }
     
-    def select_formation_with_ppo(self, rov_positions: List[Tuple[float, float, float]],
-                                 leader_id: int, target_position: Tuple[float, float, float],
-                                 filo_ref=None) -> Tuple[int, str]:
+    def select_leader_with_ppo(self, rovs_info: List[Dict], original_selection_func=None) -> int:
         """
-        PPO kullanarak en uygun formasyonu seç (Orijinal formasyon_sec ile entegreli)
+        PPO kullanarak lider seç (Orijinal seçim metodu ile entegreli)
         
         Args:
-            rov_positions: ROV pozisyonları
-            leader_id: Lider ROV ID
-            target_position: Hedef pozisyonu
-            filo_ref: Filo referansı (orijinal formasyon_sec metodu çağırısı için)
+            rovs_info: ROV bilgileri
+            original_selection_func: Orijinal lider seçim fonksiyonu (FiratROVNet.lider_sec)
             
         Returns:
-            (formasyon_id, formasyon_tipi_adı)
+            Seçilen lider ROV ID
         """
-        state = self.extract_state(rov_positions, leader_id, target_position)
+        state = self.extract_state(rovs_info)
         
         self.actor.eval()
         self.critic.eval()
         with torch.no_grad():
             action, _, _ = self.select_action(state)
         
-        formation_name = self.formasyon_types[action]
-        
-        # Eğer filo_ref varsa ve formasyon_sec metodu varsa, orijinal metodunu çağır
-        if filo_ref and hasattr(filo_ref, 'formasyon_sec') and callable(filo_ref.formasyon_sec):
+        # Eğer orijinal seçim fonksiyonu varsa, bunları karşılaştır
+        if original_selection_func and callable(original_selection_func):
             try:
-                # 50% ihtimalle orijinal formasyon_sec() metodunu çağır
+                # Orijinal seçim algoritmasını çağır
+                original_leader = original_selection_func(rovs_info)
+                
+                # 50% ihtimalle PPO, 50% ihtimalle orijinal seçimi kullan
                 if np.random.random() < 0.5:
-                    # Orijinal formasyon_sec metodunu çağır
-                    filo_ref.formasyon_sec(
-                        type=formation_name,
-                        margin=30.0,
-                        harita=False
-                    )
+                    action = original_leader
+                else:
+                    action = action
+                    
             except Exception as e:
-                print(f"⚠️ Orijinal formasyon_sec metodu başarısız: {e}")
+                print(f"⚠️ Orijinal lider seçimi başarısız: {e}")
+                # Fallback: PPO seçimini kullan
+                pass
         
-        return action, formation_name
+        return action
     
     def save_model(self, filepath: str):
         """Model'i kaydet"""

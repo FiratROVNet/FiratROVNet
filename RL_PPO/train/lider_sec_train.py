@@ -1,8 +1,14 @@
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from FiratROVNet.gnc import Filo
-from lider_sec_model import LiderSecimAgi
+from RL_PPO.lider_sec.lider_sec_model import LiderSecimAgi
 
 
 def train_lider_secim():
@@ -64,8 +70,9 @@ def train_lider_secim():
             )
 
     # Modeli Kaydet
-    torch.save(model.state_dict(), "lider_secim_modeli.pth")
-    print("✅ Model kaydedildi: lider_secim_modeli.pth")
+    model_path = os.path.join(REPO_ROOT, "RL_PPO", "lider_sec", "lider_secim_modeli.pth")
+    torch.save(model.state_dict(), model_path)
+    print(f"✅ Model kaydedildi: {model_path}")
 
 
 if __name__ == "__main__":

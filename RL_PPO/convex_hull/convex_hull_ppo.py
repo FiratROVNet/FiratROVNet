@@ -1,11 +1,17 @@
 """
-Git Path (Path Following) with Proximal Policy Optimization (PPO)
-=============================================================
+Convex Hull with Proximal Policy Optimization (PPO)
+================================================
 
-Bu modül, PPO kullanarak ROV'un hesapladığı yolu takip etmesini optimize eder.
-- Actor: Hareket seçim politikası
-- Critic: Yol takibi başarısı değerlendirmesi
+Bu modül, PPO kullanarak güvenli işlem alanı (Convex Hull) yaratılmasını optimize eder.
+- Actor: Hull parametreleri seçim politikası
+- Critic: Hull kalitesi değerlendirmesi
 """
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import torch
@@ -16,11 +22,11 @@ import math
 from typing import List, Tuple, Dict
 
 
-class GitPathPPOActor(nn.Module):
-    """PPO Actor - Yol takibi hareketi"""
+class ConvexHullPPOActor(nn.Module):
+    """PPO Actor - Hull parametreleri seçimi"""
     
-    def __init__(self, state_size: int = 20, action_size: int = 8, hidden_size: int = 128):
-        super(GitPathPPOActor, self).__init__()
+    def __init__(self, state_size: int = 50, action_size: int = 10, hidden_size: int = 256):
+        super(ConvexHullPPOActor, self).__init__()
         self.fc1 = nn.Linear(state_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.policy_head = nn.Linear(hidden_size, action_size)
@@ -35,11 +41,11 @@ class GitPathPPOActor(nn.Module):
         return action_probs
 
 
-class GitPathPPOCritic(nn.Module):
-    """PPO Critic - Yol takibi başarısı değerlendirmesi"""
+class ConvexHullPPOCritic(nn.Module):
+    """PPO Critic - Hull kalitesi değerlendirmesi"""
     
-    def __init__(self, state_size: int = 20, hidden_size: int = 128):
-        super(GitPathPPOCritic, self).__init__()
+    def __init__(self, state_size: int = 50, hidden_size: int = 256):
+        super(ConvexHullPPOCritic, self).__init__()
         self.fc1 = nn.Linear(state_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.value_head = nn.Linear(hidden_size, 1)
@@ -53,8 +59,8 @@ class GitPathPPOCritic(nn.Module):
         return value
 
 
-class GitPathPPO:
-    """PPO tabanlı yol takibi ve hareketi"""
+class ConvexHullPPO:
+    """PPO tabanlı Convex Hull oluşturma ve optimizasyonu"""
     
     def __init__(self, learning_rate: float = 0.0003, gamma: float = 0.99,
                  gae_lambda: float = 0.95, clip_ratio: float = 0.2,
@@ -73,8 +79,8 @@ class GitPathPPO:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Actor-Critic Networks
-        self.actor = GitPathPPOActor(state_size=20, action_size=8).to(self.device)
-        self.critic = GitPathPPOCritic(state_size=20).to(self.device)
+        self.actor = ConvexHullPPOActor(state_size=50, action_size=10).to(self.device)
+        self.critic = ConvexHullPPOCritic(state_size=50).to(self.device)
         
         # Optimizer
         self.optimizer = torch.optim.Adam([
@@ -101,68 +107,82 @@ class GitPathPPO:
             'dones': []
         }
         
-        # Hareket aksiyonları
-        self.action_map = {
-            0: (1.0, 0.0, 0.0),      # İleri
-            1: (-1.0, 0.0, 0.0),     # Geri
-            2: (0.0, 1.0, 0.0),      # Sağa
-            3: (0.0, -1.0, 0.0),     # Sola
-            4: (0.0, 0.0, 1.0),      # Yukarı
-            5: (0.0, 0.0, -1.0),     # Aşağı
-            6: (0.5, 0.5, 0.0),      # İleri-Sağ
-            7: (0.5, -0.5, 0.0),     # İleri-Sol
-        }
+        # Hull parametreleri
+        self.hull_params = [
+            (10.0, 1.5, 5.0),
+            (15.0, 2.0, 10.0),
+            (20.0, 2.5, 10.0),
+            (25.0, 3.0, 15.0),
+            (30.0, 2.0, 10.0),
+            (35.0, 2.5, 15.0),
+            (40.0, 3.0, 20.0),
+            (45.0, 2.5, 15.0),
+            (50.0, 3.0, 20.0),
+            (55.0, 3.5, 25.0),
+        ]
     
-    def extract_state(self, current_pos: Tuple[float, float, float],
-                     path: List[Tuple[float, float, float]],
-                     path_index: int,
-                     battery: float = 100.0) -> np.ndarray:
+    def extract_state(self, obstacles: List[Tuple[float, float, float]],
+                     rov_positions: List[Tuple[float, float, float]],
+                     target_area: Tuple[float, float, float] = None) -> np.ndarray:
         """State vektörünü oluştur"""
         state_list = []
         
-        # Mevcut pozisyon
-        state_list.extend([current_pos[0] / 500.0, current_pos[1] / 500.0, current_pos[2] / 500.0])
-        
-        # Sonraki hedef
-        if path_index < len(path):
-            next_target = path[path_index]
-            state_list.extend([next_target[0] / 500.0, next_target[1] / 500.0, next_target[2] / 500.0])
-            
-            dist_to_next = math.sqrt(
-                (current_pos[0] - next_target[0])**2 +
-                (current_pos[1] - next_target[1])**2 +
-                (current_pos[2] - next_target[2])**2
-            )
-            state_list.append(dist_to_next / 500.0)
+        # Engeller istatistikleri
+        if obstacles:
+            obs_array = np.array(obstacles)
+            state_list.append(len(obstacles) / 100.0)
+            state_list.append(np.mean(obs_array[:, 0]) / 500.0)
+            state_list.append(np.mean(obs_array[:, 1]) / 500.0)
+            state_list.append(np.mean(obs_array[:, 2]) / 500.0)
+            state_list.append(np.std(obs_array[:, 0]) / 500.0)
+            state_list.append(np.std(obs_array[:, 1]) / 500.0)
+            state_list.append(np.std(obs_array[:, 2]) / 500.0)
         else:
-            state_list.extend([0.0, 0.0, 0.0, 0.0])
+            state_list.extend([0.0] * 7)
         
-        # Son hedef
-        if len(path) > 0:
-            final_target = path[-1]
-            state_list.extend([final_target[0] / 500.0, final_target[1] / 500.0, final_target[2] / 500.0])
-            
-            dist_to_final = math.sqrt(
-                (current_pos[0] - final_target[0])**2 +
-                (current_pos[1] - final_target[1])**2 +
-                (current_pos[2] - final_target[2])**2
-            )
-            state_list.append(dist_to_final / 500.0)
+        # ROV pozisyonları istatistikleri
+        if rov_positions:
+            rov_array = np.array(rov_positions)
+            state_list.append(len(rov_positions) / 100.0)
+            state_list.append(np.mean(rov_array[:, 0]) / 500.0)
+            state_list.append(np.mean(rov_array[:, 1]) / 500.0)
+            state_list.append(np.mean(rov_array[:, 2]) / 500.0)
+            state_list.append(np.std(rov_array[:, 0]) / 500.0)
+            state_list.append(np.std(rov_array[:, 1]) / 500.0)
+            state_list.append(np.std(rov_array[:, 2]) / 500.0)
         else:
-            state_list.extend([0.0, 0.0, 0.0, 0.0])
+            state_list.extend([0.0] * 7)
         
-        # Yol ilerlemesi
-        state_list.append((path_index / (len(path) + 1)) if len(path) > 0 else 0.0)
+        # Hedef alan
+        if target_area:
+            state_list.extend([target_area[0] / 500.0, target_area[1] / 500.0, target_area[2] / 500.0])
+        else:
+            state_list.extend([0.0, 0.0, 0.0])
         
-        # Batarya
-        state_list.append(battery / 100.0)
+        # Minimum mesafe
+        min_dist = 1000.0
+        if obstacles and rov_positions:
+            for obs in obstacles:
+                for rov in rov_positions:
+                    dist = math.sqrt((obs[0]-rov[0])**2 + (obs[1]-rov[1])**2 + (obs[2]-rov[2])**2)
+                    min_dist = min(min_dist, dist)
+        state_list.append(min_dist / 500.0)
+        
+        # Hull hacmi tahmini
+        if obstacles:
+            obs_array = np.array(obstacles)
+            hull_volume_estimate = (np.max(obs_array[:, 0]) - np.min(obs_array[:, 0])) * \
+                                  (np.max(obs_array[:, 1]) - np.min(obs_array[:, 1])) * \
+                                  (np.max(obs_array[:, 2]) - np.min(obs_array[:, 2]))
+            state_list.append(hull_volume_estimate / 1000000.0)
+        else:
+            state_list.append(0.0)
         
         state = np.array(state_list, dtype=np.float32)
+        if len(state) < 50:
+            state = np.pad(state, (0, 50 - len(state)), mode='constant')
         
-        if len(state) < 20:
-            state = np.pad(state, (0, 20 - len(state)), mode='constant')
-        
-        return state[:20]
+        return state[:50]
     
     def select_action(self, state: np.ndarray) -> Tuple[int, float, float]:
         """Aksiyon seçimi"""
@@ -203,17 +223,15 @@ class GitPathPPO:
         
         return advantages, returns
     
-    def calculate_reward(self, distance_to_target: float, distance_to_final: float,
-                        energy_used: float, collision: bool,
-                        reached_waypoint: bool) -> float:
+    def calculate_reward(self, hull_validity: bool, coverage: float,
+                        safety_margin: float, computation_time: float) -> float:
         """Reward hesaplama"""
-        target_reward = (100.0 - distance_to_target) / 100.0 * 30.0
-        final_reward = (500.0 - distance_to_final) / 500.0 * 20.0
-        energy_penalty = -energy_used * 0.1
-        collision_penalty = -100.0 if collision else 0.0
-        waypoint_bonus = 50.0 if reached_waypoint else 0.0
+        validity_bonus = 50.0 if hull_validity else -50.0
+        coverage_reward = coverage * 30.0
+        safety_reward = min(safety_margin / 50.0, 1.0) * 20.0
+        speed_penalty = -computation_time * 10.0
         
-        return target_reward + final_reward + energy_penalty + collision_penalty + waypoint_bonus
+        return validity_bonus + coverage_reward + safety_reward + speed_penalty
     
     def remember(self, state: np.ndarray, action: int, reward: float,
                 log_prob: float, value: float, done: bool):
@@ -301,49 +319,59 @@ class GitPathPPO:
             'dones': []
         }
     
-    def get_movement_with_ppo(self, current_pos: Tuple[float, float, float],
-                             path: List[Tuple[float, float, float]],
-                             path_index: int,
-                             battery: float = 100.0,
-                             rov_ref=None) -> Tuple[Tuple[float, float, float], float]:
+    def select_hull_params_with_ppo(self, obstacles: List[Tuple[float, float, float]],
+                                    rov_positions: List[Tuple[float, float, float]],
+                                    hull_manager_ref=None) -> Dict[str, float]:
         """
-        PPO kullanarak yol takibi hareketi belirle (Orijinal git metodu ile entegreli)
+        PPO kullanarak en uygun hull parametrelerini seç (Orijinal convex_hull_3d ile entegreli)
         
         Args:
-            current_pos: Mevcut pozisyon
-            path: Takip edilecek yol
-            path_index: Yoldaki indeks
-            battery: Batarya seviyesi
-            rov_ref: ROV referansı (orijinal git metodu çağırısı için)
+            obstacles: Engel pozisyonları
+            rov_positions: ROV pozisyonları
+            hull_manager_ref: Hull manager referansı (orijinal convex_hull_3d için)
             
         Returns:
-            (hareket_vektörü, güç)
+            Hull parametreleri: {'offset': float, 'alpha': float, 'buffer_radius': float}
         """
-        state = self.extract_state(current_pos, path, path_index, battery)
+        state = self.extract_state(obstacles, rov_positions)
         
         self.actor.eval()
         self.critic.eval()
         with torch.no_grad():
             action, _, _ = self.select_action(state)
         
-        movement = self.action_map[action]
-        power = 0.8 + (battery / 100.0) * 0.2
+        offset, alpha, buffer_radius = self.hull_params[action]
         
-        # Eğer ROV referansı varsa ve git metodu varsa, orijinal metodunu çağır
-        if rov_ref and hasattr(rov_ref, 'git') and callable(rov_ref.git):
+        params = {
+            'offset': offset,
+            'alpha': alpha,
+            'buffer_radius': buffer_radius,
+            'channel_width': buffer_radius * 2.0
+        }
+        
+        # Eğer hull_manager_ref varsa, orijinal convex_hull_3d metodunu çağır
+        if hull_manager_ref and hasattr(hull_manager_ref, 'convex_hull_3d'):
             try:
-                # Sonraki hedef noktaya git
-                if path_index < len(path):
-                    next_target = path[path_index]
+                # Engelleri 3D noktaları olarak düzenle
+                if obstacles:
+                    # Testin ortası
+                    test_point = tuple(np.mean(rov_positions, axis=0)) if rov_positions else (0, 0, 0)
                     
-                    # 60% ihtimalle orijinal git() metodunu çağır
-                    if np.random.random() < 0.6:
-                        rov_ref.git(next_target, power=power)
-                        return next_target, power
+                    # Orijinal convex_hull_3d metodunu çağır
+                    hull_result = hull_manager_ref.convex_hull_3d(
+                        points=obstacles,
+                        test_point=test_point,
+                        margin=offset
+                    )
+                    
+                    # Hull sonucunu params'e ekle
+                    if hull_result and 'center' in hull_result:
+                        params['hull_center'] = hull_result['center']
+                        params['hull_valid'] = hull_result['inside']
             except Exception as e:
-                print(f"⚠️ Orijinal git metodu başarısız: {e}")
+                print(f"⚠️ Orijinal convex_hull başarısız: {e}")
         
-        return movement, power
+        return params
     
     def save_model(self, filepath: str):
         """Model'i kaydet"""
