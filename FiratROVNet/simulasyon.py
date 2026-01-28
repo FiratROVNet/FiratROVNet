@@ -9,6 +9,12 @@ except Exception as e:
     print(f"⚠️ [HARITA] Backend ayarlanamadı: {e}")
     pass  # Fallback için devam et
 
+from panda3d.core import loadPrcFileData
+
+# Log seviyesini 'fatal' yaparak sadece hayati hataları gösterir, bilgi mesajlarını gizler
+loadPrcFileData('', 'notify-level fatal')
+loadPrcFileData('', 'notify-level-util fatal')
+
 from ursina import *
 from ursina import Vec3  # Vec3'ü doğrudan import et
 import numpy as np
@@ -141,6 +147,192 @@ class ROV(Entity):
         # İletişim durumu (liderle iletişim var mı?)
         self.lider_ile_iletisim = False  # Liderle iletişim durumu
         self.yuzeyde = False  # Yüzeyde mi? (z_depth >= 0, yani derinlik pozitif) 
+
+    def ekle(self, konum=None):
+        """
+        ROV'u simülasyona ekler (eğer henüz eklenmemişse).
+        
+        Args:
+            konum: (x, y, z) tuple veya None (varsayılan pozisyon kullanılır)
+        
+        Returns:
+            bool: İşlem başarılı ise True, aksi halde False
+        
+        Örnek:
+            rov = ROV(5, position=(10, -5, 20))
+            rov.ekle()  # Varsayılan pozisyonda ekle
+            rov.ekle((50, -10, 30))  # Belirtilen pozisyonda ekle
+        """
+        # Environment referansı kontrolü
+        if not hasattr(self, 'environment_ref') or self.environment_ref is None:
+            print(f"⚠️ ROV-{self.id} eklenemedi: environment_ref bulunamadı")
+            return False
+        
+        ortam = self.environment_ref
+        
+        # ROV listesi kontrolü
+        if not hasattr(ortam, 'rovs'):
+            ortam.rovs = []
+        
+        # Eğer bu ID'de zaten ROV varsa, ekleme yapma
+        if self.id < len(ortam.rovs) and ortam.rovs[self.id] is not None:
+            print(f"⚠️ ROV-{self.id} zaten mevcut. Önce çıkarmak için: rov.cikar()")
+            return False
+        
+        # Pozisyon ayarla
+        if konum is not None:
+            if isinstance(konum, (tuple, list)) and len(konum) == 3:
+                x, y, z = konum  # Simülasyon koordinat sistemi: (x_2d, y_2d, z_depth)
+                # ROV için koordinat dönüşümü: sim_to_ursina(x, z, y) -> (x, z_depth, y_2d)
+                ursina_x, ursina_y, ursina_z = sim_to_ursina(x, z, y)
+                self.position = Vec3(ursina_x, ursina_y, ursina_z)
+        
+        # Environment referansını ayarla
+        self.environment_ref = ortam
+        
+        # Filo referansını ayarla (varsa)
+        if hasattr(ortam, 'filo'):
+            self.filo_ref = ortam.filo
+        
+        # ROV listesine ekle (ID'ye göre yerleştir)
+        while len(ortam.rovs) <= self.id:
+            ortam.rovs.append(None)
+        ortam.rovs[self.id] = self
+        
+        # Verbose kontrolü
+        verbose = False
+        if hasattr(ortam, 'verbose'):
+            verbose = ortam.verbose
+        
+        if verbose:
+            pos_str = f"({konum[0]}, {konum[1]}, {konum[2]})" if konum else "varsayılan"
+            print(f"✅ ROV-{self.id} eklendi: {pos_str}")
+        
+        return True
+    
+    def cikar(self):
+        """
+        ROV'u simülasyondan çıkarır.
+        ROV çıkarıldıktan sonra sistem otomatik olarak kalan ROV'ların ID'lerini 
+        0'dan başlayarak yeniden numaralandırır.
+        
+        Returns:
+            bool: İşlem başarılı ise True, aksi halde False
+        
+        Örnek:
+            rov.cikar()  # ROV'u simülasyondan çıkar ve ID'leri yeniden numaralandır
+        """
+        # Environment referansı kontrolü
+        if not hasattr(self, 'environment_ref') or self.environment_ref is None:
+            print(f"⚠️ ROV çıkarılamadı: environment_ref bulunamadı")
+            return False
+        
+        ortam = self.environment_ref
+        
+        # ROV listesi kontrolü
+        if not hasattr(ortam, 'rovs') or not ortam.rovs:
+            print(f"⚠️ ROV bulunamadı (ROV listesi boş)")
+            return False
+        
+        # ROV'un listede olup olmadığını kontrol et
+        rov_bulundu = False
+        for i, rov in enumerate(ortam.rovs):
+            if rov is self:
+                rov_bulundu = True
+                break
+        
+        if not rov_bulundu:
+            print(f"⚠️ ROV listede bulunamadı")
+            return False
+        
+        # ROV entity'sini destroy et
+        try:
+            # Görünürlüğü kapat
+            if hasattr(self, 'visible'):
+                self.visible = False
+            if hasattr(self, 'enabled'):
+                self.enabled = False
+            
+            # Label'ı destroy et
+            if hasattr(self, 'label') and self.label is not None:
+                try:
+                    if hasattr(self.label, 'destroy'):
+                        self.label.destroy()
+                except Exception:
+                    pass
+            
+            # Safety zone'u destroy et
+            if hasattr(self, 'safety_zone') and self.safety_zone is not None:
+                try:
+                    if hasattr(self.safety_zone, 'destroy'):
+                        self.safety_zone.destroy()
+                except Exception:
+                    pass
+            
+            # Engel çizgisini destroy et
+            if hasattr(self, 'engel_cizgi') and self.engel_cizgi is not None:
+                try:
+                    if hasattr(self.engel_cizgi, 'destroy'):
+                        self.engel_cizgi.destroy()
+                except Exception:
+                    pass
+            
+            # İletişim çizgilerini destroy et
+            if hasattr(self, 'iletisim_rovlari') and self.iletisim_rovlari:
+                for rov_id, iletisim_info in self.iletisim_rovlari.items():
+                    if isinstance(iletisim_info, dict) and 'cizgi' in iletisim_info:
+                        cizgi = iletisim_info['cizgi']
+                        if cizgi is not None and hasattr(cizgi, 'destroy'):
+                            try:
+                                cizgi.destroy()
+                            except Exception:
+                                pass
+            
+            # Parent'ı kaldır
+            if hasattr(self, 'parent'):
+                self.parent = None
+            
+            # Entity'yi destroy et
+            if hasattr(self, 'destroy'):
+                self.destroy()
+            
+            # Scene'den de kaldırmayı dene (eğer mümkünse)
+            try:
+                from ursina import scene
+                if hasattr(scene, 'entities') and self in scene.entities:
+                    scene.entities.remove(self)
+            except Exception:
+                pass
+        except Exception as e:
+            # Hata olsa bile devam et
+            verbose = False
+            if hasattr(ortam, 'verbose'):
+                verbose = ortam.verbose
+            if verbose:
+                eski_id = getattr(self, 'id', '?')
+                print(f"⚠️ ROV-{eski_id} destroy hatası: {e}")
+        finally:
+            # ROV listesinden çıkar (self referansını bul ve None yap)
+            for i, rov in enumerate(ortam.rovs):
+                if rov is self:
+                    ortam.rovs[i] = None
+                    break
+        
+        # Eski ID'yi sakla (yeniden numaralandırmadan önce)
+        eski_id = getattr(self, 'id', '?')
+        
+        # ROV ID'lerini yeniden numaralandır (0'dan başlayarak)
+        ortam._rov_id_yeniden_numaralandir()
+        
+        # Verbose kontrolü
+        verbose = False
+        if hasattr(ortam, 'verbose'):
+            verbose = ortam.verbose
+        
+        if verbose:
+            print(f"✅ ROV-{eski_id} çıkarıldı ve ID'ler yeniden numaralandırıldı")
+        
+        return True
 
     def update(self):
         # Manuel hareket kontrolü (sürekli hareket için)
@@ -783,6 +975,10 @@ class ROV(Entity):
         
         # Tüm ROV'ları kontrol et (sadece kendinden büyük ID'li ROV'lara çizgi çiz, çift çizgiyi önlemek için)
         for diger_rov in self.environment_ref.rovs:
+            # None kontrolü (çıkarılmış ROV'ları atla)
+            if diger_rov is None:
+                continue
+            
             if diger_rov.id == self.id:
                 continue
             
@@ -931,6 +1127,9 @@ class ROV(Entity):
         # Lider ROV'u bul
         lider_rov = None
         for rov in self.environment_ref.rovs:
+            # None kontrolü (çıkarılmış ROV'ları atla)
+            if rov is None:
+                continue
             if rov.role == 1:
                 lider_rov = rov
                 break
@@ -976,6 +1175,9 @@ class ROV(Entity):
         
         # Diğer ROV'larla çarpışma (intersects zaten kontrol ediyor, burada sadece momentum hesaplaması)
         for diger_rov in self.environment_ref.rovs:
+            # None kontrolü (çıkarılmış ROV'ları atla)
+            if diger_rov is None:
+                continue
             if diger_rov.id == self.id:
                 continue
             
@@ -1183,7 +1385,8 @@ class Minimap(Entity):
         self.goster_a_star = bool(a_star)
         
         status = "AÇIK" if self.visible else "KAPALI"
-        print(f"📡 [RADAR] Sistem: {status} | Havuz: {self.havuz_genisligi}m")
+        if getattr(self.ortam_ref, "verbose", False):
+            print(f"📡 [RADAR] Sistem: {status} | Havuz: {self.havuz_genisligi}m")
 # ============================================================
 # HARİTA SİSTEMİ (Matplotlib - Ayrı Pencere)
 # ============================================================
@@ -1225,7 +1428,8 @@ class Harita:
         # Havuz genişliği
         self.havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
         
-        print("✅ Harita sistemi hazır. Kullanım: harita.goster(True)")
+        if getattr(self.ortam_ref, "verbose", False):
+            print("✅ Harita sistemi hazır. Kullanım: harita.goster(True)")
     
     def _setup_figure(self):
         """Bu fonksiyon mutlaka ANA THREAD içinde çağrılmalıdır."""
@@ -1847,7 +2051,8 @@ class Harita:
         # Eğer sadece convex parametresi verilmişse
         if durum is None:
             self.goster_convex = convex if isinstance(convex, bool) else (str(convex).lower() == "true")
-            print(f"✅ [HARITA] Convex hull görüntüleme: {self.goster_convex}")
+            if getattr(self.ortam_ref, "verbose", False):
+                print(f"✅ [HARITA] Convex hull görüntüleme: {self.goster_convex}")
             return
         
         # String gelme ihtimaline karşı kontrol ("True" -> True)
@@ -1866,7 +2071,7 @@ class Harita:
         
         # Convex hull görüntüleme ayarı
         self.goster_convex = convex
-        if convex:
+        if convex and getattr(self.ortam_ref, "verbose", False):
             print(f"✅ [HARITA] Convex hull görüntüleme aktif: {self.goster_convex}")
             if self.convex_hull_data:
                 print(f"   Hull data mevcut: {self.convex_hull_data.get('hull') is not None}")
@@ -2220,13 +2425,25 @@ class Ortam:
             title="FıratROVNet Simülasyonu"
         )
         
-        window.fullscreen = False
-        window.exit_button.visible = False
-        window.fps_counter.enabled = True
-        window.size = (1280, 720)  # Daha geniş pencere boyutu (16:9 aspect ratio)
-        window.center_on_screen()
-        application.run_in_background = True
-        window.color = color.rgb(10, 30, 50)  # Arka plan
+        if not self.verbose:
+            from contextlib import redirect_stdout, redirect_stderr
+            import io
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                window.fullscreen = False
+                window.exit_button.visible = False
+                window.fps_counter.enabled = True
+                window.size = (1280, 720)  # Daha geniş pencere boyutu (16:9 aspect ratio)
+                window.center_on_screen()
+                application.run_in_background = True
+                window.color = color.rgb(10, 30, 50)  # Arka plan
+        else:
+            window.fullscreen = False
+            window.exit_button.visible = False
+            window.fps_counter.enabled = True
+            window.size = (1280, 720)  # Daha geniş pencere boyutu (16:9 aspect ratio)
+            window.center_on_screen()
+            application.run_in_background = True
+            window.color = color.rgb(10, 30, 50)  # Arka plan
         
         # Sağ tıklama menüsünü kapat (mouse.right event'lerini yakalamak için)
         try:
@@ -2256,13 +2473,28 @@ class Ortam:
         self.WATER_SURFACE_Y_BASE = su_hacmi_merkez_y + (su_hacmi_yuksekligi / 2)  # Su yüzeyi base pozisyonu
         
         # 1. GÖRÜNTÜ AYARI: texture_scale değerini (10, 10) gibi makul bir değere düşürdük.
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        water_texture_path = os.path.join(repo_root, "Models-3D", "water", "my_models", "water4.jpg")
+        normal_map_path = os.path.join(repo_root, "Models-3D", "water", "my_models", "map", "water4_normal.png")
+        water_texture = None
+        if os.path.exists(water_texture_path):
+            try:
+                water_texture = Texture(water_texture_path)
+            except Exception:
+                water_texture = None
+        normals_texture = None
+        if os.path.exists(normal_map_path):
+            try:
+                normals_texture = Texture(normal_map_path)
+            except Exception:
+                normals_texture = None
         self.ocean_surface = Entity(
             model="plane",
             scale=(500, 1, 500),
             position=(0, self.WATER_SURFACE_Y_BASE, 0),
-            texture="./Models-3D/water/my_models/water4.jpg",
+            texture=water_texture,
             texture_scale=(1, 1),  # 50 yerine 10 yaptık, artık küçük kareler görünmeyecek
-            normals=Texture('./Models-3D/water/my_models/map/water4_normal.png'),
+            normals=normals_texture,
             double_sided=True,
             color=color.rgb(0.3, 0.5, 0.9),
             alpha=0.25,  # Biraz daha görünür yaptık
@@ -2349,7 +2581,7 @@ class Ortam:
             # ============================================================
             # ADA OLUŞTURMA AYARLARI
             # ============================================================
-            n_islands = random.randint(3, 10)  # 1-7 arası random ada sayısı
+            n_islands = random.randint(2, 4)  # Azaltıldı: 1-3 arası random ada sayısı
             
             # Engel listesini hazırla (eğer yoksa oluştur)
             if not hasattr(self, 'engeller'):
@@ -2528,7 +2760,8 @@ class Ortam:
             # Filo referansını al (varsa)
             filo_ref = getattr(self, 'filo', None)
             self.harita = Harita(ortam_ref=self, pencere_boyutu=(800, 800), filo_ref=filo_ref)
-            print("✅ Harita sistemi başarıyla oluşturuldu (Matplotlib penceresi)")
+            if self.verbose:
+                print("✅ Harita sistemi başarıyla oluşturuldu (Matplotlib penceresi)")
         except Exception as e:
             print(f"❌ Harita oluşturulurken hata: {e}")
             import traceback
@@ -2540,7 +2773,8 @@ class Ortam:
             # Filo referansını al (varsa)
             filo_ref = getattr(self, 'filo', None)
             self.minimap = Minimap(ortam_ref=self, filo_ref=filo_ref, visible=False)
-            print("✅ Minimap sistemi başarıyla oluşturuldu")
+            if self.verbose:
+                print("✅ Minimap sistemi başarıyla oluşturuldu")
         except Exception as e:
             print(f"❌ Minimap oluşturulurken hata: {e}")
             import traceback
@@ -2676,10 +2910,11 @@ class Ortam:
             self.ocean_taban.scale = (2.2 * oran, mevcut_y, 1.8 * oran)
         # ============================================================
         
-        # Ada pozisyonlarını koru (eğer varsa)
+        # Ada pozisyonlarını koru (eğer varsa, None değerleri hariç)
         ada_positions_backup = []
         if hasattr(self, 'island_positions') and self.island_positions:
-            ada_positions_backup = self.island_positions.copy()
+            # None değerlerini filtrele
+            ada_positions_backup = [ada for ada in self.island_positions if ada is not None]
         
         # Engeller (Kayalar) - Listeyi sıfırla
         self.engeller = []
@@ -2921,21 +3156,26 @@ class Ortam:
             color=color.clear
         )
 
-        print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {n_engels} Gri Kaya.")
+        if self.verbose:
+            print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {n_engels} Gri Kaya.")
     
     # --- Ada ve ROV Konum Yönetimi (Senaryo Modülü İçin) ---
     def Ada(self, ada_id, x=None, y=None):
         """
-        Ada pozisyonunu değiştirir veya konumunu döndürür.
+        Ada pozisyonunu değiştirir, konumunu döndürür, yeni ada ekler veya var olan adayı çıkarır.
         Z (derinlik) değeri mevcut değerinden korunur, değiştirilmez.
         
         Args:
             ada_id: Ada ID'si
-            x: Yeni X koordinatı (Simülasyon koordinat sistemi, None ise mevcut konumu döndürür)
-            y: Yeni Y koordinatı (Simülasyon koordinat sistemi - İleri-Geri, None ise mevcut konumu döndürür)
+            x: Yeni X koordinatı veya "ekle"/"cikar" komutu
+                - "ekle": Yeni ada ekle (y parametresi konum tuple'ı olmalı: (x, y) veya (x, y, radius))
+                - "cikar": Var olan adayı çıkar
+                - None: Mevcut konumu döndürür
+                - Sayı: Yeni X koordinatı (y parametresi de verilmeli)
+            y: Yeni Y koordinatı (Simülasyon koordinat sistemi - İleri-Geri) veya konum tuple'ı (x="ekle" ise)
         
         Returns:
-            tuple: (x, y) koordinatları veya None
+            tuple: (x, y) koordinatları veya None veya True/False (işlem başarılı/başarısız)
         
         Örnek:
             # Ada konumunu değiştir (z değeri korunur)
@@ -2943,7 +3183,231 @@ class Ortam:
             
             # Ada konumunu al
             konum = app.Ada(0)  # (x, y) tuple döner
+            
+            # Yeni ada ekle
+            app.Ada(5, "ekle", (50, 60))  # Ada ID=5, X=50, Y=60, varsayılan radius
+            app.Ada(6, "ekle", (70, 80, 40.0))  # Ada ID=6, X=70, Y=80, radius=40.0
+            
+            # Var olan adayı çıkar
+            app.Ada(5, "cikar")  # Ada ID=5'i çıkar
         """
+        # Ada ekleme işlemi
+        if x == "ekle":
+            if not isinstance(y, (tuple, list)) or len(y) < 2:
+                print(f"⚠️ Ada ekleme hatası: Konum tuple'ı (x, y) veya (x, y, radius) formatında olmalı")
+                return False
+            
+            # Konum bilgisini al
+            konum_x, konum_y = y[0], y[1]
+            radius_verildi = len(y) >= 3
+            if radius_verildi:
+                radius = y[2]
+            else:
+                radius = None  # Scale'den hesaplanacak
+            
+            # Ada pozisyonları ve entity listelerini başlat
+            if not hasattr(self, 'island_positions'):
+                self.island_positions = []
+            if not hasattr(self, 'island_entities'):
+                self.island_entities = []
+            
+            # Ada ID'si için yeterli kapasite yoksa genişlet
+            while len(self.island_positions) <= ada_id:
+                self.island_positions.append(None)  # Placeholder
+            while len(self.island_entities) <= ada_id:
+                self.island_entities.append(None)  # Placeholder
+            
+            # Eğer bu ID'de zaten ada varsa, ekleme yapma
+            if ada_id < len(self.island_entities) and self.island_entities[ada_id] is not None:
+                print(f"⚠️ Ada-{ada_id} zaten mevcut. Önce çıkarmak için: Ada({ada_id}, 'cikar')")
+                return False
+            
+            if ada_id < len(self.island_positions) and self.island_positions[ada_id] is not None:
+                print(f"⚠️ Ada-{ada_id} zaten mevcut. Önce çıkarmak için: Ada({ada_id}, 'cikar')")
+                return False
+            
+            # Ada modeli ve texture yolları
+            island_model_path = "./Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
+            island_texture_path = "./Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
+            
+            # Ada Y pozisyonu (su yüzeyinin üstünde sabit)
+            if hasattr(self, 'WATER_SURFACE_Y_BASE'):
+                max_wave_height = self.WATER_SURFACE_Y_BASE + 1.5
+            else:
+                max_wave_height = 0.0
+            island_y_position = max_wave_height + 5
+            
+            # Ada ölçek faktörü (normal sistemdeki gibi)
+            # Normal sistemde: ISLAND_BASE_SCALE * random.uniform(0.7, 1.1)
+            ISLAND_BASE_SCALE = 0.25
+            ISLAND_SCALE_RANDOM = (0.7, 1.1)
+            
+            # Scale ve radius hesaplama (normal sistemdeki mantık)
+            if radius_verildi:
+                # Radius verilmiş, scale'i radius'a göre hesapla
+                # Normal sistemde: estimated_radius = (140.0 * scale_factor) / 2
+                # Tersine: scale_factor = (radius * 2) / 140.0
+                estimated_scale = (radius * 2) / 140.0
+                # Normal sistemdeki sınırlar içinde tut
+                min_scale = ISLAND_BASE_SCALE * ISLAND_SCALE_RANDOM[0]  # 0.175
+                max_scale = ISLAND_BASE_SCALE * ISLAND_SCALE_RANDOM[1]  # 0.275
+                scale_factor = max(min_scale, min(max_scale, estimated_scale))
+                # Scale'e göre gerçek radius'u hesapla (normal sistemdeki gibi)
+                radius = (140.0 * scale_factor) / 2
+            else:
+                # Radius verilmemiş, normal sistemdeki gibi random scale kullan
+                scale_factor = ISLAND_BASE_SCALE * random.uniform(*ISLAND_SCALE_RANDOM)
+                # Scale'den radius hesapla (normal sistemdeki gibi)
+                radius = (140.0 * scale_factor) / 2
+            
+            visual_scale = (scale_factor, scale_factor, scale_factor)
+            
+            # Simülasyon koordinat sisteminden Ursina'ya dönüştür
+            # Sim: (x, y_forward, z_depth) -> Ursina: (x, z_depth, y_forward)
+            # Ada için z_depth = 0 (su yüzeyinin üstünde)
+            z_depth = 0
+            ursina_x, ursina_y, ursina_z = sim_to_ursina(konum_x, konum_y, z_depth)
+            
+            # Ada entity oluştur
+            if os.path.exists(island_model_path):
+                island = Entity(
+                    model=island_model_path,
+                    position=(ursina_x, island_y_position, ursina_z),  # Ursina koordinat sistemi: (x, y_up, z_forward)
+                    scale=visual_scale,
+                    texture=island_texture_path if os.path.exists(island_texture_path) else None,
+                    collider='box',
+                    unlit=False,
+                    double_sided=True,
+                    color=color.white,
+                    alpha=1.0,
+                    transparent=True,
+                    render_queue=0
+                )
+                
+                # Gerçek yarıçap hesaplama (modelden otomatik)
+                try:
+                    if hasattr(island.model, 'bounds') and island.model.bounds:
+                        min_b, max_b = island.model.bounds
+                        model_size = max_b - min_b
+                        island_radius = max(model_size.x, model_size.z) * island.world_scale.x / 2
+                    else:
+                        island_radius = radius
+                except Exception:
+                    island_radius = radius
+            else:
+                # Fallback: Cube model
+                island = Entity(
+                    model='cube',
+                    position=(ursina_x, island_y_position, ursina_z),
+                    scale=(radius * 2, 10, radius * 2),
+                    color=color.green,
+                    collider='box',
+                    unlit=True
+                )
+                island_radius = radius
+            
+            # İlk adayı self.island olarak sakla (geriye uyumluluk için)
+            if ada_id == 0:
+                self.island = island
+            
+            # Ada entity'sini ve pozisyonunu sakla
+            self.island_entities[ada_id] = island
+            self.island_positions[ada_id] = (konum_x, konum_y, island_radius)
+            
+            # Verbose kontrolü
+            verbose = False
+            if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose'):
+                verbose = self.ortam.verbose
+            elif hasattr(self, 'verbose'):
+                verbose = self.verbose
+            
+            if verbose:
+                print(f"✅ Ada-{ada_id} eklendi: ({konum_x}, {konum_y}), radius={island_radius:.2f}")
+            
+            return True
+        
+        # Ada çıkarma işlemi
+        elif x == "cikar":
+            # Verbose kontrolü (başta yapılmalı)
+            verbose = False
+            if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose'):
+                verbose = self.ortam.verbose
+            elif hasattr(self, 'verbose'):
+                verbose = self.verbose
+            
+            # Ada pozisyonları kontrolü
+            if not hasattr(self, 'island_positions') or not self.island_positions:
+                print(f"⚠️ Ada-{ada_id} bulunamadı (ada listesi boş)")
+                return False
+            
+            if ada_id >= len(self.island_positions) or self.island_positions[ada_id] is None:
+                print(f"⚠️ Ada-{ada_id} bulunamadı")
+                return False
+            
+            # Ada entity'sini destroy et
+            if hasattr(self, 'island_entities') and self.island_entities:
+                if ada_id < len(self.island_entities) and self.island_entities[ada_id] is not None:
+                    island_entity = self.island_entities[ada_id]
+                    try:
+                        # Görünürlüğü kapat
+                        if hasattr(island_entity, 'visible'):
+                            island_entity.visible = False
+                        if hasattr(island_entity, 'enabled'):
+                            island_entity.enabled = False
+                        # Parent'ı kaldır
+                        if hasattr(island_entity, 'parent'):
+                            island_entity.parent = None
+                        # Entity'yi destroy et
+                        if hasattr(island_entity, 'destroy'):
+                            island_entity.destroy()
+                        # Scene'den de kaldırmayı dene (eğer mümkünse)
+                        try:
+                            from ursina import scene
+                            if hasattr(scene, 'entities') and island_entity in scene.entities:
+                                scene.entities.remove(island_entity)
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        # Hata olsa bile devam et
+                        if verbose:
+                            print(f"⚠️ Ada-{ada_id} destroy hatası: {e}")
+                    finally:
+                        self.island_entities[ada_id] = None
+            
+            # Ada hitbox'larını sil (eğer varsa)
+            # Not: Hitbox'ları destroy etmek yeterli, listeyi değiştirmeye gerek yok
+            # Çünkü hitbox'lar None kontrolü ile zaten atlanır
+            if hasattr(self, 'island_hitboxes') and self.island_hitboxes:
+                ada_hitbox_start = ada_id * 5
+                for hitbox_idx in range(ada_hitbox_start, min(ada_hitbox_start + 5, len(self.island_hitboxes))):
+                    if hitbox_idx < len(self.island_hitboxes):
+                        hitbox = self.island_hitboxes[hitbox_idx]
+                        if hitbox is not None:
+                            try:
+                                if hasattr(hitbox, 'visible'):
+                                    hitbox.visible = False
+                                if hasattr(hitbox, 'enabled'):
+                                    hitbox.enabled = False
+                                if hasattr(hitbox, 'parent'):
+                                    hitbox.parent = None
+                                if hasattr(hitbox, 'destroy'):
+                                    hitbox.destroy()
+                            except Exception:
+                                pass
+                        self.island_hitboxes[hitbox_idx] = None
+            
+            # Pozisyon listesinden çıkar
+            self.island_positions[ada_id] = None
+            
+            # İlk ada silindiyse self.island'ı None yap
+            if ada_id == 0 and hasattr(self, 'island'):
+                self.island = None
+            
+            if verbose:
+                print(f"✅ Ada-{ada_id} çıkarıldı")
+            
+            return True
+        
         # Ada pozisyonları kontrolü
         if not hasattr(self, 'island_positions') or not self.island_positions:
             # Ada yoksa oluştur
@@ -3021,6 +3485,127 @@ class Ortam:
                 return (ada_pos[0], ada_pos[1])
             else:
                 return None
+    
+    def _rov_id_yeniden_numaralandir(self):
+        """
+        ROV ID'lerini 0'dan başlayarak yeniden numaralandırır.
+        Çıkarılmış ROV'ların yerini doldurur ve tüm ID'leri sırayla yeniden atar.
+        """
+        if not hasattr(self, 'rovs') or not self.rovs:
+            return
+        
+        # Aktif ROV'ları bul (None olmayanlar)
+        aktif_rovs = [r for r in self.rovs if r is not None]
+        
+        if not aktif_rovs:
+            # Hiç aktif ROV yoksa listeyi temizle
+            self.rovs = []
+            return
+        
+        # ID eşleştirmesi: eski_id -> yeni_id
+        id_eslestirme = {}
+        yeni_rovs_listesi = []
+        
+        # Her aktif ROV için yeni ID ata (0'dan başlayarak)
+        for yeni_id, rov in enumerate(aktif_rovs):
+            eski_id = rov.id
+            id_eslestirme[eski_id] = yeni_id
+            
+            # ROV'un ID'sini güncelle
+            rov.id = yeni_id
+            
+            # Label'ı güncelle
+            if hasattr(rov, 'label') and rov.label is not None:
+                try:
+                    rov.label.text = f"ROV-{yeni_id}"
+                except Exception:
+                    pass
+            
+            # Yeni listeye ekle
+            yeni_rovs_listesi.append(rov)
+        
+        # ROV listesini güncelle
+        self.rovs = yeni_rovs_listesi
+        
+        # Filo sistemindeki referansları güncelle (eğer varsa)
+        if hasattr(self, 'filo') and self.filo is not None:
+            # Filo sistemlerini yeniden düzenle (ROV ID'lerine göre sırala)
+            # Sistemler listesi ROV ID'leriyle eşleşmeli (sistemler[rov_id] = sistem)
+            
+            # Önce mevcut sistemleri ROV ID'lerine göre eşleştir
+            sistem_eslestirme = {}
+            for sistem in self.filo.sistemler:
+                if hasattr(sistem, 'rov') and sistem.rov is not None:
+                    eski_id = sistem.rov.id
+                    if eski_id in id_eslestirme:
+                        yeni_id = id_eslestirme[eski_id]
+                        sistem_eslestirme[yeni_id] = sistem
+                        
+                        # GNC sistemindeki rov_id referanslarını güncelle
+                        if hasattr(sistem, 'rov_id') and sistem.rov_id is not None:
+                            sistem.rov_id = yeni_id
+            
+            # Sistemler listesini yeniden düzenle (yeni ID'lere göre, ROV ID'leriyle eşleşecek şekilde)
+            # Sistemler listesi ROV ID'leriyle indekslenmiş olmalı: sistemler[rov_id] = sistem
+            yeni_sistemler = [None] * len(aktif_rovs)
+            for yeni_id, sistem in sistem_eslestirme.items():
+                if 0 <= yeni_id < len(yeni_sistemler):
+                    yeni_sistemler[yeni_id] = sistem
+            
+            # None olmayan sistemleri filtrele ve sırala
+            # Ama ROV ID'leriyle eşleşmesi için None'ları da tutmalıyız
+            # Aslında sistemler listesi ROV ID'leriyle eşleşmeli, bu yüzden None'ları kaldırmamalıyız
+            # Ama liste uzunluğu aktif ROV sayısına eşit olmalı
+            self.filo.sistemler = yeni_sistemler
+            
+            # Filo'daki lider ID'sini güncelle
+            if hasattr(self.filo, 'orijinal_lider_id'):
+                if self.filo.orijinal_lider_id in id_eslestirme:
+                    self.filo.orijinal_lider_id = id_eslestirme[self.filo.orijinal_lider_id]
+                elif self.filo.orijinal_lider_id >= len(aktif_rovs):
+                    # Lider çıkarılmışsa, yeni lideri bul (ilk ROV lider olur)
+                    if len(aktif_rovs) > 0:
+                        self.filo.orijinal_lider_id = 0
+                        # İlk ROV'u lider yap
+                        if len(self.rovs) > 0:
+                            self.rovs[0].role = 1
+            
+            # Filo'daki formasyon hedefleri ve git hedeflerini güncelle
+            if hasattr(self.filo, '_formasyon_hedefleri'):
+                yeni_formasyon_hedefleri = {}
+                for eski_id, hedef in self.filo._formasyon_hedefleri.items():
+                    if eski_id in id_eslestirme:
+                        yeni_formasyon_hedefleri[id_eslestirme[eski_id]] = hedef
+                self.filo._formasyon_hedefleri = yeni_formasyon_hedefleri
+            
+            if hasattr(self.filo, '_git_hedef_yaw'):
+                yeni_git_hedef_yaw = {}
+                for eski_id, yaw in self.filo._git_hedef_yaw.items():
+                    if eski_id in id_eslestirme:
+                        yeni_git_hedef_yaw[id_eslestirme[eski_id]] = yaw
+                self.filo._git_hedef_yaw = yeni_git_hedef_yaw
+            
+            if hasattr(self.filo, '_git_nokta_listesi'):
+                yeni_git_nokta_listesi = {}
+                for eski_id, nokta_listesi in self.filo._git_nokta_listesi.items():
+                    if eski_id in id_eslestirme:
+                        yeni_git_nokta_listesi[id_eslestirme[eski_id]] = nokta_listesi
+                self.filo._git_nokta_listesi = yeni_git_nokta_listesi
+            
+            if hasattr(self.filo, '_git_mevcut_nokta_indeksi'):
+                yeni_git_mevcut_nokta_indeksi = {}
+                for eski_id, indeks in self.filo._git_mevcut_nokta_indeksi.items():
+                    if eski_id in id_eslestirme:
+                        yeni_git_mevcut_nokta_indeksi[id_eslestirme[eski_id]] = indeks
+                self.filo._git_mevcut_nokta_indeksi = yeni_git_mevcut_nokta_indeksi
+        
+        # Verbose kontrolü
+        verbose = False
+        if hasattr(self, 'verbose'):
+            verbose = self.verbose
+        
+        if verbose:
+            print(f"✅ ROV ID'leri yeniden numaralandırıldı: {len(aktif_rovs)} aktif ROV")
     
     def ROV(self, rov_id, x=None, y=None, z=None):
         """
@@ -3123,11 +3708,21 @@ class Ortam:
         Returns:
             MiniData: GAT modeli için hazırlanmış veri yapısı (x, edge_index)
         """
-        rovs = self.rovs
         engeller = self.engeller
-        n = len(rovs)
+        
+        # None olmayan ROV'ları filtrele (çıkarılmış ROV'ları atla)
+        aktif_rovs = [r for r in self.rovs if r is not None]
+        
+        if not aktif_rovs:
+            # Hiç aktif ROV yoksa boş veri döndür
+            class MiniData:
+                def __init__(self, x, edge_index): 
+                    self.x, self.edge_index = x, edge_index
+            return MiniData(x=torch.zeros((0, 7), dtype=torch.float), edge_index=torch.zeros((2, 0), dtype=torch.long))
+        
+        n = len(aktif_rovs)
         x = torch.zeros((n, 7), dtype=torch.float)
-        positions = [r.position for r in rovs]
+        positions = [r.position for r in aktif_rovs]
         sources, targets = [], []
 
         L = {'LEADER': 60.0, 'DISCONNECT': 35.0, 'OBSTACLE': 20.0, 'COLLISION': 8.0}
@@ -3154,12 +3749,12 @@ class Ortam:
                     break
             
             x[i][0] = code / 5.0
-            x[i][1] = rovs[i].battery  # Batarya artık 0-1 arası, bölmeye gerek yok
+            x[i][1] = aktif_rovs[i].battery  # Batarya artık 0-1 arası, bölmeye gerek yok
             x[i][2] = 0.9
-            x[i][3] = abs(rovs[i].y) / 100.0
-            x[i][4] = rovs[i].velocity.x
-            x[i][5] = rovs[i].velocity.z
-            x[i][6] = rovs[i].role
+            x[i][3] = abs(aktif_rovs[i].y) / 100.0
+            x[i][4] = aktif_rovs[i].velocity.x
+            x[i][5] = aktif_rovs[i].velocity.z
+            x[i][6] = aktif_rovs[i].role
 
             for j in range(n):
                 if i != j and distance(positions[i], positions[j]) < L['DISCONNECT']:
