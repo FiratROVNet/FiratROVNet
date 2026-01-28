@@ -303,6 +303,11 @@ class FiloHelper:
             # Sessiz mod: Log mesajları ve görsel işlemler kapalı (RL eğitimi için)
             out = aktif_filo.helper._formasyon_sec_impl(margin=30, is_3d=False, offset=20.0, sessiz=True)
             
+            # Formasyon seçilemediyse None döndür (eğitim verisi oluşturulamadı)
+            if out is None:
+                # Sessiz modda olduğu için log mesajı yok
+                return None
+            
             # Not: senaryo.temizle() artık çağrılmıyor - ortam bir kez başlatılıp tekrar kullanılıyor
             # Eğer gerçekten temizlemek isterseniz: senaryo.temizle()
 

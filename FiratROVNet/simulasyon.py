@@ -3194,7 +3194,8 @@ class Ortam:
         # Ada ekleme işlemi
         if x == "ekle":
             if not isinstance(y, (tuple, list)) or len(y) < 2:
-                print(f"⚠️ Ada ekleme hatası: Konum tuple'ı (x, y) veya (x, y, radius) formatında olmalı")
+                if getattr(self, 'verbose', False):
+                    print(f"⚠️ Ada ekleme hatası: Konum tuple'ı (x, y) veya (x, y, radius) formatında olmalı")
                 return False
             
             # Konum bilgisini al
@@ -3219,11 +3220,13 @@ class Ortam:
             
             # Eğer bu ID'de zaten ada varsa, ekleme yapma
             if ada_id < len(self.island_entities) and self.island_entities[ada_id] is not None:
-                print(f"⚠️ Ada-{ada_id} zaten mevcut. Önce çıkarmak için: Ada({ada_id}, 'cikar')")
+                if getattr(self, 'verbose', False):
+                    print(f"⚠️ Ada-{ada_id} zaten mevcut. Önce çıkarmak için: Ada({ada_id}, 'cikar')")
                 return False
             
             if ada_id < len(self.island_positions) and self.island_positions[ada_id] is not None:
-                print(f"⚠️ Ada-{ada_id} zaten mevcut. Önce çıkarmak için: Ada({ada_id}, 'cikar')")
+                if getattr(self, 'verbose', False):
+                    print(f"⚠️ Ada-{ada_id} zaten mevcut. Önce çıkarmak için: Ada({ada_id}, 'cikar')")
                 return False
             
             # Ada modeli ve texture yolları

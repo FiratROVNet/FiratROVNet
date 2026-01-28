@@ -697,11 +697,27 @@ class Senaryo:
                             print(f"⚠️ ROV-{i} çıkarılırken hata: {e}")
 
         # 8. Ada sayısını kontrol et ve dinamik ekle/çıkar
-            from .config import HareketAyarlari
+        from .config import HareketAyarlari
         hedef_ada_sayisi = n_adalar if n_adalar is not None else (random.randint(2, 5) if not hasattr(self, '_cache_n_adalar') else self._cache_n_adalar)
         
         if hedef_ada_sayisi is not None:
             self._cache_n_adalar = hedef_ada_sayisi
+        
+        # Önce mevcut tüm adaları temizle (yeni senaryo için)
+        if hasattr(self.ortam, 'Ada') and callable(getattr(self.ortam, 'Ada', None)):
+            if hasattr(self.ortam, 'island_positions') and self.ortam.island_positions:
+                # Mevcut adaları sondan başa doğru çıkar
+                for ada_id in range(len(self.ortam.island_positions) - 1, -1, -1):
+                    if self.ortam.island_positions[ada_id] is not None:
+                        try:
+                            self.ortam.Ada(ada_id, "cikar")
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"⚠️ Ada-{ada_id} temizlenirken hata: {e}")
+                # Listeleri temizle (yeni senaryo için)
+                self.ortam.island_positions = []
+                if hasattr(self.ortam, 'island_entities'):
+                    self.ortam.island_entities = []
         
         if hasattr(self.ortam, 'island_positions'):
             mevcut_ada_sayisi = len([ada for ada in self.ortam.island_positions if ada is not None])
