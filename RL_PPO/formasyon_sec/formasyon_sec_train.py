@@ -15,9 +15,22 @@ except Exception:
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
-import torch
-import torch.nn as nn
-import torch.optim as optim
+
+# Torch import'unu geciktir (Windows DLL hatası için geçici çözüm)
+# Eğer Windows'ta DLL hatası alıyorsanız, bu import'ları train_formasyon_secim() fonksiyonu içine taşıyın
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+except OSError as e:
+    if "WinError 1114" in str(e) or "DLL" in str(e):
+        print("⚠️ PyTorch DLL hatası tespit edildi!")
+        print("   Lütfen README_WINDOWS_FIX.md dosyasındaki çözümleri uygulayın.")
+        print("   Geçici çözüm: Torch import'larını train_formasyon_secim() fonksiyonu içine taşıyın.")
+        raise
+    else:
+        raise
+
 from FiratROVNet.gnc import Filo
 import numpy as np
 from formasyon_sec_rl_model import FormasyonSecimAgi
