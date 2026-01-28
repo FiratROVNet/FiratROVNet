@@ -67,8 +67,9 @@ print("TEST 1: Modül İmportları")
 print("="*60)
 
 try:
-    from FiratROVNet import gat, ortam, gnc, iletisim, config
-    from FiratROVNet.gat import GAT_Modeli, Train, FiratAnalizci
+    from FiratROVNet import ortam, gnc, iletisim, config
+    from GAT.gat_train import GAT_Modeli, train as Train
+    from GAT.gat_test import FiratAnalizci
     from FiratROVNet.ortam import veri_uret
     from FiratROVNet.gnc import Filo, TemelGNC
     from FiratROVNet.iletisim import AkustikModem

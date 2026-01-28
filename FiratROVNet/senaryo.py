@@ -503,8 +503,17 @@ class Senaryo:
             self.ortam.havuz_genisligi = havuz_genisligi
             if not hasattr(self.ortam, 'engeller') or not self.ortam.engeller:
                 self.ortam.engeller = []
-            if not hasattr(self.ortam, 'rovs') or not self.ortam.rovs:
-                self.ortam.rovs = []
+            # ROV listesini her zaman sıfırla (yeni senaryo için)
+            if hasattr(self.ortam, 'rovs'):
+                # Mevcut ROV'ları destroy et
+                for rov in self.ortam.rovs:
+                    if rov is not None:
+                        try:
+                            if hasattr(rov, 'destroy'):
+                                rov.destroy()
+                        except:
+                            pass
+            self.ortam.rovs = []
             
             # Eksik engelleri oluştur
             while len(self.ortam.engeller) < n_engels:
@@ -885,13 +894,17 @@ class Senaryo:
             print("⚠️ Filo sistemi kurulmamış.")
             return None
         
+        # ROV ID kontrolü (sessiz mod - hata mesajı yok)
+        if rov_id >= len(self.ortam.rovs) or (self.ortam.rovs[rov_id] is None):
+            return None
+        
         # Filo üzerinden veri al
         veri = self.filo.get(rov_id, veri_tipi)
         
         # Eğer filo None döndürdüyse, direkt ROV'tan al (fallback)
         if veri is None and rov_id < len(self.ortam.rovs):
             rov = self.ortam.rovs[rov_id]
-            if hasattr(rov, 'get'):
+            if rov is not None and hasattr(rov, 'get'):
                 veri = rov.get(veri_tipi)
         
         return veri

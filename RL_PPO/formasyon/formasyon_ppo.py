@@ -1,21 +1,5 @@
 """
 Formasyon Yönetimi with PPO (Proximal Policy Optimization)
-==========================================================
-
-Bu modül, orijinal formasyon algoritmasını PPO ile optimize eder.
-- Orijinal A* tabanlı formasyon yönetimi temel alınır
-- PPO ağı, formasyon tipini, mesafeleri ve adaptasyonu öğrenir
-- State: Lider pozisyonu, takipçi pozisyonları, engel mesafeleri, formasyon tipi
-- Action: Formasyon tipi seçimi (V_SHAPE, LINE, WEDGE, COLUMN), mesafe ayarı
-- Reward: Formasyon kalitesi, çarpışma önleme, hedef takibi
-"""
-import os
-import sys
-
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
