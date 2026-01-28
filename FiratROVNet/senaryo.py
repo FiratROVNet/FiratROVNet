@@ -697,7 +697,7 @@ class Senaryo:
                             print(f"⚠️ ROV-{i} çıkarılırken hata: {e}")
 
         # 8. Ada sayısını kontrol et ve dinamik ekle/çıkar
-        from .config import HareketAyarlari
+            from .config import HareketAyarlari
         hedef_ada_sayisi = n_adalar if n_adalar is not None else (random.randint(2, 5) if not hasattr(self, '_cache_n_adalar') else self._cache_n_adalar)
         
         if hedef_ada_sayisi is not None:

@@ -722,7 +722,7 @@ class Filo:
                         ursina_pos = (rov.x, rov.y, rov.z)
                         # Simülasyon formatına dönüştür
                         sim_pos = Koordinator.ursina_to_sim(*ursina_pos)
-                        all_positions[i] = sim_pos
+                    all_positions[i] = sim_pos
         except Exception as e:
             print(f"❌ [HATA] Tüm ROV koordinatları alınırken hata: {e}")
             import traceback
