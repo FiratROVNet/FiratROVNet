@@ -6,7 +6,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 from FiratROVNet.simulasyon import Ortam
 from FiratROVNet.gnc import Filo
-from FiratROVNet.gat import FiratAnalizci
+from GAT.gat_test import FiratAnalizci
 from FiratROVNet.config import cfg
 from ursina import *
 import numpy as np

@@ -57,11 +57,42 @@ class ROV(Entity):
     def __init__(self, rov_id, **kwargs):
         super().__init__()
         
-        # FBX model kontrolü
-        rov_model_path = "./Models-3D/water/my_models/submarine/submarine1.fbx"
+        # FBX model kontrolü (relative path - Ursina için)
+        # Models-3D klasörü proje kök dizininde (CWD'de)
+        # Ursina relative path'i tercih eder, bu yüzden önce relative path dene
+        rov_model_path_rel = "Models-3D/water/my_models/submarine/submarine1.fbx"
         
-        if os.path.exists(rov_model_path):
+        # Absolute path'i de kontrol et (script'in bulunduğu yerden)
+        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        rov_model_path_abs = os.path.join(script_dir, "Models-3D", "water", "my_models", "submarine", "submarine1.fbx")
+        
+        # Path seçimi: Önce relative path'i kontrol et (Ursina için tercih edilen)
+        rov_model_path = None
+        if os.path.exists(rov_model_path_rel):
+            rov_model_path = rov_model_path_rel
+        elif os.path.exists(rov_model_path_abs):
+            # Absolute path varsa, CWD'ye göre relative path'e çevir
+            try:
+                cwd = os.getcwd()
+                rov_model_path = os.path.relpath(rov_model_path_abs, cwd)
+                # Eğer relative path oluşturulamazsa veya dosya yoksa, absolute kullan
+                if not os.path.exists(rov_model_path):
+                    rov_model_path = rov_model_path_abs
+            except (ValueError, OSError):
+                # Relative path oluşturulamazsa absolute kullan
+                rov_model_path = rov_model_path_abs
+        else:
+            # Hiçbiri yoksa relative path'i kullan (Ursina kendi path çözümlemesini yapacak)
+            rov_model_path = rov_model_path_rel
+        
+        # Model dosyası kontrolü (en az bir yerde varsa kullan)
+        model_exists = os.path.exists(rov_model_path) or os.path.exists(rov_model_path_rel) or os.path.exists(rov_model_path_abs)
+        
+        if model_exists:
             # FBX model kullan - Model çok büyük olduğu için yaklaşık 1000 kat küçültülüyor
+            # Ursina için path'i normalize et (forward slash kullan)
+            if os.path.sep == '\\':  # Windows
+                rov_model_path = rov_model_path.replace('\\', '/')
             self.model = rov_model_path
             self.scale = (0.01, 0.01, 0.01)  # FBX model için çok küçük scale (1000 kat küçültme)
             # Mesh collider intersects() ile çalışmaz, bu yüzden box collider kullanıyoruz
@@ -2560,8 +2591,60 @@ class Ortam:
         
         # Ada modeli (su yüzeyinin üstünde, deniz tabanına değen)
         # 1-5 arasında random ada oluştur
-        island_model_path = "./Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
-        island_texture_path = "./Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
+        # Models-3D klasörü proje kök dizininde (CWD'de)
+        # Ursina relative path'i tercih eder, bu yüzden önce relative path dene
+        island_model_path_rel = "Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
+        island_texture_path_rel = "Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
+        
+        # Absolute path'i de kontrol et (script'in bulunduğu yerden)
+        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        island_model_path_abs = os.path.join(script_dir, "Models-3D", "lowpoly-island", "source", "island1_design2_c4d.obj")
+        island_texture_path_abs = os.path.join(script_dir, "Models-3D", "lowpoly-island", "textures", "textureSurface_Color_2.jpg")
+        
+        # Path seçimi: Önce relative path'i kontrol et (Ursina için tercih edilen)
+        island_model_path = None
+        island_texture_path = None
+        
+        if os.path.exists(island_model_path_rel):
+            island_model_path = island_model_path_rel
+        elif os.path.exists(island_model_path_abs):
+            # Absolute path varsa, CWD'ye göre relative path'e çevir
+            try:
+                cwd = os.getcwd()
+                island_model_path = os.path.relpath(island_model_path_abs, cwd)
+                # Eğer relative path oluşturulamazsa veya dosya yoksa, absolute kullan
+                if not os.path.exists(island_model_path):
+                    island_model_path = island_model_path_abs
+            except (ValueError, OSError):
+                # Relative path oluşturulamazsa absolute kullan
+                island_model_path = island_model_path_abs
+        else:
+            # Hiçbiri yoksa relative path'i kullan (Ursina kendi path çözümlemesini yapacak)
+            island_model_path = island_model_path_rel
+        
+        if os.path.exists(island_texture_path_rel):
+            island_texture_path = island_texture_path_rel
+        elif os.path.exists(island_texture_path_abs):
+            # Absolute path varsa, CWD'ye göre relative path'e çevir
+            try:
+                cwd = os.getcwd()
+                island_texture_path = os.path.relpath(island_texture_path_abs, cwd)
+                # Eğer relative path oluşturulamazsa veya dosya yoksa, absolute kullan
+                if not os.path.exists(island_texture_path):
+                    island_texture_path = island_texture_path_abs
+            except (ValueError, OSError):
+                # Relative path oluşturulamazsa absolute kullan
+                island_texture_path = island_texture_path_abs
+        else:
+            # Hiçbiri yoksa relative path'i kullan (Ursina kendi path çözümlemesini yapacak)
+            island_texture_path = island_texture_path_rel
+        
+        # Ursina için path'leri normalize et (forward slash kullan)
+        if os.path.sep == '\\':  # Windows
+            if island_model_path:
+                island_model_path = island_model_path.replace('\\', '/')
+            if island_texture_path:
+                island_texture_path = island_texture_path.replace('\\', '/')
         
         # =============================
         # ADA BOYUT AYARLARI (TEK YER)
@@ -2577,7 +2660,11 @@ class Ortam:
         # Havuz genişliği (varsayılan 200, sim_olustur'da güncellenebilir)
         self.havuz_genisligi = 200
         
-        if os.path.exists(island_model_path):
+        # Model ve texture kontrolü (en az bir yerde varsa kullan)
+        model_exists = os.path.exists(island_model_path) if island_model_path else False
+        texture_exists = os.path.exists(island_texture_path) if island_texture_path else False
+        
+        if model_exists or os.path.exists(island_model_path_rel) or os.path.exists(island_model_path_abs):
             # ============================================================
             # ADA OLUŞTURMA AYARLARI
             # ============================================================
@@ -3226,9 +3313,61 @@ class Ortam:
                 print(f"⚠️ Ada-{ada_id} zaten mevcut. Önce çıkarmak için: Ada({ada_id}, 'cikar')")
                 return False
             
-            # Ada modeli ve texture yolları
-            island_model_path = "./Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
-            island_texture_path = "./Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
+            # Ada modeli ve texture yolları (os zaten import edilmiş)
+            # Models-3D klasörü proje kök dizininde (CWD'de)
+            # Ursina relative path'i tercih eder, bu yüzden önce relative path dene
+            island_model_path_rel = "Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
+            island_texture_path_rel = "Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
+            
+            # Absolute path'i de kontrol et (script'in bulunduğu yerden)
+            script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            island_model_path_abs = os.path.join(script_dir, "Models-3D", "lowpoly-island", "source", "island1_design2_c4d.obj")
+            island_texture_path_abs = os.path.join(script_dir, "Models-3D", "lowpoly-island", "textures", "textureSurface_Color_2.jpg")
+            
+            # Path seçimi: Önce relative path'i kontrol et (Ursina için tercih edilen)
+            island_model_path = None
+            island_texture_path = None
+            
+            if os.path.exists(island_model_path_rel):
+                island_model_path = island_model_path_rel
+            elif os.path.exists(island_model_path_abs):
+                # Absolute path varsa, CWD'ye göre relative path'e çevir
+                try:
+                    cwd = os.getcwd()
+                    island_model_path = os.path.relpath(island_model_path_abs, cwd)
+                    # Eğer relative path oluşturulamazsa veya dosya yoksa, absolute kullan
+                    if not os.path.exists(island_model_path):
+                        island_model_path = island_model_path_abs
+                except (ValueError, OSError):
+                    # Relative path oluşturulamazsa absolute kullan
+                    island_model_path = island_model_path_abs
+            else:
+                # Hiçbiri yoksa relative path'i kullan (Ursina kendi path çözümlemesini yapacak)
+                island_model_path = island_model_path_rel
+            
+            if os.path.exists(island_texture_path_rel):
+                island_texture_path = island_texture_path_rel
+            elif os.path.exists(island_texture_path_abs):
+                # Absolute path varsa, CWD'ye göre relative path'e çevir
+                try:
+                    cwd = os.getcwd()
+                    island_texture_path = os.path.relpath(island_texture_path_abs, cwd)
+                    # Eğer relative path oluşturulamazsa veya dosya yoksa, absolute kullan
+                    if not os.path.exists(island_texture_path):
+                        island_texture_path = island_texture_path_abs
+                except (ValueError, OSError):
+                    # Relative path oluşturulamazsa absolute kullan
+                    island_texture_path = island_texture_path_abs
+            else:
+                # Hiçbiri yoksa relative path'i kullan (Ursina kendi path çözümlemesini yapacak)
+                island_texture_path = island_texture_path_rel
+            
+            # Ursina için path'leri normalize et (forward slash kullan)
+            if os.path.sep == '\\':  # Windows
+                if island_model_path:
+                    island_model_path = island_model_path.replace('\\', '/')
+                if island_texture_path:
+                    island_texture_path = island_texture_path.replace('\\', '/')
             
             # Ada Y pozisyonu (su yüzeyinin üstünde sabit)
             if hasattr(self, 'WATER_SURFACE_Y_BASE'):
@@ -3269,12 +3408,21 @@ class Ortam:
             ursina_x, ursina_y, ursina_z = sim_to_ursina(konum_x, konum_y, z_depth)
             
             # Ada entity oluştur
-            if os.path.exists(island_model_path):
+            # Model ve texture kontrolü (en az bir yerde varsa kullan)
+            model_exists_ada = os.path.exists(island_model_path) if island_model_path else False
+            texture_exists_ada = os.path.exists(island_texture_path) if island_texture_path else False
+            
+            if model_exists_ada or os.path.exists(island_model_path_rel) or os.path.exists(island_model_path_abs):
+                # Texture kontrolü
+                texture_path_final = None
+                if texture_exists_ada or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs):
+                    texture_path_final = island_texture_path
+                
                 island = Entity(
                     model=island_model_path,
                     position=(ursina_x, island_y_position, ursina_z),  # Ursina koordinat sistemi: (x, y_up, z_forward)
                     scale=visual_scale,
-                    texture=island_texture_path if os.path.exists(island_texture_path) else None,
+                    texture=texture_path_final,
                     collider='box',
                     unlit=False,
                     double_sided=True,
