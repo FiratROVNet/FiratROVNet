@@ -239,6 +239,7 @@ class FiloHelper:
     def uret_rl_egitim_verisi(self):
         """
         RL eğitimi için hızlı senaryo üretir ve sabit boyutlu verileri döner.
+        Yeni senaryo sistemi: Ortam bir kez başlatılır, ROV/ada sayıları dinamik olarak ayarlanır.
         """
         from FiratROVNet import senaryo
         import random
@@ -247,15 +248,28 @@ class FiloHelper:
             n_rov_secenekleri = [4, 6, 8]
             secilen_n = random.choice(n_rov_secenekleri)
             n_engels = random.randint(12, 22)
+            n_adalar = random.randint(2, 5)  # 2-5 arasında random ada sayısı
 
-            senaryo.uret(n_rovs=secilen_n, n_engels=n_engels, havuz_genisligi=200, verbose=False)
+            # Senaryo ortamı bir kez başlatılır, sonra sadece parametreler güncellenir
+            senaryo.uret(n_rovs=secilen_n, n_engels=n_engels, n_adalar=n_adalar, havuz_genisligi=200, verbose=False)
             aktif_filo = senaryo.filo
             if not aktif_filo:
                 return None
 
-            lider_id = 0
-            lider_gps = senaryo.get(lider_id, "gps")
-            lider_yaw = senaryo.get(lider_id, "yaw")
+            # Lider ROV'u bul (role=1 olan)
+            lider_id = None
+            for i in range(secilen_n):
+                if i < len(senaryo.filo.sistemler) and senaryo.filo.sistemler[i] is not None:
+                    rol = senaryo.get(i, "rol")
+                    if rol == 1:
+                        lider_id = i
+                        break
+            
+            if lider_id is None:
+                lider_id = 0  # Fallback: ilk ROV lider olsun
+
+            lider_gps = senaryo.get(lider_id, "gps") if lider_id < len(senaryo.filo.sistemler) else None
+            lider_yaw = senaryo.get(lider_id, "yaw") if lider_id < len(senaryo.filo.sistemler) else None
 
             if lider_gps is None:
                 lider_gps = np.array([400.0, 400.0, 400.0])
@@ -264,7 +278,7 @@ class FiloHelper:
 
             rov_filo_gps = []
             for i in range(8):
-                if i < secilen_n:
+                if i < secilen_n and i < len(senaryo.filo.sistemler):
                     pos = senaryo.get(i, "gps")
                     rov_filo_gps.append(pos if pos is not None else [400.0, 400.0, 400.0])
                 else:
@@ -286,8 +300,11 @@ class FiloHelper:
                     hull_noktalar = samples
 
             # Headless/egitim modunda main thread olmadığından formasyon_sec None dönebilir.
-            out = aktif_filo.helper._formasyon_sec_impl()
-            senaryo.temizle()
+            # Sessiz mod: Log mesajları ve görsel işlemler kapalı (RL eğitimi için)
+            out = aktif_filo.helper._formasyon_sec_impl(margin=30, is_3d=False, offset=20.0, sessiz=True)
+            
+            # Not: senaryo.temizle() artık çağrılmıyor - ortam bir kez başlatılıp tekrar kullanılıyor
+            # Eğer gerçekten temizlemek isterseniz: senaryo.temizle()
 
             return {
                 "output": out,
@@ -302,20 +319,24 @@ class FiloHelper:
             print(f"❌ [RL_DATA] Veri üretimi sırasında hata: {e}")
             import traceback
             traceback.print_exc()
-            senaryo.temizle()
+            # Hata durumunda temizleme yapılabilir (isteğe bağlı)
+            # senaryo.temizle()
             return None
 
     def lider_sec_veri_uret(self, asil_hedef=None):
         """
         RL eğitimi için lider seçim verisi üretir.
         Matematiksel liderlik formülünü 'Label' olarak kullanır.
+        Yeni senaryo sistemi: Ortam bir kez başlatılır, ROV/ada sayıları dinamik olarak ayarlanır.
         """
         from FiratROVNet import senaryo
         import random
         try:
             n_rov_list = [4, 6, 8]
             secilen_n = random.choice(n_rov_list)
-            senaryo.uret(n_rovs=secilen_n, n_engels=random.randint(10, 20), havuz_genisligi=200)
+            n_adalar = random.randint(2, 5)  # 2-5 arasında random ada sayısı
+            # Senaryo ortamı bir kez başlatılır, sonra sadece parametreler güncellenir
+            senaryo.uret(n_rovs=secilen_n, n_engels=random.randint(10, 20), n_adalar=n_adalar, havuz_genisligi=200, verbose=False)
 
             if not senaryo.filo:
                 return None
@@ -326,8 +347,13 @@ class FiloHelper:
             rov_list_for_calc = []
             for i in range(8):
                 if i < secilen_n:
-                    bat = senaryo.get(i, "batarya") * 100.0
+                    bat = senaryo.get(i, "batarya")
+                    if bat is None:
+                        bat = 1.0  # Varsayılan batarya
+                    bat = bat * 100.0
                     gps = senaryo.get(i, "gps")
+                    if gps is None:
+                        gps = np.array([400.0, 400.0, 400.0])
                     rov_data.append([bat, gps[0], gps[1], gps[2]])
                     rov_list_for_calc.append({'id': i, 'batarya': bat, 'konum': gps})
                 else:
@@ -344,7 +370,9 @@ class FiloHelper:
                 dtype=np.float32
             )
 
-            senaryo.temizle()
+            # Not: senaryo.temizle() artık çağrılmıyor - ortam bir kez başlatılıp tekrar kullanılıyor
+            # Eğer gerçekten temizlemek isterseniz: senaryo.temizle()
+            
             return {
                 "state": state,
                 "target_id": dogru_lider_id,
@@ -352,7 +380,10 @@ class FiloHelper:
             }
         except Exception as e:
             print(f"❌ Lider veri üretim hatası: {e}")
-            senaryo.temizle()
+            import traceback
+            traceback.print_exc()
+            # Hata durumunda temizleme yapılabilir (isteğe bağlı)
+            # senaryo.temizle()
             return None
 
     def hedef_gorsel_olustur(self, x, y, z):
@@ -442,47 +473,53 @@ class FiloHelper:
 
         return self.filo._guvenlik_hull_olustur_impl(offset)
 
-    def git(self, rov_id: int, x, y: float = None, z: float = None, ai: bool = True) -> None:
+    def git(self, rov_id: int, x, y: float = None, z: float = None, ai: bool = True, sessiz: bool = False) -> None:
         """
         ROV'a hedef koordinatı atar ve otomatik moda geçirir (Thread-safe).
         Tüm girişler Simülasyon formatındadır: (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
+        
+        Args:
+            sessiz: Log mesajlarını kapatır (RL eğitimi için)
         """
         if isinstance(x, (list, tuple)) and len(x) > 0:
             if isinstance(x[0], (list, tuple)) and len(x[0]) >= 2:
                 nokta_listesi = [[float(n[0]), float(n[1])] for n in x if len(n) >= 2]
                 if len(nokta_listesi) == 0:
-                    print(f"❌ [FİLO] Geçersiz nokta listesi: {x}")
+                    if not sessiz:
+                        print(f"❌ [FİLO] Geçersiz nokta listesi: {x}")
                     return
                 self.filo._git_nokta_listesi[rov_id] = nokta_listesi
                 self.filo._git_mevcut_nokta_indeksi[rov_id] = 0
                 ilk_nokta = nokta_listesi[0]
-                self.filo._command_queue.put(('git', (rov_id, ilk_nokta[0], ilk_nokta[1], z, ai), {}))
+                self.filo._command_queue.put(('git', (rov_id, ilk_nokta[0], ilk_nokta[1], z, ai, sessiz), {}))
                 return
             else:
                 if len(x) >= 2:
                     x_val, y_val = float(x[0]), float(x[1])
                     z_val = float(x[2]) if len(x) >= 3 else z
                 else:
-                    print(f"❌ [FİLO] Geçersiz koordinat formatı: {x}")
+                    if not sessiz:
+                        print(f"❌ [FİLO] Geçersiz koordinat formatı: {x}")
                     return
         else:
             x_val, y_val = float(x), float(y) if y is not None else None
             z_val = z
 
         if y_val is None:
-            print("❌ [FİLO] Y koordinatı gerekli! (x liste değilse)")
+            if not sessiz:
+                print("❌ [FİLO] Y koordinatı gerekli! (x liste değilse)")
             return
 
         if not self.filo._is_main_thread():
             try:
                 from ursina import invoke
-                invoke(self._git_impl, rov_id, x_val, y_val, z_val, ai)
+                invoke(self._git_impl, rov_id, x_val, y_val, z_val, ai, sessiz)
                 return
             except (ImportError, AttributeError):
-                self.filo._command_queue.put(('git', (rov_id, x_val, y_val, z_val, ai), {}))
+                self.filo._command_queue.put(('git', (rov_id, x_val, y_val, z_val, ai, sessiz), {}))
                 return
 
-        self._git_impl(rov_id, x_val, y_val, z_val, ai)
+        self._git_impl(rov_id, x_val, y_val, z_val, ai, sessiz)
 
     def git_path(self, rov_id, hedef, ai=True):
         """
@@ -496,7 +533,7 @@ class FiloHelper:
         gidilecek_n = self.filo.gidilecek_noktalar(path)
         self.filo.git(rov_id, gidilecek_n, ai)
 
-    def _git_impl(self, rov_id: int, x: float, y: float, z: float = None, ai: bool = True) -> None:
+    def _git_impl(self, rov_id: int, x: float, y: float, z: float = None, ai: bool = True, sessiz: bool = False) -> None:
         """git() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         from FiratROVNet.gnc import Koordinator
 
@@ -543,10 +580,12 @@ class FiloHelper:
 
         try:
             self.filo.sistemler[rov_id].hedef_atama(x, y, z)
-            ai_durum = "AÇIK" if ai else "KAPALI (Kör Mod)"
-            print(f"✅ [FİLO] ROV-{rov_id} Hedef: X:{x}, Y:{y}, Z:{z} (Sim Formatı) | AI: {ai_durum}")
+            if not sessiz:
+                ai_durum = "AÇIK" if ai else "KAPALI (Kör Mod)"
+                print(f"✅ [FİLO] ROV-{rov_id} Hedef: X:{x}, Y:{y}, Z:{z} (Sim Formatı) | AI: {ai_durum}")
         except Exception as e:
-            print(f"❌ [HATA] Hedef atama sırasında hata: {e}")
+            if not sessiz:
+                print(f"❌ [HATA] Hedef atama sırasında hata: {e}")
             import traceback
             traceback.print_exc()
 
@@ -929,9 +968,15 @@ class FiloHelper:
             print("⚠️ [FORMASYON] Formasyon seçilemedi")
         return result
 
-    def _formasyon_sec_impl(self, margin: float = 30, is_3d: bool = False, offset: float = 20.0):
+    def _formasyon_sec_impl(self, margin: float = 30, is_3d: bool = False, offset: float = 20.0, sessiz: bool = False):
         """
         formasyon_sec() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır).
+        
+        Args:
+            margin: Formasyon aralığı
+            is_3d: 3D formasyon modu
+            offset: Hull offset değeri
+            sessiz: Log mesajlarını kapatır (RL eğitimi için)
         """
         try:
             self.filo._formasyon_hedefleri.clear()
@@ -948,17 +993,20 @@ class FiloHelper:
             hull = guvenlik_hull_dict.get("hull")
             hull_merkez = guvenlik_hull_dict.get("center")
             if hull is None or hull_merkez is None:
-                print("⚠️ [FORMASYON] Hull oluşturulamadı veya hull merkezi bulunamadı")
+                if not sessiz:
+                    print("⚠️ [FORMASYON] Hull oluşturulamadı veya hull merkezi bulunamadı")
                 return None
 
             hull_merkez = self.filo._normalize_hull_center(hull_merkez)
-            lider_rov_id, lider_gps = self.filo._find_leader_info()
+            lider_rov_id, lider_gps = self.filo._find_leader_info(sessiz=sessiz)
             if lider_rov_id is None:
-                print("⚠️ [FORMASYON] Lider ROV bulunamadı")
+                if not sessiz:
+                    print("⚠️ [FORMASYON] Lider ROV bulunamadı")
                 return None
             if lider_gps is None:
                 lider_gps = hull_merkez
-                print(f"ℹ️ [FORMASYON] Lider GPS bulunamadı, hull merkezi kullanılıyor: {hull_merkez}")
+                if not sessiz:
+                    print(f"ℹ️ [FORMASYON] Lider GPS bulunamadı, hull merkezi kullanılıyor: {hull_merkez}")
 
             min_aralik = margin * 0.2
             baslangic_aralik = margin * 0.6
@@ -973,13 +1021,15 @@ class FiloHelper:
                         aralik = baslangic_aralik
                         while aralik >= min_aralik:
                             if self.filo._try_formation_fit(i, aralik, is_3d, merkez_koordinat,
-                                                            deneme_yaw, hull, lider_rov_id, nokta_adi):
+                                                            deneme_yaw, hull, lider_rov_id, nokta_adi, sessiz=sessiz):
                                 if i in self.filo._formasyon_id_pool:
                                     self.filo._formasyon_id_pool.remove(i)
-                                print(f"✅ [FORMASYON] Formasyon seçildi: Tip={i}, Aralık={aralik:.2f}, Yaw={deneme_yaw:.1f}°, Konum={nokta_adi}")
+                                if not sessiz:
+                                    print(f"✅ [FORMASYON] Formasyon seçildi: Tip={i}, Aralık={aralik:.2f}, Yaw={deneme_yaw:.1f}°, Konum={nokta_adi}")
                                 return (i, aralik, deneme_yaw, merkez_koordinat)
                             aralik -= adim
-            print("⚠️ [FORMASYON] Uygun formasyon bulunamadı (tüm denemeler başarısız)")
+            if not sessiz:
+                print("⚠️ [FORMASYON] Uygun formasyon bulunamadı (tüm denemeler başarısız)")
             return None
         except Exception as e:
             import traceback
@@ -1009,6 +1059,10 @@ class FiloHelper:
         tum_noktalar = []
         
         for island_data in self.filo.ortam_ref.island_positions:
+            # None kontrolü (çıkarılmış adalar için None olabilir)
+            if island_data is None:
+                continue
+            
             if len(island_data) < 3:
                 continue
             
@@ -1027,7 +1081,8 @@ class FiloHelper:
                 tum_noktalar.append((nokta_x, nokta_y, nokta_z))
         
         if not sessiz and getattr(self.filo.ortam_ref, "verbose", False):
-            print(f"✅ [ADA_CEVRE] {len(self.filo.ortam_ref.island_positions)} ada için {len(tum_noktalar)} nokta hesaplandı (offset={offset}m)")
+            aktif_ada_sayisi = sum(1 for ada in self.filo.ortam_ref.island_positions if ada is not None)
+            print(f"✅ [ADA_CEVRE] {aktif_ada_sayisi} ada için {len(tum_noktalar)} nokta hesaplandı (offset={offset}m)")
         return tum_noktalar
     
     def yeniden_ciz(self, noktalar: list, yasakli_noktalar: list, alpha: float = 2.0, 
@@ -1264,14 +1319,15 @@ class FiloHelper:
         hull_merkez_liste[2] = 0
         return tuple(hull_merkez_liste)
     
-    def find_leader_info(self) -> tuple:
+    def find_leader_info(self, sessiz: bool = False) -> tuple:
         """Lider ROV ID ve GPS koordinatını bulur."""
         lider_rov_id = None
         lider_gps = None
         
         # Debug: Sistemler listesi kontrolü
         if not self.filo.sistemler or len(self.filo.sistemler) == 0:
-            print("⚠️ [FORMASYON] Sistemler listesi boş! ROV'lar filo sistemine eklenmemiş olabilir.")
+            if not sessiz:
+                print("⚠️ [FORMASYON] Sistemler listesi boş! ROV'lar filo sistemine eklenmemiş olabilir.")
             return None, None
         
         for rov_id in range(len(self.filo.sistemler)):
@@ -1289,9 +1345,7 @@ class FiloHelper:
                     lider_gps = (float(gps[0]), float(gps[1]), float(gps[2]))
                 break
         
-        if lider_rov_id is None:
-            print("⚠️ [FORMASYON] Lider ROV bulunamadı (role=1 olan ROV yok)")
-        
+        # Not: find_leader_info() içindeki print mesajları kaldırıldı (sessiz mod için)
         return lider_rov_id, lider_gps
     
     def generate_search_points(self, lider_gps: tuple, hull_merkez: tuple) -> list:
@@ -1340,7 +1394,7 @@ class FiloHelper:
     
     def try_formation_fit(self, formasyon_id: int, aralik: float, is_3d: bool,
                           merkez_koordinat: tuple, deneme_yaw: float, hull,
-                          lider_rov_id: int, nokta_adi: str) -> bool:
+                          lider_rov_id: int, nokta_adi: str, sessiz: bool = False) -> bool:
         """Formasyonun geçerli olup olmadığını kontrol eder ve uygular."""
         formasyon_obj = Formasyon(self.filo)
         pozisyonlar = formasyon_obj.pozisyonlar(
@@ -1368,7 +1422,7 @@ class FiloHelper:
         
         if nokta_adi != "Lider GPS":
             self.filo.git(lider_rov_id, merkez_koordinat[0], merkez_koordinat[1],
-                        merkez_koordinat[2], ai=True)
+                        merkez_koordinat[2], ai=True, sessiz=sessiz)
         
         # Takipçi ROV'ları formasyon pozisyonlarına gönder
         for rov_id, pozisyon in enumerate(pozisyonlar):
@@ -1392,7 +1446,7 @@ class FiloHelper:
                 'hedef_yaw': deneme_yaw
             }
             
-            self.filo.git(rov_id, sim_x, sim_y, sim_z, ai=True)
+            self.filo.git(rov_id, sim_x, sim_y, sim_z, ai=True, sessiz=sessiz)
         
         return True
 

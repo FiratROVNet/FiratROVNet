@@ -890,9 +890,9 @@ class Filo:
         """Hull merkezini Sim formatına dönüştürür (z=0 yapar)."""
         return self.helper.normalize_hull_center(hull_merkez)
     
-    def _find_leader_info(self) -> tuple:
+    def _find_leader_info(self, sessiz: bool = False) -> tuple:
         """Lider ROV ID ve GPS koordinatını bulur."""
-        return self.helper.find_leader_info()
+        return self.helper.find_leader_info(sessiz=sessiz)
     
     def _generate_search_points(self, lider_gps: tuple, hull_merkez: tuple) -> list:
         """Lider GPS'ten hull merkezine kadar ara noktalar oluşturur."""
@@ -904,11 +904,11 @@ class Filo:
     
     def _try_formation_fit(self, formasyon_id: int, aralik: float, is_3d: bool, 
                           merkez_koordinat: tuple, deneme_yaw: float, hull, 
-                          lider_rov_id: int, nokta_adi: str) -> bool:
+                          lider_rov_id: int, nokta_adi: str, sessiz: bool = False) -> bool:
         """Formasyonun geçerli olup olmadığını kontrol eder ve uygular."""
         return self.helper.try_formation_fit(formasyon_id, aralik, is_3d,
                                             merkez_koordinat, deneme_yaw, hull,
-                                            lider_rov_id, nokta_adi)
+                                            lider_rov_id, nokta_adi, sessiz=sessiz)
 
     
 
@@ -1077,12 +1077,15 @@ class Filo:
         """
         return self.helper.hedef_gorsel_olustur(x, y, z)
 
-    def git(self, rov_id: int, x, y: float = None, z: float = None, ai: bool = True) -> None:
+    def git(self, rov_id: int, x, y: float = None, z: float = None, ai: bool = True, sessiz: bool = False) -> None:
         """
         ROV'a hedef koordinatı atar ve otomatik moda geçirir (Thread-safe).
         Tüm girişler Simülasyon formatındadır: (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
         
         Çoklu nokta desteği: Eğer x bir liste ise, ROV bu noktaları sırayla ziyaret eder.
+        
+        Args:
+            sessiz: Log mesajlarını kapatır (RL eğitimi için)
 
         Args:
             rov_id: ROV ID (0, 1, 2, ...)
@@ -1104,7 +1107,7 @@ class Filo:
             gidilecek_n = [[150.5, 10.5], [142.5, 2.5], [134.5, -5.5]]
             filo.git(0, gidilecek_n)  # ROV-0 bu noktaları sırayla ziyaret eder
         """
-        return self.helper.git(rov_id=rov_id, x=x, y=y, z=z, ai=ai)
+        return self.helper.git(rov_id=rov_id, x=x, y=y, z=z, ai=ai, sessiz=sessiz)
 
     def git_path(self, rov_id, hedef, ai=True):
         """
@@ -1112,9 +1115,9 @@ class Filo:
         """
         return self.helper.git_path(rov_id, hedef, ai=ai)
     
-    def _git_impl(self, rov_id: int, x: float, y: float, z: float = None, ai: bool = True) -> None:
+    def _git_impl(self, rov_id: int, x: float, y: float, z: float = None, ai: bool = True, sessiz: bool = False) -> None:
         """git() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
-        return self.helper._git_impl(rov_id, x, y, z, ai)
+        return self.helper._git_impl(rov_id, x, y, z, ai, sessiz=sessiz)
 
     def move(self, rov_id: int, yon: str, guc: float = 1.0) -> None:
         """

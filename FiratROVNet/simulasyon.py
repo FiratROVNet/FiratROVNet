@@ -2910,10 +2910,11 @@ class Ortam:
             self.ocean_taban.scale = (2.2 * oran, mevcut_y, 1.8 * oran)
         # ============================================================
         
-        # Ada pozisyonlarını koru (eğer varsa)
+        # Ada pozisyonlarını koru (eğer varsa, None değerleri hariç)
         ada_positions_backup = []
         if hasattr(self, 'island_positions') and self.island_positions:
-            ada_positions_backup = self.island_positions.copy()
+            # None değerlerini filtrele
+            ada_positions_backup = [ada for ada in self.island_positions if ada is not None]
         
         # Engeller (Kayalar) - Listeyi sıfırla
         self.engeller = []

@@ -164,6 +164,10 @@ class Senaryo:
         # Adaları güvenli pozisyonlara taşı
         if hasattr(self.ortam, 'island_positions') and self.ortam.island_positions:
             for i, ada_data in enumerate(self.ortam.island_positions):
+                # None kontrolü (çıkarılmış adalar için None olabilir)
+                if ada_data is None:
+                    continue
+                
                 if len(ada_data) >= 3:
                     _, _, radius = ada_data
                 else:
@@ -199,7 +203,7 @@ class Senaryo:
                     yeni_ada_pos.append((yeni_x, yeni_z, radius))
                 else:
                     # Güvenli pozisyon bulunamazsa eski pozisyonu kullan
-                    if len(ada_data) >= 2:
+                    if ada_data is not None and len(ada_data) >= 2:
                         yeni_ada_pos.append((ada_data[0], ada_data[1], radius))
         
         # --- 2. DİĞER ENGELLERİ (Kayaları) DAĞIT ---
@@ -240,6 +244,9 @@ class Senaryo:
         # --- 3. ROV'LARI DAĞIT ---
         mevcut_rov_pos = []
         for rov in self.ortam.rovs:
+            if rov is None:
+                continue  # Çıkarılmış ROV'ları atla
+            
             pos = self._guvenli_rov_pozisyonu_bul(mevcut_rov_pos, yeni_ada_pos, 
                                                   min_mesafe_rov, min_mesafe_ada, havuz)
             if pos:
@@ -284,14 +291,25 @@ class Senaryo:
                 
                 mevcut_rov_pos.append([yeni_x, -5, yeni_z])
         
-        # Lideri random seç
-        if len(self.ortam.rovs) > 0:
-            yeni_lider_id = random.randint(0, len(self.ortam.rovs) - 1)
+        # Lideri random seç (sadece aktif ROV'lar arasından)
+        aktif_rovs = [rov for rov in self.ortam.rovs if rov is not None]
+        if len(aktif_rovs) > 0:
+            yeni_lider_id = random.randint(0, len(aktif_rovs) - 1)
+            aktif_indeks = 0
             for i, rov in enumerate(self.ortam.rovs):
-                if hasattr(rov, 'set'):
-                    rov.set('rol', 1 if i == yeni_lider_id else 0)
-                elif hasattr(rov, 'role'):
-                    rov.role = 1 if i == yeni_lider_id else 0
+                if rov is None:
+                    continue
+                if aktif_indeks == yeni_lider_id:
+                    if hasattr(rov, 'set'):
+                        rov.set('rol', 1)
+                    elif hasattr(rov, 'role'):
+                        rov.role = 1
+                else:
+                    if hasattr(rov, 'set'):
+                        rov.set('rol', 0)
+                    elif hasattr(rov, 'role'):
+                        rov.role = 0
+                aktif_indeks += 1
         
         if self.verbose:
             print(f"🔄 Senaryo Yeniden Düzenlendi (ID'ler ve Nesneler Korundu)")
@@ -328,13 +346,15 @@ class Senaryo:
             self.verbose = verbose
         
         # 1. Kontrol: Eğer ortam zaten varsa ve parametreler değişmediyse SADECE YER DEĞİŞTİR
+        # Not: Artık parametreler değiştiğinde dinamik ekleme/çıkarma yapılacak, ortam yeniden başlatılmayacak
         if self.aktif and self.ortam is not None:
             # Parametre kontrolü
             n_rovs_changed = (n_rovs is not None and n_rovs != self._cache_n_rovs)
             n_engels_changed = (n_engels is not None and n_engels != self._cache_n_engels)
             havuz_changed = (havuz_genisligi is not None and havuz_genisligi != self._cache_havuz_genisligi)
+            n_adalar_changed = (n_adalar is not None and n_adalar != getattr(self, '_cache_n_adalar', None))
             
-            if not n_rovs_changed and not n_engels_changed and not havuz_changed:
+            if not n_rovs_changed and not n_engels_changed and not havuz_changed and not n_adalar_changed:
                 # Parametreler değişmedi, sadece pozisyonları güncelle (ÇOK HIZLI!)
                 return self._nesneleri_yeniden_dagit()
         
@@ -602,8 +622,8 @@ class Senaryo:
                 
                 self.ortam.rovs.append(rov)
             
-        # 5. Filo Kurulumu (sadece ilk kurulumda veya ROV sayısı değiştiğinde)
-        if not hasattr(self, 'filo') or self.filo is None or len(self.ortam.rovs) != len(getattr(self.filo, 'sistemler', [])):
+        # 5. Filo Kurulumu (sadece ilk kurulumda)
+        if not hasattr(self, 'filo') or self.filo is None:
             self.filo = Filo()
             self.filo.otomatik_kurulum(
                 rovs=self.ortam.rovs,
@@ -619,11 +639,117 @@ class Senaryo:
         # 6. Aktif durumu
         self.aktif = True
 
-        # 7. Ada üretimi (headless/minimal mod için)
-        if not hasattr(self.ortam, 'island_positions') or not self.ortam.island_positions:
-            from .config import HareketAyarlari
-            hedef_ada_sayisi = n_adalar if n_adalar is not None else random.randint(2, 5)
-            self.ortam.island_positions = []
+        # 7. ROV sayısını kontrol et ve dinamik ekle/çıkar
+        if self.filo and hasattr(self.ortam, 'rovs'):
+            # Aktif ROV sayısını hesapla (None olmayanlar)
+            aktif_rov_sayisi = sum(1 for rov in self.ortam.rovs if rov is not None)
+            
+            if aktif_rov_sayisi < n_rovs:
+                # Eksik ROV'ları ekle
+                from .config import GATLimitleri
+                min_mesafe_rov = GATLimitleri.CARPISMA * 1.5
+                mevcut_rov_pos = []
+                for rov in self.ortam.rovs:
+                    if rov is not None and hasattr(rov, 'position'):
+                        pos = (rov.position.x, rov.position.z)
+                        mevcut_rov_pos.append([pos[0], -5, pos[1]])
+                
+                # Mevcut adaları al
+                mevcut_adalar = []
+                if hasattr(self.ortam, 'island_positions'):
+                    for ada_data in self.ortam.island_positions:
+                        if len(ada_data) >= 3:
+                            mevcut_adalar.append((ada_data[0], ada_data[1], ada_data[2]))
+                
+                for i in range(aktif_rov_sayisi, n_rovs):
+                    # Güvenli pozisyon bul
+                    pos = self._guvenli_rov_pozisyonu_bul(
+                        mevcut_rov_pos, 
+                        mevcut_adalar,
+                        min_mesafe_rov,
+                        getattr(self, '_cache_min_mesafe_ada', 15.0),
+                        havuz_genisligi
+                    )
+                    if pos:
+                        x, z = pos
+                        konum = (x, -5, z)
+                    else:
+                        # Güvenli pozisyon bulunamazsa rastgele yerleştir
+                        x = random.uniform(-havuz_genisligi * 0.45, havuz_genisligi * 0.45)
+                        z = random.uniform(-havuz_genisligi * 0.45, havuz_genisligi * 0.45)
+                        konum = (x, -5, z)
+                    
+                    # ROV ekle
+                    try:
+                        self.filo.rov(i, "ekle", konum)
+                        mevcut_rov_pos.append([x, -5, z])
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"⚠️ ROV-{i} eklenirken hata: {e}")
+            
+            elif aktif_rov_sayisi > n_rovs:
+                # Fazla ROV'ları çıkar (sondan başlayarak)
+                for i in range(aktif_rov_sayisi - 1, n_rovs - 1, -1):
+                    try:
+                        self.filo.rov(i, "cikar")
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"⚠️ ROV-{i} çıkarılırken hata: {e}")
+
+        # 8. Ada sayısını kontrol et ve dinamik ekle/çıkar
+        from .config import HareketAyarlari
+        hedef_ada_sayisi = n_adalar if n_adalar is not None else (random.randint(2, 5) if not hasattr(self, '_cache_n_adalar') else self._cache_n_adalar)
+        
+        if hedef_ada_sayisi is not None:
+            self._cache_n_adalar = hedef_ada_sayisi
+        
+        if hasattr(self.ortam, 'island_positions'):
+            mevcut_ada_sayisi = len([ada for ada in self.ortam.island_positions if ada is not None])
+            
+            if mevcut_ada_sayisi < hedef_ada_sayisi:
+                # Eksik adaları ekle
+                yeni_ada_pos = []
+                if self.ortam.island_positions:
+                    for ada_data in self.ortam.island_positions:
+                        if ada_data and len(ada_data) >= 3:
+                            yeni_ada_pos.append((ada_data[0], ada_data[1], ada_data[2]))
+                
+                for ada_id in range(mevcut_ada_sayisi, hedef_ada_sayisi):
+                    radius = random.uniform(20.0, 45.0)
+                    pos = self._guvenli_ada_pozisyonu_bul(
+                        yeni_ada_pos,
+                        havuz_genisligi,
+                        radius,
+                        HareketAyarlari.RANDOM_HEDEF_MIN_MESAFE_ADA
+                    )
+                    if pos:
+                        ada_x, ada_z = pos
+                        # Ada ekle
+                        if hasattr(self.ortam, 'Ada') and callable(getattr(self.ortam, 'Ada', None)):
+                            try:
+                                self.ortam.Ada(ada_id, "ekle", (ada_x, ada_z, radius))
+                            except Exception as e:
+                                if self.verbose:
+                                    print(f"⚠️ Ada-{ada_id} eklenirken hata: {e}")
+                        yeni_ada_pos.append((ada_x, ada_z, radius))
+            
+            elif mevcut_ada_sayisi > hedef_ada_sayisi:
+                # Fazla adaları çıkar (sondan başlayarak)
+                for ada_id in range(mevcut_ada_sayisi - 1, hedef_ada_sayisi - 1, -1):
+                    if hasattr(self.ortam, 'Ada') and callable(getattr(self.ortam, 'Ada', None)):
+                        try:
+                            self.ortam.Ada(ada_id, "cikar")
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"⚠️ Ada-{ada_id} çıkarılırken hata: {e}")
+        else:
+            # Ada sistemi yoksa oluştur
+            if hedef_ada_sayisi is None:
+                hedef_ada_sayisi = random.randint(2, 5)
+            
+            if not hasattr(self.ortam, 'island_positions'):
+                self.ortam.island_positions = []
+            
             yeni_ada_pos = []
             for ada_id in range(hedef_ada_sayisi):
                 radius = random.uniform(20.0, 45.0)
@@ -638,9 +764,11 @@ class Senaryo:
                 ada_x, ada_z = pos
                 if hasattr(self.ortam, 'Ada') and callable(getattr(self.ortam, 'Ada', None)):
                     try:
-                        self.ortam.Ada(ada_id, ada_x, ada_z)
+                        self.ortam.Ada(ada_id, "ekle", (ada_x, ada_z, radius))
                     except Exception:
                         pass
+                if not hasattr(self.ortam, 'island_positions'):
+                    self.ortam.island_positions = []
                 self.ortam.island_positions.append([ada_x, ada_z, radius])
                 yeni_ada_pos.append((ada_x, ada_z, radius))
 
