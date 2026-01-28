@@ -688,26 +688,20 @@ class Senaryo:
                         z = random.uniform(-havuz_genisligi * 0.45, havuz_genisligi * 0.45)
                         konum = (x, -5, z)
                     
-                    # ROV ekle (sessiz mod için flag ayarla)
+                    # ROV ekle
                     try:
-                        self.filo._sessiz_mod = True
                         self.filo.rov(i, "ekle", konum)
-                        self.filo._sessiz_mod = False
                         mevcut_rov_pos.append([x, -5, z])
                     except Exception as e:
-                        self.filo._sessiz_mod = False
                         if self.verbose:
                             print(f"⚠️ ROV-{i} eklenirken hata: {e}")
             
             elif aktif_rov_sayisi > n_rovs:
-                # Fazla ROV'ları çıkar (sondan başlayarak, sessiz mod)
+                # Fazla ROV'ları çıkar (sondan başlayarak)
                 for i in range(aktif_rov_sayisi - 1, n_rovs - 1, -1):
                     try:
-                        self.filo._sessiz_mod = True
                         self.filo.rov(i, "cikar")
-                        self.filo._sessiz_mod = False
                     except Exception as e:
-                        self.filo._sessiz_mod = False
                         if self.verbose:
                             print(f"⚠️ ROV-{i} çıkarılırken hata: {e}")
 
@@ -717,6 +711,22 @@ class Senaryo:
         
         if hedef_ada_sayisi is not None:
             self._cache_n_adalar = hedef_ada_sayisi
+        
+        # Önce mevcut tüm adaları temizle (yeni senaryo için)
+        if hasattr(self.ortam, 'Ada') and callable(getattr(self.ortam, 'Ada', None)):
+            if hasattr(self.ortam, 'island_positions') and self.ortam.island_positions:
+                # Mevcut adaları sondan başa doğru çıkar
+                for ada_id in range(len(self.ortam.island_positions) - 1, -1, -1):
+                    if self.ortam.island_positions[ada_id] is not None:
+                        try:
+                            self.ortam.Ada(ada_id, "cikar")
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"⚠️ Ada-{ada_id} temizlenirken hata: {e}")
+                # Listeleri temizle (yeni senaryo için)
+                self.ortam.island_positions = []
+                if hasattr(self.ortam, 'island_entities'):
+                    self.ortam.island_entities = []
         
         if hasattr(self.ortam, 'island_positions'):
             mevcut_ada_sayisi = len([ada for ada in self.ortam.island_positions if ada is not None])
