@@ -22,6 +22,22 @@ from FiratROVNet.gnc import Filo
 MODEL_DOSYA_ADI = "rov_modeli_multi.pth"
 
 
+class FocalLoss(nn.Module):
+    """
+    Focal Loss - Nadir sınıflar için daha iyi öğrenme.
+    """
+    def __init__(self, alpha=1, gamma=2):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+    
+    def forward(self, inputs, targets):
+        ce_loss = F.nll_loss(inputs, targets, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+        return focal_loss.mean()
+
+
 class GAT_Modeli(torch.nn.Module):
     def __init__(self, hidden_channels=16, num_heads=4, dropout=0.1):
         """
@@ -33,8 +49,8 @@ class GAT_Modeli(torch.nn.Module):
             dropout (float): Dropout oranı
         """
         super().__init__()
-        # Giriş: 7 Özellik
-        self.conv1 = GATConv(in_channels=7, out_channels=hidden_channels, heads=num_heads, dropout=dropout)
+        # Giriş: 9 Özellik (mesafe bilgileri eklendi)
+        self.conv1 = GATConv(in_channels=9, out_channels=hidden_channels, heads=num_heads, dropout=dropout)
         # Çıkış: 6 Sınıf
         self.conv2 = GATConv(hidden_channels * num_heads, 6, heads=1, dropout=dropout)
         self.dropout = dropout
@@ -86,7 +102,21 @@ def train(epochs=5000, lr=0.001, hidden_channels=16, num_heads=4,
     # Optimizer ve Scheduler
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=500, min_lr=1e-6)
-    criterion = nn.NLLLoss()
+    
+    # Class weights (nadir sınıfları daha fazla ağırlıklandır)
+    # Sınıf frekanslarına göre ters orantılı ağırlıklar
+    class_weights = torch.tensor([
+        0.5,  # 0: OK (çoğunluk sınıfı)
+        2.0,  # 1: Engel (nadir)
+        3.0,  # 2: Çarpışma (çok nadir)
+        1.0,  # 3: Kopma (orta)
+        2.0,  # 4: Uzak (nadir)
+        1.0   # 5: Kullanılmıyor
+    ], dtype=torch.float32).to(device)
+    
+    # Focal Loss kullan (nadir sınıflar için daha iyi)
+    # Alternatif: nn.NLLLoss(weight=class_weights) kullanılabilir
+    criterion = FocalLoss(alpha=1, gamma=2)
     
     best_loss = float('inf')
     loss_history = []
@@ -194,4 +224,4 @@ def train(epochs=5000, lr=0.001, hidden_channels=16, num_heads=4,
 
 if __name__ == "__main__":
     # Eğitimi başlat
-    model, best_loss = train(epochs=5000, lr=0.001, hidden_channels=16, num_heads=4, dropout=0.1)
+    model, best_loss = train(epochs=5000, lr=0.001, hidden_channels=32, num_heads=4, dropout=0.1)

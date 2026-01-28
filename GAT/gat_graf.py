@@ -34,7 +34,7 @@ def olustur_graf(senaryo_verisi):
     
     Returns:
         dict: {
-            'x': torch.Tensor,  # Özellik matrisi (n_rovs, 7)
+            'x': torch.Tensor,  # Özellik matrisi (n_rovs, 9)
             'positions': list,  # ROV pozisyonları
             'dist_matrix': np.ndarray,  # Mesafe matrisi
             'n_rovs': int
@@ -43,8 +43,8 @@ def olustur_graf(senaryo_verisi):
     senaryo = senaryo_verisi['senaryo']
     n_rovs = senaryo_verisi['n_rovs']
     
-    # Özellik matrisi (7 özellik: GAT_kodu, batarya, SNR, derinlik, vx, vz, rol)
-    x = torch.zeros((n_rovs, 7), dtype=torch.float)
+    # Özellik matrisi (9 özellik: GAT_kodu, batarya, SNR, derinlik, vx, vz, rol, min_rov_dist, lider_dist)
+    x = torch.zeros((n_rovs, 9), dtype=torch.float)
     
     # Pozisyon matrisi (mesafe hesaplamaları için)
     positions = []
@@ -114,6 +114,32 @@ def olustur_graf(senaryo_verisi):
         for j in range(n_rovs):
             if i != j:
                 dist_matrix[i, j] = np.linalg.norm(np.array(positions[i]) - np.array(positions[j]))
+    
+    # Mesafe bilgilerini özellik olarak ekle
+    for i in range(n_rovs):
+        # En yakın ROV mesafesi (normalize edilmiş)
+        if n_rovs > 1:
+            min_dist = np.min([dist_matrix[i, j] for j in range(n_rovs) if j != i])
+            x[i][7] = float(np.clip(min_dist / 100.0, 0.0, 1.0))
+        
+        # Lider mesafesi (normalize edilmiş) - sadece takipçiler için
+        try:
+            role = senaryo.get(i, 'rol')
+            if role != 1:  # Takipçi ise
+                lider_id = None
+                for j in range(n_rovs):
+                    try:
+                        r = senaryo.get(j, 'rol')
+                        if r == 1:
+                            lider_id = j
+                            break
+                    except (AttributeError, IndexError, KeyError):
+                        pass
+                if lider_id is not None and lider_id < n_rovs:
+                    lider_dist = dist_matrix[i, lider_id]
+                    x[i][8] = float(np.clip(lider_dist / 100.0, 0.0, 1.0))
+        except (AttributeError, IndexError, KeyError):
+            pass
     
     return {
         'x': x,
