@@ -458,6 +458,9 @@ class FiloHelper:
                     self.instance = instance
                     self.filo = instance.filo
                     self.ortam = instance.ortam
+                    # Sessiz modu aktif et (GAT eğitimi için)
+                    if hasattr(self.filo, 'helper'):
+                        self.filo.helper._sessiz_mod = True
                 
                 def get(self, rov_id, veri_tipi):
                     """ROV verisine erişim (sessiz mod - hata mesajları yok)."""
@@ -466,6 +469,9 @@ class FiloHelper:
                         n_rovs = len([r for r in self.instance.ortam.rovs if r is not None])
                         if rov_id >= n_rovs:
                             return None
+                    # Sessiz modu aktif et (her çağrıda)
+                    if hasattr(self.filo, 'helper'):
+                        self.filo.helper._sessiz_mod = True
                     return self.instance.get(rov_id, veri_tipi)
             
             return {

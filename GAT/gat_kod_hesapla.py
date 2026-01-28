@@ -51,7 +51,10 @@ def hesapla_gat_kodlari(graf_verisi, senaryo_verisi):
         
         # 2. Engel yakınlığı kontrolü (sonar verisi)
         if code == 0:
-            sonar = senaryo.get(i, 'sonar')
+            try:
+                sonar = senaryo.get(i, 'sonar')
+            except (AttributeError, IndexError, KeyError):
+                sonar = None
             if sonar is not None and sonar > 0 and sonar < GATLimitleri.ENGEL:
                 code = 1
                 danger_map[i] = code
@@ -67,7 +70,10 @@ def hesapla_gat_kodlari(graf_verisi, senaryo_verisi):
             # Lider ID'yi bul
             lider_id = None
             for j in range(n_rovs):
-                rol = senaryo.get(j, 'rol')
+                try:
+                    rol = senaryo.get(j, 'rol')
+                except (AttributeError, IndexError, KeyError):
+                    rol = None
                 if rol == 1:
                     lider_id = j
                     break

@@ -52,7 +52,10 @@ def olustur_graf(senaryo_verisi):
     # Her ROV için veri topla
     for i in range(n_rovs):
         # GPS koordinatları
-        gps = senaryo.get(i, 'gps')
+        try:
+            gps = senaryo.get(i, 'gps')
+        except (AttributeError, IndexError, KeyError):
+            gps = None
         if gps is None:
             gps = np.array([0.0, 0.0, -5.0])
         elif isinstance(gps, (list, tuple)):
@@ -60,7 +63,10 @@ def olustur_graf(senaryo_verisi):
         positions.append(gps[:2])  # Sadece x, y (2D düzlem)
         
         # Batarya
-        battery = senaryo.get(i, 'batarya')
+        try:
+            battery = senaryo.get(i, 'batarya')
+        except (AttributeError, IndexError, KeyError):
+            battery = None
         if battery is None:
             battery = 1.0
         x[i][1] = float(np.clip(battery, 0.0, 1.0))
@@ -74,7 +80,10 @@ def olustur_graf(senaryo_verisi):
         x[i][3] = float(np.clip(depth / 100.0, 0.0, 1.0))
         
         # Hız vektörü
-        velocity = senaryo.get(i, 'hiz')
+        try:
+            velocity = senaryo.get(i, 'hiz')
+        except (AttributeError, IndexError, KeyError):
+            velocity = None
         if velocity is None:
             velocity = np.array([0.0, 0.0, 0.0])
         elif isinstance(velocity, (list, tuple)):
@@ -91,7 +100,10 @@ def olustur_graf(senaryo_verisi):
             x[i][5] = 0.0
         
         # Rol (lider = 1.0, takipçi = 0.0)
-        role = senaryo.get(i, 'rol')
+        try:
+            role = senaryo.get(i, 'rol')
+        except (AttributeError, IndexError, KeyError):
+            role = None
         if role is None:
             role = 0
         x[i][6] = 1.0 if role == 1 else 0.0
