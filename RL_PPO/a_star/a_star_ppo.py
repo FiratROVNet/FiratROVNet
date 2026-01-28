@@ -1,427 +1,432 @@
 """
-A* Path Finding with Proximal Policy Optimization (PPO)
-========================================================
+PPO-A* (Proximal Policy Optimization Enhanced A-Star)
 
-Bu modül, PPO algoritmasını kullanarak A* yol bulma işlemini optimize eder.
-- Actor Network: Politika (Policy) - Aksiyon seçimi
-- Critic Network: Value function - Durum değerlendirmesi
-- PPO Objective: Clipped surrogate loss ile stabil eğitim
+Bu modül, PyTorch kullanarak bir Actor-Critic sinir ağı eğitir.
+Critic ağının öğrendiği 'Value' (Değer) fonksiyonu, A* algoritmasının
+sezgisel (heuristic) fonksiyonu olarak kullanılır.
 """
-import os
-import sys
-
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
+import math
+import random
 import torch
 import torch.nn as nn
+import torch.optim as optim
 from torch.distributions import Categorical
-from collections import deque
-import math
-from typing import List, Tuple, Optional, Dict
+from heapq import heappush, heappop
+from typing import List, Tuple, Optional, Set
 
+# --- 1. SİNİR AĞI MODÜLLERİ (PPO BEYNİ) ---
 
-class A_StarPPOActor(nn.Module):
-    """PPO Actor Network (Policy)"""
-    
-    def __init__(self, state_size: int = 10, action_size: int = 8, hidden_size: int = 128):
-        super(A_StarPPOActor, self).__init__()
-        self.fc1 = nn.Linear(state_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.policy_head = nn.Linear(hidden_size, action_size)
+class ActorCritic(nn.Module):
+    """
+    Hem aksiyon seçen (Actor) hem de durumu değerlendiren (Critic) ağ.
+    Input: [x, y, hedef_x, hedef_y, mesafe]
+    """
+    def __init__(self, input_dim, action_dim):
+        super(ActorCritic, self).__init__()
         
-        self.relu = nn.ReLU()
-        self.softmax = nn.Softmax(dim=-1)
-    
-    def forward(self, state):
-        x = self.relu(self.fc1(state))
-        x = self.relu(self.fc2(x))
-        action_probs = self.softmax(self.policy_head(x))
-        return action_probs
-
-
-class A_StarPPOCritic(nn.Module):
-    """PPO Critic Network (Value Function)"""
-    
-    def __init__(self, state_size: int = 10, hidden_size: int = 128):
-        super(A_StarPPOCritic, self).__init__()
-        self.fc1 = nn.Linear(state_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.value_head = nn.Linear(hidden_size, 1)
-        
-        self.relu = nn.ReLU()
-    
-    def forward(self, state):
-        x = self.relu(self.fc1(state))
-        x = self.relu(self.fc2(x))
-        value = self.value_head(x)
-        return value
-
-
-class A_StarPPO:
-    """PPO tabanlı A* yol bulma algoritması"""
-    
-    def __init__(self, learning_rate: float = 0.0003, gamma: float = 0.99,
-                 gae_lambda: float = 0.95, clip_ratio: float = 0.2,
-                 entropy_coef: float = 0.01, value_coef: float = 0.5,
-                 num_epochs: int = 3, mini_batch_size: int = 32):
-        """
-        Args:
-            learning_rate: Öğrenme oranı
-            gamma: Discount factor
-            gae_lambda: GAE lambda (Generalized Advantage Estimation)
-            clip_ratio: PPO clipping oranı (ε)
-            entropy_coef: Entropy regularization katsayısı
-            value_coef: Value loss katsayısı
-            num_epochs: Her episode'te eğitim döngü sayısı
-            mini_batch_size: Mini batch boyutu
-        """
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        # Actor-Critic Networks
-        self.actor = A_StarPPOActor(state_size=10, action_size=8).to(self.device)
-        self.critic = A_StarPPOCritic(state_size=10).to(self.device)
-        
-        # Optimizer
-        self.optimizer = torch.optim.Adam([
-            {'params': self.actor.parameters(), 'lr': learning_rate},
-            {'params': self.critic.parameters(), 'lr': learning_rate}
-        ])
-        
-        # Hiperparametreler
-        self.gamma = gamma
-        self.gae_lambda = gae_lambda
-        self.clip_ratio = clip_ratio
-        self.entropy_coef = entropy_coef
-        self.value_coef = value_coef
-        self.num_epochs = num_epochs
-        self.mini_batch_size = mini_batch_size
-        
-        # Memory
-        self.memory = {
-            'states': [],
-            'actions': [],
-            'rewards': [],
-            'values': [],
-            'log_probs': [],
-            'dones': []
-        }
-        
-        # Aksiyon mappings
-        self.action_map = {
-            0: (1, 0),    # Sağ
-            1: (-1, 0),   # Sol
-            2: (0, 1),    # İleri
-            3: (0, -1),   # Geri
-            4: (1, 1),    # Sağ-İleri
-            5: (-1, 1),   # Sol-İleri
-            6: (1, -1),   # Sağ-Geri
-            7: (-1, -1),  # Sol-Geri
-        }
-    
-    def extract_state(self, start: Tuple[float, float], goal: Tuple[float, float],
-                     current: Tuple[float, float], obstacles: List = None) -> np.ndarray:
-        """
-        State vektörünü oluştur (A* RL ile aynı)
-        
-        Args:
-            start: Başlangıç koordinatı
-            goal: Hedef koordinatı
-            current: Mevcut koordinat
-            obstacles: Engel listesi
-            
-        Returns:
-            State vektörü (10D)
-        """
-        dist_to_goal = math.sqrt((current[0] - goal[0])**2 + (current[1] - goal[1])**2)
-        dist_to_start = math.sqrt((current[0] - start[0])**2 + (current[1] - start[1])**2)
-        
-        nearest_obstacle_dist = 100.0
-        if obstacles:
-            for obs in obstacles:
-                obs_dist = math.sqrt((current[0] - obs[0])**2 + (current[1] - obs[1])**2)
-                nearest_obstacle_dist = min(nearest_obstacle_dist, obs_dist)
-        
-        dx_goal = (goal[0] - current[0]) / (dist_to_goal + 1e-6)
-        dy_goal = (goal[1] - current[1]) / (dist_to_goal + 1e-6)
-        
-        state = np.array([
-            current[0] / 100.0,
-            current[1] / 100.0,
-            goal[0] / 100.0,
-            goal[1] / 100.0,
-            dist_to_goal / 100.0,
-            dist_to_start / 100.0,
-            nearest_obstacle_dist / 100.0,
-            dx_goal,
-            dy_goal,
-            1.0 if dist_to_goal < 5.0 else 0.0
-        ], dtype=np.float32)
-        
-        return state
-    
-    def select_action(self, state: np.ndarray) -> Tuple[int, float, float]:
-        """
-        Politika ile aksiyon seçimi
-        
-        Args:
-            state: State vektörü
-            
-        Returns:
-            (action, log_prob, value)
-        """
-        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        
-        with torch.no_grad():
-            action_probs = self.actor(state_tensor)
-            value = self.critic(state_tensor)
-        
-        # Kategorik dağılımdan sample al
-        dist = Categorical(action_probs)
-        action = dist.sample().item()
-        log_prob = dist.log_prob(torch.tensor([action]).to(self.device)).item()
-        value = value.item()
-        
-        return action, log_prob, value
-    
-    def calculate_gae(self, rewards: List[float], values: List[float], dones: List[bool]) -> Tuple:
-        """
-        Generalized Advantage Estimation (GAE) hesapla
-        
-        Args:
-            rewards: Reward listesi
-            values: Value estimatları
-            dones: Done flagları
-            
-        Returns:
-            (advantages, returns)
-        """
-        advantages = []
-        gae = 0
-        next_value = 0
-        
-        # Arkadan öne doğru hesapla
-        for t in reversed(range(len(rewards))):
-            if t == len(rewards) - 1:
-                next_value = 0
-            else:
-                next_value = values[t + 1]
-            
-            # Temporal difference error
-            td_error = rewards[t] + self.gamma * next_value * (1 - dones[t]) - values[t]
-            
-            # GAE
-            gae = td_error + self.gamma * self.gae_lambda * (1 - dones[t]) * gae
-            advantages.insert(0, gae)
-        
-        advantages = np.array(advantages)
-        # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        
-        returns = advantages + np.array(values)
-        
-        return advantages, returns
-    
-    def calculate_reward(self, prev_dist: float, curr_dist: float,
-                        obstacle_penalty: float = 0.0, goal_reached: bool = False) -> float:
-        """Reward hesaplama"""
-        distance_reward = (prev_dist - curr_dist) * 0.1
-        collision_penalty = -obstacle_penalty * 10.0
-        goal_bonus = 100.0 if goal_reached else 0.0
-        
-        return distance_reward + collision_penalty + goal_bonus
-    
-    def remember(self, state: np.ndarray, action: int, reward: float,
-                log_prob: float, value: float, done: bool):
-        """Experience memory'ye ekle"""
-        self.memory['states'].append(state)
-        self.memory['actions'].append(action)
-        self.memory['rewards'].append(reward)
-        self.memory['log_probs'].append(log_prob)
-        self.memory['values'].append(value)
-        self.memory['dones'].append(done)
-    
-    def train(self):
-        """PPO eğitim loop'u"""
-        if len(self.memory['states']) < self.mini_batch_size:
-            return 0.0
-        
-        # GAE hesapla
-        advantages, returns = self.calculate_gae(
-            self.memory['rewards'],
-            self.memory['values'],
-            self.memory['dones']
+        # Ortak katmanlar (Haritayı anlama)
+        self.feature_layer = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.Tanh(),
+            nn.Linear(64, 64),
+            nn.Tanh()
         )
         
-        states = torch.FloatTensor(np.array(self.memory['states'])).to(self.device)
-        actions = torch.LongTensor(np.array(self.memory['actions'])).to(self.device)
-        old_log_probs = torch.FloatTensor(np.array(self.memory['log_probs'])).to(self.device)
-        advantages = torch.FloatTensor(advantages).to(self.device)
-        returns = torch.FloatTensor(returns).to(self.device)
+        # Actor: Hangi yöne gitmeli? (Policy)
+        self.actor = nn.Sequential(
+            nn.Linear(64, action_dim),
+            nn.Softmax(dim=-1)
+        )
         
-        total_loss = 0.0
+        # Critic: Burası hedefe ne kadar yakın/iyi? (Value)
+        # Bu değer A* için Heuristic olacak.
+        self.critic = nn.Linear(64, 1)
         
-        # PPO eğitim epochs
-        for epoch in range(self.num_epochs):
-            # Mini batch'ler halinde eğit
-            indices = np.arange(len(states))
-            np.random.shuffle(indices)
-            
-            for i in range(0, len(states), self.mini_batch_size):
-                batch_indices = indices[i:i + self.mini_batch_size]
-                
-                batch_states = states[batch_indices]
-                batch_actions = actions[batch_indices]
-                batch_old_log_probs = old_log_probs[batch_indices]
-                batch_advantages = advantages[batch_indices]
-                batch_returns = returns[batch_indices]
-                
-                # Forward pass
-                action_probs = self.actor(batch_states)
-                values = self.critic(batch_states).squeeze(1)
-                
-                # Yeni log probabilities
-                dist = Categorical(action_probs)
-                new_log_probs = dist.log_prob(batch_actions)
-                
-                # PPO loss components
-                # 1. Actor loss (Policy loss)
-                ratio = torch.exp(new_log_probs - batch_old_log_probs)
-                surr1 = ratio * batch_advantages
-                surr2 = torch.clamp(ratio, 1 - self.clip_ratio, 1 + self.clip_ratio) * batch_advantages
-                actor_loss = -torch.min(surr1, surr2).mean()
-                
-                # 2. Critic loss (Value loss)
-                critic_loss = nn.MSELoss()(values, batch_returns)
-                
-                # 3. Entropy bonus (exploration)
-                entropy = dist.entropy().mean()
-                
-                # Total loss
-                loss = actor_loss + self.value_coef * critic_loss - self.entropy_coef * entropy
-                
-                # Backward
-                self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(list(self.actor.parameters()) + list(self.critic.parameters()), 0.5)
-                self.optimizer.step()
-                
-                total_loss += loss.item()
+    def forward(self, x):
+        features = self.feature_layer(x)
+        return self.actor(features), self.critic(features)
+
+    def get_value(self, x):
+        features = self.feature_layer(x)
+        return self.critic(features)
+
+
+# --- 2. PPO AGENT ---
+
+class PPOAgent:
+    def __init__(self, input_dim, action_dim, lr=0.002, gamma=0.99, eps_clip=0.2, k_epochs=4):
+        self.gamma = gamma
+        self.eps_clip = eps_clip
+        self.k_epochs = k_epochs
         
-        # Memory'yi temizle
-        self.clear_memory()
+        self.policy = ActorCritic(input_dim, action_dim)
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
+        self.policy_old = ActorCritic(input_dim, action_dim)
+        self.policy_old.load_state_dict(self.policy.state_dict())
         
-        return total_loss / self.num_epochs
+        self.MseLoss = nn.MSELoss()
     
-    def clear_memory(self):
-        """Memory'yi temizle"""
-        self.memory = {
-            'states': [],
-            'actions': [],
-            'rewards': [],
-            'values': [],
-            'log_probs': [],
-            'dones': []
-        }
-    
-    def a_star_with_ppo(self, start: Tuple[float, float], goal: Tuple[float, float],
-                        obstacles: List = None, max_steps: int = 1000,
-                        safety_margin: float = 15.0, harita_ref=None) -> Optional[List[Tuple[float, float]]]:
-        """
-        PPO-optimized A* yol bulma (Orijinal A* algoritması ile entegreli)
-        
-        Args:
-            start: Başlangıç koordinatı
-            goal: Hedef koordinatı
-            obstacles: Engel listesi
-            max_steps: Maksimum adım sayısı
-            safety_margin: Güvenlik mesafesi
-            harita_ref: Harita referansı (orijinal a_star_yolu_hesapla için)
-            
-        Returns:
-            Bulunan yol [(x1, y1), (x2, y2), ...] veya None
-        """
-        # Önce PPO'yu kullanarak yol bulma yapan bir strateji belirle
-        state = self.extract_state(start, goal, start, obstacles)
-        self.actor.eval()
-        self.critic.eval()
-        
+    def select_action(self, state):
         with torch.no_grad():
-            action_probs = self.actor(torch.FloatTensor(state).unsqueeze(0).to(self.device))
-        
-        use_ppo_enhanced = action_probs.argmax().item() < 4  # Bazı aksiyonları PPO moduna ayarla
-        
-        if use_ppo_enhanced and harita_ref is None:
-            # PPO-enhanced yol (adım adım PPO hareketi)
-            current = start
-            path = [current]
-            prev_dist = math.sqrt((current[0] - goal[0])**2 + (current[1] - goal[1])**2)
+            state = torch.FloatTensor(state)
+            probs, val = self.policy_old(state)
+            m = Categorical(probs)
+            action = m.sample()
+            return action.item(), m.log_prob(action), val.item()
+
+    def update(self, memory):
+        # Hafızadaki verileri tensörlere çevir
+        rewards = []
+        discounted_reward = 0
+        for reward, is_terminal in zip(reversed(memory.rewards), reversed(memory.is_terminals)):
+            if is_terminal:
+                discounted_reward = 0
+            discounted_reward = reward + (self.gamma * discounted_reward)
+            rewards.insert(0, discounted_reward)
             
-            for step in range(max_steps):
-                # State oluştur
-                state = self.extract_state(start, goal, current, obstacles)
+        rewards = torch.tensor(rewards, dtype=torch.float32)
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-5) # Normalize et
+        
+        old_states = torch.tensor(np.array(memory.states), dtype=torch.float32)
+        old_actions = torch.tensor(memory.actions, dtype=torch.float32)
+        old_logprobs = torch.tensor(memory.logprobs, dtype=torch.float32)
+        
+        # K Epochs boyunca ağı güncelle
+        for _ in range(self.k_epochs):
+            probs, state_values = self.policy(old_states)
+            dist = Categorical(probs)
+            
+            # Yeni log_probs
+            logprobs = dist.log_prob(old_actions)
+            dist_entropy = dist.entropy()
+            state_values = torch.squeeze(state_values)
+            
+            # Ratio (r_t)
+            ratios = torch.exp(logprobs - old_logprobs)
+            
+            # Surrogate Loss
+            advantages = rewards - state_values.detach()
+            surr1 = ratios * advantages
+            surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
+            
+            loss = -torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, rewards) - 0.01 * dist_entropy
+            
+            self.optimizer.zero_grad()
+            loss.mean().backward()
+            self.optimizer.step()
+            
+        self.policy_old.load_state_dict(self.policy.state_dict())
+
+class Memory:
+    def __init__(self):
+        self.actions = []
+        self.states = []
+        self.logprobs = []
+        self.rewards = []
+        self.is_terminals = []
+    
+    def clear(self):
+        del self.actions[:]
+        del self.states[:]
+        del self.logprobs[:]
+        del self.rewards[:]
+        del self.is_terminals[:]
+
+
+# --- 3. PPO İLE GÜÇLENDİRİLMİŞ A* PLANLAYICI ---
+
+class AStarNode:
+    """Orijinal düğüm yapısı"""
+    def __init__(self, x: int, y: int, g_cost: float = 0, h_cost: float = 0, parent=None):
+        self.x = x
+        self.y = y
+        self.g_cost = g_cost
+        self.h_cost = h_cost
+        self.f_cost = g_cost + h_cost
+        self.parent = parent
+    
+    def __lt__(self, other):
+        return self.f_cost < other.f_cost
+
+
+class PPOAStarPlanner:
+    def __init__(self, grid_size: float = 1.0):
+        self.grid_size = grid_size
+        # State: [rel_x, rel_y, dist_norm, is_obstacle_around]
+        self.input_dim = 4 
+        self.actions = [ # 8 Yön
+            (-1, -1), (0, -1), (1, -1),
+            (-1, 0),           (1, 0),
+            (-1, 1),  (0, 1),  (1, 1)
+        ]
+        self.agent = PPOAgent(self.input_dim, len(self.actions))
+        
+    def _get_state(self, x, y, goal_x, goal_y, obstacle_map, bounds):
+        """Sinir ağı için durumu vektöre çevirir"""
+        # Normalizasyon faktörü (harita büyüklüğü tahmini)
+        max_dist = max(bounds[1], bounds[3])
+        
+        dx = (goal_x - x) / max_dist
+        dy = (goal_y - y) / max_dist
+        dist = math.sqrt(dx**2 + dy**2)
+        
+        # Basit bir engel sensörü (etrafında engel var mı?)
+        # 8 komşudan kaçı engel? (0.0 - 1.0 arası)
+        blocked_count = 0
+        h, w = obstacle_map.shape
+        for mx, my in self.actions:
+            nx, ny = x + mx, y + my
+            if nx < 0 or ny < 0 or nx >= w or ny >= h or obstacle_map[ny, nx]:
+                blocked_count += 1
+        obstacle_sense = blocked_count / 8.0
+        
+        return np.array([dx, dy, dist, obstacle_sense])
+
+    def train_ppo(self, start: Tuple[float, float], goal: Tuple[float, float],
+                 obstacles: List[Tuple[float, float, float]],
+                 map_bounds: Tuple[float, float, float, float],
+                 max_episodes: int = 500):
+        
+        print(f"🧠 [PPO] Eğitim Başlıyor ({max_episodes} bölüm)...")
+        
+        obstacle_map = self._create_obstacle_map(obstacles, map_bounds)
+        start_grid = self._world_to_grid(start[0], start[1], map_bounds)
+        goal_grid = self._world_to_grid(goal[0], goal[1], map_bounds)
+        
+        memory = Memory()
+        update_timestep = 200
+        timestep = 0
+        
+        min_x, max_x, min_y, max_y = map_bounds
+        w, h = obstacle_map.shape[1], obstacle_map.shape[0]
+        
+        for ep in range(max_episodes):
+            # Rastgele başlangıç (Curriculum Learning için) veya sabit başlangıç
+            if ep % 5 == 0:
+                current_x, current_y = start_grid
+            else:
+                current_x, current_y = random.randint(0, w-1), random.randint(0, h-1)
+                while obstacle_map[current_y, current_x]:
+                    current_x, current_y = random.randint(0, w-1), random.randint(0, h-1)
+            
+            ep_reward = 0
+            
+            for t in range(300): # Max steps per episode
+                timestep += 1
+                
+                # Mevcut durum
+                state = self._get_state(current_x, current_y, goal_grid[0], goal_grid[1], obstacle_map, map_bounds)
                 
                 # Aksiyon seç
-                self.actor.eval()
-                with torch.no_grad():
-                    action_probs = self.actor(torch.FloatTensor(state).unsqueeze(0).to(self.device))
-                action = action_probs.argmax(dim=1).item()
+                action_idx, log_prob, val = self.agent.select_action(state)
+                dx, dy = self.actions[action_idx]
                 
-                dx, dy = self.action_map[action]
-                next_pos = (current[0] + dx * 5.0, current[1] + dy * 5.0)
+                nx, ny = current_x + dx, current_y + dy
                 
-                # Çarpışma kontrolü
-                collision = False
-                if obstacles:
-                    for obs in obstacles:
-                        obs_dist = math.sqrt((next_pos[0] - obs[0])**2 + (next_pos[1] - obs[1])**2)
-                        if obs_dist < safety_margin:
-                            collision = True
-                            break
+                # Ödül Mekanizması
+                done = False
+                reward = 0
                 
-                # Hareketi uygula
-                if not collision:
-                    current = next_pos
-                    path.append(current)
+                # Mesafe bazlı ödül (Shaping)
+                dist_old = math.sqrt((current_x - goal_grid[0])**2 + (current_y - goal_grid[1])**2)
+                dist_new = math.sqrt((nx - goal_grid[0])**2 + (ny - goal_grid[1])**2)
                 
-                # Hedefe mesafe
-                goal_dist = math.sqrt((current[0] - goal[0])**2 + (current[1] - goal[1])**2)
+                # Geçersiz hareket / Engel
+                if nx < 0 or ny < 0 or nx >= w or ny >= h or obstacle_map[ny, nx]:
+                    reward = -10 # Çarpma cezası
+                    nx, ny = current_x, current_y # Hareket etme
+                    # done = True # İstersek bölümü bitirebiliriz ama öğrenmesi için devam etsin
                 
-                if goal_dist < safety_margin:
-                    path.append(goal)
-                    return path
+                # Hedef
+                elif (nx, ny) == goal_grid:
+                    reward = 100
+                    done = True
                 
-                prev_dist = goal_dist
+                # Hedefe yaklaştı mı?
+                else:
+                    reward = (dist_old - dist_new) * 10 - 0.1 # Adım maliyeti
+                
+                # Hafızaya kaydet
+                memory.states.append(state)
+                memory.actions.append(action_idx)
+                memory.logprobs.append(log_prob)
+                memory.rewards.append(reward)
+                memory.is_terminals.append(done)
+                
+                current_x, current_y = nx, ny
+                ep_reward += reward
+                
+                # PPO Güncellemesi
+                if timestep % update_timestep == 0:
+                    self.agent.update(memory)
+                    memory.clear()
+                    timestep = 0
+                
+                if done:
+                    break
             
-            return path if len(path) > 1 else None
-        else:
-            # Orijinal A* algoritması (harita sistemi varsa)
-            if harita_ref and hasattr(harita_ref, 'a_star_yolu_hesapla'):
-                try:
-                    return harita_ref.a_star_yolu_hesapla(
-                        start=start,
-                        goal=goal,
-                        safety_margin=safety_margin
-                    )
-                except Exception as e:
-                    print(f"⚠️ Orijinal A* başarısız, PPO yoluna geçiliyor: {e}")
-                    return self.a_star_with_ppo(start, goal, obstacles, max_steps, safety_margin, None)
-            else:
-                return self.a_star_with_ppo(start, goal, obstacles, max_steps, safety_margin, None)
+            if (ep+1) % 50 == 0:
+                print(f"Epizot: {ep+1}, Son Ödül: {ep_reward:.2f}")
+
+        print("✅ [PPO] Eğitim Tamamlandı.")
+
+    def _ppo_heuristic(self, x, y, goal_x, goal_y, obstacle_map, bounds):
+        """
+        A* için Heuristic Fonksiyonu.
+        Sinir ağının 'Critic' çıktısını kullanır.
+        Critic 'Value' (Değer) döndürür: Yüksek değer = İyi durum (Hedefe yakın).
+        A* ise 'Cost' (Maliyet) ister: Düşük maliyet = İyi durum.
+        Bu yüzden: Heuristic = -Value (Negatif Değer)
+        """
+        state = self._get_state(x, y, goal_x, goal_y, obstacle_map, bounds)
+        state_tensor = torch.FloatTensor(state)
+        
+        with torch.no_grad():
+            value = self.agent.policy.get_value(state_tensor).item()
+        
+        # PPO Value genellikle normalize edilmiştir veya ödül skalasındadır.
+        # Bunu A* için pozitif bir uzaklık maliyetine çevirmeliyiz.
+        # Negatif value kullanıyoruz ve scale ediyoruz.
+        return -value * 2.0 
+
+    def find_path(self, start, goal, obstacles, map_bounds):
+        start_grid = self._world_to_grid(start[0], start[1], map_bounds)
+        goal_grid = self._world_to_grid(goal[0], goal[1], map_bounds)
+        obstacle_map = self._create_obstacle_map(obstacles, map_bounds)
+        
+        if not self._is_valid(start_grid[0], start_grid[1], obstacle_map):
+            print("Geçersiz Başlangıç")
+            return None
+
+        # A* Başlat
+        open_set = []
+        closed_set = set()
+        
+        # Başlangıç Heuristic: PPO Network'ten al
+        h_start = self._ppo_heuristic(start_grid[0], start_grid[1], goal_grid[0], goal_grid[1], obstacle_map, map_bounds)
+        
+        start_node = AStarNode(start_grid[0], start_grid[1], 0, h_start)
+        heappush(open_set, start_node)
+        
+        iters = 0
+        max_iters = 5000
+        
+        while open_set and iters < max_iters:
+            iters += 1
+            current = heappop(open_set)
+            
+            if current.x == goal_grid[0] and current.y == goal_grid[1]:
+                path = []
+                while current:
+                    wx, wy = self._grid_to_world(current.x, current.y, map_bounds)
+                    path.append((wx, wy))
+                    current = current.parent
+                return path[::-1]
+            
+            closed_set.add((current.x, current.y))
+            
+            for i, (dx, dy) in enumerate(self.actions):
+                nx, ny = current.x + dx, current.y + dy
+                
+                if not self._is_valid(nx, ny, obstacle_map) or (nx, ny) in closed_set:
+                    continue
+                
+                move_cost = math.sqrt(2) if dx != 0 and dy != 0 else 1.0
+                new_g = current.g_cost + move_cost
+                
+                # PPO Heuristic
+                new_h = self._ppo_heuristic(nx, ny, goal_grid[0], goal_grid[1], obstacle_map, map_bounds)
+                
+                neighbor = AStarNode(nx, ny, new_g, new_h, current)
+                
+                # Basitleştirilmiş open set kontrolü
+                in_open = False
+                for node in open_set:
+                    if node.x == nx and node.y == ny:
+                        if new_g < node.g_cost:
+                            node.g_cost = new_g
+                            node.f_cost = new_g + node.h_cost
+                            node.parent = current
+                        in_open = True
+                        break
+                
+                if not in_open:
+                    heappush(open_set, neighbor)
+                    
+        return None
+
+    # --- Yardımcılar ---
+    def _world_to_grid(self, wx, wy, bounds):
+        return int((wx - bounds[0])/self.grid_size), int((wy - bounds[2])/self.grid_size)
     
-    def save_model(self, filepath: str):
-        """Model'i kaydet"""
-        torch.save({
-            'actor': self.actor.state_dict(),
-            'critic': self.critic.state_dict(),
-            'optimizer': self.optimizer.state_dict(),
-        }, filepath)
+    def _grid_to_world(self, gx, gy, bounds):
+        return bounds[0] + (gx + 0.5)*self.grid_size, bounds[2] + (gy + 0.5)*self.grid_size
+        
+    def _is_valid(self, x, y, obs_map):
+        if x < 0 or y < 0 or x >= obs_map.shape[1] or y >= obs_map.shape[0]: return False
+        return not obs_map[y, x]
+
+    def _create_obstacle_map(self, obstacles, bounds, margin=2.0):
+        w = int((bounds[1] - bounds[0]) / self.grid_size) + 1
+        h = int((bounds[3] - bounds[2]) / self.grid_size) + 1
+        obs_map = np.zeros((h, w), dtype=bool)
+        for ox, oy, r in obstacles:
+            gx, gy = self._world_to_grid(ox, oy, bounds)
+            gr = int((r + margin) / self.grid_size) + 1
+            for i in range(-gr, gr+1):
+                for j in range(-gr, gr+1):
+                    nx, ny = gx+i, gy+j
+                    if 0 <= nx < w and 0 <= ny < h:
+                        wx, wy = self._grid_to_world(nx, ny, bounds)
+                        if math.sqrt((wx-ox)**2 + (wy-oy)**2) <= r + margin:
+                            obs_map[ny, nx] = True
+        return obs_map
+
+# --- GÖRSELLEŞTİRME VE TEST ---
+import matplotlib.pyplot as plt
+
+def visualize_path(path, obstacles, start, goal, bounds):
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.set_xlim(bounds[0], bounds[1])
+    ax.set_ylim(bounds[2], bounds[3])
+    ax.set_aspect('equal')
+    ax.grid(True, linestyle='--', alpha=0.5)
     
-    def load_model(self, filepath: str):
-        """Model'i yükle"""
-        checkpoint = torch.load(filepath, map_location=self.device)
-        self.actor.load_state_dict(checkpoint['actor'])
-        self.critic.load_state_dict(checkpoint['critic'])
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
+    for obs in obstacles:
+        ax.add_patch(plt.Circle((obs[0], obs[1]), obs[2], color='red', alpha=0.5))
+        ax.add_patch(plt.Circle((obs[0], obs[1]), obs[2]+2.0, color='red', alpha=0.1))
+
+    ax.plot(start[0], start[1], 'go', markersize=10, label='Başlangıç')
+    ax.plot(goal[0], goal[1], 'bo', markersize=10, label='Hedef')
+    
+    if path:
+        px, py = zip(*path)
+        ax.plot(px, py, 'g-', linewidth=2, label='PPO-A* Yolu')
+        ax.set_title("PPO (Neural Net) Destekli A*")
+    else:
+        ax.set_title("Yol Bulunamadı")
+    plt.legend()
+    plt.show()
+
+if __name__ == "__main__":
+    bounds = (0, 30, 0, 30)
+    # U Şeklinde Engel
+    obstacles = []
+    for y in range(10, 20): obstacles.append((10, y, 0.5))
+    for x in range(10, 20): obstacles.append((x, 10, 0.5))
+    for y in range(10, 20): obstacles.append((20, y, 0.5))
+    
+    start_pos = (15, 15)
+    goal_pos = (25, 25)
+    
+    planner = PPOAStarPlanner(grid_size=1.0)
+    
+    # 1. PPO Eğitimi
+    planner.train_ppo(start_pos, goal_pos, obstacles, bounds, max_episodes=1000)
+    
+    # 2. A* ile Yol Bulma (Heuristic olarak PPO Critic ağı kullanılır)
+    path = planner.find_path(start_pos, goal_pos, obstacles, bounds)
+    
+    visualize_path(path, obstacles, start_pos, goal_pos, bounds)

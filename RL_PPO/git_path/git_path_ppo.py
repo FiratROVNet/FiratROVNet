@@ -1,10 +1,14 @@
 """
-Git Path (Path Following) with Proximal Policy Optimization (PPO)
-=============================================================
+Git Path with Proximal Policy Optimization (PPO)
+================================================
 
-Bu modül, PPO kullanarak ROV'un hesapladığı yolu takip etmesini optimize eder.
-- Actor: Hareket seçim politikası
-- Critic: Yol takibi başarısı değerlendirmesi
+Bu modül, git_path() fonksiyonunu PPO ile optimize eder.
+A* yerine PPO agent yol planlama yapar.
+
+- Actor: Hareket seçim politikası (stochastic)
+- Critic: State value estimation
+- Action: 8 yön hareketi (N, S, E, W, NE, NW, SE, SW)
+- Reward: Hedefe yaklaşma, engelden kaçınma, yol optimizasyonu
 """
 import os
 import sys
@@ -13,184 +17,314 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
 from torch.distributions import Categorical
-from collections import deque
+import numpy as np
 import math
-from typing import List, Tuple, Dict
+from collections import deque
+from typing import List, Tuple, Optional
 
 
-class GitPathPPOActor(nn.Module):
-    """PPO Actor - Yol takibi hareketi"""
-    
-    def __init__(self, state_size: int = 20, action_size: int = 8, hidden_size: int = 128):
-        super(GitPathPPOActor, self).__init__()
+# =============================================================================
+# ACTOR-CRITIC NETWORK
+# =============================================================================
+class ActorCriticNetwork(nn.Module):
+    """
+    Actor-Critic Network for PPO path planning
+    Actor: Policy (action probabilities)
+    Critic: Value function (state value)
+    """
+    def __init__(self, state_size=20, action_size=8, hidden_size=128):
+        super(ActorCriticNetwork, self).__init__()
+        
+        # Shared layers
         self.fc1 = nn.Linear(state_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.policy_head = nn.Linear(hidden_size, action_size)
         
-        self.relu = nn.ReLU()
-        self.softmax = nn.Softmax(dim=-1)
+        # Actor head (policy)
+        self.actor_fc = nn.Linear(hidden_size, hidden_size // 2)
+        self.actor_head = nn.Linear(hidden_size // 2, action_size)
+        
+        # Critic head (value)
+        self.critic_fc = nn.Linear(hidden_size, hidden_size // 2)
+        self.critic_head = nn.Linear(hidden_size // 2, 1)
+        
+        self.dropout = nn.Dropout(0.2)
+        self.layernorm1 = nn.LayerNorm(hidden_size)
+        self.layernorm2 = nn.LayerNorm(hidden_size)
     
     def forward(self, state):
-        x = self.relu(self.fc1(state))
-        x = self.relu(self.fc2(x))
-        action_probs = self.softmax(self.policy_head(x))
-        return action_probs
-
-
-class GitPathPPOCritic(nn.Module):
-    """PPO Critic - Yol takibi başarısı değerlendirmesi"""
-    
-    def __init__(self, state_size: int = 20, hidden_size: int = 128):
-        super(GitPathPPOCritic, self).__init__()
-        self.fc1 = nn.Linear(state_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.value_head = nn.Linear(hidden_size, 1)
-        
-        self.relu = nn.ReLU()
-    
-    def forward(self, state):
-        x = self.relu(self.fc1(state))
-        x = self.relu(self.fc2(x))
-        value = self.value_head(x)
-        return value
-
-
-class GitPathPPO:
-    """PPO tabanlı yol takibi ve hareketi"""
-    
-    def __init__(self, learning_rate: float = 0.0003, gamma: float = 0.99,
-                 gae_lambda: float = 0.95, clip_ratio: float = 0.2,
-                 entropy_coef: float = 0.01, value_coef: float = 0.5,
-                 num_epochs: int = 3):
         """
         Args:
+            state: (batch, state_size)
+        Returns:
+            action_probs: (batch, action_size) - Softmax probabilities
+            state_value: (batch, 1) - Value estimation
+        """
+        # Shared features
+        x = F.relu(self.layernorm1(self.fc1(state)))
+        x = self.dropout(x)
+        x = F.relu(self.layernorm2(self.fc2(x)))
+        x = self.dropout(x)
+        
+        # Actor (policy)
+        actor_x = F.relu(self.actor_fc(x))
+        action_logits = self.actor_head(actor_x)
+        action_probs = F.softmax(action_logits, dim=-1)
+        
+        # Critic (value)
+        critic_x = F.relu(self.critic_fc(x))
+        state_value = self.critic_head(critic_x)
+        
+        return action_probs, state_value
+    
+    def get_action(self, state):
+        """Stochastic action sampling"""
+        action_probs, state_value = self.forward(state)
+        dist = Categorical(action_probs)
+        action = dist.sample()
+        action_log_prob = dist.log_prob(action)
+        
+        return action.item(), action_log_prob, state_value
+    
+    def evaluate_actions(self, states, actions):
+        """Evaluate actions for PPO update"""
+        action_probs, state_values = self.forward(states)
+        dist = Categorical(action_probs)
+        action_log_probs = dist.log_prob(actions)
+        dist_entropy = dist.entropy()
+        
+        return action_log_probs, state_values, dist_entropy
+
+
+# =============================================================================
+# PPO MEMORY BUFFER
+# =============================================================================
+class PPOMemory:
+    """
+    Memory buffer for PPO (trajectory based)
+    Stores full episodes for on-policy learning
+    """
+    def __init__(self):
+        self.states = []
+        self.actions = []
+        self.rewards = []
+        self.log_probs = []
+        self.values = []
+        self.dones = []
+    
+    def store(self, state, action, reward, log_prob, value, done):
+        self.states.append(state)
+        self.actions.append(action)
+        self.rewards.append(reward)
+        self.log_probs.append(log_prob)
+        self.values.append(value)
+        self.dones.append(done)
+    
+    def clear(self):
+        self.states.clear()
+        self.actions.clear()
+        self.rewards.clear()
+        self.log_probs.clear()
+        self.values.clear()
+        self.dones.clear()
+    
+    def get_batches(self, batch_size=64):
+        """Generate mini-batches"""
+        n_states = len(self.states)
+        indices = np.arange(n_states)
+        np.random.shuffle(indices)
+        
+        for start_idx in range(0, n_states, batch_size):
+            end_idx = min(start_idx + batch_size, n_states)
+            batch_indices = indices[start_idx:end_idx]
+            
+            yield (
+                np.array([self.states[i] for i in batch_indices]),
+                np.array([self.actions[i] for i in batch_indices]),
+                np.array([self.rewards[i] for i in batch_indices]),
+                np.array([self.log_probs[i] for i in batch_indices]),
+                np.array([self.values[i] for i in batch_indices]),
+                np.array([self.dones[i] for i in batch_indices])
+            )
+
+
+# =============================================================================
+# PPO PATH PLANNER AGENT
+# =============================================================================
+class PathPlannerPPO:
+    """
+    PPO tabanlı yol planlayıcı
+    A* algoritmasının PPO versiyonu
+    """
+    
+    # 8 yönlü hareket (grid based)
+    ACTIONS = {
+        0: (0, 1, 0),    # İleri (North)
+        1: (0, -1, 0),   # Geri (South)
+        2: (1, 0, 0),    # Sağ (East)
+        3: (-1, 0, 0),   # Sol (West)
+        4: (1, 1, 0),    # Sağ-İleri (NE)
+        5: (-1, 1, 0),   # Sol-İleri (NW)
+        6: (1, -1, 0),   # Sağ-Geri (SE)
+        7: (-1, -1, 0)   # Sol-Geri (SW)
+    }
+    
+    def __init__(self, grid_size=200, step_size=5.0, learning_rate=0.0003,
+                 gamma=0.95, gae_lambda=0.95, epsilon_clip=0.2, epochs=10):
+        """
+        Args:
+            grid_size: Grid boyutu (200x200 varsayılan)
+            step_size: Her adımda hareket mesafesi (5.0m varsayılan)
             learning_rate: Öğrenme oranı
             gamma: Discount factor
-            gae_lambda: GAE lambda
-            clip_ratio: PPO clipping oranı
-            entropy_coef: Entropy regularization
-            value_coef: Value loss katsayısı
-            num_epochs: Eğitim epochs
+            gae_lambda: GAE lambda parameter
+            epsilon_clip: PPO clipping parameter
+            epochs: PPO update epochs
         """
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"🔧 [PathPlanner-PPO] Device: {self.device}")
         
-        # Actor-Critic Networks
-        self.actor = GitPathPPOActor(state_size=20, action_size=8).to(self.device)
-        self.critic = GitPathPPOCritic(state_size=20).to(self.device)
+        self.grid_size = grid_size
+        self.step_size = step_size
+        
+        # Actor-Critic Network
+        self.policy = ActorCriticNetwork(state_size=20, action_size=8, hidden_size=128).to(self.device)
         
         # Optimizer
-        self.optimizer = torch.optim.Adam([
-            {'params': self.actor.parameters(), 'lr': learning_rate},
-            {'params': self.critic.parameters(), 'lr': learning_rate}
-        ])
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
         
         # Hiperparametreler
         self.gamma = gamma
         self.gae_lambda = gae_lambda
-        self.clip_ratio = clip_ratio
-        self.entropy_coef = entropy_coef
-        self.value_coef = value_coef
-        self.num_epochs = num_epochs
-        self.mini_batch_size = 32
+        self.epsilon_clip = epsilon_clip
+        self.epochs = epochs
         
         # Memory
-        self.memory = {
-            'states': [],
-            'actions': [],
-            'rewards': [],
-            'values': [],
-            'log_probs': [],
-            'dones': []
-        }
+        self.memory = PPOMemory()
         
-        # Hareket aksiyonları
-        self.action_map = {
-            0: (1.0, 0.0, 0.0),      # İleri
-            1: (-1.0, 0.0, 0.0),     # Geri
-            2: (0.0, 1.0, 0.0),      # Sağa
-            3: (0.0, -1.0, 0.0),     # Sola
-            4: (0.0, 0.0, 1.0),      # Yukarı
-            5: (0.0, 0.0, -1.0),     # Aşağı
-            6: (0.5, 0.5, 0.0),      # İleri-Sağ
-            7: (0.5, -0.5, 0.0),     # İleri-Sol
+        # İstatistikler
+        self.training_stats = {
+            'episode': 0,
+            'success_rate': 0,
+            'avg_path_length': 0,
+            'avg_reward': 0
         }
     
     def extract_state(self, current_pos: Tuple[float, float, float],
-                     path: List[Tuple[float, float, float]],
-                     path_index: int,
-                     battery: float = 100.0) -> np.ndarray:
-        """State vektörünü oluştur"""
-        state_list = []
+                     goal_pos: Tuple[float, float, float],
+                     obstacles: List[Tuple[float, float, float]]) -> np.ndarray:
+        """State vektörü oluştur (git_path_rl.py ile aynı)"""
+        # Pozisyonlar (normalize edilmiş)
+        state = [
+            current_pos[0] / self.grid_size,  # 0: ROV X
+            current_pos[1] / self.grid_size,  # 1: ROV Y
+            current_pos[2] / 50.0,            # 2: ROV Z (depth)
+            goal_pos[0] / self.grid_size,     # 3: Goal X
+            goal_pos[1] / self.grid_size,     # 4: Goal Y
+            goal_pos[2] / 50.0,               # 5: Goal Z
+        ]
         
-        # Mevcut pozisyon
-        state_list.extend([current_pos[0] / 500.0, current_pos[1] / 500.0, current_pos[2] / 500.0])
+        # Hedefe mesafe ve açı
+        dx = goal_pos[0] - current_pos[0]
+        dy = goal_pos[1] - current_pos[1]
+        dz = goal_pos[2] - current_pos[2]
         
-        # Sonraki hedef
-        if path_index < len(path):
-            next_target = path[path_index]
-            state_list.extend([next_target[0] / 500.0, next_target[1] / 500.0, next_target[2] / 500.0])
+        dist_to_goal = math.sqrt(dx**2 + dy**2 + dz**2)
+        angle_to_goal = math.atan2(dy, dx)
+        
+        state.extend([
+            dist_to_goal / self.grid_size,
+            angle_to_goal / math.pi,
+        ])
+        
+        # En yakın engeller (8 yön için)
+        obstacle_distances = []
+        for action_id in range(8):
+            dx_act, dy_act, _ = self.ACTIONS[action_id]
+            min_dist = self.grid_size
             
-            dist_to_next = math.sqrt(
-                (current_pos[0] - next_target[0])**2 +
-                (current_pos[1] - next_target[1])**2 +
-                (current_pos[2] - next_target[2])**2
-            )
-            state_list.append(dist_to_next / 500.0)
-        else:
-            state_list.extend([0.0, 0.0, 0.0, 0.0])
-        
-        # Son hedef
-        if len(path) > 0:
-            final_target = path[-1]
-            state_list.extend([final_target[0] / 500.0, final_target[1] / 500.0, final_target[2] / 500.0])
+            if obstacles:
+                for obs in obstacles:
+                    obs_dx = obs[0] - current_pos[0]
+                    obs_dy = obs[1] - current_pos[1]
+                    dot_product = dx_act * obs_dx + dy_act * obs_dy
+                    
+                    if dot_product > 0:
+                        dist = math.sqrt(obs_dx**2 + obs_dy**2)
+                        min_dist = min(min_dist, dist)
             
-            dist_to_final = math.sqrt(
-                (current_pos[0] - final_target[0])**2 +
-                (current_pos[1] - final_target[1])**2 +
-                (current_pos[2] - final_target[2])**2
-            )
-            state_list.append(dist_to_final / 500.0)
-        else:
-            state_list.extend([0.0, 0.0, 0.0, 0.0])
+            obstacle_distances.append(min_dist / self.grid_size)
         
-        # Yol ilerlemesi
-        state_list.append((path_index / (len(path) + 1)) if len(path) > 0 else 0.0)
+        state.extend(obstacle_distances)
         
-        # Batarya
-        state_list.append(battery / 100.0)
+        # Grid sınırlarına mesafe
+        border_distances = [
+            (self.grid_size/2 - current_pos[1]) / self.grid_size,
+            (self.grid_size/2 + current_pos[1]) / self.grid_size,
+            (self.grid_size/2 - current_pos[0]) / self.grid_size,
+            (self.grid_size/2 + current_pos[0]) / self.grid_size,
+        ]
+        state.extend(border_distances)
         
-        state = np.array(state_list, dtype=np.float32)
-        
-        if len(state) < 20:
-            state = np.pad(state, (0, 20 - len(state)), mode='constant')
-        
-        return state[:20]
+        return np.array(state, dtype=np.float32)
     
-    def select_action(self, state: np.ndarray) -> Tuple[int, float, float]:
-        """Aksiyon seçimi"""
+    def select_action(self, state: np.ndarray, training: bool = True):
+        """PPO stochastic action selection"""
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         
-        with torch.no_grad():
-            action_probs = self.actor(state_tensor)
-            value = self.critic(state_tensor)
-        
-        dist = Categorical(action_probs)
-        action = dist.sample().item()
-        log_prob = dist.log_prob(torch.tensor([action]).to(self.device)).item()
-        value = value.item()
-        
-        return action, log_prob, value
+        if training:
+            action, log_prob, value = self.policy.get_action(state_tensor)
+            return action, log_prob.item(), value.item()
+        else:
+            with torch.no_grad():
+                action_probs, _ = self.policy(state_tensor)
+                action = action_probs.argmax(dim=1).item()
+            return action, 0, 0
     
-    def calculate_gae(self, rewards: List[float], values: List[float],
-                     dones: List[bool]) -> Tuple:
-        """GAE hesapla"""
+    def calculate_reward(self, current_pos, next_pos, goal_pos, obstacles, done, collision):
+        """Reward hesapla (git_path_rl.py ile aynı)"""
+        current_dist = math.sqrt(
+            (current_pos[0] - goal_pos[0])**2 + 
+            (current_pos[1] - goal_pos[1])**2 + 
+            (current_pos[2] - goal_pos[2])**2
+        )
+        
+        next_dist = math.sqrt(
+            (next_pos[0] - goal_pos[0])**2 + 
+            (next_pos[1] - goal_pos[1])**2 + 
+            (next_pos[2] - goal_pos[2])**2
+        )
+        
+        reward = -0.1
+        
+        if next_dist < current_dist:
+            reward += 1.0
+        else:
+            reward -= 0.5
+        
+        if collision:
+            reward = -50.0
+        elif done:
+            reward = 100.0
+        
+        if obstacles:
+            min_obstacle_dist = min([
+                math.sqrt((obs[0]-next_pos[0])**2 + (obs[1]-next_pos[1])**2)
+                for obs in obstacles
+            ])
+            if min_obstacle_dist < self.step_size * 2:
+                reward -= 2.0
+        
+        return reward
+    
+    def compute_gae(self, rewards, values, dones):
+        """Generalized Advantage Estimation"""
         advantages = []
         gae = 0
-        next_value = 0
         
         for t in reversed(range(len(rewards))):
             if t == len(rewards) - 1:
@@ -198,170 +332,330 @@ class GitPathPPO:
             else:
                 next_value = values[t + 1]
             
-            td_error = rewards[t] + self.gamma * next_value * (1 - dones[t]) - values[t]
-            gae = td_error + self.gamma * self.gae_lambda * (1 - dones[t]) * gae
+            delta = rewards[t] + self.gamma * next_value * (1 - dones[t]) - values[t]
+            gae = delta + self.gamma * self.gae_lambda * (1 - dones[t]) * gae
             advantages.insert(0, gae)
         
-        advantages = np.array(advantages)
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        
-        returns = advantages + np.array(values)
+        returns = [adv + val for adv, val in zip(advantages, values)]
         
         return advantages, returns
     
-    def calculate_reward(self, distance_to_target: float, distance_to_final: float,
-                        energy_used: float, collision: bool,
-                        reached_waypoint: bool) -> float:
-        """Reward hesaplama"""
-        target_reward = (100.0 - distance_to_target) / 100.0 * 30.0
-        final_reward = (500.0 - distance_to_final) / 500.0 * 20.0
-        energy_penalty = -energy_used * 0.1
-        collision_penalty = -100.0 if collision else 0.0
-        waypoint_bonus = 50.0 if reached_waypoint else 0.0
+    def ppo_update(self):
+        """PPO policy update"""
+        if len(self.memory.states) == 0:
+            return 0, 0, 0
         
-        return target_reward + final_reward + energy_penalty + collision_penalty + waypoint_bonus
-    
-    def remember(self, state: np.ndarray, action: int, reward: float,
-                log_prob: float, value: float, done: bool):
-        """Memory'ye ekle"""
-        self.memory['states'].append(state)
-        self.memory['actions'].append(action)
-        self.memory['rewards'].append(reward)
-        self.memory['log_probs'].append(log_prob)
-        self.memory['values'].append(value)
-        self.memory['dones'].append(done)
-    
-    def train(self):
-        """PPO eğitim"""
-        if len(self.memory['states']) < self.mini_batch_size:
-            return 0.0
-        
-        advantages, returns = self.calculate_gae(
-            self.memory['rewards'],
-            self.memory['values'],
-            self.memory['dones']
+        # Compute GAE
+        advantages, returns = self.compute_gae(
+            self.memory.rewards,
+            self.memory.values,
+            self.memory.dones
         )
         
-        states = torch.FloatTensor(np.array(self.memory['states'])).to(self.device)
-        actions = torch.LongTensor(np.array(self.memory['actions'])).to(self.device)
-        old_log_probs = torch.FloatTensor(np.array(self.memory['log_probs'])).to(self.device)
-        advantages = torch.FloatTensor(advantages).to(self.device)
-        returns = torch.FloatTensor(returns).to(self.device)
+        # Normalize advantages
+        advantages = np.array(advantages)
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
-        total_loss = 0.0
+        # Convert to tensors
+        old_states = torch.FloatTensor(np.array(self.memory.states)).to(self.device)
+        old_actions = torch.LongTensor(self.memory.actions).to(self.device)
+        old_log_probs = torch.FloatTensor(self.memory.log_probs).to(self.device)
+        advantages_tensor = torch.FloatTensor(advantages).to(self.device)
+        returns_tensor = torch.FloatTensor(returns).to(self.device)
         
-        for epoch in range(self.num_epochs):
-            indices = np.arange(len(states))
-            np.random.shuffle(indices)
-            
-            for i in range(0, len(states), self.mini_batch_size):
-                batch_indices = indices[i:i + self.mini_batch_size]
+        total_policy_loss = 0
+        total_value_loss = 0
+        total_entropy = 0
+        update_count = 0
+        
+        # PPO epochs
+        for _ in range(self.epochs):
+            for batch in self.memory.get_batches(batch_size=64):
+                batch_states, batch_actions, _, batch_old_log_probs, _, _ = batch
                 
-                batch_states = states[batch_indices]
-                batch_actions = actions[batch_indices]
-                batch_old_log_probs = old_log_probs[batch_indices]
-                batch_advantages = advantages[batch_indices]
-                batch_returns = returns[batch_indices]
+                batch_states_t = torch.FloatTensor(batch_states).to(self.device)
+                batch_actions_t = torch.LongTensor(batch_actions).to(self.device)
+                batch_old_log_probs_t = torch.FloatTensor(batch_old_log_probs).to(self.device)
                 
-                # Forward pass
-                action_probs = self.actor(batch_states)
-                values = self.critic(batch_states).squeeze(1)
+                # Find indices in full data
+                batch_indices = []
+                for i in range(len(batch_states)):
+                    for j in range(len(self.memory.states)):
+                        if np.array_equal(batch_states[i], self.memory.states[j]):
+                            batch_indices.append(j)
+                            break
                 
-                # Yeni log probs
-                dist = Categorical(action_probs)
-                new_log_probs = dist.log_prob(batch_actions)
+                batch_advantages = advantages_tensor[batch_indices]
+                batch_returns = returns_tensor[batch_indices]
                 
-                # PPO loss
-                ratio = torch.exp(new_log_probs - batch_old_log_probs)
-                surr1 = ratio * batch_advantages
-                surr2 = torch.clamp(ratio, 1 - self.clip_ratio, 1 + self.clip_ratio) * batch_advantages
-                actor_loss = -torch.min(surr1, surr2).mean()
+                # Evaluate actions
+                new_log_probs, state_values, entropy = self.policy.evaluate_actions(
+                    batch_states_t, batch_actions_t
+                )
                 
-                critic_loss = nn.MSELoss()(values, batch_returns)
-                entropy = dist.entropy().mean()
+                # Policy loss (clipped surrogate objective)
+                ratios = torch.exp(new_log_probs - batch_old_log_probs_t)
+                surr1 = ratios * batch_advantages
+                surr2 = torch.clamp(ratios, 1 - self.epsilon_clip, 1 + self.epsilon_clip) * batch_advantages
+                policy_loss = -torch.min(surr1, surr2).mean()
                 
-                loss = actor_loss + self.value_coef * critic_loss - self.entropy_coef * entropy
+                # Value loss
+                value_loss = F.mse_loss(state_values.squeeze(), batch_returns)
                 
+                # Total loss
+                loss = policy_loss + 0.5 * value_loss - 0.01 * entropy.mean()
+                
+                # Backprop
                 self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(
-                    list(self.actor.parameters()) + list(self.critic.parameters()),
-                    0.5
-                )
+                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=0.5)
                 self.optimizer.step()
                 
-                total_loss += loss.item()
+                total_policy_loss += policy_loss.item()
+                total_value_loss += value_loss.item()
+                total_entropy += entropy.mean().item()
+                update_count += 1
         
-        self.clear_memory()
+        avg_policy_loss = total_policy_loss / max(update_count, 1)
+        avg_value_loss = total_value_loss / max(update_count, 1)
+        avg_entropy = total_entropy / max(update_count, 1)
         
-        return total_loss / self.num_epochs
+        return avg_policy_loss, avg_value_loss, avg_entropy
     
-    def clear_memory(self):
-        """Memory'yi temizle"""
-        self.memory = {
-            'states': [],
-            'actions': [],
-            'rewards': [],
-            'values': [],
-            'log_probs': [],
-            'dones': []
-        }
+    def plan_path(self, start_pos: Tuple[float, float, float],
+                 goal_pos: Tuple[float, float, float],
+                 obstacles: List[Tuple[float, float, float]],
+                 max_steps: int = 200) -> List[Tuple[float, float, float]]:
+        """PPO ile yol planlama (inference)"""
+        path = [start_pos]
+        current_pos = list(start_pos)
+        
+        for step in range(max_steps):
+            state = self.extract_state(tuple(current_pos), goal_pos, obstacles)
+            action, _, _ = self.select_action(state, training=False)
+            
+            dx, dy, dz = self.ACTIONS[action]
+            next_pos = [
+                current_pos[0] + dx * self.step_size,
+                current_pos[1] + dy * self.step_size,
+                current_pos[2] + dz * self.step_size
+            ]
+            
+            dist_to_goal = math.sqrt(
+                (next_pos[0] - goal_pos[0])**2 + 
+                (next_pos[1] - goal_pos[1])**2 + 
+                (next_pos[2] - goal_pos[2])**2
+            )
+            
+            if dist_to_goal < self.step_size:
+                path.append(goal_pos)
+                break
+            
+            path.append(tuple(next_pos))
+            current_pos = next_pos
+        
+        return path
     
-    def get_movement_with_ppo(self, current_pos: Tuple[float, float, float],
-                             path: List[Tuple[float, float, float]],
-                             path_index: int,
-                             battery: float = 100.0,
-                             rov_ref=None) -> Tuple[Tuple[float, float, float], float]:
+    def train(self, num_episodes: int = 1000, save_path: str = "path_planner_ppo.pth"):
         """
-        PPO kullanarak yol takibi hareketi belirle (Orijinal git metodu ile entegreli)
+        PPO Agent'ı eğit
         
         Args:
-            current_pos: Mevcut pozisyon
-            path: Takip edilecek yol
-            path_index: Yoldaki indeks
-            battery: Batarya seviyesi
-            rov_ref: ROV referansı (orijinal git metodu çağırısı için)
-            
-        Returns:
-            (hareket_vektörü, güç)
+            num_episodes: Episode sayısı
+            save_path: Model kayıt yolu
         """
-        state = self.extract_state(current_pos, path, path_index, battery)
+        print(f"\n{'='*80}")
+        print(f"🚀 PATH PLANNER PPO TRAINING BAŞLIYOR")
+        print(f"{'='*80}")
+        print(f"📊 Episodes: {num_episodes}")
+        print(f"📊 Device: {self.device}")
+        print(f"📊 Grid Size: {self.grid_size}x{self.grid_size}")
+        print(f"📊 Step Size: {self.step_size}m")
+        print(f"📊 PPO Epochs: {self.epochs}")
+        print(f"📊 Epsilon Clip: {self.epsilon_clip}")
+        print(f"{'='*80}\n")
         
-        self.actor.eval()
-        self.critic.eval()
-        with torch.no_grad():
-            action, _, _ = self.select_action(state)
+        episode_rewards = []
+        episode_lengths = []
+        success_count = 0
         
-        movement = self.action_map[action]
-        power = 0.8 + (battery / 100.0) * 0.2
+        for episode in range(num_episodes):
+            # Random start ve goal pozisyonları
+            start_pos = (
+                np.random.uniform(-self.grid_size/4, self.grid_size/4),
+                np.random.uniform(-self.grid_size/4, self.grid_size/4),
+                np.random.uniform(0, 30)
+            )
+            
+            goal_pos = (
+                np.random.uniform(-self.grid_size/4, self.grid_size/4),
+                np.random.uniform(-self.grid_size/4, self.grid_size/4),
+                np.random.uniform(0, 30)
+            )
+            
+            # Random obstacles
+            num_obstacles = np.random.randint(5, 15)
+            obstacles = [
+                (np.random.uniform(-self.grid_size/3, self.grid_size/3),
+                 np.random.uniform(-self.grid_size/3, self.grid_size/3),
+                 np.random.uniform(0, 30))
+                for _ in range(num_obstacles)
+            ]
+            
+            current_pos = list(start_pos)
+            episode_reward = 0
+            path_length = 0
+            
+            # Episode rollout
+            for step in range(200):
+                state = self.extract_state(tuple(current_pos), goal_pos, obstacles)
+                action, log_prob, value = self.select_action(state, training=True)
+                
+                dx, dy, dz = self.ACTIONS[action]
+                next_pos = [
+                    current_pos[0] + dx * self.step_size,
+                    current_pos[1] + dy * self.step_size,
+                    current_pos[2] + dz * self.step_size
+                ]
+                
+                # Check goal reach
+                dist_to_goal = math.sqrt(
+                    (next_pos[0] - goal_pos[0])**2 + 
+                    (next_pos[1] - goal_pos[1])**2 + 
+                    (next_pos[2] - goal_pos[2])**2
+                )
+                done = dist_to_goal < self.step_size
+                
+                # Check collision
+                collision = False
+                for obs in obstacles:
+                    obs_dist = math.sqrt(
+                        (next_pos[0] - obs[0])**2 + 
+                        (next_pos[1] - obs[1])**2
+                    )
+                    if obs_dist < self.step_size:
+                        collision = True
+                        break
+                
+                # Check bounds
+                if (abs(next_pos[0]) > self.grid_size/2 or 
+                    abs(next_pos[1]) > self.grid_size/2 or 
+                    next_pos[2] < 0 or next_pos[2] > 50):
+                    collision = True
+                
+                reward = self.calculate_reward(current_pos, next_pos, goal_pos, 
+                                               obstacles, done, collision)
+                
+                # Store transition
+                self.memory.store(state, action, reward, log_prob, value, done or collision)
+                
+                episode_reward += reward
+                path_length += 1
+                
+                if done:
+                    success_count += 1
+                    break
+                
+                if collision:
+                    break
+                
+                current_pos = next_pos
+            
+            # PPO update after episode
+            policy_loss, value_loss, entropy = self.ppo_update()
+            self.memory.clear()
+            
+            episode_rewards.append(episode_reward)
+            episode_lengths.append(path_length)
+            
+            # Logging
+            if episode % 50 == 0:
+                avg_reward = np.mean(episode_rewards[-50:]) if len(episode_rewards) >= 50 else np.mean(episode_rewards)
+                avg_length = np.mean(episode_lengths[-50:]) if len(episode_lengths) >= 50 else np.mean(episode_lengths)
+                success_rate = success_count / (episode + 1) * 100
+                
+                print(f"📈 Episode {episode}/{num_episodes} | "
+                      f"Avg Reward: {avg_reward:.2f} | "
+                      f"Avg Length: {avg_length:.1f} | "
+                      f"Success: {success_rate:.1f}% | "
+                      f"Policy Loss: {policy_loss:.4f} | "
+                      f"Value Loss: {value_loss:.4f}")
+                
+                self.training_stats['episode'] = episode
+                self.training_stats['avg_reward'] = float(avg_reward)
+                self.training_stats['avg_path_length'] = float(avg_length)
+                self.training_stats['success_rate'] = float(success_rate)
         
-        # Eğer ROV referansı varsa ve git metodu varsa, orijinal metodunu çağır
-        if rov_ref and hasattr(rov_ref, 'git') and callable(rov_ref.git):
-            try:
-                # Sonraki hedef noktaya git
-                if path_index < len(path):
-                    next_target = path[path_index]
-                    
-                    # 60% ihtimalle orijinal git() metodunu çağır
-                    if np.random.random() < 0.6:
-                        rov_ref.git(next_target, power=power)
-                        return next_target, power
-            except Exception as e:
-                print(f"⚠️ Orijinal git metodu başarısız: {e}")
+        # Model kaydet
+        self.save_model(save_path)
         
-        return movement, power
+        print(f"\n{'='*80}")
+        print(f"✅ EĞİTİM TAMAMLANDI!")
+        print(f"📊 Toplam Episode: {num_episodes}")
+        print(f"📊 Başarı Oranı: {success_count/num_episodes*100:.1f}%")
+        print(f"📊 Ortalama Reward: {np.mean(episode_rewards):.2f}")
+        print(f"📊 Ortalama Yol Uzunluğu: {np.mean(episode_lengths):.1f}")
+        print(f"{'='*80}\n")
     
     def save_model(self, filepath: str):
         """Model'i kaydet"""
         torch.save({
-            'actor': self.actor.state_dict(),
-            'critic': self.critic.state_dict(),
+            'policy': self.policy.state_dict(),
             'optimizer': self.optimizer.state_dict(),
+            'training_stats': self.training_stats
         }, filepath)
+        print(f"✅ [PathPlanner-PPO] Model kaydedildi: {filepath}")
     
     def load_model(self, filepath: str):
         """Model'i yükle"""
         checkpoint = torch.load(filepath, map_location=self.device)
-        self.actor.load_state_dict(checkpoint['actor'])
-        self.critic.load_state_dict(checkpoint['critic'])
+        self.policy.load_state_dict(checkpoint['policy'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
+        self.training_stats = checkpoint['training_stats']
+        print(f"✅ [PathPlanner-PPO] Model yüklendi: {filepath}")
+
+
+# =============================================================================
+# MAIN TRAINING LOOP
+# =============================================================================
+if __name__ == "__main__":
+    print("\n" + "="*80)
+    print("🤖 GIT_PATH PPO TRAINING")
+    print("="*80 + "\n")
+    
+    # Agent oluştur
+    agent = PathPlannerPPO(
+        grid_size=200,
+        step_size=5.0,
+        learning_rate=0.0003,
+        gamma=0.95,
+        gae_lambda=0.95,
+        epsilon_clip=0.2,
+        epochs=10
+    )
+    
+    # Eğitim
+    agent.train(
+        num_episodes=1000,
+        save_path="path_planner_ppo_model.pth"
+    )
+    
+    # Test
+    print("\n" + "="*80)
+    print("🧪 TEST PHASE")
+    print("="*80 + "\n")
+    
+    start = (0, 0, 10)
+    goal = (80, 80, 10)
+    obstacles = [(30, 30, 10), (50, 50, 10), (70, 40, 10)]
+    
+    path = agent.plan_path(start, goal, obstacles, max_steps=200)
+    
+    print(f"✅ Path planned: {len(path)} waypoints")
+    print(f"   Start: {start}")
+    print(f"   Goal: {goal}")
+    print(f"   Path length: {len(path)}")
+    
+    print("\n" + "="*80)
+    print("✅ TAMAMLANDI!")
+    print("="*80 + "\n")

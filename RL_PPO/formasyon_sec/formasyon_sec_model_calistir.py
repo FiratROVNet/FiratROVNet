@@ -1,6 +1,17 @@
 import os
 import sys
 
+# Ursina/Panda3D pencere loglarını sessize al (importlardan önce)
+try:
+    from panda3d.core import loadPrcFileData
+    loadPrcFileData("", "window-type none")
+    loadPrcFileData("", "audio-library-name null")
+    loadPrcFileData("", "notify-level error")
+    loadPrcFileData("", "default-directnotify-level error")
+    loadPrcFileData("", "notify-level-display error")
+except Exception:
+    pass
+
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
