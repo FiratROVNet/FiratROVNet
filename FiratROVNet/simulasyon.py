@@ -57,8 +57,18 @@ class ROV(Entity):
     def __init__(self, rov_id, **kwargs):
         super().__init__()
         
-        # FBX model kontrolü
-        rov_model_path = "./Models-3D/water/my_models/submarine/submarine1.fbx"
+        # FBX model kontrolü (relative path - Ursina için)
+        # Models-3D klasörü proje kök dizininde (CWD'de)
+        # Absolute path'i hesapla, sonra CWD'ye göre relative path'e çevir (os zaten import edilmiş)
+        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        rov_model_path_abs = os.path.join(script_dir, "Models-3D", "water", "my_models", "submarine", "submarine1.fbx")
+        
+        if os.path.exists(rov_model_path_abs):
+            # Ursina absolute path'i kabul eder - direkt kullan
+            rov_model_path = os.path.normpath(rov_model_path_abs)
+        else:
+            # Fallback: relative path dene (CWD'den)
+            rov_model_path = "Models-3D/water/my_models/submarine/submarine1.fbx"
         
         if os.path.exists(rov_model_path):
             # FBX model kullan - Model çok büyük olduğu için yaklaşık 1000 kat küçültülüyor
@@ -2560,8 +2570,21 @@ class Ortam:
         
         # Ada modeli (su yüzeyinin üstünde, deniz tabanına değen)
         # 1-5 arasında random ada oluştur
-        island_model_path = "./Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
-        island_texture_path = "./Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
+        # Models-3D klasörü proje kök dizininde (CWD'de)
+        # Absolute path'i hesapla, sonra CWD'ye göre relative path'e çevir (os zaten import edilmiş)
+        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        island_model_path_abs = os.path.join(script_dir, "Models-3D", "lowpoly-island", "source", "island1_design2_c4d.obj")
+        island_texture_path_abs = os.path.join(script_dir, "Models-3D", "lowpoly-island", "textures", "textureSurface_Color_2.jpg")
+        
+        # Ursina için path'leri belirle
+        if os.path.exists(island_model_path_abs):
+            # Ursina absolute path'i kabul eder - direkt kullan
+            island_model_path = os.path.normpath(island_model_path_abs)
+            island_texture_path = os.path.normpath(island_texture_path_abs)
+        else:
+            # Fallback: relative path dene (CWD'den)
+            island_model_path = "Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
+            island_texture_path = "Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
         
         # =============================
         # ADA BOYUT AYARLARI (TEK YER)
@@ -3226,9 +3249,20 @@ class Ortam:
                 print(f"⚠️ Ada-{ada_id} zaten mevcut. Önce çıkarmak için: Ada({ada_id}, 'cikar')")
                 return False
             
-            # Ada modeli ve texture yolları
-            island_model_path = "./Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
-            island_texture_path = "./Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
+            # Ada modeli ve texture yolları (os zaten import edilmiş)
+            # Models-3D klasörü proje kök dizininde (CWD'de)
+            script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            island_model_path_abs = os.path.join(script_dir, "Models-3D", "lowpoly-island", "source", "island1_design2_c4d.obj")
+            island_texture_path_abs = os.path.join(script_dir, "Models-3D", "lowpoly-island", "textures", "textureSurface_Color_2.jpg")
+            
+            if os.path.exists(island_model_path_abs):
+                # Ursina absolute path'i kabul eder - direkt kullan
+                island_model_path = os.path.normpath(island_model_path_abs)
+                island_texture_path = os.path.normpath(island_texture_path_abs)
+            else:
+                # Fallback: relative path dene (CWD'den)
+                island_model_path = "Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
+                island_texture_path = "Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
             
             # Ada Y pozisyonu (su yüzeyinin üstünde sabit)
             if hasattr(self, 'WATER_SURFACE_Y_BASE'):
