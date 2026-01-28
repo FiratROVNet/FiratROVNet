@@ -1,6 +1,17 @@
 import os
 import sys
 
+# Ursina/Panda3D pencere loglarını sessize al (importlardan önce)
+try:
+    from panda3d.core import loadPrcFileData
+    loadPrcFileData("", "window-type none")
+    loadPrcFileData("", "audio-library-name null")
+    loadPrcFileData("", "notify-level error")
+    loadPrcFileData("", "default-directnotify-level error")
+    loadPrcFileData("", "notify-level-display error")
+except Exception:
+    pass
+
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -26,10 +37,12 @@ def train_formasyon_secim():
 
     print("🚀 Formasyon Seçim Eğitimi Başlıyor...")
 
-    for epoch in range(100):  # 1000 iterasyon
+    for epoch in range(1000):  # 1000 iterasyon
         # Veri üret
         data = filo.uret_rl_egitim_verisi()
         if data is None:
+            if epoch % 50 == 0:
+                print("⚠️ [Eğitim] Veri üretimi başarısız (data=None)")
             continue
         
         # Giriş verilerini hazırla
@@ -52,6 +65,8 @@ def train_formasyon_secim():
         # Çıkış bilgilerini al (formasyon_sec() çıktısı)
         output_info = data["output"]
         if output_info is None:
+            if epoch % 50 == 0:
+                print("⚠️ [Eğitim] Çıkış bilgisi yok (output=None)")
             continue
         
         # Çıkış: (formasyon_id, aralik, yaw, koordinat)

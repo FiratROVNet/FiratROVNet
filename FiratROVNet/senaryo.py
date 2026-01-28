@@ -21,6 +21,11 @@ Kullanım:
 
 import os
 import sys
+from panda3d.core import loadPrcFileData
+
+# Log seviyesini 'fatal' yaparak sadece hayati hataları gösterir, bilgi mesajlarını gizler
+loadPrcFileData('', 'notify-level fatal')
+loadPrcFileData('', 'notify-level-util fatal')
 
 # Ursina'yı headless modda başlat
 os.environ['URSINA_HEADLESS'] = '1'
@@ -292,7 +297,7 @@ class Senaryo:
             print(f"🔄 Senaryo Yeniden Düzenlendi (ID'ler ve Nesneler Korundu)")
         return self
         
-    def uret(self, n_rovs=None, n_engels=None, havuz_genisligi=None, 
+    def uret(self, n_rovs=None, n_engels=None, havuz_genisligi=None, n_adalar=None,
              engel_tipleri=None, baslangic_pozisyonlari=None,
              modem_ayarlari=None, sensor_ayarlari=None, verbose=None):
         """
@@ -301,6 +306,7 @@ class Senaryo:
         Args:
             n_rovs (int): ROV sayısı (varsayılan: 3, None ise mevcut sayı korunur)
             n_engels (int): Engel sayısı (varsayılan: 15, None ise mevcut sayı korunur)
+            n_adalar (int): Ada sayısı (None ise otomatik belirlenir)
             havuz_genisligi (float): Havuz genişliği (varsayılan: 200)
             engel_tipleri (list, optional): Engel tipleri listesi (sadece ilk kurulumda kullanılır)
             baslangic_pozisyonlari (dict, optional): ROV başlangıç pozisyonları (sadece ilk kurulumda)
@@ -353,6 +359,16 @@ class Senaryo:
         havuz_genisligi = self._cache_havuz_genisligi
         
         # 3. İlk Kurulum (Sadece bir kez çalışır - AĞIR KISIM)
+        if not self.verbose:
+            try:
+                from panda3d.core import loadPrcFileData
+                loadPrcFileData("", "window-type none")
+                loadPrcFileData("", "audio-library-name null")
+                loadPrcFileData("", "notify-level error")
+                loadPrcFileData("", "default-directnotify-level error")
+                loadPrcFileData("", "notify-level-display error")
+            except Exception:
+                pass
         if self.ortam is None:
             # Ursina'yı headless modda başlat
             if self.app is None:
@@ -360,13 +376,25 @@ class Senaryo:
                 os.environ['URSINA_HEADLESS'] = '1'
                 
                 try:
-                    self.app = Ursina(
-                        vsync=False,
-                        development_mode=False,
-                        show_ursina_splash=False,
-                        borderless=True,
-                        title="FıratROVNet Senaryo Üretimi (Headless)"
-                    )
+                    if not self.verbose:
+                        from contextlib import redirect_stdout, redirect_stderr
+                        import io
+                        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                            self.app = Ursina(
+                                vsync=False,
+                                development_mode=False,
+                                show_ursina_splash=False,
+                                borderless=True,
+                                title="FıratROVNet Senaryo Üretimi (Headless)"
+                            )
+                    else:
+                        self.app = Ursina(
+                            vsync=False,
+                            development_mode=False,
+                            show_ursina_splash=False,
+                            borderless=True,
+                            title="FıratROVNet Senaryo Üretimi (Headless)"
+                        )
                     
                     # Window özelliklerini güvenli şekilde ayarla
                     try:
@@ -397,7 +425,13 @@ class Senaryo:
             # Bu sayede Ada ve ROV fonksiyonları kullanılabilir
             try:
                 from FiratROVNet.simulasyon import Ortam as OrtamSinifi
-                self.ortam = OrtamSinifi(verbose=self.verbose)
+                if not self.verbose:
+                    from contextlib import redirect_stdout, redirect_stderr
+                    import io
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        self.ortam = OrtamSinifi(verbose=self.verbose)
+                else:
+                    self.ortam = OrtamSinifi(verbose=self.verbose)
                 # Ortam'a verbose flag'ini aktar
                 if hasattr(self.ortam, 'verbose'):
                     self.ortam.verbose = self.verbose
@@ -584,11 +618,37 @@ class Senaryo:
         
         # 6. Aktif durumu
         self.aktif = True
-        
-        # 7. Başlangıçta bir kez dağıt (güvenli pozisyonlara yerleştir)
+
+        # 7. Ada üretimi (headless/minimal mod için)
+        if not hasattr(self.ortam, 'island_positions') or not self.ortam.island_positions:
+            from .config import HareketAyarlari
+            hedef_ada_sayisi = n_adalar if n_adalar is not None else random.randint(2, 5)
+            self.ortam.island_positions = []
+            yeni_ada_pos = []
+            for ada_id in range(hedef_ada_sayisi):
+                radius = random.uniform(20.0, 45.0)
+                pos = self._guvenli_ada_pozisyonu_bul(
+                    yeni_ada_pos,
+                    havuz_genisligi,
+                    radius,
+                    HareketAyarlari.RANDOM_HEDEF_MIN_MESAFE_ADA
+                )
+                if not pos:
+                    continue
+                ada_x, ada_z = pos
+                if hasattr(self.ortam, 'Ada') and callable(getattr(self.ortam, 'Ada', None)):
+                    try:
+                        self.ortam.Ada(ada_id, ada_x, ada_z)
+                    except Exception:
+                        pass
+                self.ortam.island_positions.append([ada_x, ada_z, radius])
+                yeni_ada_pos.append((ada_x, ada_z, radius))
+
+        # 8. Başlangıçta bir kez dağıt (güvenli pozisyonlara yerleştir)
         self._nesneleri_yeniden_dagit()
         # Yeni ortam oluşturulduğunda her zaman göster (verbose kontrolü yok)
-        print(f"✅ Yeni senaryo oluşturuldu: {n_rovs} ROV, {n_engels} Engel, Havuz: {havuz_genisligi}x{havuz_genisligi}")
+        if self.verbose:
+            print(f"✅ Yeni senaryo oluşturuldu: {n_rovs} ROV, {n_engels} Engel, Havuz: {havuz_genisligi}x{havuz_genisligi}")
         return self
     
     def guncelle(self, delta_time=0.016):
@@ -753,11 +813,12 @@ class Senaryo:
         self.ortam = None
         self.aktif = False
         
-        print("✅ Senaryo temizlendi")
+        if self.verbose:
+            print("✅ Senaryo temizlendi")
 
 
 # Global fonksiyonlar (kolay kullanım için)
-def uret(n_rovs=3, n_engels=15, havuz_genisligi=200, verbose=False, **kwargs):
+def uret(n_rovs=3, n_engels=15, havuz_genisligi=200, n_adalar=None, verbose=False, **kwargs):
     """
     Senaryo oluşturur (global fonksiyon).
     
@@ -765,6 +826,7 @@ def uret(n_rovs=3, n_engels=15, havuz_genisligi=200, verbose=False, **kwargs):
         n_rovs (int): ROV sayısı
         n_engels (int): Engel sayısı
         havuz_genisligi (float): Havuz genişliği
+        n_adalar (int): Ada sayısı (None ise otomatik belirlenir)
         verbose (bool): Log mesajlarını göster (varsayılan: False)
         **kwargs: Diğer parametreler (engel_tipleri, baslangic_pozisyonlari, vb.)
     
@@ -777,8 +839,14 @@ def uret(n_rovs=3, n_engels=15, havuz_genisligi=200, verbose=False, **kwargs):
     global _senaryo_instance
     if _senaryo_instance is None:
         _senaryo_instance = Senaryo(verbose=verbose)
-    return _senaryo_instance.uret(n_rovs=n_rovs, n_engels=n_engels, 
-                                   havuz_genisligi=havuz_genisligi, verbose=verbose, **kwargs)
+    return _senaryo_instance.uret(
+        n_rovs=n_rovs,
+        n_engels=n_engels,
+        havuz_genisligi=havuz_genisligi,
+        n_adalar=n_adalar,
+        verbose=verbose,
+        **kwargs
+    )
 
 
 # Global instance (kolay erişim için)
