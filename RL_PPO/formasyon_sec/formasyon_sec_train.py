@@ -1,17 +1,6 @@
 import os
 import sys
 
-# Ursina/Panda3D pencere loglarını sessize al (importlardan önce)
-try:
-    from panda3d.core import loadPrcFileData
-    loadPrcFileData("", "window-type none")
-    loadPrcFileData("", "audio-library-name null")
-    loadPrcFileData("", "notify-level error")
-    loadPrcFileData("", "default-directnotify-level error")
-    loadPrcFileData("", "notify-level-display error")
-except Exception:
-    pass
-
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -24,7 +13,6 @@ from formasyon_sec_rl_model import FormasyonSecimAgi
 
 
 def train_formasyon_secim():
-    
     # 1. Kurulum
     filo = Filo()
     model = FormasyonSecimAgi(input_dim=230, num_formations=20)
