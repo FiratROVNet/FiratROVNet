@@ -1,0 +1,6 @@
+{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"simulasyon.py:2712","message":"ROV listesi temizlenmeden önce","data":{"eski_rov_sayisi":0,"hedef_rov_sayisi":6},"timestamp":1769627753734}
+{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"simulasyon.py:2730","message":"ROV listesi temizlendikten sonra","data":{"yeni_rov_sayisi":0,"hedef_rov_sayisi":6},"timestamp":1769627753735}
+{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"simulasyon.py:2712","message":"ROV listesi temizlenmeden önce","data":{"eski_rov_sayisi":0,"hedef_rov_sayisi":6},"timestamp":1769627776228}
+{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"simulasyon.py:2730","message":"ROV listesi temizlendikten sonra","data":{"yeni_rov_sayisi":0,"hedef_rov_sayisi":6},"timestamp":1769627776230}
+{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"simulasyon.py:2712","message":"ROV listesi temizlenmeden önce","data":{"eski_rov_sayisi":0,"hedef_rov_sayisi":6},"timestamp":1769627932331}
+{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"simulasyon.py:2730","message":"ROV listesi temizlendikten sonra","data":{"yeni_rov_sayisi":0,"hedef_rov_sayisi":6},"timestamp":1769627932332}
