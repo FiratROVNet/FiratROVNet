@@ -57,32 +57,54 @@ class ROV(Entity):
     def __init__(self, rov_id, **kwargs):
         super().__init__()
         
-        # FBX model kontrolü (Windows uyumlu path)
+        # FBX model kontrolü (Windows uyumlu path - geliştirilmiş)
         # Models-3D klasörü proje kök dizininde (CWD'de)
         # Ursina relative path'i tercih eder, bu yüzden önce relative path dene
+        
+        # 1. Relative path (CWD'den)
         rov_model_path_rel = "Models-3D/water/my_models/submarine/submarine1.fbx"
         
-        # Absolute path'i de kontrol et (script'in bulunduğu yerden)
+        # 2. Absolute path (script'in bulunduğu yerden)
         script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         rov_model_path_abs = os.path.join(script_dir, "Models-3D", "water", "my_models", "submarine", "submarine1.fbx")
         
+        # 3. CWD'den absolute path (Windows için ek kontrol)
+        cwd = os.getcwd()
+        rov_model_path_cwd_abs = os.path.join(cwd, "Models-3D", "water", "my_models", "submarine", "submarine1.fbx")
+        
         # Path seçimi: Önce relative path'i kontrol et (Ursina için tercih edilen)
         rov_model_path = None
+        model_found = False
+        
+        # Kontrol sırası: relative -> script_abs -> cwd_abs
         if os.path.exists(rov_model_path_rel):
             rov_model_path = rov_model_path_rel
+            model_found = True
         elif os.path.exists(rov_model_path_abs):
             # Absolute path varsa, CWD'ye göre relative path'e çevir
             try:
-                cwd = os.getcwd()
                 rov_model_path = os.path.relpath(rov_model_path_abs, cwd)
                 # Eğer relative path oluşturulamazsa veya dosya yoksa, absolute kullan
                 if not os.path.exists(rov_model_path):
                     rov_model_path = rov_model_path_abs
+                model_found = True
             except (ValueError, OSError):
                 # Relative path oluşturulamazsa absolute kullan
                 rov_model_path = rov_model_path_abs
-        else:
-            # Hiçbiri yoksa relative path'i kullan (Ursina kendi path çözümlemesini yapacak)
+                model_found = True
+        elif os.path.exists(rov_model_path_cwd_abs):
+            # CWD'den absolute path varsa kullan
+            try:
+                rov_model_path = os.path.relpath(rov_model_path_cwd_abs, cwd)
+                if not os.path.exists(rov_model_path):
+                    rov_model_path = rov_model_path_cwd_abs
+                model_found = True
+            except (ValueError, OSError):
+                rov_model_path = rov_model_path_cwd_abs
+                model_found = True
+        
+        # Hiçbiri bulunamazsa relative path'i kullan (Ursina kendi path çözümlemesini yapacak)
+        if not model_found:
             rov_model_path = rov_model_path_rel
         
         # Ursina için path'i normalize et (forward slash kullan)
@@ -92,12 +114,47 @@ class ROV(Entity):
         # Model dosyası kontrolü (en az bir yerde varsa kullan)
         model_exists = os.path.exists(rov_model_path) if rov_model_path else False
         
-        if model_exists or os.path.exists(rov_model_path_rel) or os.path.exists(rov_model_path_abs):
+        # Windows için ek path kontrolü: normalize edilmiş path'leri de kontrol et
+        if not model_exists and os.path.sep == '\\':  # Windows
+            # Windows'ta path'leri normalize et ve tekrar kontrol et
+            normalized_paths = [
+                rov_model_path_rel.replace('/', '\\'),
+                rov_model_path_rel.replace('\\', '/'),
+                rov_model_path_abs.replace('/', '\\'),
+                rov_model_path_abs.replace('\\', '/'),
+                rov_model_path_cwd_abs.replace('/', '\\'),
+                rov_model_path_cwd_abs.replace('\\', '/'),
+            ]
+            for norm_path in normalized_paths:
+                if os.path.exists(norm_path):
+                    rov_model_path = norm_path.replace('\\', '/')  # Ursina için forward slash
+                    model_exists = True
+                    break
+        
+        if model_exists or os.path.exists(rov_model_path_rel) or os.path.exists(rov_model_path_abs) or os.path.exists(rov_model_path_cwd_abs):
             # FBX model kullan - Model çok büyük olduğu için yaklaşık 1000 kat küçültülüyor
             # Ursina için path'i normalize et (forward slash kullan)
             if os.path.sep == '\\':  # Windows
                 rov_model_path = rov_model_path.replace('\\', '/')
-            self.model = rov_model_path
+            
+            # Model dosyasının gerçekten var olduğundan emin ol (Windows için ek kontrol)
+            final_model_path = rov_model_path
+            if not os.path.exists(final_model_path):
+                # Windows'ta backslash ile de dene
+                final_model_path_win = final_model_path.replace('/', '\\')
+                if os.path.exists(final_model_path_win):
+                    final_model_path = final_model_path_win.replace('\\', '/')  # Ursina için forward slash
+                else:
+                    # Model bulunamadı, fallback kullan (sessizce)
+                    self.model = 'cube'
+                    self.scale = (1.5, 0.8, 2.5)
+                    self.color = color.orange
+                    self.collider = 'box'
+                    self.unlit = True
+                    self.gat_kodu = 0
+                    return  # Erken çıkış, aşağıdaki FBX ayarlarını atla
+            
+            self.model = final_model_path
             self.scale = (0.01, 0.01, 0.01)  # FBX model için çok küçük scale (1000 kat küçültme)
             # Mesh collider intersects() ile çalışmaz, bu yüzden box collider kullanıyoruz
             # Görsel model mesh, ama çarpışma kontrolü için box kullanılıyor
