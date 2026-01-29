@@ -665,7 +665,7 @@ class Filo:
             traceback.print_exc()
             return False
 
-    def get(self, rov_id: int = None, veri_tipi: str = None, taraf: int = None):
+    def get(self, rov_id: int = None, veri_tipi: str = None, taraf: int = None, sessiz: bool = False):
         """
         ROV bilgilerini alır.
         
@@ -680,6 +680,7 @@ class Filo:
                 - 1: Sağ (lidary)
                 - 2: Sol (lidary1)
                 - None: Tüm yönlerden en yakın engel mesafesi
+            sessiz: Hata mesajlarını bastırır (RL eğitimi için)
         
         Returns:
             İstenen veri tipine göre değer veya tüm ROV'ların koordinatları
@@ -700,7 +701,7 @@ class Filo:
             en_yakin = filo.get(0, 'lidar')  # Tüm yönlerden en yakın
             engeller = filo.get(0, 'engels')  # Tüm tespit edilen engellerin koordinatları [(x,y,z), ...]
         """
-        return self.helper.get(rov_id=rov_id, veri_tipi=veri_tipi, taraf=taraf, koordinator=Koordinator)
+        return self.helper.get(rov_id=rov_id, veri_tipi=veri_tipi, taraf=taraf, koordinator=Koordinator, sessiz=sessiz)
     
     def _get_all_rovs_positions(self):
         """
@@ -722,7 +723,7 @@ class Filo:
                         ursina_pos = (rov.x, rov.y, rov.z)
                         # Simülasyon formatına dönüştür
                         sim_pos = Koordinator.ursina_to_sim(*ursina_pos)
-                        all_positions[i] = sim_pos
+                    all_positions[i] = sim_pos
         except Exception as e:
             print(f"❌ [HATA] Tüm ROV koordinatları alınırken hata: {e}")
             import traceback

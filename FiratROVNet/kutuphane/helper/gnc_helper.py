@@ -65,7 +65,7 @@ class FiloHelper:
         """
         self.filo = filo_ref
 
-    def get(self, rov_id: int = None, veri_tipi: str = None, taraf: int = None, koordinator=None):
+    def get(self, rov_id: int = None, veri_tipi: str = None, taraf: int = None, koordinator=None, sessiz: bool = False):
         """
         ROV bilgilerini alır.
 
@@ -77,6 +77,7 @@ class FiloHelper:
                                   veya None (tüm ROV'ların GPS koordinatları)
             taraf: Lidar için yön parametresi (sadece 'lidar' için geçerli)
             koordinator: Koordinat dönüştürücü (Koordinator.ursina_to_sim)
+            sessiz: Hata mesajlarını bastırır (RL eğitimi için)
 
         Returns:
             İstenen veri tipine göre değer veya tüm ROV'ların koordinatları
@@ -85,18 +86,18 @@ class FiloHelper:
             return self.filo._get_all_rovs_positions()
 
         if len(self.filo.sistemler) == 0:
-            print("❌ [HATA] GNC sistemleri henüz kurulmamış!")
+            if not sessiz:
+                print("❌ [HATA] GNC sistemleri henüz kurulmamış!")
             return None
 
         if rov_id is not None and (not isinstance(rov_id, int) or rov_id < 0):
-            print(f"❌ [HATA] Geçersiz ROV ID: {rov_id} (pozitif tam sayı olmalı)")
-            print(f"   Mevcut ROV sayısı: {len(self.filo.sistemler)} (0-{len(self.filo.sistemler)-1} arası)")
+            if not sessiz:
+                print(f"❌ [HATA] Geçersiz ROV ID: {rov_id} (pozitif tam sayı olmalı)")
+                print(f"   Mevcut ROV sayısı: {len(self.filo.sistemler)} (0-{len(self.filo.sistemler)-1} arası)")
             return None
 
         if rov_id is not None and rov_id >= len(self.filo.sistemler):
-            # Sessiz mod kontrolü (GAT eğitimi için)
-            # Eğer sessiz mod aktifse hata mesajı gösterme
-            if not getattr(self, '_sessiz_mod', False):
+            if not sessiz:
                 print(f"❌ [HATA] ROV ID {rov_id} mevcut değil!")
                 print(f"   Mevcut ROV sayısı: {len(self.filo.sistemler)} (0-{len(self.filo.sistemler)-1} arası)")
             return None
@@ -112,12 +113,14 @@ class FiloHelper:
         try:
             # Sistem kontrolü
             if self.filo.sistemler[rov_id] is None:
-                print(f"⚠️ [GET] ROV-{rov_id} için sistem bulunamadı (None)")
+                if not sessiz:
+                    print(f"⚠️ [GET] ROV-{rov_id} için sistem bulunamadı (None)")
                 return None
             
             sistem = self.filo.sistemler[rov_id]
             if not hasattr(sistem, 'rov') or sistem.rov is None:
-                print(f"⚠️ [GET] ROV-{rov_id} için ROV entity bulunamadı")
+                if not sessiz:
+                    print(f"⚠️ [GET] ROV-{rov_id} için ROV entity bulunamadı")
                 return None
             
             rov = sistem.rov
@@ -316,6 +319,11 @@ class FiloHelper:
             # Headless/egitim modunda main thread olmadığından formasyon_sec None dönebilir.
             # Sessiz mod: Log mesajları ve görsel işlemler kapalı (RL eğitimi için)
             out = aktif_filo.helper._formasyon_sec_impl(margin=30, is_3d=False, offset=20.0, sessiz=True)
+            
+            # Formasyon seçilemediyse None döndür (eğitim verisi oluşturulamadı)
+            if out is None:
+                # Sessiz modda olduğu için log mesajı yok
+                return None
             
             # Not: senaryo.temizle() artık çağrılmıyor - ortam bir kez başlatılıp tekrar kullanılıyor
             # Eğer gerçekten temizlemek isterseniz: senaryo.temizle()
