@@ -3,7 +3,8 @@ torch>=2.0.0
 torch-geometric>=2.3.0
 
 # --- 3D Simülasyon ve Oyun Motoru ---
-ursina>=5.0.0
+# Ursina 7.x bu projedeki ada OBJ formatı ile uyumsuz (mesh triangles:0); 6.x kullan
+ursina>=5.0.0,<7.0.0
 panda3d
 
 # --- Matematik ve Veri İşleme ---
