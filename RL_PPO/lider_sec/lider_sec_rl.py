@@ -431,7 +431,7 @@ def lider_kim():
 
 def update():
     """Ana güncelleme döngüsü (RL entegreli)"""
-    global episode_count, episode_steps, last_leader, mission_start_battery, episode_rewards
+    global episode_count, episode_steps, last_leader
     
     try:
         # Lider seçimi (RL veya orijinal)

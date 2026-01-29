@@ -438,13 +438,39 @@ class FiloHelper:
         import random
         
         try:
-            n_rov_secenekleri = [4, 6, 8]
-            secilen_n = random.choice(n_rov_secenekleri)
-            n_engels = random.randint(10, 25)
-            n_adalar = random.randint(2, 5)  # 2-5 arasında random ada sayısı
+            # NOT: random.seed() çağrısını KALDIRDIK - Python'un varsayılan rastgele durumunu kullan
+            # Bu, her çağrıda gerçekten farklı senaryolar üretilmesini sağlar
             
-            # Senaryo ortamı oluştur
-            senaryo.uret(n_rovs=secilen_n, n_engels=n_engels, n_adalar=n_adalar, havuz_genisligi=200, verbose=False)
+            # Senaryo tipi seçimi - farklı GAT kodları için çeşitli senaryolar
+            senaryo_tipi = random.choice([
+                'normal',       # Standart dağılım
+                'yakin',        # ROV'lar yakın (çarpışma riski)
+                'dagnik',       # ROV'lar dağınık (kopma riski)
+                'tek_kume',     # Tek kümede toplanmış
+                'iki_kume',     # İki ayrı kümede
+            ])
+            
+            # Daha geniş parametre aralığı ile çeşitlilik sağla
+            n_rov_secenekleri = [4,5,6,7, 8,9, 10,11,12]
+            secilen_n = random.choice(n_rov_secenekleri)
+            n_engels = random.randint(10, 20)  # Daha geniş aralık
+            n_adalar = random.randint(2, 6)  # 2-6 arası (daha geniş)
+            
+            # Cache'i temizlemek için önce mevcut cache'i sıfırla
+            senaryo_instance = _get_instance()
+            if senaryo_instance:
+                # Cache'i temizle - böylece her zaman yeni senaryo üretilir
+                senaryo_instance._cache_n_rovs = None
+                senaryo_instance._cache_n_engels = None
+                senaryo_instance._cache_n_adalar = None
+                senaryo_instance._cache_havuz_genisligi = None
+            
+            # Havuz genişliğini daha fazla değiştir (cache'i bypass etmek için)
+            # Daha geniş aralık ile her epoch'ta kesinlikle farklı senaryo üretilir
+            havuz_genisligi = 200 + random.uniform(-5, 5)  # 195-205 arası (daha geniş fark)
+            
+            # Senaryo ortamı oluştur (her zaman yeni senaryo üretilir)
+            senaryo.uret(n_rovs=secilen_n, n_engels=n_engels, n_adalar=n_adalar, havuz_genisligi=havuz_genisligi, verbose=False)
             
             # Senaryo instance'ını al
             senaryo_instance = _get_instance()
@@ -455,9 +481,61 @@ class FiloHelper:
             if not aktif_filo:
                 return None
             
+            # ROV pozisyonlarını senaryo tipine göre ayarla (çeşitli GAT kodları için)
+            if hasattr(senaryo_instance.ortam, 'rovs') and senaryo_instance.ortam.rovs:
+                from ursina import Vec3
+                rovs = [r for r in senaryo_instance.ortam.rovs if r is not None]
+                n_rovs_actual = len(rovs)
+                
+                if senaryo_tipi == 'yakin':
+                    # ROV'ları yakın yerleştir (çarpışma riski - GAT kodu 2)
+                    merkez_x = random.uniform(-50, 50)
+                    merkez_z = random.uniform(-50, 50)
+                    for i, rov in enumerate(rovs):
+                        # Çok yakın mesafeler (3-8 arası)
+                        offset_x = random.uniform(-4, 4)
+                        offset_z = random.uniform(-4, 4)
+                        if hasattr(rov, 'position'):
+                            rov.position = Vec3(merkez_x + offset_x, -5, merkez_z + offset_z)
+                
+                elif senaryo_tipi == 'dagnik':
+                    # ROV'ları dağınık yerleştir (kopma riski - GAT kodu 3)
+                    for i, rov in enumerate(rovs):
+                        # Geniş alana yay (50+ metre arası)
+                        pos_x = random.uniform(-80, 80)
+                        pos_z = random.uniform(-80, 80)
+                        if hasattr(rov, 'position'):
+                            rov.position = Vec3(pos_x, -5, pos_z)
+                
+                elif senaryo_tipi == 'tek_kume':
+                    # Tek kümede toplanmış (karma GAT kodları)
+                    merkez_x = random.uniform(-40, 40)
+                    merkez_z = random.uniform(-40, 40)
+                    for i, rov in enumerate(rovs):
+                        offset_x = random.uniform(-15, 15)
+                        offset_z = random.uniform(-15, 15)
+                        if hasattr(rov, 'position'):
+                            rov.position = Vec3(merkez_x + offset_x, -5, merkez_z + offset_z)
+                
+                elif senaryo_tipi == 'iki_kume':
+                    # İki ayrı kümede (liderden uzaklık - GAT kodu 4)
+                    merkez1_x, merkez1_z = random.uniform(-60, -20), random.uniform(-60, 60)
+                    merkez2_x, merkez2_z = random.uniform(20, 60), random.uniform(-60, 60)
+                    for i, rov in enumerate(rovs):
+                        if i < n_rovs_actual // 2:
+                            merkez_x, merkez_z = merkez1_x, merkez1_z
+                        else:
+                            merkez_x, merkez_z = merkez2_x, merkez2_z
+                        offset_x = random.uniform(-10, 10)
+                        offset_z = random.uniform(-10, 10)
+                        if hasattr(rov, 'position'):
+                            rov.position = Vec3(merkez_x + offset_x, -5, merkez_z + offset_z)
+                
+                # 'normal' durumunda senaryo.uret() tarafından yerleştirilen pozisyonlar kullanılır
+            
             # Birkaç adım simülasyon çalıştır (fizik ve sensör güncellemeleri için)
             for _ in range(5):
-                senaryo.guncelle(0.016)
+                senaryo.guncelle(0.032)
             
             # Senaryo instance'ının get metodunu kullanabilmek için wrapper
             # Bu wrapper, ROV ID kontrolü yapar ve sessiz modda çalışır

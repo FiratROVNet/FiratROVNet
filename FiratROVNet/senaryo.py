@@ -354,8 +354,9 @@ class Senaryo:
             havuz_changed = (havuz_genisligi is not None and havuz_genisligi != self._cache_havuz_genisligi)
             n_adalar_changed = (n_adalar is not None and n_adalar != getattr(self, '_cache_n_adalar', None))
             
-            if not n_rovs_changed and not n_engels_changed and not havuz_changed and not n_adalar_changed:
+            if not n_rovs_changed:
                 # Parametreler değişmedi, sadece pozisyonları güncelle (ÇOK HIZLI!)
+                print("rov sayısı değişmedi, sadece pozisyonları güncelle")
                 return self._nesneleri_yeniden_dagit()
         
         # 2. Önbellek Güncelleme
