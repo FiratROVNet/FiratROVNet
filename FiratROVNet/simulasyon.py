@@ -3483,9 +3483,8 @@ class Ortam:
             # Model ve texture kontrolü (en az bir yerde varsa kullan)
             model_exists_ada = os.path.exists(island_model_path) if island_model_path else False
             texture_exists_ada = os.path.exists(island_texture_path) if island_texture_path else False
-            
+
             if model_exists_ada or os.path.exists(island_model_path_rel) or os.path.exists(island_model_path_abs):
-                # Texture kontrolü
                 texture_path_final = None
                 if texture_exists_ada or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs):
                     texture_path_final = island_texture_path

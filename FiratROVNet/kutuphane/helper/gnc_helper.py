@@ -284,20 +284,9 @@ class FiloHelper:
 
             rov_filo_gps = []
             for i in range(8):
-                if i < secilen_n:
-                    # Senaryo'dan get kullan (sessiz mod - hata mesajları yok)
-                    try:
-                        # Senaryo instance'ından direkt get kullan (sessiz mod)
-                        from FiratROVNet.senaryo import _get_instance
-                        senaryo_instance = _get_instance()
-                        if senaryo_instance and senaryo_instance.aktif and i < len(senaryo_instance.ortam.rovs):
-                            pos = senaryo_instance.get(i, "gps")
-                            rov_filo_gps.append(pos if pos is not None else [400.0, 400.0, 400.0])
-                        else:
-                            rov_filo_gps.append([400.0, 400.0, 400.0])
-                    except Exception:
-                        # Hata durumunda varsayılan değer
-                        rov_filo_gps.append([400.0, 400.0, 400.0])
+                if i < secilen_n and i < len(senaryo.filo.sistemler):
+                    pos = senaryo.get(i, "gps")
+                    rov_filo_gps.append(pos if pos is not None else [400.0, 400.0, 400.0])
                 else:
                     rov_filo_gps.append([400.0, 400.0, 400.0])
             rov_filo_gps = np.array(rov_filo_gps)
@@ -369,25 +358,15 @@ class FiloHelper:
             rov_list_for_calc = []
             for i in range(8):
                 if i < secilen_n:
-                    # Senaryo instance'ından direkt get kullan (sessiz mod)
-                    try:
-                        from FiratROVNet.senaryo import _get_instance
-                        senaryo_instance = _get_instance()
-                        if senaryo_instance and senaryo_instance.aktif and i < len(senaryo_instance.ortam.rovs):
-                            bat = senaryo_instance.get(i, "batarya")
-                            if bat is None:
-                                bat = 1.0  # Varsayılan batarya
-                            bat = bat * 100.0
-                            gps = senaryo_instance.get(i, "gps")
-                            if gps is None:
-                                gps = np.array([400.0, 400.0, 400.0])
-                            rov_data.append([bat, gps[0], gps[1], gps[2]])
-                            rov_list_for_calc.append({'id': i, 'batarya': bat, 'konum': gps})
-                        else:
-                            rov_data.append([0.0, 400.0, 400.0, 400.0])
-                    except Exception:
-                        # Hata durumunda varsayılan değer
-                        rov_data.append([0.0, 400.0, 400.0, 400.0])
+                    bat = senaryo.get(i, "batarya")
+                    if bat is None:
+                        bat = 1.0  # Varsayılan batarya
+                    bat = bat * 100.0
+                    gps = senaryo.get(i, "gps")
+                    if gps is None:
+                        gps = np.array([400.0, 400.0, 400.0])
+                    rov_data.append([bat, gps[0], gps[1], gps[2]])
+                    rov_list_for_calc.append({'id': i, 'batarya': bat, 'konum': gps})
                 else:
                     rov_data.append([0.0, 400.0, 400.0, 400.0])
 

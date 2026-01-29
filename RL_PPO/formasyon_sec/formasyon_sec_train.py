@@ -10,10 +10,34 @@ import torch.optim as optim
 import torch.nn.functional as F
 from FiratROVNet.gnc import Filo
 import numpy as np
-from formasyon_sec_rl_model import FormasyonSecimAgi
 
 
 def train_formasyon_secim():
+    # Windows DLL hatası için torch import'unu buraya taşı
+    import platform
+    
+    if platform.system() == 'Windows':
+        try:
+            import torch
+            import torch.nn as nn
+            import torch.optim as optim
+        except OSError as e:
+            if "WinError 1114" in str(e) or "DLL" in str(e):
+                print("❌ PyTorch DLL hatası tespit edildi!")
+                print("   Lütfen README_WINDOWS_FIX.md dosyasındaki çözümleri uygulayın.")
+                print("   Hızlı çözüm: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu")
+                print("   Visual C++ Redistributables kurulumu gerekebilir.")
+                return
+            raise
+    else:
+        # Linux'ta normal import
+        import torch
+        import torch.nn as nn
+        import torch.optim as optim
+    
+    # Model import'unu da buraya taşı (torch import'undan sonra)
+    from formasyon_sec_rl_model import FormasyonSecimAgi
+    
     # 1. Kurulum
     filo = Filo()
     model = FormasyonSecimAgi(input_dim=230, num_formations=20)
