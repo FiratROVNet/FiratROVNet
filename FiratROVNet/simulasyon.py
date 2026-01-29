@@ -2505,6 +2505,82 @@ class Harita:
         self.goster(False)
 
 
+def _load_obj_as_mesh(obj_path):
+    """
+    OBJ dosyasını yükler, quad yüzleri üçgene çevirir; Ursina 7.x mesh uyumsuzluğunu giderir.
+    Cinema 4D / v/vt formatı ve quad face'leri destekler.
+    Returns:
+        Ursina Mesh veya None (hata/boş dosya).
+    """
+    if not obj_path or not os.path.exists(obj_path):
+        return None
+    v_list = []
+    vt_list = []
+    vertices = []
+    uvs = []
+    triangles = []
+    try:
+        with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split()
+                if not parts:
+                    continue
+                if parts[0] == 'v' and len(parts) >= 4:
+                    v_list.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                elif parts[0] == 'vt' and len(parts) >= 3:
+                    vt_list.append((float(parts[1]), float(parts[2])))
+                elif parts[0] == 'f':
+                    face_verts = []
+                    for i in range(1, len(parts)):
+                        seg = parts[i].split('/')
+                        try:
+                            vi = int(seg[0])
+                        except (ValueError, IndexError):
+                            continue
+                        if vi < 0:
+                            vi = len(v_list) + vi
+                        else:
+                            vi -= 1
+                        vti = 0
+                        if len(seg) > 1 and seg[1].strip():
+                            try:
+                                vti = int(seg[1])
+                            except ValueError:
+                                pass
+                        if vti < 0:
+                            vti = len(vt_list) + vti
+                        elif vti > 0:
+                            vti -= 1
+                        if vi < 0 or vi >= len(v_list):
+                            continue
+                        u, v = vt_list[vti] if vti < len(vt_list) else (0.0, 0.0)
+                        face_verts.append((vi, u, v))
+                    if len(face_verts) == 3:
+                        base = len(vertices)
+                        for vi, u, v in face_verts:
+                            vertices.append(v_list[vi])
+                            uvs.append((u, v))
+                        triangles.append((base, base + 1, base + 2))
+                    elif len(face_verts) == 4:
+                        base = len(vertices)
+                        for vi, u, v in face_verts:
+                            vertices.append(v_list[vi])
+                            uvs.append((u, v))
+                        triangles.append((base, base + 1, base + 2))
+                        triangles.append((base, base + 2, base + 3))
+    except Exception:
+        return None
+    if not vertices or not triangles:
+        return None
+    try:
+        return Mesh(vertices=vertices, triangles=triangles, uvs=uvs, mode='triangle', static=True)
+    except Exception:
+        return None
+
+
 class Ortam:
     def __init__(self, verbose=False):
         self.verbose = verbose  # Log mesajlarını kontrol eder
@@ -2589,11 +2665,11 @@ class Ortam:
             scale=(500, 1, 500),
             position=(0, self.WATER_SURFACE_Y_BASE, 0),
             texture=water_texture,
-            texture_scale=(20, 20),  # Tekrarlı su dokusu görünür olsun
+            texture_scale=(1, 1),  # Tekrarlı su dokusu görünür olsun
             normals=normals_texture,
             double_sided=True,
             color=color.rgb(0.5, 0.65, 0.9),
-            alpha=0.25,  # Texture net görünsün
+            alpha=0.25,  # Texture net görünsün (senaryo.guncelle ile animasyon)
             transparent=True,
             render_queue=0  # Önce su yüzeyini render et (z-order)
         )
@@ -2802,9 +2878,10 @@ class Ortam:
                     )
                 
                 # --- 3. ADA ENTITY OLUŞTUR ---
-                # OBJ (Cinema 4D v/vt formatı) Ursina'da bazen triangles:0 hatası verir; yüklenemezse cube kullan
+                # Ursina 7.x: OBJ quad'ları bazen triangles:0 verir; önce doğrudan, olmazsa _load_obj_as_mesh ile üçgenleyip yükle
                 island = None
                 island_radius = estimated_radius
+                island_model_for_entity = None
                 try:
                     island = Entity(
                         model=island_model_path,
@@ -2819,8 +2896,35 @@ class Ortam:
                         transparent=True,
                         render_queue=0
                     )
-                except Exception as _e:
-                    # Ada OBJ yüklenemedi (örn. vertices/triangles/uvs uyumsuzluğu) -> basit cube ile devam et
+                    if hasattr(island, 'model') and island.model:
+                        tri = getattr(island.model, 'triangles', None)
+                        idx = getattr(island.model, 'indices', None)
+                        n_tri = (len(tri) if tri is not None else 0) or (len(idx) // 3 if idx is not None else 0)
+                        if n_tri == 0:
+                            destroy(island)
+                            island = None
+                except Exception:
+                    island = None
+                if island is None and island_model_path:
+                    island_model_for_entity = _load_obj_as_mesh(island_model_path)
+                if island is None and island_model_for_entity is not None:
+                    try:
+                        island = Entity(
+                            model=island_model_for_entity,
+                            position=(island_x, island_y_position, island_z),
+                            scale=visual_scale,
+                            texture=island_texture_path if (texture_exists or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs)) else None,
+                            collider='box',
+                            unlit=False,
+                            double_sided=True,
+                            color=color.white,
+                            alpha=1.0,
+                            transparent=True,
+                            render_queue=0
+                        )
+                    except Exception:
+                        island = None
+                if island is None:
                     if island_idx == 0:
                         print("⚠️ Ada OBJ modeli yüklenemedi (Ursina mesh formatı uyumsuz), cube kullanılıyor.")
                     island = Entity(
@@ -3498,6 +3602,7 @@ class Ortam:
                 if texture_exists_ada or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs):
                     texture_path_final = island_texture_path
                 island_radius = radius
+                island = None
                 try:
                     island = Entity(
                         model=island_model_path,
@@ -3512,15 +3617,35 @@ class Ortam:
                         transparent=True,
                         render_queue=0
                     )
-                    try:
-                        if hasattr(island.model, 'bounds') and island.model.bounds:
-                            min_b, max_b = island.model.bounds
-                            model_size = max_b - min_b
-                            island_radius = max(model_size.x, model_size.z) * island.world_scale.x / 2
-                    except Exception:
-                        pass
+                    if hasattr(island, 'model') and island.model:
+                        tri = getattr(island.model, 'triangles', None)
+                        idx = getattr(island.model, 'indices', None)
+                        n_tri = (len(tri) if tri is not None else 0) or (len(idx) // 3 if idx is not None else 0)
+                        if n_tri == 0:
+                            destroy(island)
+                            island = None
                 except Exception:
-                    # OBJ yüklenemedi (Ursina mesh formatı uyumsuz) -> cube kullan
+                    island = None
+                if island is None and island_model_path:
+                    island_mesh = _load_obj_as_mesh(island_model_path)
+                    if island_mesh is not None:
+                        try:
+                            island = Entity(
+                                model=island_mesh,
+                                position=(ursina_x, island_y_position, ursina_z),
+                                scale=visual_scale,
+                                texture=texture_path_final,
+                                collider='box',
+                                unlit=False,
+                                double_sided=True,
+                                color=color.white,
+                                alpha=1.0,
+                                transparent=True,
+                                render_queue=0
+                            )
+                        except Exception:
+                            island = None
+                if island is None:
                     island = Entity(
                         model='cube',
                         position=(ursina_x, island_y_position, ursina_z),
@@ -3530,6 +3655,14 @@ class Ortam:
                         alpha=1.0
                     )
                     island_radius = radius
+                else:
+                    try:
+                        if hasattr(island.model, 'bounds') and island.model.bounds:
+                            min_b, max_b = island.model.bounds
+                            model_size = max_b - min_b
+                            island_radius = max(model_size.x, model_size.z) * island.world_scale.x / 2
+                    except Exception:
+                        pass
             else:
                 # Fallback: Cube model
                 island = Entity(
