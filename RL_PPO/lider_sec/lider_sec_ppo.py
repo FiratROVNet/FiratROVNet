@@ -540,7 +540,7 @@ def lider_kim():
 
 def update():
     """Ana güncelleme döngüsü (PPO entegreli)"""
-    global episode_count, episode_steps, last_leader, episode_rewards
+    global episode_count, episode_steps, last_leader
     
     try:
         # Lider seçimi (PPO veya orijinal)

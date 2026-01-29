@@ -2793,33 +2793,50 @@ class Ortam:
                     )
                 
                 # --- 3. ADA ENTITY OLUŞTUR ---
-                island = Entity(
-                    model=island_model_path,
-                    position=(island_x, island_y_position, island_z),
-                    scale=visual_scale,
-                    texture=island_texture_path if (texture_exists or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs)) else None,
-                    collider='box',
-                    unlit=False,
-                    double_sided=True, 
-                    color=color.white,
-                    alpha=1.0,
-                    transparent=True,
-                    render_queue=0
-                )
-                
-                # --- 4. GERÇEK YARIÇAP HESAPLAMA (Modelden otomatik) ---
+                # OBJ (Cinema 4D v/vt formatı) Ursina'da bazen triangles:0 hatası verir; yüklenemezse cube kullan
+                island = None
+                island_radius = estimated_radius
                 try:
-                    # Model bounds'u al
-                    if hasattr(island.model, 'bounds') and island.model.bounds:
-                        min_b, max_b = island.model.bounds
-                        model_size = max_b - min_b
-                        # X-Z düzleminde yarıçap (world_scale kullanarak parent scale varsa da doğru çıkar)
-                        island_radius = max(model_size.x, model_size.z) * island.world_scale.x / 2
-                    else:
-                        # Fallback: Tahmini değeri kullan
+                    island = Entity(
+                        model=island_model_path,
+                        position=(island_x, island_y_position, island_z),
+                        scale=visual_scale,
+                        texture=island_texture_path if (texture_exists or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs)) else None,
+                        collider='box',
+                        unlit=False,
+                        double_sided=True,
+                        color=color.white,
+                        alpha=1.0,
+                        transparent=True,
+                        render_queue=0
+                    )
+                except Exception as _e:
+                    # Ada OBJ yüklenemedi (örn. vertices/triangles/uvs uyumsuzluğu) -> basit cube ile devam et
+                    if island_idx == 0:
+                        print("⚠️ Ada OBJ modeli yüklenemedi (Ursina mesh formatı uyumsuz), cube kullanılıyor.")
+                    island = Entity(
+                        model='cube',
+                        position=(island_x, island_y_position, island_z),
+                        scale=visual_scale,
+                        collider='box',
+                        color=color.white,
+                        alpha=1.0
+                    )
+                    island_radius = estimated_radius
+
+                if island is not None:
+                    # --- 4. GERÇEK YARIÇAP HESAPLAMA (Modelden otomatik) ---
+                    try:
+                        if island_radius is None or (hasattr(island, 'model') and hasattr(island.model, 'bounds') and island.model.bounds):
+                            if hasattr(island.model, 'bounds') and island.model.bounds:
+                                min_b, max_b = island.model.bounds
+                                model_size = max_b - min_b
+                                island_radius = max(model_size.x, model_size.z) * island.world_scale.x / 2
+                            else:
+                                island_radius = estimated_radius
+                    except Exception:
                         island_radius = estimated_radius
-                except Exception:
-                    # Hata durumunda tahmini değeri kullan
+                if island_radius is None:
                     island_radius = estimated_radius
  
   
@@ -3463,30 +3480,46 @@ class Ortam:
             ursina_x, ursina_y, ursina_z = sim_to_ursina(konum_x, konum_y, z_depth)
             
             # Ada entity oluştur
-            if os.path.exists(island_model_path):
-                island = Entity(
-                    model=island_model_path,
-                    position=(ursina_x, island_y_position, ursina_z),  # Ursina koordinat sistemi: (x, y_up, z_forward)
-                    scale=visual_scale,
-                    texture=island_texture_path if os.path.exists(island_texture_path) else None,
-                    collider='box',
-                    unlit=False,
-                    double_sided=True,
-                    color=color.white,
-                    alpha=1.0,
-                    transparent=True,
-                    render_queue=0
-                )
-                
-                # Gerçek yarıçap hesaplama (modelden otomatik)
+            # Model ve texture kontrolü (en az bir yerde varsa kullan)
+            model_exists_ada = os.path.exists(island_model_path) if island_model_path else False
+            texture_exists_ada = os.path.exists(island_texture_path) if island_texture_path else False
+
+            if model_exists_ada or os.path.exists(island_model_path_rel) or os.path.exists(island_model_path_abs):
+                texture_path_final = None
+                if texture_exists_ada or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs):
+                    texture_path_final = island_texture_path
+                island_radius = radius
                 try:
-                    if hasattr(island.model, 'bounds') and island.model.bounds:
-                        min_b, max_b = island.model.bounds
-                        model_size = max_b - min_b
-                        island_radius = max(model_size.x, model_size.z) * island.world_scale.x / 2
-                    else:
-                        island_radius = radius
+                    island = Entity(
+                        model=island_model_path,
+                        position=(ursina_x, island_y_position, ursina_z),
+                        scale=visual_scale,
+                        texture=texture_path_final,
+                        collider='box',
+                        unlit=False,
+                        double_sided=True,
+                        color=color.white,
+                        alpha=1.0,
+                        transparent=True,
+                        render_queue=0
+                    )
+                    try:
+                        if hasattr(island.model, 'bounds') and island.model.bounds:
+                            min_b, max_b = island.model.bounds
+                            model_size = max_b - min_b
+                            island_radius = max(model_size.x, model_size.z) * island.world_scale.x / 2
+                    except Exception:
+                        pass
                 except Exception:
+                    # OBJ yüklenemedi (Ursina mesh formatı uyumsuz) -> cube kullan
+                    island = Entity(
+                        model='cube',
+                        position=(ursina_x, island_y_position, ursina_z),
+                        scale=visual_scale,
+                        collider='box',
+                        color=color.white,
+                        alpha=1.0
+                    )
                     island_radius = radius
             else:
                 # Fallback: Cube model
@@ -3908,47 +3941,61 @@ class Ortam:
         aktif_rovs = [r for r in self.rovs if r is not None]
         
         if not aktif_rovs:
-            # Hiç aktif ROV yoksa boş veri döndür
+            # Hiç aktif ROV yoksa boş veri döndür (GAT modeli 9 özellik bekliyor)
             class MiniData:
-                def __init__(self, x, edge_index): 
+                def __init__(self, x, edge_index):
                     self.x, self.edge_index = x, edge_index
-            return MiniData(x=torch.zeros((0, 7), dtype=torch.float), edge_index=torch.zeros((2, 0), dtype=torch.long))
-        
+            return MiniData(x=torch.zeros((0, 9), dtype=torch.float), edge_index=torch.zeros((2, 0), dtype=torch.long))
+
         n = len(aktif_rovs)
-        x = torch.zeros((n, 7), dtype=torch.float)
+        x = torch.zeros((n, 9), dtype=torch.float)
         positions = [r.position for r in aktif_rovs]
         sources, targets = [], []
 
         L = {'LEADER': 60.0, 'DISCONNECT': 35.0, 'OBSTACLE': 20.0, 'COLLISION': 8.0}
 
+        # Mesafe matrisi (min_rov_dist ve lider_dist için)
+        dist_matrix = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    dist_matrix[i][j] = distance(positions[i], positions[j])
+
         for i in range(n):
             code = 0
-            if i != 0 and distance(positions[i], positions[0]) > L['LEADER']: 
+            if i != 0 and distance(positions[i], positions[0]) > L['LEADER']:
                 code = 5
             dists = [distance(positions[i], positions[j]) for j in range(n) if i != j]
-            if dists and min(dists) > L['DISCONNECT']: 
+            if dists and min(dists) > L['DISCONNECT']:
                 code = 3
-            
+
             min_engel = 999
             for engel in engeller:
-                d = distance(positions[i], engel.position) - 6 
-                if d < min_engel: 
+                d = distance(positions[i], engel.position) - 6
+                if d < min_engel:
                     min_engel = d
-            if min_engel < L['OBSTACLE']: 
+            if min_engel < L['OBSTACLE']:
                 code = 1
-            
+
             for j in range(n):
                 if i != j and distance(positions[i], positions[j]) < L['COLLISION']:
                     code = 2
                     break
-            
+
             x[i][0] = code / 5.0
-            x[i][1] = aktif_rovs[i].battery  # Batarya artık 0-1 arası, bölmeye gerek yok
+            x[i][1] = aktif_rovs[i].battery
             x[i][2] = 0.9
-            x[i][3] = abs(aktif_rovs[i].y) / 100.0
-            x[i][4] = aktif_rovs[i].velocity.x
-            x[i][5] = aktif_rovs[i].velocity.z
-            x[i][6] = aktif_rovs[i].role
+            x[i][3] = min(1.0, abs(aktif_rovs[i].y) / 100.0)
+            x[i][4] = getattr(aktif_rovs[i].velocity, 'x', 0.0)
+            x[i][5] = getattr(aktif_rovs[i].velocity, 'z', 0.0)
+            x[i][6] = 1.0 if getattr(aktif_rovs[i], 'role', 0) == 1 else 0.0
+            # [7] En yakın ROV mesafesi (normalize 0–100 -> 0–1), GAT ile uyumlu
+            if n > 1:
+                min_rov_d = min(dist_matrix[i][j] for j in range(n) if j != i)
+                x[i][7] = float(min(min_rov_d / 100.0, 1.0))
+            # [8] Lider mesafesi (takipçiler için, normalize 0–100 -> 0–1)
+            if i != 0 and n > 0:
+                x[i][8] = float(min(dist_matrix[i][0] / 100.0, 1.0))
 
             for j in range(n):
                 if i != j and distance(positions[i], positions[j]) < L['DISCONNECT']:
