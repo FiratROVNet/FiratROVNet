@@ -689,20 +689,26 @@ class Senaryo:
                         z = random.uniform(-havuz_genisligi * 0.45, havuz_genisligi * 0.45)
                         konum = (x, -5, z)
                     
-                    # ROV ekle
+                    # ROV ekle (sessiz mod için flag ayarla)
                     try:
+                        self.filo._sessiz_mod = True
                         self.filo.rov(i, "ekle", konum)
+                        self.filo._sessiz_mod = False
                         mevcut_rov_pos.append([x, -5, z])
                     except Exception as e:
+                        self.filo._sessiz_mod = False
                         if self.verbose:
                             print(f"⚠️ ROV-{i} eklenirken hata: {e}")
             
             elif aktif_rov_sayisi > n_rovs:
-                # Fazla ROV'ları çıkar (sondan başlayarak)
+                # Fazla ROV'ları çıkar (sondan başlayarak, sessiz mod)
                 for i in range(aktif_rov_sayisi - 1, n_rovs - 1, -1):
                     try:
+                        self.filo._sessiz_mod = True
                         self.filo.rov(i, "cikar")
+                        self.filo._sessiz_mod = False
                     except Exception as e:
+                        self.filo._sessiz_mod = False
                         if self.verbose:
                             print(f"⚠️ ROV-{i} çıkarılırken hata: {e}")
 
@@ -819,12 +825,19 @@ class Senaryo:
             print("⚠️ Senaryo aktif değil. Önce senaryo.uret() çağırın.")
             return
         
-        # Ursina time.dt'yi ayarla (eğer varsa)
+        # Ursina time.dt'yi ayarla (su yüzeyi animasyonu ve diğer entity update'leri için)
         try:
-            import time as ursina_time
-            if hasattr(ursina_time, 'dt'):
-                ursina_time.dt = delta_time
-        except:
+            from ursina import time as ursina_time
+            ursina_time.dt = delta_time
+        except Exception:
+            pass
+        
+        # Su yüzeyi animasyonu (senaryo.guncelle döngüsünden çağrıldığı için burada da güncelle)
+        try:
+            if hasattr(self.ortam, 'ocean_surface') and self.ortam.ocean_surface is not None:
+                if hasattr(self.ortam.ocean_surface, 'update') and callable(self.ortam.ocean_surface.update):
+                    self.ortam.ocean_surface.update()
+        except Exception:
             pass
         
         # ROV'ları güncelle (sadece update metodu varsa)
