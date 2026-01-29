@@ -688,26 +688,20 @@ class Senaryo:
                         z = random.uniform(-havuz_genisligi * 0.45, havuz_genisligi * 0.45)
                         konum = (x, -5, z)
                     
-                    # ROV ekle (sessiz mod için flag ayarla)
+                    # ROV ekle
                     try:
-                        self.filo._sessiz_mod = True
                         self.filo.rov(i, "ekle", konum)
-                        self.filo._sessiz_mod = False
                         mevcut_rov_pos.append([x, -5, z])
                     except Exception as e:
-                        self.filo._sessiz_mod = False
                         if self.verbose:
                             print(f"⚠️ ROV-{i} eklenirken hata: {e}")
             
             elif aktif_rov_sayisi > n_rovs:
-                # Fazla ROV'ları çıkar (sondan başlayarak, sessiz mod)
+                # Fazla ROV'ları çıkar (sondan başlayarak)
                 for i in range(aktif_rov_sayisi - 1, n_rovs - 1, -1):
                     try:
-                        self.filo._sessiz_mod = True
                         self.filo.rov(i, "cikar")
-                        self.filo._sessiz_mod = False
                     except Exception as e:
-                        self.filo._sessiz_mod = False
                         if self.verbose:
                             print(f"⚠️ ROV-{i} çıkarılırken hata: {e}")
 

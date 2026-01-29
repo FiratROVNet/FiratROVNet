@@ -284,20 +284,9 @@ class FiloHelper:
 
             rov_filo_gps = []
             for i in range(8):
-                if i < secilen_n:
-                    # Senaryo'dan get kullan (sessiz mod - hata mesajları yok)
-                    try:
-                        # Senaryo instance'ından direkt get kullan (sessiz mod)
-                        from FiratROVNet.senaryo import _get_instance
-                        senaryo_instance = _get_instance()
-                        if senaryo_instance and senaryo_instance.aktif and i < len(senaryo_instance.ortam.rovs):
-                            pos = senaryo_instance.get(i, "gps")
-                            rov_filo_gps.append(pos if pos is not None else [400.0, 400.0, 400.0])
-                        else:
-                            rov_filo_gps.append([400.0, 400.0, 400.0])
-                    except Exception:
-                        # Hata durumunda varsayılan değer
-                        rov_filo_gps.append([400.0, 400.0, 400.0])
+                if i < secilen_n and i < len(senaryo.filo.sistemler):
+                    pos = senaryo.get(i, "gps")
+                    rov_filo_gps.append(pos if pos is not None else [400.0, 400.0, 400.0])
                 else:
                     rov_filo_gps.append([400.0, 400.0, 400.0])
             rov_filo_gps = np.array(rov_filo_gps)
@@ -369,25 +358,15 @@ class FiloHelper:
             rov_list_for_calc = []
             for i in range(8):
                 if i < secilen_n:
-                    # Senaryo instance'ından direkt get kullan (sessiz mod)
-                    try:
-                        from FiratROVNet.senaryo import _get_instance
-                        senaryo_instance = _get_instance()
-                        if senaryo_instance and senaryo_instance.aktif and i < len(senaryo_instance.ortam.rovs):
-                            bat = senaryo_instance.get(i, "batarya")
-                            if bat is None:
-                                bat = 1.0  # Varsayılan batarya
-                            bat = bat * 100.0
-                            gps = senaryo_instance.get(i, "gps")
-                            if gps is None:
-                                gps = np.array([400.0, 400.0, 400.0])
-                            rov_data.append([bat, gps[0], gps[1], gps[2]])
-                            rov_list_for_calc.append({'id': i, 'batarya': bat, 'konum': gps})
-                        else:
-                            rov_data.append([0.0, 400.0, 400.0, 400.0])
-                    except Exception:
-                        # Hata durumunda varsayılan değer
-                        rov_data.append([0.0, 400.0, 400.0, 400.0])
+                    bat = senaryo.get(i, "batarya")
+                    if bat is None:
+                        bat = 1.0  # Varsayılan batarya
+                    bat = bat * 100.0
+                    gps = senaryo.get(i, "gps")
+                    if gps is None:
+                        gps = np.array([400.0, 400.0, 400.0])
+                    rov_data.append([bat, gps[0], gps[1], gps[2]])
+                    rov_list_for_calc.append({'id': i, 'batarya': bat, 'konum': gps})
                 else:
                     rov_data.append([0.0, 400.0, 400.0, 400.0])
 
@@ -416,84 +395,6 @@ class FiloHelper:
             traceback.print_exc()
             # Hata durumunda temizleme yapılabilir (isteğe bağlı)
             # senaryo.temizle()
-            return None
-
-    def gat_veri_uret(self):
-        """
-        GAT eğitimi için senaryo verisi üretir.
-        Senaryo.py kullanarak 8, 6, 4 rastgele ROV ve 2-5 arası ada ile ortam oluşturur.
-        
-        Returns:
-            dict: {
-                'senaryo': Senaryo instance,
-                'filo': Filo instance,
-                'ortam': Ortam instance,
-                'n_rovs': int,
-                'n_adalar': int,
-                'n_engels': int
-            } veya None (hata durumunda)
-        """
-        from FiratROVNet import senaryo
-        from FiratROVNet.senaryo import _get_instance
-        import random
-        
-        try:
-            n_rov_secenekleri = [4, 6, 8]
-            secilen_n = random.choice(n_rov_secenekleri)
-            n_engels = random.randint(10, 25)
-            n_adalar = random.randint(2, 5)  # 2-5 arasında random ada sayısı
-            
-            # Senaryo ortamı oluştur
-            senaryo.uret(n_rovs=secilen_n, n_engels=n_engels, n_adalar=n_adalar, havuz_genisligi=200, verbose=False)
-            
-            # Senaryo instance'ını al
-            senaryo_instance = _get_instance()
-            if not senaryo_instance or not senaryo_instance.aktif:
-                return None
-            
-            aktif_filo = senaryo_instance.filo
-            if not aktif_filo:
-                return None
-            
-            # Birkaç adım simülasyon çalıştır (fizik ve sensör güncellemeleri için)
-            for _ in range(5):
-                senaryo.guncelle(0.016)
-            
-            # Senaryo instance'ının get metodunu kullanabilmek için wrapper
-            # Bu wrapper, ROV ID kontrolü yapar ve sessiz modda çalışır
-            class SenaryoWrapper:
-                def __init__(self, instance):
-                    self.instance = instance
-                    self.filo = instance.filo
-                    self.ortam = instance.ortam
-                    # Sessiz modu aktif et (GAT eğitimi için)
-                    if hasattr(self.filo, 'helper'):
-                        self.filo.helper._sessiz_mod = True
-                
-                def get(self, rov_id, veri_tipi):
-                    """ROV verisine erişim (sessiz mod - hata mesajları yok)."""
-                    # ROV sayısını kontrol et
-                    if hasattr(self.instance, 'ortam') and hasattr(self.instance.ortam, 'rovs'):
-                        n_rovs = len([r for r in self.instance.ortam.rovs if r is not None])
-                        if rov_id >= n_rovs:
-                            return None
-                    # Sessiz modu aktif et (her çağrıda)
-                    if hasattr(self.filo, 'helper'):
-                        self.filo.helper._sessiz_mod = True
-                    return self.instance.get(rov_id, veri_tipi)
-            
-            return {
-                'senaryo': SenaryoWrapper(senaryo_instance),
-                'filo': aktif_filo,
-                'ortam': senaryo_instance.ortam,
-                'n_rovs': secilen_n,
-                'n_adalar': n_adalar,
-                'n_engels': n_engels
-            }
-        except Exception as e:
-            print(f"❌ [GAT_DATA] Veri üretimi sırasında hata: {e}")
-            import traceback
-            traceback.print_exc()
             return None
 
     def hedef_gorsel_olustur(self, x, y, z):

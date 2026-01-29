@@ -3463,21 +3463,12 @@ class Ortam:
             ursina_x, ursina_y, ursina_z = sim_to_ursina(konum_x, konum_y, z_depth)
             
             # Ada entity oluştur
-            # Model ve texture kontrolü (en az bir yerde varsa kullan)
-            model_exists_ada = os.path.exists(island_model_path) if island_model_path else False
-            texture_exists_ada = os.path.exists(island_texture_path) if island_texture_path else False
-            
-            if model_exists_ada or os.path.exists(island_model_path_rel) or os.path.exists(island_model_path_abs):
-                # Texture kontrolü
-                texture_path_final = None
-                if texture_exists_ada or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs):
-                    texture_path_final = island_texture_path
-                
+            if os.path.exists(island_model_path):
                 island = Entity(
                     model=island_model_path,
                     position=(ursina_x, island_y_position, ursina_z),  # Ursina koordinat sistemi: (x, y_up, z_forward)
                     scale=visual_scale,
-                    texture=texture_path_final,
+                    texture=island_texture_path if os.path.exists(island_texture_path) else None,
                     collider='box',
                     unlit=False,
                     double_sided=True,
