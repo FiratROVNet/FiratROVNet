@@ -2509,14 +2509,13 @@ def _load_obj_as_mesh(obj_path):
     """
     OBJ dosyasını yükler, quad yüzleri üçgene çevirir; Ursina 7.x mesh uyumsuzluğunu giderir.
     Cinema 4D / v/vt formatı ve quad face'leri destekler.
-    
     Returns:
         Ursina Mesh veya None (hata/boş dosya).
     """
     if not obj_path or not os.path.exists(obj_path):
         return None
-    v_list = []   # [(x,y,z), ...]
-    vt_list = [] # [(u,v), ...]
+    v_list = []
+    vt_list = []
     vertices = []
     uvs = []
     triangles = []
@@ -2534,7 +2533,6 @@ def _load_obj_as_mesh(obj_path):
                 elif parts[0] == 'vt' and len(parts) >= 3:
                     vt_list.append((float(parts[1]), float(parts[2])))
                 elif parts[0] == 'f':
-                    # f v1/vt1 v2/vt2 v3/vt3 [v4/vt4] veya v1/vt1/vn1 (1-based)
                     face_verts = []
                     for i in range(1, len(parts)):
                         seg = parts[i].split('/')
@@ -2667,11 +2665,11 @@ class Ortam:
             scale=(500, 1, 500),
             position=(0, self.WATER_SURFACE_Y_BASE, 0),
             texture=water_texture,
-            texture_scale=(20, 20),  # Tekrarlı su dokusu görünür olsun
+            texture_scale=(1, 1),  # Tekrarlı su dokusu görünür olsun
             normals=normals_texture,
             double_sided=True,
             color=color.rgb(0.5, 0.65, 0.9),
-            alpha=0.25,  # Texture net görünsün
+            alpha=0.25,  # Texture net görünsün (senaryo.guncelle ile animasyon)
             transparent=True,
             render_queue=0  # Önce su yüzeyini render et (z-order)
         )
@@ -2898,7 +2896,6 @@ class Ortam:
                         transparent=True,
                         render_queue=0
                     )
-                    # Ursina 7'de bazen model yüklenir ama triangles:0 olur; kontrol et
                     if hasattr(island, 'model') and island.model:
                         tri = getattr(island.model, 'triangles', None)
                         idx = getattr(island.model, 'indices', None)
