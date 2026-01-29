@@ -1,24 +1,13 @@
 import os
 import sys
 
-# Ursina/Panda3D pencere loglarını sessize al (importlardan önce)
-try:
-    from panda3d.core import loadPrcFileData
-    loadPrcFileData("", "window-type none")
-    loadPrcFileData("", "audio-library-name null")
-    loadPrcFileData("", "notify-level error")
-    loadPrcFileData("", "default-directnotify-level error")
-    loadPrcFileData("", "notify-level-display error")
-except Exception:
-    pass
-
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
-
-# Torch import'ları kaldırıldı - Windows DLL hatası için lazy loading kullanılacak
-# Import'lar train_formasyon_secim() fonksiyonu içine taşındı
-
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
 from FiratROVNet.gnc import Filo
 import numpy as np
 
@@ -59,6 +48,13 @@ def train_formasyon_secim():
     criterion_spacing = nn.MSELoss()                 # Aralık regresyonu
     criterion_yaw = nn.MSELoss()                     # Yaw regresyonu
     criterion_leader_pos = nn.MSELoss()              # Lider konum regresyonu
+
+    # RL Metrikleri için değişkenler
+    episode_rewards = []  # Her episode için reward
+    avg_reward_window = 100  # Son N episode için ortalama
+    policy_losses = []  # Policy loss'ları
+    value_losses = []  # Value loss'ları
+    entropy_losses = []  # Entropy loss'ları
 
     print("🚀 Formasyon Seçim Eğitimi Başlıyor...")
 
@@ -117,10 +113,35 @@ def train_formasyon_secim():
         # Toplam Kayıp (Ağırlıklı)
         total_loss = loss_formation_id + 0.5 * loss_spacing + 0.3 * loss_yaw + 0.4 * loss_leader_pos
 
-        # Accuracy (sınıflandırma)
+        # RL Metrikleri Hesaplama
         with torch.no_grad():
+            # Policy Loss (Formation ID için CrossEntropyLoss)
+            policy_loss = loss_formation_id.item()
+            
+            # Value Loss (Spacing, Yaw, Position için MSELoss'ların toplamı)
+            value_loss = (0.5 * loss_spacing.item() + 0.3 * loss_yaw.item() + 0.4 * loss_leader_pos.item())
+            
+            # Entropy Loss (Logits'lerden entropy hesapla)
+            probs = F.softmax(formation_id_logits, dim=1)
+            log_probs = F.log_softmax(formation_id_logits, dim=1)
+            entropy = -(probs * log_probs).sum(dim=1).mean()
+            entropy_loss = entropy.item()
+            
+            # Reward Hesaplama (Accuracy ve loss'lara göre)
             pred_id = torch.argmax(formation_id_logits, dim=1)
             accuracy = (pred_id == target_formation_id).float().mean().item()
+            # Reward: Accuracy yüksek, loss düşük olmalı
+            # Reward = accuracy * 100 - total_loss (normalize edilmiş)
+            episode_reward = accuracy * 100.0 - total_loss.item() * 5.0
+            
+            # Metrikleri kaydet
+            episode_rewards.append(episode_reward)
+            policy_losses.append(policy_loss)
+            value_losses.append(value_loss)
+            entropy_losses.append(entropy_loss)
+            
+            # Ortalama reward (son N episode)
+            avg_reward = sum(episode_rewards[-avg_reward_window:]) / min(len(episode_rewards), avg_reward_window)
 
         # Backward Pass
         total_loss.backward()
@@ -130,7 +151,9 @@ def train_formasyon_secim():
             print(
                 "Epoch: {epoch} | Total: {loss:.6f} | Loss(id): {loss_id:.6f} | "
                 "Loss(spacing): {loss_spacing:.6f} | Loss(yaw): {loss_yaw:.6f} | Loss(pos): {loss_pos:.6f} | "
-                "Acc: {acc:.4f} | Pred Spacing: {pred_spacing:.2f} | Pred Pos: ({pos_x:.1f}, {pos_y:.1f}, {pos_z:.1f})".format(
+                "Acc: {acc:.4f} | Pred Spacing: {pred_spacing:.2f} | Pred Pos: ({pos_x:.1f}, {pos_y:.1f}, {pos_z:.1f}) | "
+                "Reward: {reward:.2f} | Avg Reward: {avg_reward:.2f} | "
+                "Policy Loss: {policy_loss:.6f} | Value Loss: {value_loss:.6f} | Entropy: {entropy:.6f}".format(
                     epoch=epoch,
                     loss=total_loss.item(),
                     loss_id=loss_formation_id.item(),
@@ -142,6 +165,11 @@ def train_formasyon_secim():
                     pos_x=leader_pos_pred[0, 0].item(),
                     pos_y=leader_pos_pred[0, 1].item(),
                     pos_z=leader_pos_pred[0, 2].item(),
+                    reward=episode_reward,
+                    avg_reward=avg_reward,
+                    policy_loss=policy_loss,
+                    value_loss=value_loss,
+                    entropy=entropy_loss,
                 )
             )
 

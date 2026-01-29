@@ -59,7 +59,30 @@ class GAT_Modeli(torch.nn.Module):
         if os.path.exists(MODEL_DOSYA_ADI):
             try:
                 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                self.load_state_dict(torch.load(MODEL_DOSYA_ADI, map_location=device))
+                checkpoint = torch.load(MODEL_DOSYA_ADI, map_location=device)
+                
+                # Eski checkpoint kontrolü: 7 feature'dan 9 feature'a uyarlama
+                if 'conv1.lin.weight' in checkpoint:
+                    old_weight = checkpoint['conv1.lin.weight']
+                    # Eski model 7 feature, yeni model 9 feature bekliyor
+                    if old_weight.shape[1] == 7:
+                        # Yeni model state_dict'ini al
+                        new_state_dict = self.state_dict()
+                        new_weight = new_state_dict['conv1.lin.weight']
+                        
+                        # Eski ağırlıkları kopyala (ilk 7 feature için)
+                        new_weight[:, :7] = old_weight
+                        
+                        # Yeni feature'lar için küçük rastgele ağırlıklar ekle (Xavier initialization benzeri)
+                        if new_weight.shape[1] > 7:
+                            import torch.nn.init as init
+                            init.xavier_uniform_(new_weight[:, 7:], gain=0.1)
+                        
+                        # Güncellenmiş ağırlığı checkpoint'e ekle
+                        checkpoint['conv1.lin.weight'] = new_weight
+                
+                # Güncellenmiş checkpoint'i yükle
+                self.load_state_dict(checkpoint, strict=False)
             except: 
                 pass
 
