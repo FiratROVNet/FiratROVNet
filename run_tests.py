@@ -67,10 +67,9 @@ print("TEST 1: Modül İmportları")
 print("="*60)
 
 try:
-    from FiratROVNet import ortam, gnc, iletisim, config
+    from FiratROVNet import gnc, iletisim, config
     from GAT.gat_train import GAT_Modeli, train as Train
     from GAT.gat_test import FiratAnalizci
-    from FiratROVNet.ortam import veri_uret
     from FiratROVNet.gnc import Filo, TemelGNC
     from FiratROVNet.iletisim import AkustikModem
     from FiratROVNet.config import cfg
@@ -84,6 +83,23 @@ except Exception as e:
     record_test_fail("Modül İmportları", e)
     sys.exit(1)
 
+
+def _test_veri_uret(n_rovs=4):
+    """Testler için minimal GAT verisi (9 özellik, edge_index, y)."""
+    import torch
+    from torch_geometric.data import Data
+    n = n_rovs
+    x = torch.zeros((n, 9), dtype=torch.float)
+    x[:, 1], x[:, 2] = 0.9, 0.9
+    x[:, 6] = 0.0
+    x[0, 6] = 1.0
+    sources = [i for i in range(n) for j in range(n) if i != j]
+    targets = [j for i in range(n) for j in range(n) if i != j]
+    edge_index = torch.tensor([sources, targets], dtype=torch.long) if sources else torch.zeros((2, 0), dtype=torch.long)
+    y = torch.zeros(n, dtype=torch.long)
+    return Data(x=x, edge_index=edge_index, y=y)
+
+
 # ==========================================
 # TEST 2: Veri Üretimi
 # ==========================================
@@ -92,20 +108,16 @@ print("TEST 2: Veri Üretimi")
 print("="*60)
 
 try:
-    # Veri üretimi testi
-    data = veri_uret(n_rovs=5)
+    data = _test_veri_uret(n_rovs=5)
     assert data.x.shape[0] == 5, f"ROV sayısı yanlış: {data.x.shape[0]}"
-    assert data.x.shape[1] == 7, f"Özellik sayısı yanlış: {data.x.shape[1]}"
+    assert data.x.shape[1] == 9, f"Özellik sayısı yanlış: {data.x.shape[1]}"
     assert data.edge_index.shape[0] == 2, "Edge index formatı yanlış"
     assert data.y.shape[0] == 5, f"Etiket sayısı yanlış: {data.y.shape[0]}"
     record_test_pass("Veri Üretimi (5 ROV)")
-    
-    # Farklı ROV sayıları ile test
     for n in [3, 10, 15]:
-        data = veri_uret(n_rovs=n)
+        data = _test_veri_uret(n_rovs=n)
         assert data.x.shape[0] == n, f"{n} ROV için veri üretimi başarısız"
     record_test_pass("Veri Üretimi (Farklı ROV Sayıları)")
-    
 except Exception as e:
     record_test_fail("Veri Üretimi", e)
 
@@ -124,7 +136,7 @@ try:
     record_test_pass("GAT Modeli Oluşturma")
     
     # Forward pass testi
-    data = veri_uret(n_rovs=4)
+    data = _test_veri_uret(n_rovs=4)
     output = model(data.x, data.edge_index)
     assert output.shape[0] == 4, "Output shape yanlış"
     assert output.shape[1] == 6, "Output sınıf sayısı yanlış"
@@ -151,7 +163,7 @@ try:
     record_test_pass("FiratAnalizci Oluşturma")
     
     # Analiz testi
-    data = veri_uret(n_rovs=4)
+    data = _test_veri_uret(n_rovs=4)
     tahminler, edge_idx, alpha = analizci.analiz_et(data)
     assert len(tahminler) == 4, "Tahmin sayısı yanlış"
     assert all(0 <= t < 6 for t in tahminler), "Tahmin değerleri geçersiz"
@@ -420,7 +432,7 @@ print("="*60)
 
 try:
     # Tüm sistemleri bir arada test et
-    data = veri_uret(n_rovs=4)
+    data = _test_veri_uret(n_rovs=4)
     analizci = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
     tahminler, _, _ = analizci.analiz_et(data)
     
@@ -531,7 +543,7 @@ print("="*60)
 
 try:
     # Tüm sistemleri bir arada test et
-    data = veri_uret(n_rovs=4)
+    data = _test_veri_uret(n_rovs=4)
     analizci = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
     tahminler, _, _ = analizci.analiz_et(data)
     

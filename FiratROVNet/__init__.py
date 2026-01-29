@@ -14,13 +14,6 @@ except ImportError:
     Train = None
     FiratAnalizci = None
 
-try:
-    from . import ortam
-    from .ortam import veri_uret
-except ImportError:
-    ortam = None
-    veri_uret = None
-
 # Senaryo modülü (headless mod için önemli)
 try:
     from . import senaryo
@@ -45,14 +38,12 @@ __author__ = "Ömer Faruk Çelik"
 # 'from FiratROVNet import *' dendiğinde bunlar gelir.
 __all__ = [
     # Modüller (None olabilir)
-    'ortam',
     'senaryo',
     
     # Sınıflar ve Fonksiyonlar (None olabilir)
     'GAT_Modeli', 
     'Train', 
     'FiratAnalizci', 
-    'veri_uret',
     'Senaryo',
     'uret',
     'get',

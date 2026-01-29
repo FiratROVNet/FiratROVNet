@@ -19,7 +19,7 @@ cfg = Ayarlar()
 class GATLimitleri:
     """
     GAT kodları için limitler - Eğitim ve kullanımda tutarlı olmalı!
-    Bu limitler ortam.py (eğitim) ve gnc.py/simulasyon.py (kullanım) tarafından kullanılır.
+    Bu limitler gnc.py ve simulasyon.py (kullanım) tarafından kullanılır.
     """
     # GAT Kod Limitleri (metre cinsinden)
     CARPISMA = 5.0    # Kod 2: Çarpışma riski mesafesi
@@ -42,9 +42,9 @@ class SensorAyarlari:
     """
     Sensör ayarları - Eğitim ve kullanımda tutarlı olmalı!
     Bu ayarlar GAT limitleri ile uyumlu olmalı:
-    - engel_mesafesi >= GATLimitleri.ENGEL (20.0)
+    - engel_mesafesi: Sonar ve lidar maksimum algılama menzili (metre). Varsayılan GATLimitleri.ENGEL = 10.0 m.
     - iletisim_menzili >= GATLimitleri.KOPMA (35.0)
-    - kacinma_mesafesi <= GATLimitleri.CARPISMA (8.0)
+    - kacinma_mesafesi <= GATLimitleri.CARPISMA (5.0)
     """
     # Lider ROV için varsayılan ayarlar
     LIDER = {
@@ -193,8 +193,9 @@ class SimulasyonSabitleri:
     ILETISIM_CIZGI_PARCA_UZUNLUGU = 1.5  # İletişim çizgisi parça uzunluğu
     ILETISIM_CIZGI_BOSLUK_UZUNLUGU = 0.8 # İletişim çizgisi boşluk uzunluğu
     
-    # Sensör ayarları
+    # Sensör ayarları (sonar/lidar menzili ROV.sensor_config["engel_mesafesi"] ile, varsayılan 10 m)
     LIDAR_RAYCAST_SAYISI = 5             # Lidar için raycast sayısı (her yön için)
+    LIDAR_GORUS_ACISI_DERECE = 60        # Lidar koni taraması açısı (derece)
     ENGEL_TESPITI_MIN_MESAFE = 999.0    # Engel tespiti için başlangıç minimum mesafesi
 
 

@@ -716,27 +716,18 @@ class ROV(Entity):
             return self.sensor_config.get("kacinma_mesafesi")
         elif veri_tipi == "sonar":
             """
-            Sonar sensörü: Thread-Safe cache'lenmiş değeri döndürür.
-            Raycast işlemleri sadece Ana Thread'de (update içinde) yapılır.
-            
-            Returns:
-                float: En yakın engel mesafesi (metre), engel yoksa -1
+            Sonar sensörü: En yakın engeli tespit eder. Thread-Safe cache'lenmiş değer döner.
+            Maksimum algılama menzili: sensor_config["engel_mesafesi"] (varsayılan 10 m).
+            Engel bu menzil dışındaysa veya tespit yoksa -1 döner.
             """
             # Konsol thread'i sadece cache'lenmiş değeri okur (raycast yapmaz!)
             return self.son_sonar_mesafesi
         elif veri_tipi == "lidar":
             """
-            Lidar sensörü: Thread-Safe cache'lenmiş değeri döndürür.
-            Raycast işlemleri sadece Ana Thread'de (update içinde) yapılır.
-            
-            taraf parametresi:
-                - 0: Ön (lidarx) - ROV'un baktığı yön
-                - 1: Sağ (lidary) - ROV'un sağ tarafı
-                - 2: Sol (lidary1) - ROV'un sol tarafı
-                - None: Ön yön (varsayılan)
-            
-            Returns:
-                float: Engel mesafesi (metre), engel yoksa -1
+            Lidar sensörü: Yöne göre en yakın engeli tespit eder. Thread-Safe cache kullanır.
+            Maksimum algılama menzili: sensor_config["engel_mesafesi"] (varsayılan 10 m).
+            Engel yoksa veya menzil dışındaysa -1 döner.
+            taraf: 0=Ön, 1=Sol, 2=Sağ; None=Ön.
             """
             # Konsol thread'i sadece cache'lenmiş değeri okur (raycast yapmaz!)
             t = taraf if taraf is not None else 0
