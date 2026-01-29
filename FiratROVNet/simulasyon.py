@@ -16,7 +16,7 @@ loadPrcFileData('', 'notify-level fatal')
 loadPrcFileData('', 'notify-level-util fatal')
 
 from ursina import *
-from ursina import Vec3  # Vec3'ü doğrudan import et
+from ursina import Vec3, window, application  # Vec3, window, application doğrudan import
 import numpy as np
 import random
 import threading
@@ -2642,10 +2642,14 @@ class Ortam:
         # Su yüzeyi
         self.WATER_SURFACE_Y_BASE = su_hacmi_merkez_y + (su_hacmi_yuksekligi / 2)  # Su yüzeyi base pozisyonu
         
-        # 1. GÖRÜNTÜ AYARI: texture_scale değerini (10, 10) gibi makul bir değere düşürdük.
+        # Su yüzeyi texture: önce repo_root, yoksa cwd ile dene
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         water_texture_path = os.path.join(repo_root, "Models-3D", "water", "my_models", "water4.jpg")
         normal_map_path = os.path.join(repo_root, "Models-3D", "water", "my_models", "map", "water4_normal.png")
+        if not os.path.exists(water_texture_path):
+            water_texture_path = os.path.join(os.getcwd(), "Models-3D", "water", "my_models", "water4.jpg")
+        if not os.path.exists(normal_map_path):
+            normal_map_path = os.path.join(os.getcwd(), "Models-3D", "water", "my_models", "map", "water4_normal.png")
         water_texture = None
         if os.path.exists(water_texture_path):
             try:
@@ -2663,11 +2667,12 @@ class Ortam:
             scale=(500, 1, 500),
             position=(0, self.WATER_SURFACE_Y_BASE, 0),
             texture=water_texture,
-            texture_scale=(1, 1),  # 50 yerine 10 yaptık, artık küçük kareler görünmeyecek
+            texture_scale=(20, 20),  # Tekrarlı su dokusu görünür olsun
             normals=normals_texture,
             double_sided=True,
-            color=color.rgb(0.3, 0.5, 0.9),
-            alpha=0.25,  # Biraz daha görünür yaptık
+            color=color.rgb(0.5, 0.65, 0.9),
+            alpha=0.25,  # Texture net görünsün
+            transparent=True,
             render_queue=0  # Önce su yüzeyini render et (z-order)
         )
 
@@ -2686,10 +2691,14 @@ class Ortam:
         self.ocean_surface.Y_BASE = self.WATER_SURFACE_Y_BASE
         
         # 2. HAREKET AYARI: Update fonksiyonunu doğrudan nesneye tanımlıyoruz.
-        # Bu fonksiyon Ursina tarafından otomatik olarak her karede çağrılır.
+        # Hem Ursina ana döngüsü hem de senaryo.guncelle() ile çağrılabilir.
         def update_ocean():
-            # Zamanı ilerlet
-            dt = time.dt if hasattr(time, 'dt') and time.dt > 0 else 0.016
+            try:
+                dt = getattr(time, 'dt', None)
+                if dt is None or not (dt > 0):
+                    dt = 0.016
+            except Exception:
+                dt = 0.016
             self.ocean_surface.sim_time += dt
             
             # Dalga Yüksekliği (Fiziksel)
@@ -3592,7 +3601,6 @@ class Ortam:
             texture_exists_ada = os.path.exists(island_texture_path) if island_texture_path else False
 
             if model_exists_ada or os.path.exists(island_model_path_rel) or os.path.exists(island_model_path_abs):
-                # Texture kontrolü
                 texture_path_final = None
                 if texture_exists_ada or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs):
                     texture_path_final = island_texture_path
