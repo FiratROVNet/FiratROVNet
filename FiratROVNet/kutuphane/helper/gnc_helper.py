@@ -513,8 +513,8 @@ class FiloHelper:
                 # 'normal' durumunda senaryo.uret() tarafından yerleştirilen pozisyonlar kullanılır
             
             # Birkaç adım simülasyon çalıştır (fizik ve sensör güncellemeleri için)
-            for _ in range(5):
-                senaryo.guncelle(0.032)
+            for _ in range(10):
+                senaryo.guncelle(0.016)
             
             # Senaryo instance'ının get metodunu kullanabilmek için wrapper
             # Bu wrapper, ROV ID kontrolü yapar ve sessiz modda çalışır
