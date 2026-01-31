@@ -1810,7 +1810,7 @@ class TemelGNCHelper:
     
     # Sabitler
     HEDEF_TOLERANSI = 0.5
-    YAVASLAMA_MESAFESI = 2.0
+    YAVASLAMA_MESAFESI = 4.0
     
     def __init__(self, rov_entity, filo_ref=None, gnc_ref=None):
         """
@@ -1907,7 +1907,14 @@ class TemelGNCHelper:
             return
 
         if self.gnc_ref.hedef is None:
-            if self.rov.velocity.length() > 1:
+            # filo.move() ile manuel hareket varken hızı sönümleme; sadece hedef yok ve manuel kuvvet de yoksa yavaşlat
+            manuel_kuvvet_var = False
+            if hasattr(self.rov, 'active_forces') and self.rov.active_forces is not None:
+                for k in ('surge', 'sway', 'heave'):
+                    if self.rov.active_forces.get(k, 0) != 0:
+                        manuel_kuvvet_var = True
+                        break
+            if not manuel_kuvvet_var and self.rov.velocity.length() > 1:
                 self.rov.velocity *= 0.4
             return
 
@@ -1927,5 +1934,35 @@ class TemelGNCHelper:
 
         self.yaw_ayarla(hareket_vektoru, ani=False)
 
-        guc = 0.4 * hiz_carpani
+        # filo.git() / filo.git_path() hedefe giderken güç (düşük = daha yavaş, daha kontrollü)
+        HEDEF_GUC_CARPANI = 0.3
+        guc = HEDEF_GUC_CARPANI * hiz_carpani
         self.vektor_to_motor_sim(hareket_vektoru, guc=guc)
+
+        # Yakın mesafede teğetsel hızı kır: hedef etrafında çember çizmesini önle
+        # Hız sadece ekleniyordu, yön hedefe zorlanmıyordu; teğetsel momentum orbit oluşturuyordu
+        if mesafe < self.YAVASLAMA_MESAFESI and mesafe > 0.01 and hareket_vektoru.length() > 0.01:
+            # Velocity Ursina'da (x, z, y); sim = (x, y, z) -> v_sim.x=velocity.x, v_sim.y=velocity.z, v_sim.z=velocity.y
+            v_sim = Vec3(self.rov.velocity.x, self.rov.velocity.z, self.rov.velocity.y)
+            radial_mag = v_sim.x * hareket_vektoru.x + v_sim.y * hareket_vektoru.y + v_sim.z * hareket_vektoru.z
+            radial = Vec3(radial_mag * hareket_vektoru.x, radial_mag * hareket_vektoru.y, radial_mag * hareket_vektoru.z)
+            tangential = Vec3(v_sim.x - radial.x, v_sim.y - radial.y, v_sim.z - radial.z)
+            # Teğetsel bileşeni sönümle: yaklaştıkça daha agresif (çembersel hareketi kırmak için)
+            if mesafe < 1.0:
+                teget_carpani = 0.04   # Çok yakın: neredeyse tamamen radyale zorla
+            elif mesafe < 2.0:
+                teget_carpani = 0.08   # Yakın: güçlü sönüm
+            else:
+                teget_carpani = 0.16   # Yavaşlama bölgesi (1–2 m): orta sönüm
+
+            v_sim_new = Vec3(
+                radial.x + teget_carpani * tangential.x,
+                radial.y + teget_carpani * tangential.y,
+                radial.z + teget_carpani * tangential.z,
+            )
+            self.rov.velocity.x = v_sim_new.x
+            self.rov.velocity.z = v_sim_new.y
+            self.rov.velocity.y = v_sim_new.z
+            limit = guc * 100.0
+            if self.rov.velocity.length() > limit:
+                self.rov.velocity = self.rov.velocity.normalized() * limit
