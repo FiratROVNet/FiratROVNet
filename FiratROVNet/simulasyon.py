@@ -1356,19 +1356,24 @@ class Minimap(Entity):
     """
     Gelişmiş HUD Radar ve Navigasyon Haritası.
     Matplotlib yerine Ursina UI kullanır (GPU Tabanlı, 0 FPS kaybı).
+    scale_carpan: 1 = taban boyut (0.45), 2 = 2 katı, 0.1 = onda biri vb.
     """
-    def __init__(self, ortam_ref, scale=0.30, pozisyon='bottom_right', **kwargs):
+    BASE_SCALE = 0.50  # Taban boyut (Ursina UI birimi); scale_carpan=1 iken kullanılır
+
+    def __init__(self, ortam_ref, scale_carpan=1, pozisyon='bottom_right', **kwargs):
+        self._scale_carpan = float(scale_carpan)
+        effective = self.BASE_SCALE * self._scale_carpan
         # Konumlandırma Mantığı
         if pozisyon == 'bottom_right':
-            pos = window.bottom_right + Vec2(-scale/2 - 0.02, scale/2 + 0.02)
+            pos = window.bottom_right + Vec2(-effective/2 - 0.02, effective/2 + 0.02)
         else:
             pos = (0, 0)
 
         super().__init__(
             parent=camera.ui,
             model='quad',
-            color=color.rgba(255, 255, 255, 0.1),  # Beyaz, %25 saydam (alpha ≈ 0.75)
-            scale=(scale, scale),
+            color=color.rgba(255, 255, 255, 0.01),  # Beyaz, daha şeffaf arka plan
+            scale=(effective, effective),
             position=pos,
             origin=(0, 0),
             **kwargs
@@ -1376,6 +1381,9 @@ class Minimap(Entity):
 
         self.ortam_ref = ortam_ref
         self.havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
+        self._pozisyon = pozisyon
+        # grid_sayisi: None = varsayılan (GRID_UNIT m); N = toplam N aralık (her grid = (2*havuz)/N m)
+        self._grid_sayisi = kwargs.pop('grid', None)
         
         # --- Katmanlar (Z-Order) ---
         # Arka Plan (-0.0) -> Grid (-0.1) -> Adalar (-0.2) -> Yollar (-0.3) -> ROV (-0.4) -> Engeller (-0.5)
@@ -1399,6 +1407,13 @@ class Minimap(Entity):
         # Durum
         self.visible = False
 
+    def _apply_scale(self):
+        """Çarpana göre entity scale ve pozisyonu günceller (filo.minimap(scale=2) vb.)."""
+        effective = self.BASE_SCALE * self._scale_carpan
+        self.scale = (effective, effective)
+        if self._pozisyon == 'bottom_right':
+            self.position = window.bottom_right + Vec2(-effective/2 - 0.02, effective/2 + 0.02)
+
     def dunya_to_harita(self, x, z):
         """
         Dünya koordinatlarını (Metre) Harita lokal koordinatlarına (-0.5, 0.5) çevirir.
@@ -1410,20 +1425,104 @@ class Minimap(Entity):
         my = z * factor
         return Vec3(mx, my, 0)
 
+    # Grid: varsayılan her çizgi bu kadar metre (grid_sayisi verilmezse)
+    GRID_UNIT = 50
+
+    def _grid_step_metre(self):
+        """Grid başına mesafe (m). grid_sayisi verilmişse (2*havuz)/N, yoksa GRID_UNIT."""
+        half = self.havuz_genisligi
+        if self._grid_sayisi is not None and self._grid_sayisi > 0:
+            return (2.0 * half) / self._grid_sayisi
+        return float(self.GRID_UNIT)
+
     def _grid_olustur(self):
-        """Radar görünümü için grid çizgileri ve eksenleri oluşturur."""
-        # Ana Eksenler (X ve Y)
-        self.statik_nesneler.append(Entity(parent=self, model='quad', scale=(1, 0.005), color=color.rgba(255,255,255,100), z=-0.1))
-        self.statik_nesneler.append(Entity(parent=self, model='quad', scale=(0.005, 1), color=color.rgba(255,255,255,100), z=-0.1))
-        
+        """Radar görünümü için grid çizgileri ve eksenleri oluşturur. Merkez (0,0) harita ortasındadır."""
+        factor = 1.0 / (self.havuz_genisligi * 2)  # dünya -> lokal (-0.5, 0.5)
+        grid_z = -0.1
+        grid_color = color.rgba(255, 255, 255, 50)
+        line_thick = 0.004
+
+        # Ana Eksenler (X ve Y) — merkezde 0,0
+        self.statik_nesneler.append(Entity(parent=self, model='quad', scale=(1, 0.005), color=color.rgba(255,255,255,100), z=grid_z))
+        self.statik_nesneler.append(Entity(parent=self, model='quad', scale=(0.005, 1), color=color.rgba(255,255,255,100), z=grid_z))
+
+        # Grid adımı: grid_sayisi varsa (2*havuz)/N m, yoksa GRID_UNIT m
+        half = self.havuz_genisligi
+        step = self._grid_step_metre()
+        label_z = grid_z - 0.05
+        label_scale = 1  # metin boyutu (minimap lokal biriminde)
+        # Dikey çizgiler (sabit dünya X): lokal x = world_x * factor — x ekseni tarafında mesafe etiketi
+        world_x = -half
+        while world_x <= half:
+            local_x = world_x * factor
+            if world_x != 0:  # merkez eksenini tekrar çizme
+                self.statik_nesneler.append(Entity(
+                    parent=self, model='quad',
+                    position=(local_x, 0, grid_z),
+                    scale=(line_thick, 1),
+                    color=grid_color
+                ))
+            # X grid: sadece ilk ve son noktada mesafe etiketi (altta)
+            if world_x != -half:
+                lbl = Text(
+                    text=str(int(world_x)),
+                    parent=self,
+                    position=(local_x, -0.50, label_z),
+                    scale=label_scale,
+                    color=color.rgba(0, 0, 0, 1),
+                    origin=(0.5, 0.5),
+                    z=label_z
+                )
+                self.statik_nesneler.append(lbl)
+            world_x += step
+        # Yatay çizgiler (sabit dünya Z/Y): lokal y = world_z * factor — y ekseni tarafında mesafe etiketi
+        world_z = -half
+        while world_z <= half:
+            local_y = world_z * factor
+            if world_z != 0:
+                self.statik_nesneler.append(Entity(
+                    parent=self, model='quad',
+                    position=(0, local_y, grid_z),
+                    scale=(1, line_thick),
+                    color=grid_color
+                ))
+            # Y grid: sadece ilk ve son noktada mesafe etiketi (solda)
+            if True:           
+                lbl = Text(
+                    text=str(int(world_z)),
+                    parent=self,
+                    position=(-0.52, local_y, label_z),
+                    scale=label_scale,
+                    color=color.rgba(0, 0, 0, 1),
+                    origin=(0.5, 0.5),
+                    z=label_z
+                )
+                self.statik_nesneler.append(lbl)
+            world_z += step
+
+        # Grid bilgisi: 1 grid = X m, ölçek (türev: harita birimi başına metre)
+        step_m = self._grid_step_metre()
+        toplam_metre = 2 * half
+        olcek_metre_birim = toplam_metre  # 1 harita birimi (-0.5..0.5) = toplam_metre m
+        info_z = label_z - 0.02
+        self.statik_nesneler.append(Text(
+            parent=self,
+            text=f"1 grid={step_m:.0f}m | 1 birim={olcek_metre_birim:.0f}m",
+            position=(0, -0.54, info_z),
+            scale=0.7,
+            color=color.rgba(0, 0, 0, 1),
+            origin=(0.5, 0.5),
+            z=info_z
+        ))
+
         # Dairesel Menzil Çizgileri (%33, %66, %100)
         for r in [0.33, 0.66, 1.0]:
             self.statik_nesneler.append(Entity(
                 parent=self,
-                model=Circle(resolution=60, radius=0.5 * r, mode='line', thickness=1),
+                model=Circle(resolution=60, radius=0.5 * r, mode='line', thickness=2),
                 scale=1,
-                color=color.rgba(255,255,255,30),
-                z=-0.1
+                color=color.rgba(255,255,0,50),
+                z=grid_z
             ))
 
     def _adalari_ciz(self):
@@ -1448,6 +1547,17 @@ class Minimap(Entity):
                     alpha=0.8
                 )
                 self.statik_nesneler.append(ada)
+
+    def _statik_yeniden_ciz(self):
+        """Grid ve adalar dahil statik nesneleri siler ve yeniden çizer (grid değişince kullanılır)."""
+        for e in self.statik_nesneler:
+            try:
+                destroy(e)
+            except Exception:
+                pass
+        self.statik_nesneler = []
+        self._grid_olustur()
+        self._adalari_ciz()
 
     def update_hull(self, points):
         """
@@ -1539,6 +1649,8 @@ class Minimap(Entity):
                     govde = Entity(parent=self, model='circle', scale=0.04, color=rov_renk, position=target_pos)
                     # Yön Oku (yön göstergesi, açık tonda)
                     ok = Entity(parent=govde, model='quad', scale=(0.2, 0.8), y=0.4, color=ok_renk)
+                    # ROV ID etiketi (ikonun üstünde)
+                    Text(parent=govde, text=str(rid), position=(0, 1.5, 0), scale=50, color=rov_renk, origin=(0.5, 0.5))
                     self.rov_ikonlari[rid] = govde
                 else:
                     current_entity = self.rov_ikonlari[rid]
@@ -1590,8 +1702,16 @@ class Minimap(Entity):
             destroy(e)
         self.engel_noktalari.clear()
 
-    def goster(self, durum=True, convex=False, a_star=False):
-        """Görünürlüğü ayarlar. convex/a_star Harita.update() ile senkronize edilir; API uyumluluğu için kabul edilir."""
+    def goster(self, durum=True, convex=False, a_star=False, scale=None, grid=None):
+        """Görünürlüğü ayarlar. scale: çarpan; grid: grid sayısı (None=varsayılan GRID_UNIT m). convex/a_star Harita.update() ile senkronize edilir."""
+        if grid is not None:
+            n = int(grid)
+            if n > 0 and n != self._grid_sayisi:
+                self._grid_sayisi = n
+                self._statik_yeniden_ciz()
+        if scale is not None:
+            self._scale_carpan = float(scale)
+            self._apply_scale()
         self.visible = durum
         # Çocukları da gizle/göster (Ursina bazen bunu otomatik yapmayabilir parent UI ise)
         for child in self.children:

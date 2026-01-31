@@ -984,21 +984,26 @@ class FiloHelper:
         if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'harita') and self.filo.ortam_ref.harita:
             self.filo.ortam_ref.harita.goster(goster, convex, a_star)
 
-    def minimap(self, durum=True, convex=True, a_star=True):
+    def minimap(self, durum=True, convex=True, a_star=True, scale=None, grid=None):
         """
         Minimap'i açar, kapatır veya durumunu döndürür.
-        Harita fonksiyonunun tüm işlevlerine sahiptir.
+        scale: çarpan (1=taban 0.45, 2=2 katı, 0.1=4.5 vb.); verilirse boyut dinamik güncellenir.
+        grid: grid sayısı (None=varsayılan GRID_UNIT m; N=toplam N aralık, 1 grid=(2*havuz)/N m).
         """
         if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'minimap') and self.filo.ortam_ref.minimap:
             if not hasattr(self.filo.ortam_ref.minimap, 'filo_ref') or self.filo.ortam_ref.minimap.filo_ref != self.filo:
                 self.filo.ortam_ref.minimap.filo_ref = self.filo
 
             if durum is None:
+                if scale is not None or grid is not None:
+                    self.filo.ortam_ref.minimap.goster(
+                        self.filo.ortam_ref.minimap.visible, convex, a_star, scale=scale, grid=grid
+                    )
                 self.filo.ortam_ref.minimap.visible = not self.filo.ortam_ref.minimap.visible
                 status = "AÇIK" if self.filo.ortam_ref.minimap.visible else "KAPALI"
                 print(f"🗺️ [MİNİMAP] Minimap şu an {status}")
             else:
-                self.filo.ortam_ref.minimap.goster(durum, convex, a_star)
+                self.filo.ortam_ref.minimap.goster(durum, convex, a_star, scale=scale, grid=grid)
         else:
             print("❌ [MİNİMAP] Minimap sistemi bulunamadı!")
 

@@ -1260,23 +1260,26 @@ class Filo:
         """Harita penceresini açar, kapatır veya görünürlük ayarlarını yapar."""
         return self.helper.harita(goster=goster, convex=convex, a_star=a_star)
     
-    def minimap(self, durum=True, convex=True, a_star=True):
+    def minimap(self, durum=True, convex=True, a_star=True, scale=None, grid=None):
         """
         Minimap'i açar, kapatır veya durumunu döndürür.
         Harita fonksiyonunun tüm işlevlerine sahiptir.
-        
+
         Args:
             durum: True/False - Minimap'i aç/kapat (None ise toggle)
             convex: True/False - Convex hull'u göster/gizle
             a_star: True/False - A* yolunu göster/gizle
-        
+            scale: Çarpan (1=taban 0.45, 2=2 katı, 0.1=4.5 vb.); verilirse boyut dinamik güncellenir
+            grid: Grid sayısı (None=varsayılan GRID_UNIT m; N=toplam N aralık, 1 grid=(2*havuz)/N m).
+                  Minimap üzerinde "1 grid=X m" ve ölçek bilgisi yazılır.
+
         Örnekler:
-            filo.minimap()  # Toggle (aç/kapat)
+            filo.minimap()  # Toggle (aç/kapat), varsayılan grid
             filo.minimap(True)  # Aç
-            filo.minimap(False)  # Kapat
-            filo.minimap(True, convex=True, a_star=True)  # Aç ve her şeyi göster
+            filo.minimap(grid=10)  # 10 aralık, 1 grid = (2*havuz)/10 m
+            filo.minimap(scale=2, grid=8)  # 2 kat büyük, 8 aralık
         """
-        return self.helper.minimap(durum=durum, convex=convex, a_star=a_star)
+        return self.helper.minimap(durum=durum, convex=convex, a_star=a_star, scale=scale, grid=grid)
 
     def a_star(self, start=None, goal=None, safety_margin=15.0, **kwargs):
         """
