@@ -144,7 +144,6 @@ StarProjesi/
 └── FiratROVNet/             # Çekirdek Kütüphane
     ├── __init__.py
     ├── gat.py               # GAT modeli ve eğitim fonksiyonları
-    ├── ortam.py             # Veri seti ve senaryo üretimi
     ├── simulasyon.py        # 3D render & fizik motoru
     ├── iletisim.py          # Akustik modem simülatörü
     ├── gnc.py               # Güdüm, Navigasyon ve Kontrol
@@ -164,17 +163,8 @@ pip install torch torch_geometric ursina numpy networkx
 
     Aşağıdaki komutları çalıştırın:
 
-from FiratROVNet import gat, ortam
-
-# 1. Eski modeli sıfırla
-gat.reset()
-
-# 2. Eğitimi başlat (Dinamik veri ile)
-gat.Train(
-    veri_kaynagi=lambda: ortam.veri_uret(n_rovs=None),
-    epochs=10000
-)
-
+    GAT eğitimi için: python -m GAT.gat_train [--epochs 200] [--no-resume]
+    Veri kaynağı olarak filo.gat_veri_uret() (senaryo tabanlı) kullanılır.
     Eğitim tamamlandığında rov_modeli_multi.pth otomatik olarak oluşturulur.
 
 🚀 Çalıştırma

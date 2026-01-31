@@ -224,9 +224,12 @@ class ROV(Entity):
         
         # Manuel hareket kontrolü (sürekli hareket için)
         self.manuel_hareket = {
-            'yon': None,  # 'ileri', 'geri', 'sag', 'sol', 'cik', 'bat', 'dur'
+            'yon': None,  # 'ileri', 'geri', 'sag', 'sol', 'cik', 'bat', 'dur', 'yaw'
             'guc': 0.0    # 0.0 - 1.0 arası güç
         }
+        # Eşzamanlı hareket: her eksendeki güç (sadece ilgili eksen move() ile güncellenir)
+        # surge: ileri/geri, sway: sağ/sol, heave: çık/bat, yaw: dönüş hızı (-1..1)
+        self.active_forces = {'surge': 0.0, 'sway': 0.0, 'heave': 0.0, 'yaw': 0.0}
         
         # Engel tespit bilgisi (kesikli çizgi için)
         self.tespit_edilen_engel = None  # En yakın engel referansı
@@ -427,61 +430,71 @@ class ROV(Entity):
         return True
 
     def update(self):
-        # Manuel hareket kontrolü (sürekli hareket için)
+        # Manuel hareket kontrolü (sürekli hareket için) — active_forces ile eşzamanlı hareket
         if self.manuel_hareket['yon'] is not None:
             if self.manuel_hareket['yon'] == 'dur':
-                self.velocity *= FizikSabitleri.VELOCITY_DURMA_CARPANI  # Yavaşça dur (momentum korunumu)
+                # Tüm kuvvetleri sıfırla ve yavaşça dur
+                if hasattr(self, 'active_forces'):
+                    for k in self.active_forces:
+                        self.active_forces[k] = 0.0
+                self.velocity *= FizikSabitleri.VELOCITY_DURMA_CARPANI
                 if self.velocity.length() < FizikSabitleri.VELOCITY_DURMA_ESIGI:
                     self.velocity = Vec3(0, 0, 0)
                     self.manuel_hareket['yon'] = None
                     self.manuel_hareket['guc'] = 0.0
             elif self.manuel_hareket['yon'] == 'yaw':
-                # Yaw rotasyonu için sürekli dönme
-                guc = self.manuel_hareket['guc']
-                if abs(guc) > 0:
-                    # Yaw rotasyonu için rotation.y güncelle
-                    # Güç değeri: 1.0 = saat yönünün tersine, -1.0 = saat yönünde
-                    yaw_hizi = abs(guc) * 90.0  # Derece/saniye (maksimum 90 derece/saniye)
-                    yaw_delta = yaw_hizi * time.dt  # Bu frame'de döndürülecek açı (küçük adım)
-                    
-                    # Mevcut rotation değerini al ve Vec3 olarak ayarla
+                # Yaw: active_forces['yaw'] ile sürekli dönme (derece/saniye)
+                yaw_guc = self.active_forces.get('yaw', 0.0)
+                if abs(yaw_guc) > 0:
+                    yaw_hizi = abs(yaw_guc) * 90.0
+                    yaw_delta = yaw_hizi * time.dt
                     if not hasattr(self, 'rotation') or self.rotation is None:
                         self.rotation = Vec3(0, 0, 0)
                     elif not isinstance(self.rotation, Vec3):
-                        # Tuple veya list ise Vec3'e dönüştür
-                        if isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 3:
-                            self.rotation = Vec3(self.rotation[0], self.rotation[1], self.rotation[2])
-                        else:
-                            self.rotation = Vec3(0, 0, 0)
-                    
-                    # Mevcut rotation değerlerini al
+                        self.rotation = Vec3(self.rotation[0], self.rotation[1], self.rotation[2]) if isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 3 else Vec3(0, 0, 0)
                     current_x = self.rotation.x if isinstance(self.rotation, Vec3) else 0
                     current_y = self.rotation.y if isinstance(self.rotation, Vec3) else 0
                     current_z = self.rotation.z if isinstance(self.rotation, Vec3) else 0
-                    
-                    # Y ekseni etrafında döndür (yaw) - küçük adımlarla
-                    if guc > 0:
-                        # Pozitif güç: saat yönünün tersine (pozitif yaw)
-                        new_y = current_y + yaw_delta
-                    elif guc < 0:
-                        # Negatif güç: saat yönünde (negatif yaw)
-                        new_y = current_y - yaw_delta
-                    else:
-                        new_y = current_y
-                    
-                    # Rotation'ı normalize et (0-360 arası tutmak için)
+                    new_y = current_y + (yaw_delta if yaw_guc > 0 else -yaw_delta)
                     while new_y >= 360:
                         new_y -= 360
                     while new_y < 0:
                         new_y += 360
-                    
-                    # Rotation'ı yeni Vec3 olarak atama (küçük adımlarla güncelleme)
                     self.rotation = Vec3(current_x, new_y, current_z)
-            elif self.manuel_hareket['guc'] > 0:
-                # Sürekli hareket: move metodunu çağır
-                yon = self.manuel_hareket['yon']
-                guc = self.manuel_hareket['guc']
-                self.move(yon, guc)
+            elif self.manuel_hareket['guc'] > 0 or any(self.active_forces.get(k, 0) != 0 for k in ('surge', 'sway', 'heave')):
+                # Hibrit: Manuel kuvvet velocity'e eklenir (AI çıktısı guncelle() ile zaten eklenmiş olabilir)
+                # Final_Force = AI_Output + Manual_Input (vektörel toplama)
+                # Eşzamanlı hareket: active_forces'tan vektör hesapla (surge, sway, heave)
+                af = getattr(self, 'active_forces', {'surge': 0.0, 'sway': 0.0, 'heave': 0.0})
+                surge = af.get('surge', 0.0)
+                sway = af.get('sway', 0.0)
+                heave = af.get('heave', 0.0)
+                yaw_acisi = 0.0
+                if hasattr(self, 'rotation') and self.rotation is not None:
+                    yaw_acisi = self.rotation.y if isinstance(self.rotation, Vec3) else (self.rotation[1] if isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 2 else 0)
+                yaw_rad = radians(yaw_acisi)
+                # Lokal eksenler (Ursina: X sağ, Z ileri, Y yukarı). İleri = (sin(yaw), 0, cos(yaw)), Sağ = (cos(yaw), 0, -sin(yaw))
+                ileri_x = sin(yaw_rad)
+                ileri_z = cos(yaw_rad)
+                sag_x = cos(yaw_rad)
+                sag_z = -sin(yaw_rad)
+                # Global hareket vektörü = surge*ileri + sway*sağ + heave*yukarı
+                hareket_x = surge * ileri_x + sway * sag_x
+                hareket_z = surge * ileri_z + sway * sag_z
+                hareket_y = heave
+                # Büyüklük 1.0'ı geçerse normalize et (çaprazda motor limitini aşmasın)
+                toplam_len = (hareket_x ** 2 + hareket_z ** 2 + hareket_y ** 2) ** 0.5
+                if toplam_len > 1.0:
+                    hareket_x /= toplam_len
+                    hareket_z /= toplam_len
+                    hareket_y /= toplam_len
+                max_guc = 100.0
+                thrust = max_guc * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
+                self.velocity.x += hareket_x * thrust
+                self.velocity.z += hareket_z * thrust
+                self.velocity.y += hareket_y * thrust
+                if self.velocity.length() > max_guc:
+                    self.velocity = self.velocity.normalized() * max_guc
         
         # --- SENSÖR GÜNCELLEME (Ana Thread'de - Thread-Safe) ---
         # Tüm fiziksel raycast işlemleri burada yapılır
@@ -716,27 +729,18 @@ class ROV(Entity):
             return self.sensor_config.get("kacinma_mesafesi")
         elif veri_tipi == "sonar":
             """
-            Sonar sensörü: Thread-Safe cache'lenmiş değeri döndürür.
-            Raycast işlemleri sadece Ana Thread'de (update içinde) yapılır.
-            
-            Returns:
-                float: En yakın engel mesafesi (metre), engel yoksa -1
+            Sonar sensörü: En yakın engeli tespit eder. Thread-Safe cache'lenmiş değer döner.
+            Maksimum algılama menzili: sensor_config["engel_mesafesi"] (varsayılan 10 m).
+            Engel bu menzil dışındaysa veya tespit yoksa -1 döner.
             """
             # Konsol thread'i sadece cache'lenmiş değeri okur (raycast yapmaz!)
             return self.son_sonar_mesafesi
         elif veri_tipi == "lidar":
             """
-            Lidar sensörü: Thread-Safe cache'lenmiş değeri döndürür.
-            Raycast işlemleri sadece Ana Thread'de (update içinde) yapılır.
-            
-            taraf parametresi:
-                - 0: Ön (lidarx) - ROV'un baktığı yön
-                - 1: Sağ (lidary) - ROV'un sağ tarafı
-                - 2: Sol (lidary1) - ROV'un sol tarafı
-                - None: Ön yön (varsayılan)
-            
-            Returns:
-                float: Engel mesafesi (metre), engel yoksa -1
+            Lidar sensörü: Yöne göre en yakın engeli tespit eder. Thread-Safe cache kullanır.
+            Maksimum algılama menzili: sensor_config["engel_mesafesi"] (varsayılan 10 m).
+            Engel yoksa veya menzil dışındaysa -1 döner.
+            taraf: 0=Ön, 1=Sol, 2=Sağ; None=Ön.
             """
             # Konsol thread'i sadece cache'lenmiş değeri okur (raycast yapmaz!)
             t = taraf if taraf is not None else 0
@@ -1348,94 +1352,284 @@ class ROV(Entity):
 from ursina import *
 import numpy as np
 
-
 class Minimap(Entity):
     """
-    Profesyonel Navigasyon Sistemi - Chevron İkonları ve Teknik Grid
+    Gelişmiş HUD Radar ve Navigasyon Haritası.
+    Matplotlib yerine Ursina UI kullanır (GPU Tabanlı, 0 FPS kaybı).
+    scale_carpan: 1 = taban boyut (0.45), 2 = 2 katı, 0.1 = onda biri vb.
     """
-    def __init__(self, ortam_ref, filo_ref=None, **kwargs):
+    BASE_SCALE = 0.50  # Taban boyut (Ursina UI birimi); scale_carpan=1 iken kullanılır
+
+    def __init__(self, ortam_ref, scale_carpan=1, pozisyon='bottom_right', **kwargs):
+        self._scale_carpan = float(scale_carpan)
+        effective = self.BASE_SCALE * self._scale_carpan
+        # Konumlandırma Mantığı
+        if pozisyon == 'bottom_right':
+            pos = window.bottom_right + Vec2(-effective/2 - 0.02, effective/2 + 0.02)
+        else:
+            pos = (0, 0)
+
         super().__init__(
             parent=camera.ui,
             model='quad',
-            color=color.rgba(15, 15, 15, 200), # Yarı şeffaf modern koyu arka plan
-            scale=(0.35, 0.35),
-            position=(0.68, 0.30),
+            color=color.rgba(255, 255, 255, 0.01),  # Beyaz, daha şeffaf arka plan
+            scale=(effective, effective),
+            position=pos,
+            origin=(0, 0),
             **kwargs
         )
+
         self.ortam_ref = ortam_ref
-        self.filo_ref = filo_ref
         self.havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
+        self._pozisyon = pozisyon
+        # grid_sayisi: None = varsayılan (GRID_UNIT m); N = toplam N aralık (her grid = (2*havuz)/N m)
+        self._grid_sayisi = kwargs.pop('grid', None)
         
-        # 'cone' hatasını çözen özel OK (Chevron) Mesh'i
-        # Line mode kullanarak kapalı çokgen oluştur (triangle mode vertex sayısı sorunu çözüldü)
-        self.rov_mesh = Mesh(
-            vertices=[
-                (0, 0.5, 0),       # Burun
-                (-0.3, -0.4, 0),   # Sol kanat
-                (0, -0.15, 0),     # İç girinti
-                (0.3, -0.4, 0),    # Sağ kanat
-                (0, 0.5, 0)        # Kapanış (kapalı çokgen için)
-            ],
-            mode='line',
-            thickness=3,  # Kalın çizgi
-            static=True
-        )
-
-        self.rov_gostergeleri = {}
-        self.grid_gostergeleri = []
-        self.label_entities = []
+        # --- Katmanlar (Z-Order) ---
+        # Arka Plan (-0.0) -> Grid (-0.1) -> Adalar (-0.2) -> Yollar (-0.3) -> ROV (-0.4) -> Engeller (-0.5)
         
-        self.goster_a_star = False
-        self.goster_convex = False
+        # Sınır Çizgisi (Border)
+        self.border = Entity(parent=self, model='quad', color=color.white, scale=(1.02, 1.02), z=0.01, alpha=0.5)
         
-        # İlk kurulum
-        self._setup_ui()
-        self.visible = False # Başlangıçta gizli
-
-    def _setup_ui(self):
-        """Grid hatlarını, sınırları ve koordinat yazılarını oluşturur."""
-        for e in self.grid_gostergeleri + self.label_entities:
-            destroy(e)
-        self.grid_gostergeleri = []
-        self.label_entities = []
-
-        # 1. Havuz Dış Çerçevesi (Modern Cam Göbeği)
-        border_color = color.cyan
-        thickness = 0.005
-        # Üst-Alt-Sağ-Sol Sınırlar
-        self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(1, thickness), position=(0, 0.5, -0.01), color=border_color))
-        self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(1, thickness), position=(0, -0.5, -0.01), color=border_color))
-        self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(thickness, 1), position=(0.5, 0, -0.01), color=border_color))
-        self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(thickness, 1), position=(-0.5, 0, -0.01), color=border_color))
-
-        # 2. Teknik Grid (Her 50 birimde bir)
-        step = 50
-        limit = int(self.havuz_genisligi)
-        grid_alpha = 40 # 0-255 arası şeffaflık
+        # Dinamik Nesne Referansları
+        self.rov_ikonlari = {}      # {id: Entity}
+        self.engel_noktalari = []   # [Entity, ...]
+        self.statik_nesneler = []   # [Entity, ...] (Adalar, Grid)
         
-        for i in range(-limit, limit + 1, step):
-            pos = i / (self.havuz_genisligi * 2)
+        # Çizgi Meshleri (A* ve Hull için)
+        self.path_entity = None
+        self.hull_entity = None
+        
+        # Başlangıç Kurulumu
+        self._grid_olustur()
+        self._adalari_ciz()
+        
+        # Durum
+        self.visible = False
+
+    def _apply_scale(self):
+        """Çarpana göre entity scale ve pozisyonu günceller (filo.minimap(scale=2) vb.)."""
+        effective = self.BASE_SCALE * self._scale_carpan
+        self.scale = (effective, effective)
+        if self._pozisyon == 'bottom_right':
+            self.position = window.bottom_right + Vec2(-effective/2 - 0.02, effective/2 + 0.02)
+
+    def dunya_to_harita(self, x, z):
+        """
+        Dünya koordinatlarını (Metre) Harita lokal koordinatlarına (-0.5, 0.5) çevirir.
+        Ursina UI'da Y ekseni yukarıdır, bu yüzden Dünya Z'si Harita Y'si olur.
+        """
+        # Ölçekleme faktörü: Havuzun toplam genişliği (genislik * 2)
+        factor = 1.0 / (self.havuz_genisligi * 2)
+        mx = x * factor
+        my = z * factor
+        return Vec3(mx, my, 0)
+
+    # Grid: varsayılan her çizgi bu kadar metre (grid_sayisi verilmezse)
+    GRID_UNIT = 50
+
+    def _grid_step_metre(self):
+        """Grid başına mesafe (m). grid_sayisi verilmişse (2*havuz)/N, yoksa GRID_UNIT."""
+        half = self.havuz_genisligi
+        if self._grid_sayisi is not None and self._grid_sayisi > 0:
+            return (2.0 * half) / self._grid_sayisi
+        return float(self.GRID_UNIT)
+
+    def _grid_olustur(self):
+        """Radar görünümü için grid çizgileri ve eksenleri oluşturur. Merkez (0,0) harita ortasındadır."""
+        factor = 1.0 / (self.havuz_genisligi * 2)  # dünya -> lokal (-0.5, 0.5)
+        grid_z = -0.1
+        grid_color = color.rgba(255, 255, 255, 50)
+        line_thick = 0.004
+
+        # Ana Eksenler (X ve Y) — merkezde 0,0
+        self.statik_nesneler.append(Entity(parent=self, model='quad', scale=(1, 0.005), color=color.rgba(255,255,255,100), z=grid_z))
+        self.statik_nesneler.append(Entity(parent=self, model='quad', scale=(0.005, 1), color=color.rgba(255,255,255,100), z=grid_z))
+
+        # Grid adımı: grid_sayisi varsa (2*havuz)/N m, yoksa GRID_UNIT m
+        half = self.havuz_genisligi
+        step = self._grid_step_metre()
+        label_z = grid_z - 0.05
+        label_scale = 1  # metin boyutu (minimap lokal biriminde)
+        # Dikey çizgiler (sabit dünya X): lokal x = world_x * factor — x ekseni tarafında mesafe etiketi
+        world_x = -half
+        while world_x <= half:
+            local_x = world_x * factor
+            if world_x != 0:  # merkez eksenini tekrar çizme
+                self.statik_nesneler.append(Entity(
+                    parent=self, model='quad',
+                    position=(local_x, 0, grid_z),
+                    scale=(line_thick, 1),
+                    color=grid_color
+                ))
+            # X grid: sadece ilk ve son noktada mesafe etiketi (altta)
+            if world_x != -half:
+                lbl = Text(
+                    text=str(int(world_x)),
+                    parent=self,
+                    position=(local_x, -0.50, label_z),
+                    scale=label_scale,
+                    color=color.rgba(0, 0, 0, 1),
+                    origin=(0.5, 0.5),
+                    z=label_z
+                )
+                self.statik_nesneler.append(lbl)
+            world_x += step
+        # Yatay çizgiler (sabit dünya Z/Y): lokal y = world_z * factor — y ekseni tarafında mesafe etiketi
+        world_z = -half
+        while world_z <= half:
+            local_y = world_z * factor
+            if world_z != 0:
+                self.statik_nesneler.append(Entity(
+                    parent=self, model='quad',
+                    position=(0, local_y, grid_z),
+                    scale=(1, line_thick),
+                    color=grid_color
+                ))
+            # Y grid: sadece ilk ve son noktada mesafe etiketi (solda)
+            if True:           
+                lbl = Text(
+                    text=str(int(world_z)),
+                    parent=self,
+                    position=(-0.52, local_y, label_z),
+                    scale=label_scale,
+                    color=color.rgba(0, 0, 0, 1),
+                    origin=(0.5, 0.5),
+                    z=label_z
+                )
+                self.statik_nesneler.append(lbl)
+            world_z += step
+
+        # Grid bilgisi: 1 grid = X m, ölçek (türev: harita birimi başına metre)
+        step_m = self._grid_step_metre()
+        toplam_metre = 2 * half
+        olcek_metre_birim = toplam_metre  # 1 harita birimi (-0.5..0.5) = toplam_metre m
+        info_z = label_z - 0.02
+        self.statik_nesneler.append(Text(
+            parent=self,
+            text=f"1 grid={step_m:.0f}m | 1 birim={olcek_metre_birim:.0f}m",
+            position=(0, -0.54, info_z),
+            scale=0.7,
+            color=color.rgba(0, 0, 0, 1),
+            origin=(0.5, 0.5),
+            z=info_z
+        ))
+
+        # Dairesel Menzil Çizgileri (%33, %66, %100)
+        for r in [0.33, 0.66, 1.0]:
+            self.statik_nesneler.append(Entity(
+                parent=self,
+                model=Circle(resolution=60, radius=0.5 * r, mode='line', thickness=2),
+                scale=1,
+                color=color.rgba(255,255,0,50),
+                z=grid_z
+            ))
+
+    def _adalari_ciz(self):
+        """Simülasyondaki adaları haritada kahverengi daireler olarak gösterir."""
+        if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
+            for pos in self.ortam_ref.island_positions:
+                # Format: [x, z, radius] veya [x, z]
+                x, z = pos[0], pos[1]
+                r = pos[2] if len(pos) > 2 else 10.0
+                
+                # Konum ve Ölçek Hesapla
+                map_pos = self.dunya_to_harita(x, z)
+                # Yarıçap ölçeği (Harita 1 birim = 2*havuz_genisligi)
+                map_scale = (r * 2) / (self.havuz_genisligi * 2)
+                
+                ada = Entity(
+                    parent=self,
+                    model='circle',
+                    color=color.hex('#8B5A3C'), # Kahverengi
+                    position=(map_pos.x, map_pos.y, -0.2),
+                    scale=(map_scale, map_scale),
+                    alpha=0.8
+                )
+                self.statik_nesneler.append(ada)
+
+    def _statik_yeniden_ciz(self):
+        """Grid ve adalar dahil statik nesneleri siler ve yeniden çizer (grid değişince kullanılır)."""
+        for e in self.statik_nesneler:
+            try:
+                destroy(e)
+            except Exception:
+                pass
+        self.statik_nesneler = []
+        self._grid_olustur()
+        self._adalari_ciz()
+
+    def update_hull(self, points):
+        """
+        Convex Hull (Güvenlik Alanı) çizgilerini çizer.
+        points: Numpy array veya liste [[x, z], ...]
+        """
+        if self.hull_entity:
+            destroy(self.hull_entity)
+            self.hull_entity = None
             
-            # Dikey ve Yatay Grid Çizgileri
-            self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(0.002, 1), position=(pos, 0, -0.005), color=color.rgba(255,255,255,grid_alpha)))
-            self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(1, 0.002), position=(0, pos, -0.005), color=color.rgba(255,255,255,grid_alpha)))
-            
-            # Koordinat Etiketleri
-            if i % 100 == 0 or abs(i) == limit:
-                # X ekseni (Alt)
-                self.label_entities.append(Text(text=f"{i}", parent=self, position=(pos, -0.55), scale=0.6, color=color.gray, origin=(0,0)))
-                # Y ekseni (Sol)
-                self.label_entities.append(Text(text=f"{i}", parent=self, position=(-0.58, pos), scale=0.6, color=color.gray, origin=(0,0)))
-
-    def update(self):
-        if not self.visible or not self.ortam_ref:
+        if points is None or len(points) < 3:
             return
 
-        # Havuz boyutu değişirse haritayı yeniden çiz
-        mevcut_limit = getattr(self.ortam_ref, 'havuz_genisligi', 200)
-        if mevcut_limit != self.havuz_genisligi:
-            self.havuz_genisligi = mevcut_limit
-            self._setup_ui()
+        # Noktaları harita koordinatlarına çevir
+        verts = []
+        for p in points:
+            # Gelen veri formatı kontrolü
+            px = p[0]
+            pz = p[1] if len(p) > 1 else 0
+            
+            # Local koordinata çevir
+            mp = self.dunya_to_harita(px, pz)
+            verts.append((mp.x, mp.y, -0.25)) # Z-index: Adaların üstünde, ROV'un altında
+            
+        # Çizgiyi kapat (Son noktayı ilke bağla)
+        verts.append(verts[0])
+
+        self.hull_entity = Entity(
+            parent=self,
+            model=Mesh(vertices=verts, mode='line', thickness=2),
+            color=color.cyan,
+            alpha=0.6
+        )
+
+    def update_path(self, path_points):
+        """
+        A* Yolunu çizer (Yeşil Çizgi).
+        path_points: [(x1, z1), (x2, z2), ...]
+        """
+        if self.path_entity:
+            destroy(self.path_entity)
+            self.path_entity = None
+            
+        if not path_points or len(path_points) < 2:
+            return
+
+        verts = []
+        for p in path_points:
+            mp = self.dunya_to_harita(p[0], p[1])
+            verts.append((mp.x, mp.y, -0.3)) # Z-index: Hull'un üstünde
+
+        self.path_entity = Entity(
+            parent=self,
+            model=Mesh(vertices=verts, mode='line', thickness=3),
+            color=color.lime,
+            alpha=0.9
+        )
+        
+        # Başlangıç ve Bitiş Noktaları
+        # (Bu örnekte basit tutmak için sadece çizgi çiziyoruz)
+
+    def _rov_renk_al(self, rov):
+        """3D ROV'un rengini alır; minimap ikonunda aynı renk kullanılır."""
+        c = getattr(rov, 'color', None)
+        if c is not None and hasattr(c, 'r') and hasattr(c, 'g') and hasattr(c, 'b'):
+            return c
+        return color.orange
+
+    def update(self):
+        """Her karede çalışır: ROV konumlarını günceller."""
+        if not self.visible or not self.ortam_ref:
+            return
 
         # ROV'ları Güncelle
         if hasattr(self.ortam_ref, 'rovs'):
@@ -1443,42 +1637,107 @@ class Minimap(Entity):
             for rov in self.ortam_ref.rovs:
                 rid = getattr(rov, 'id', id(rov))
                 active_ids.add(rid)
-                
-                # Dünya -> Harita dönüşümü (Ursina X, Z -> Harita X, Y)
-                map_x = rov.x / (self.havuz_genisligi * 2)
-                map_y = rov.z / (self.havuz_genisligi * 2) 
-                
-                if rid not in self.rov_gostergeleri:
-                    # Yeni ROV ikonu oluştur
-                    self.rov_gostergeleri[rid] = Entity(
-                        parent=self, 
-                        model=self.rov_mesh, 
-                        scale=0.06,
-                        color=rov.color if hasattr(rov, 'color') else color.orange,
-                        position=(map_x, map_y, -0.02)
-                    )
-                
-                # Pozisyon ve Yön güncelleme
-                self.rov_gostergeleri[rid].position = (map_x, map_y, -0.02)
-                # Ursina rotation_y (dünya) -> Harita rotation_z (2D)
-                # 180 derece ofset ROV'un burnunun doğru yöne bakmasını sağlar
-                self.rov_gostergeleri[rid].rotation_z = -rov.rotation_y + 180
+                rov_renk = self._rov_renk_al(rov)
+                # Yön oku: beyaz (her ROV renginde okunaklı)
+                ok_renk = color.white
 
-            # Silinen ROV'ları haritadan kaldır
-            for rid in list(self.rov_gostergeleri.keys()):
+                target_pos = self.dunya_to_harita(rov.x, rov.z)
+                target_pos.z = -0.4 # En üstte (Z negatif bize yakın demek UI'da)
+
+                if rid not in self.rov_ikonlari:
+                    # ROV Gövdesi (Daire) - 3D ile aynı renk
+                    govde = Entity(parent=self, model='circle', scale=0.04, color=rov_renk, position=target_pos)
+                    # Yön Oku (yön göstergesi, açık tonda)
+                    ok = Entity(parent=govde, model='quad', scale=(0.2, 0.8), y=0.4, color=ok_renk)
+                    # ROV ID etiketi (ikonun üstünde)
+                    Text(parent=govde, text=str(rid), position=(0, 1.5, 0), scale=50, color=rov_renk, origin=(0.5, 0.5))
+                    self.rov_ikonlari[rid] = govde
+                else:
+                    current_entity = self.rov_ikonlari[rid]
+                    current_entity.color = rov_renk
+                    if current_entity.children:
+                        current_entity.children[0].color = ok_renk
+
+                # Pozisyonu yumuşak güncelle (Lerp)
+                current_entity = self.rov_ikonlari[rid]
+                current_entity.position = lerp(current_entity.position, target_pos, time.dt * 15)
+                
+                # Rotasyonu güncelle (Simülasyon Rotation Y -> Harita Rotation Z)
+                # Simülasyon 0 derece = İleri (Z+). Harita 0 derece = Yukarı (Y+). Uyumlular.
+                # Ancak Ursina dönüş yönleri farklı olabilir, -rotasyon genelde çözer.
+                current_entity.rotation_z = -rov.rotation_y
+
+            # Silinenleri Temizle
+            for rid in list(self.rov_ikonlari.keys()):
                 if rid not in active_ids:
-                    destroy(self.rov_gostergeleri[rid])
-                    del self.rov_gostergeleri[rid]
+                    destroy(self.rov_ikonlari[rid])
+                    del self.rov_ikonlari[rid]
 
-    def goster(self, durum=True, convex=False, a_star=False):
-        """filo.minimap() tarafından çağrılan ana fonksiyon"""
-        self.visible = bool(durum)
-        self.goster_convex = bool(convex)
-        self.goster_a_star = bool(a_star)
+    def engel_ekle(self, x, z):
+        """engel_bul() fonksiyonundan gelen tespitleri kırmızı nokta olarak ekler."""
+        if not self.visible: return
         
-        status = "AÇIK" if self.visible else "KAPALI"
-        if getattr(self.ortam_ref, "verbose", False):
-            print(f"📡 [RADAR] Sistem: {status} | Havuz: {self.havuz_genisligi}m")
+        pos = self.dunya_to_harita(x, z)
+        # Harita sınırları içinde mi? (-0.5 ile 0.5 arası)
+        if abs(pos.x) > 0.5 or abs(pos.y) > 0.5: return
+        
+        # Nokta Ekle
+        nokta = Entity(
+            parent=self,
+            model='circle',
+            scale=0.015,
+            color=color.red,
+            position=(pos.x, pos.y, -0.35),
+            alpha=0.8
+        )
+        self.engel_noktalari.append(nokta)
+        
+        # Performans: Çok fazla nokta varsa eskileri sil (FIFO)
+        if len(self.engel_noktalari) > 150:
+            eski = self.engel_noktalari.pop(0)
+            destroy(eski)
+
+    def temizle_engeller(self):
+        for e in self.engel_noktalari:
+            destroy(e)
+        self.engel_noktalari.clear()
+
+    def goster(self, durum=True, convex=False, a_star=False, scale=None, grid=None):
+        """Görünürlüğü ayarlar. scale: çarpan; grid: grid sayısı (None=varsayılan GRID_UNIT m). convex/a_star Harita.update() ile senkronize edilir."""
+        if grid is not None:
+            n = int(grid)
+            if n > 0 and n != self._grid_sayisi:
+                self._grid_sayisi = n
+                self._statik_yeniden_ciz()
+        if scale is not None:
+            self._scale_carpan = float(scale)
+            self._apply_scale()
+        self.visible = durum
+        # Çocukları da gizle/göster (Ursina bazen bunu otomatik yapmayabilir parent UI ise)
+        for child in self.children:
+            child.enabled = durum
+        # Açılırken mevcut A* yolunu ve convex çevresini çiz
+        if durum and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
+            harita = self.ortam_ref.harita
+            path = getattr(harita, 'a_star_yolu', None)
+            if path and len(path) >= 2:
+                try:
+                    self.update_path(path)
+                except Exception:
+                    pass
+            # Hesaplanmış convex hull varsa uygun renkte göster (cyan)
+            hull_data = getattr(harita, 'convex_hull_data', None)
+            if hull_data and isinstance(hull_data, dict):
+                points = hull_data.get('points')
+                if points is not None and len(points) >= 3:
+                    try:
+                        import numpy as np
+                        pts = np.asarray(points)
+                        if len(pts.shape) == 2 and pts.shape[1] >= 2:
+                            pts_2d = pts[:, :2].tolist() if pts.shape[1] > 2 else pts.tolist()
+                            self.update_hull(pts_2d)
+                    except Exception:
+                        pass
 # ============================================================
 # HARİTA SİSTEMİ (Matplotlib - Ayrı Pencere)
 # ============================================================
@@ -1499,6 +1758,7 @@ class Harita:
         self.filo_ref = filo_ref  # Filo referansı (ada_cevre için)
         self.pencere_boyutu = pencere_boyutu
         self.manuel_engeller = []  # Elle eklenen engeller [(x_2d, y_2d), ...]
+        self.tespit_edilen_engeller = []  # engel_bul ile tespit edilen noktalar [(x_2d, y_2d), ...] (kırmızı nokta)
         
         # Durum Değişkenleri
         self.gorunur = False
@@ -2020,6 +2280,13 @@ class Harita:
             ey = [p[1] for p in self.manuel_engeller]
             self.ax.scatter(ex, ey, c='red', marker='X', s=80, label="Engel", zorder=10,
                           edgecolors='darkred', linewidths=2)
+
+        # Tespit edilen engeller (engel_bul sonucu — kırmızı noktalar)
+        if self.tespit_edilen_engeller:
+            tx = [p[0] for p in self.tespit_edilen_engeller]
+            ty = [p[1] for p in self.tespit_edilen_engeller]
+            self.ax.scatter(tx, ty, c='red', marker='o', s=40, label="Tespit", zorder=10,
+                          edgecolors='darkred', linewidths=1, alpha=0.9)
         
         # Convex Hull Çizimi
         if self.goster_convex:
@@ -2110,6 +2377,8 @@ class Harita:
         legend_items = []
         if self.manuel_engeller:
             legend_items.append('Engel')
+        if self.tespit_edilen_engeller:
+            legend_items.append('Tespit')
         if self.goster_convex and self.convex_hull_data and self.convex_hull_data.get('hull') is not None:
             legend_items.append('Convex Hull')
             legend_items.append('Hull Merkezi')
@@ -2280,6 +2549,12 @@ class Harita:
             if path:
                 self.a_star_yolu = path
                 print(f"✅ [HARITA] A* yolu hesaplandı: {len(path)} nokta")
+                # Minimap açıksa A* rotasını hemen çiz (filo.minimap() ile açılan haritada)
+                if hasattr(self.ortam_ref, 'minimap') and self.ortam_ref.minimap and getattr(self.ortam_ref.minimap, 'visible', False):
+                    try:
+                        self.ortam_ref.minimap.update_path(path)
+                    except Exception:
+                        pass
                 return path
             else:
                 self.a_star_yolu = None
@@ -2330,6 +2605,23 @@ class Harita:
                     print(f"❌ [HARITA] Harita açılırken hata: {e}")
                     import traceback
                     traceback.print_exc()
+
+        # 2.5 Minimap convex hull senkronizasyonu (ana harita kapalı olsa bile minimap açıksa güncelle)
+        if hasattr(self.ortam_ref, 'minimap') and self.ortam_ref.minimap and getattr(self.ortam_ref.minimap, 'visible', False) and self.convex_hull_data:
+            if not hasattr(self, '_minimap_hull_cnt'):
+                self._minimap_hull_cnt = 0
+            self._minimap_hull_cnt += 1
+            if self._minimap_hull_cnt >= 30:
+                self._minimap_hull_cnt = 0
+                try:
+                    points = self.convex_hull_data.get('points')
+                    if points is not None and len(points) >= 3:
+                        pts = np.asarray(points)
+                        if len(pts.shape) == 2 and pts.shape[1] >= 2:
+                            pts_2d = pts[:, :2] if pts.shape[1] > 2 else pts
+                            self.ortam_ref.minimap.update_hull(pts_2d)
+                except Exception:
+                    pass
 
         # 3. Rutin Çizim Güncellemesi
         if self.gorunur and self.fig is not None:
@@ -2492,6 +2784,37 @@ class Harita:
             return True
         
         return False
+
+    def tespit_engelleri_guncelle(self, noktalar_2d, debug=False):
+        """
+        engel_bul ile tespit edilen engelleri haritada kırmızı noktalar olarak günceller.
+        debug=True ise önce eski tespit noktalarını siler, sonra yenilerini ekler.
+        noktalar_2d: [(x, y), ...] simülasyon 2D koordinatları (x = Ursina x, y = Ursina z).
+        """
+        if debug:
+            self.tespit_edilen_engeller.clear()
+        if noktalar_2d:
+            new_list = [(float(p[0]), float(p[1])) for p in noktalar_2d if len(p) >= 2]
+            if debug:
+                self.tespit_edilen_engeller = new_list
+            else:
+                self.tespit_edilen_engeller.extend(new_list)
+        if self.gorunur and self.fig is not None:
+            try:
+                self._ciz()
+                self.fig.canvas.draw_idle()
+            except Exception as e:
+                print(f"⚠️ [HARITA] Tespit engelleri çizilirken hata: {e}")
+
+    def tespit_engelleri_temizle(self):
+        """Haritadaki tespit edilen engel noktalarını (kırmızı noktalar) siler."""
+        self.tespit_edilen_engeller.clear()
+        if self.gorunur and self.fig is not None:
+            try:
+                self._ciz()
+                self.fig.canvas.draw_idle()
+            except Exception as e:
+                print(f"⚠️ [HARITA] Tespit engelleri temizlenirken hata: {e}")
     
     def temizle(self):
         """Haritayı temizler (elle eklenen engelleri siler)"""

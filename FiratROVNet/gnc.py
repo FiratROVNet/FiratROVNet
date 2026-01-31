@@ -115,6 +115,11 @@ class Filo:
         self._git_mevcut_nokta_indeksi = {}  # {rov_id: 0, ...} - Hangi noktaya gidiyor
         self._git_hedef_mesafe_toleransi = 2.0  # Hedefe ulaşma toleransı (metre)
         
+        # engel_bul(debug=True) için görsel debug noktaları (kırmızı küreler)
+        self._debug_noktalari = []
+        # engel_bul konsol thread'den çağrıldığında uyarıyı sadece bir kez bas
+        self._engel_bul_console_warned = False
+        
         # Helper instance for complex calculations
         self.helper = FiloHelper(self)
     
@@ -747,6 +752,22 @@ class Filo:
             result = filo.ConvexHull(points, test_point, margin=0.2)
         """
         return self.helper.points()
+
+    def engel_bul(self, rov_id: int, menzil: float = 10.0, debug: bool = False) -> list:
+        """
+        Belirtilen ROV için çevresel tarama yapar (sonar/lidar benzeri).
+        İleri, sağ, sol, sağ-çapraz, sol-çapraz, yukarı, aşağı yönlerinde raycast atar;
+        tespit edilen engellerin dünya koordinatlarını döndürür.
+        
+        Args:
+            rov_id (int): ROV ID.
+            menzil (float): Tarama menzili (metre, varsayılan 10.0).
+            debug (bool): True ise çarpışma noktalarında kırmızı küre gösterir.
+        
+        Returns:
+            list: [{'koordinat': Vec3(x,y,z), 'mesafe': float, 'vektor': Vec3}, ...]; engel yoksa [].
+        """
+        return self.helper.engel_bul(rov_id=rov_id, menzil=menzil, debug=debug)
     
     def _compute_obstacle_positions(self, rov_id):
         """
@@ -930,11 +951,12 @@ class Filo:
 
     
 
-    def hedef(self, x=None, y=None, z=None):
+    def hedef(self, x=None, y=None, z=None, rov_id=None):
         """
-        Sadece lider ROV'un hedefini ayarlar (Thread-safe). Takipçiler bu komuttan etkilenmez.
-        Hedef görsel olarak (büyük X işareti) gösterilir ve haritaya eklenir.
-        Derinlik her zaman 0 (su üstünde) olarak ayarlanır.
+        Hedef konumu atar (Thread-safe). rov_id verilmezse lider ROV hedefe gider;
+        rov_id verilirse sadece o ROV hedefe gider.
+        Hedef görsel (X işareti) ve harita sadece lider hedefi için güncellenir (rov_id verilmediğinde).
+        Sim formatı: (x, y, z) — z = derinlik (0 = su üstü, negatif = su altı, örn. -50 = 50 m derinlik).
         
         Parametre verilmezse mevcut hedef koordinatlarını döndürür.
         Parametre verilirse hedefi günceller ve yeni koordinatları döndürür.
@@ -942,15 +964,17 @@ class Filo:
         Args:
             x (float, optional): X koordinatı (yatay düzlem). None ise mevcut hedef döndürülür.
             y (float, optional): Y koordinatı (yatay düzlem). None ise mevcut hedef döndürülür.
-            z (float, optional): İGNORED - Her zaman 0 (su üstünde) kullanılır
+            z (float, optional): Derinlik (Sim: 0 = yüzey, negatif = su altı). None ise 0 kullanılır.
+            rov_id (int, optional): Hedefe gidecek ROV ID. None ise lider gider; verilirse o ROV gider.
         
         Returns:
-            tuple: (x, y, z) - Hedef koordinatları (z her zaman 0)
+            tuple: (x, y, z) - Hedef koordinatları
         
         Örnekler:
-            filo.hedef(50, 60)  # Sadece lider (50, 60, 0) hedefine gider
-            filo.hedef(40, 50)  # Sadece lider (40, 50, 0) hedefine gider
-            filo.hedef()  # Mevcut hedef koordinatlarını döndürür: (x, y, 0) veya None
+            filo.hedef(50, 60)        # Lider (50, 60, 0)'a gider
+            filo.hedef(0, 50, -50)    # Lider (0, 50, -50)'ye gider
+            filo.hedef(10, 20, -5, rov_id=2)  # ROV-2 (10, 20, -5)'e gider
+            filo.hedef()              # Mevcut hedef: (x, y, z) veya None
         """
         # Parametre verilmediyse mevcut hedefi döndür (thread-safe değil, sadece okuma)
         if x is None or y is None:
@@ -959,51 +983,56 @@ class Filo:
             else:
                 return None
         
+        # z verilmezse yüzey (0)
+        if z is None:
+            z = 0
+        
         # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
         if not self._is_main_thread():
-            self._command_queue.put(('hedef', (x, y, z), {}))
-            # Queue'ya eklendi, hedef pozisyonunu kaydet (okuma için)
-            self.hedef_pozisyon = (x, y, 0)
-            return (x, y, 0)
+            self._command_queue.put(('hedef', (x, y, z), {'rov_id': rov_id}))
+            if rov_id is None:
+                self.hedef_pozisyon = (x, y, z)
+            return (x, y, z)
         
         # Ana thread'deyiz, direkt çalıştır
-        return self._hedef_impl(x, y, z)
+        return self._hedef_impl(x, y, z, rov_id=rov_id)
     
-    def _hedef_impl(self, x, y, z):
+    def _hedef_impl(self, x, y, z, rov_id=None):
         """hedef() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
-        # Derinlik her zaman 0 (su üstünde)
-        z = 0
+        # Hedefe gidecek ROV: rov_id verilmişse o ROV, verilmemişse lider
+        if rov_id is not None:
+            if rov_id < 0 or rov_id >= len(self.sistemler):
+                print(f"❌ [HEDEF] Geçersiz ROV ID: {rov_id}. Geçerli aralık: 0-{len(self.sistemler) - 1}")
+                return None
+            target_rov_id = rov_id
+        else:
+            lider_rov_id = None
+            for i, sistem in enumerate(self.sistemler):
+                if hasattr(sistem, 'rov') and sistem.rov.role == 1:
+                    lider_rov_id = i
+                    break
+            if lider_rov_id is None:
+                print("❌ [HEDEF] Lider ROV bulunamadı!")
+                return None
+            target_rov_id = lider_rov_id
         
-        # Hedef pozisyonunu kaydet (z her zaman 0 - su üstünde)
-        self.hedef_pozisyon = (x, y, 0)
+        # Hedefi hedefleyen ROV'a git komutu (Sim formatında)
+        self.git(target_rov_id, x, y, z, ai=True)
         
-        # Lider ROV'u bul
-        lider_rov_id = None
-        for i, sistem in enumerate(self.sistemler):
-            if hasattr(sistem, 'rov') and sistem.rov.role == 1:
-                lider_rov_id = i
-                break
+        # Görsel ve harita sadece lider hedefi için güncellenir (rov_id verilmediğinde)
+        if rov_id is None:
+            self.hedef_pozisyon = (x, y, z)
+            ursina_pos = (x, y, z)
+            self._hedef_gorsel_olustur(*ursina_pos)
+            if self.ortam_ref and hasattr(self.ortam_ref, 'harita'):
+                self.ortam_ref.harita.hedef_pozisyon = (x, y)
+            depth_msg = "Su üstünde" if z >= 0 else f"{abs(z):.1f} m derinlik"
+            print(f"✅ [HEDEF] Lider hedefi güncellendi: ({x:.2f}, {y:.2f}, {z:.2f}) - {depth_msg}. Takipçiler de aynı hedefe gidiyor.")
+        else:
+            depth_msg = "Su üstünde" if z >= 0 else f"{abs(z):.1f} m derinlik"
+            print(f"✅ [HEDEF] ROV-{rov_id} hedefi: ({x:.2f}, {y:.2f}, {z:.2f}) - {depth_msg}.")
         
-        if lider_rov_id is None:
-            print("❌ [HEDEF] Lider ROV bulunamadı!")
-            return None
-        
-        # Sadece liderin hedefini güncelle (Sim formatında)
-        # filo.git() artık Sim formatında çalışıyor: (x, y, z)
-        self.git(lider_rov_id, x, y, z, ai=True)
-        
-        # Hedef görselini oluştur/güncelle (Ursina formatına dönüştür)
-        ursina_pos = (x, y, z)
-        self._hedef_gorsel_olustur(*ursina_pos)
-        
-        # Haritaya hedefi ekle (Matplotlib - ana thread'de olmalı)
-        if self.ortam_ref and hasattr(self.ortam_ref, 'harita'):
-            self.ortam_ref.harita.hedef_pozisyon = (x, y)
-        
-        print(f"✅ [HEDEF] Lider hedefi güncellendi: ({x:.2f}, {y:.2f}, 0) - Su üstünde. Takipçiler de aynı hedefe gidiyor.")
-        
-        # Hedef koordinatlarını döndür
-        return (x, y, 0)
+        return (x, y, z)
 
     def _formasyon_gecerli_mi(self, test_points, hull, formasyon_aralik):
         """Wrapper: HullManager'a yönlendirir (geriye dönük uyumluluk için)."""
@@ -1260,23 +1289,26 @@ class Filo:
         """Harita penceresini açar, kapatır veya görünürlük ayarlarını yapar."""
         return self.helper.harita(goster=goster, convex=convex, a_star=a_star)
     
-    def minimap(self, durum=True, convex=True, a_star=True):
+    def minimap(self, durum=True, convex=True, a_star=True, scale=None, grid=None):
         """
         Minimap'i açar, kapatır veya durumunu döndürür.
         Harita fonksiyonunun tüm işlevlerine sahiptir.
-        
+
         Args:
             durum: True/False - Minimap'i aç/kapat (None ise toggle)
             convex: True/False - Convex hull'u göster/gizle
             a_star: True/False - A* yolunu göster/gizle
-        
+            scale: Çarpan (1=taban 0.45, 2=2 katı, 0.1=4.5 vb.); verilirse boyut dinamik güncellenir
+            grid: Grid sayısı (None=varsayılan GRID_UNIT m; N=toplam N aralık, 1 grid=(2*havuz)/N m).
+                  Minimap üzerinde "1 grid=X m" ve ölçek bilgisi yazılır.
+
         Örnekler:
-            filo.minimap()  # Toggle (aç/kapat)
+            filo.minimap()  # Toggle (aç/kapat), varsayılan grid
             filo.minimap(True)  # Aç
-            filo.minimap(False)  # Kapat
-            filo.minimap(True, convex=True, a_star=True)  # Aç ve her şeyi göster
+            filo.minimap(grid=10)  # 10 aralık, 1 grid = (2*havuz)/10 m
+            filo.minimap(scale=2, grid=8)  # 2 kat büyük, 8 aralık
         """
-        return self.helper.minimap(durum=durum, convex=convex, a_star=a_star)
+        return self.helper.minimap(durum=durum, convex=convex, a_star=a_star, scale=scale, grid=grid)
 
     def a_star(self, start=None, goal=None, safety_margin=15.0, **kwargs):
         """
@@ -1353,10 +1385,6 @@ class TemelGNC:
         
         # Helper instance for complex calculations
         self.helper = TemelGNCHelper(rov_entity, filo_ref, self)
-        
-        # GAT Manevra Yöneticisi - Filo referansı ile initialize et
-        # ROV ID dinamik olarak guncelle() içinde bulunacak
-        self.gat_manevra = GATManevraYoneticisi(filo_ref, None) if filo_ref else None 
 
     def hedef_atama(self, x, y, z):
         self.hedef = Vec3(x, y, z)
@@ -1375,16 +1403,22 @@ class TemelGNC:
         return self.helper.guncelle(gat_kodu=gat_kodu)
 
     def _hedefe_varis_islemleri(self, fark):
-        """Hedefe ulaşıldığında yapılacak işlemler."""
-        self.rov.velocity *= 0.1
-        self.helper.yaw_ayarla(fark, ani=True)  # Son düzeltme
-        
-        # Çoklu nokta geçiş mantığı (Filo ref üzerinden)
+        """Hedefe ulaşıldığında yapılacak işlemler. Sonraki nokta yoksa hedefi temizler, hızı sıfırlar ve log basar."""
+        # Çoklu nokta geçiş mantığı: sonraki waypoint varsa ona geç, bu frame'de durma
         if self.filo_ref:
-            self._siradaki_noktaya_gec()
+            had_next = self._siradaki_noktaya_gec()
+            if had_next:
+                return
+        # Tek nokta veya son nokta: hedefi kaldır, dur, otonom sürüşü sonlandır
+        rov_id = self.filo_ref.sistemler.index(self) if self.filo_ref else None
+        self.hedef = None
+        self.rov.velocity = Vec3(0, 0, 0)
+        self.ai_aktif = False
+        id_msg = f"ROV-{rov_id}" if rov_id is not None else "ROV"
+        print(f"✅ [FİLO] {id_msg} Hedefe ulaştı.")
 
     def _siradaki_noktaya_gec(self):
-        """Çoklu nokta takibinde sonraki noktaya geçer."""
+        """Çoklu nokta takibinde sonraki noktaya geçer. Sonraki nokta atandıysa True, yoksa False döner."""
         try:
             my_id = self.filo_ref.sistemler.index(self)
             nokta_listesi = self.filo_ref._git_nokta_listesi.get(my_id)
@@ -1395,11 +1429,13 @@ class TemelGNC:
                 nxt = nokta_listesi[yeni_indeks]
                 self.filo_ref._git_mevcut_nokta_indeksi[my_id] = yeni_indeks
                 self.hedef = Vec3(nxt[0], nxt[1], self.hedef.z)
+                return True
             elif nokta_listesi:
                 # Liste bitti
                 self.filo_ref._git_nokta_listesi.pop(my_id, None)
-        except:
+        except Exception:
             pass
+        return False
 
     def _hiz_hesapla(self, mesafe: float) -> float:
         """Hedefe yaklaşırken hızı azaltır (wrapper for helper)."""
@@ -1419,148 +1455,5 @@ class TemelGNC:
             guc: Güç çarpanı (varsayılan: 0.4)
         """
         self.helper.vektor_to_motor_sim(v_sim, guc=guc)
-
-
-# ==========================================
-# YENİ SINIF: GAT MANEVRA YÖNETİCİSİ (KACIN)
-# ==========================================
-class GATManevraYoneticisi:
-    """
-    GAT (AI) tahminlerine göre özel kaçınma manevraları ve vektörleri üretir.
-    
-    GAT Kodları:
-    0: OK -> Normal Seyir (Hedefe doğru normal hızda git)
-    1: ENGEL -> Yumuşak Kaçınma (Hızı azalt, yanlamasına git, lidar'a göre yön seç)
-    2: CARPISMA -> Acil Durum (Tam geri, sert dönüş, rastgele sağ/sol kırma)
-    3: KOPUK -> İletişim Kopması (Dur, yukarı çık, iletişimi yeniden kurmaya çalış)
-    4: UZAK -> Liderden Uzaklaşma (Hızı artır, lideri yakalamaya çalış)
-    """
-    def __init__(self, filo_ref, rov_id):
-        """
-        Initialize GAT Manevra Yöneticisi.
-        
-        Args:
-            filo_ref: Filo referansı (lidar verilerine erişim için)
-            rov_id: ROV ID (lidar verilerini almak için)
-        """
-        self.filo_ref = filo_ref
-        self.rov_id = rov_id
-    
-    def manevra_hesapla(self, gat_kodu, hedef_vektoru):
-        """
-        GAT koduna göre nihai hareket vektörünü ve hız çarpanını döndürür.
-        
-        Args:
-            gat_kodu: GAT tahmin kodu (0=OK, 1=ENGEL, 2=CARPISMA, 3=KOPUK, 4=UZAK)
-            hedef_vektoru: Hedefe doğru hareket vektörü (Sim formatında)
-        
-        Returns:
-            tuple: (final_vektor, hiz_carpani, manevra_adi)
-        """
-        # Varsayılan değerler (Normal Seyir - Kod 0)
-        final_vektor = hedef_vektoru
-        hiz_carpani = 1.0
-        manevra_adi = "NORMAL"
-
-        # GAT Kodu 0: OK (Normal Seyir)
-        if gat_kodu == 0:
-            manevra_adi = "NORMAL"
-            hiz_carpani = 1.0
-            final_vektor = hedef_vektoru
-
-        # GAT Kodu 1: ENGEL (Yakınlarda engel var, dikkatli ol)
-        elif gat_kodu == 10:
-            manevra_adi = "YUMUSAK_KACIS"
-            hiz_carpani = 0.6  # Hızı %60'a düşür
-            
-            # Lidar verilerine bakıp boş tarafa yönelme
-            if self.filo_ref and self.rov_id is not None:
-                lidar_sag = self.filo_ref.get(self.rov_id, 'lidar', taraf=1) or 100
-                lidar_sol = self.filo_ref.get(self.rov_id, 'lidar', taraf=2) or 100
-            else:
-                lidar_sag = 100
-                lidar_sol = 100
-            
-            # Boş olan tarafa ek vektör ekle (sağ=+X, sol=-X)
-            kacis_yonu = 1 if lidar_sol > lidar_sag else -1
-            ek_vektor = Vec3(kacis_yonu * 1.5, 0, 0)  # Yana doğru it
-            
-            # Hedefle kaçışı harmanla (%40 hedef, %60 kaçış)
-            final_vektor = (hedef_vektoru * 0.4) + (ek_vektor * 0.6)
-            
-            # Biraz yukarı çık (engelden uzaklaşmak için)
-            # Sim formatında: Z=derinlik, yukarı çıkmak için Z'yi azalt (negatif)
-            final_vektor.z -= 0.3
-            final_vektor = final_vektor.normalized() if final_vektor.length() > 0.01 else hedef_vektoru
-
-        # GAT Kodu 2: CARPISMA (Çok kritik, hemen uzaklaş)
-        elif gat_kodu == 20:
-            manevra_adi = "ACIL_GERI"
-            hiz_carpani = 0.8  # Kaçarken hızlı olmalı ama kontrollü
-            
-            # Tam geri vektörü (Y ekseni tersi - Sim formatında Y=ileri, -Y=geri)
-            geri_vektor = Vec3(0, -2.0, 0) 
-            
-            # Rastgele sağ/sol kırarak gerile (Sıkışmayı önler)
-            kirma = Vec3(random.uniform(-1, 1), 0, 0)
-            
-            # Yukarı çık (engelden uzaklaşmak için)
-            # Sim formatında: Z=derinlik, yukarı çıkmak için Z'yi azalt (negatif)
-            yukari_vektor = Vec3(0, 0, -0.5)  # Sim formatında Z=derinlik, yukarı için negatif
-            
-            # Hedefi tamamen yok say, sadece kaç
-            final_vektor = geri_vektor + kirma + yukari_vektor
-            final_vektor = final_vektor.normalized() if final_vektor.length() > 0.01 else geri_vektor
-
-        # GAT Kodu 4: UZAK (Liderden uzaklaşma, hızı artır)
-        elif gat_kodu == 40:
-            manevra_adi = "UZAK_HIZLI"
-            hiz_carpani = 1.3  # Hızı %30 artır (lideri yakalamak için)
-            
-            # Hedefe doğru daha hızlı git
-            final_vektor = hedef_vektoru
-            
-            # Eğer lider varsa ve çok uzaksa, direkt lider yönüne git
-            if self.filo_ref and self.rov_id is not None:
-                try:
-                    # Lider ROV'u bul
-                    lider_id = None
-                    for i, gnc in enumerate(self.filo_ref.sistemler):
-                        if hasattr(gnc, 'rov') and gnc.rov.role == 1:
-                            lider_id = i
-                            break
-                    
-                    if lider_id is not None and lider_id != self.rov_id:
-                        lider_gps = self.filo_ref.get(lider_id, 'gps')
-                        mevcut_gps = self.filo_ref.get(self.rov_id, 'gps')
-                        
-                        if lider_gps is not None and mevcut_gps is not None:
-                            # GPS koordinatları Ursina formatında, Sim formatına dönüştür
-                            lider_sim = Koordinator.ursina_to_sim(lider_gps[0], lider_gps[1], lider_gps[2])
-                            mevcut_sim = Koordinator.ursina_to_sim(mevcut_gps[0], mevcut_gps[1], mevcut_gps[2])
-                            
-                            # Lider yönüne doğru vektör hesapla (Sim formatında)
-                            lider_vektor_sim = Vec3(
-                                lider_sim[0] - mevcut_sim[0],
-                                lider_sim[1] - mevcut_sim[1],
-                                lider_sim[2] - mevcut_sim[2]
-                            )
-                            
-                            if lider_vektor_sim.length() > 0.01:
-                                # Lider yönüne öncelik ver (%70 lider, %30 hedef)
-                                final_vektor = (lider_vektor_sim.normalized() * 0.7) + (hedef_vektoru * 0.3)
-                                final_vektor = final_vektor.normalized() if final_vektor.length() > 0.01 else hedef_vektoru
-                except Exception:
-                    # Hata durumunda normal hedef vektörünü kullan
-                    pass
-
-        # Bilinmeyen kod (varsayılan davranış)
-        else:
-            manevra_adi = "BILINMEYEN"
-            hiz_carpani = 1.0
-            final_vektor = hedef_vektoru
-
-        return final_vektor, hiz_carpani, manevra_adi
-
 
 
