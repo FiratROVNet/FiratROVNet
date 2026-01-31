@@ -1352,94 +1352,174 @@ class ROV(Entity):
 from ursina import *
 import numpy as np
 
-
 class Minimap(Entity):
     """
-    Profesyonel Navigasyon Sistemi - Chevron İkonları ve Teknik Grid
+    Gelişmiş HUD Radar ve Navigasyon Haritası.
+    Matplotlib yerine Ursina UI kullanır (GPU Tabanlı, 0 FPS kaybı).
     """
-    def __init__(self, ortam_ref, filo_ref=None, **kwargs):
+    def __init__(self, ortam_ref, scale=0.30, pozisyon='bottom_right', **kwargs):
+        # Konumlandırma Mantığı
+        if pozisyon == 'bottom_right':
+            pos = window.bottom_right + Vec2(-scale/2 - 0.02, scale/2 + 0.02)
+        else:
+            pos = (0, 0)
+
         super().__init__(
             parent=camera.ui,
             model='quad',
-            color=color.rgba(15, 15, 15, 200), # Yarı şeffaf modern koyu arka plan
-            scale=(0.35, 0.35),
-            position=(0.68, 0.30),
+            color=color.rgba(255, 255, 255, 0.1),  # Beyaz, %25 saydam (alpha ≈ 0.75)
+            scale=(scale, scale),
+            position=pos,
+            origin=(0, 0),
             **kwargs
         )
+
         self.ortam_ref = ortam_ref
-        self.filo_ref = filo_ref
         self.havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
         
-        # 'cone' hatasını çözen özel OK (Chevron) Mesh'i
-        # Line mode kullanarak kapalı çokgen oluştur (triangle mode vertex sayısı sorunu çözüldü)
-        self.rov_mesh = Mesh(
-            vertices=[
-                (0, 0.5, 0),       # Burun
-                (-0.3, -0.4, 0),   # Sol kanat
-                (0, -0.15, 0),     # İç girinti
-                (0.3, -0.4, 0),    # Sağ kanat
-                (0, 0.5, 0)        # Kapanış (kapalı çokgen için)
-            ],
-            mode='line',
-            thickness=3,  # Kalın çizgi
-            static=True
-        )
-
-        self.rov_gostergeleri = {}
-        self.grid_gostergeleri = []
-        self.label_entities = []
+        # --- Katmanlar (Z-Order) ---
+        # Arka Plan (-0.0) -> Grid (-0.1) -> Adalar (-0.2) -> Yollar (-0.3) -> ROV (-0.4) -> Engeller (-0.5)
         
-        self.goster_a_star = False
-        self.goster_convex = False
+        # Sınır Çizgisi (Border)
+        self.border = Entity(parent=self, model='quad', color=color.white, scale=(1.02, 1.02), z=0.01, alpha=0.5)
         
-        # İlk kurulum
-        self._setup_ui()
-        self.visible = False # Başlangıçta gizli
-
-    def _setup_ui(self):
-        """Grid hatlarını, sınırları ve koordinat yazılarını oluşturur."""
-        for e in self.grid_gostergeleri + self.label_entities:
-            destroy(e)
-        self.grid_gostergeleri = []
-        self.label_entities = []
-
-        # 1. Havuz Dış Çerçevesi (Modern Cam Göbeği)
-        border_color = color.cyan
-        thickness = 0.005
-        # Üst-Alt-Sağ-Sol Sınırlar
-        self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(1, thickness), position=(0, 0.5, -0.01), color=border_color))
-        self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(1, thickness), position=(0, -0.5, -0.01), color=border_color))
-        self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(thickness, 1), position=(0.5, 0, -0.01), color=border_color))
-        self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(thickness, 1), position=(-0.5, 0, -0.01), color=border_color))
-
-        # 2. Teknik Grid (Her 50 birimde bir)
-        step = 50
-        limit = int(self.havuz_genisligi)
-        grid_alpha = 40 # 0-255 arası şeffaflık
+        # Dinamik Nesne Referansları
+        self.rov_ikonlari = {}      # {id: Entity}
+        self.engel_noktalari = []   # [Entity, ...]
+        self.statik_nesneler = []   # [Entity, ...] (Adalar, Grid)
         
-        for i in range(-limit, limit + 1, step):
-            pos = i / (self.havuz_genisligi * 2)
+        # Çizgi Meshleri (A* ve Hull için)
+        self.path_entity = None
+        self.hull_entity = None
+        
+        # Başlangıç Kurulumu
+        self._grid_olustur()
+        self._adalari_ciz()
+        
+        # Durum
+        self.visible = False
+
+    def dunya_to_harita(self, x, z):
+        """
+        Dünya koordinatlarını (Metre) Harita lokal koordinatlarına (-0.5, 0.5) çevirir.
+        Ursina UI'da Y ekseni yukarıdır, bu yüzden Dünya Z'si Harita Y'si olur.
+        """
+        # Ölçekleme faktörü: Havuzun toplam genişliği (genislik * 2)
+        factor = 1.0 / (self.havuz_genisligi * 2)
+        mx = x * factor
+        my = z * factor
+        return Vec3(mx, my, 0)
+
+    def _grid_olustur(self):
+        """Radar görünümü için grid çizgileri ve eksenleri oluşturur."""
+        # Ana Eksenler (X ve Y)
+        self.statik_nesneler.append(Entity(parent=self, model='quad', scale=(1, 0.005), color=color.rgba(255,255,255,100), z=-0.1))
+        self.statik_nesneler.append(Entity(parent=self, model='quad', scale=(0.005, 1), color=color.rgba(255,255,255,100), z=-0.1))
+        
+        # Dairesel Menzil Çizgileri (%33, %66, %100)
+        for r in [0.33, 0.66, 1.0]:
+            self.statik_nesneler.append(Entity(
+                parent=self,
+                model=Circle(resolution=60, radius=0.5 * r, mode='line', thickness=1),
+                scale=1,
+                color=color.rgba(255,255,255,30),
+                z=-0.1
+            ))
+
+    def _adalari_ciz(self):
+        """Simülasyondaki adaları haritada kahverengi daireler olarak gösterir."""
+        if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
+            for pos in self.ortam_ref.island_positions:
+                # Format: [x, z, radius] veya [x, z]
+                x, z = pos[0], pos[1]
+                r = pos[2] if len(pos) > 2 else 10.0
+                
+                # Konum ve Ölçek Hesapla
+                map_pos = self.dunya_to_harita(x, z)
+                # Yarıçap ölçeği (Harita 1 birim = 2*havuz_genisligi)
+                map_scale = (r * 2) / (self.havuz_genisligi * 2)
+                
+                ada = Entity(
+                    parent=self,
+                    model='circle',
+                    color=color.hex('#8B5A3C'), # Kahverengi
+                    position=(map_pos.x, map_pos.y, -0.2),
+                    scale=(map_scale, map_scale),
+                    alpha=0.8
+                )
+                self.statik_nesneler.append(ada)
+
+    def update_hull(self, points):
+        """
+        Convex Hull (Güvenlik Alanı) çizgilerini çizer.
+        points: Numpy array veya liste [[x, z], ...]
+        """
+        if self.hull_entity:
+            destroy(self.hull_entity)
+            self.hull_entity = None
             
-            # Dikey ve Yatay Grid Çizgileri
-            self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(0.002, 1), position=(pos, 0, -0.005), color=color.rgba(255,255,255,grid_alpha)))
-            self.grid_gostergeleri.append(Entity(parent=self, model='quad', scale=(1, 0.002), position=(0, pos, -0.005), color=color.rgba(255,255,255,grid_alpha)))
-            
-            # Koordinat Etiketleri
-            if i % 100 == 0 or abs(i) == limit:
-                # X ekseni (Alt)
-                self.label_entities.append(Text(text=f"{i}", parent=self, position=(pos, -0.55), scale=0.6, color=color.gray, origin=(0,0)))
-                # Y ekseni (Sol)
-                self.label_entities.append(Text(text=f"{i}", parent=self, position=(-0.58, pos), scale=0.6, color=color.gray, origin=(0,0)))
-
-    def update(self):
-        if not self.visible or not self.ortam_ref:
+        if points is None or len(points) < 3:
             return
 
-        # Havuz boyutu değişirse haritayı yeniden çiz
-        mevcut_limit = getattr(self.ortam_ref, 'havuz_genisligi', 200)
-        if mevcut_limit != self.havuz_genisligi:
-            self.havuz_genisligi = mevcut_limit
-            self._setup_ui()
+        # Noktaları harita koordinatlarına çevir
+        verts = []
+        for p in points:
+            # Gelen veri formatı kontrolü
+            px = p[0]
+            pz = p[1] if len(p) > 1 else 0
+            
+            # Local koordinata çevir
+            mp = self.dunya_to_harita(px, pz)
+            verts.append((mp.x, mp.y, -0.25)) # Z-index: Adaların üstünde, ROV'un altında
+            
+        # Çizgiyi kapat (Son noktayı ilke bağla)
+        verts.append(verts[0])
+
+        self.hull_entity = Entity(
+            parent=self,
+            model=Mesh(vertices=verts, mode='line', thickness=2),
+            color=color.cyan,
+            alpha=0.6
+        )
+
+    def update_path(self, path_points):
+        """
+        A* Yolunu çizer (Yeşil Çizgi).
+        path_points: [(x1, z1), (x2, z2), ...]
+        """
+        if self.path_entity:
+            destroy(self.path_entity)
+            self.path_entity = None
+            
+        if not path_points or len(path_points) < 2:
+            return
+
+        verts = []
+        for p in path_points:
+            mp = self.dunya_to_harita(p[0], p[1])
+            verts.append((mp.x, mp.y, -0.3)) # Z-index: Hull'un üstünde
+
+        self.path_entity = Entity(
+            parent=self,
+            model=Mesh(vertices=verts, mode='line', thickness=3),
+            color=color.lime,
+            alpha=0.9
+        )
+        
+        # Başlangıç ve Bitiş Noktaları
+        # (Bu örnekte basit tutmak için sadece çizgi çiziyoruz)
+
+    def _rov_renk_al(self, rov):
+        """3D ROV'un rengini alır; minimap ikonunda aynı renk kullanılır."""
+        c = getattr(rov, 'color', None)
+        if c is not None and hasattr(c, 'r') and hasattr(c, 'g') and hasattr(c, 'b'):
+            return c
+        return color.orange
+
+    def update(self):
+        """Her karede çalışır: ROV konumlarını günceller."""
+        if not self.visible or not self.ortam_ref:
+            return
 
         # ROV'ları Güncelle
         if hasattr(self.ortam_ref, 'rovs'):
@@ -1447,42 +1527,97 @@ class Minimap(Entity):
             for rov in self.ortam_ref.rovs:
                 rid = getattr(rov, 'id', id(rov))
                 active_ids.add(rid)
-                
-                # Dünya -> Harita dönüşümü (Ursina X, Z -> Harita X, Y)
-                map_x = rov.x / (self.havuz_genisligi * 2)
-                map_y = rov.z / (self.havuz_genisligi * 2) 
-                
-                if rid not in self.rov_gostergeleri:
-                    # Yeni ROV ikonu oluştur
-                    self.rov_gostergeleri[rid] = Entity(
-                        parent=self, 
-                        model=self.rov_mesh, 
-                        scale=0.06,
-                        color=rov.color if hasattr(rov, 'color') else color.orange,
-                        position=(map_x, map_y, -0.02)
-                    )
-                
-                # Pozisyon ve Yön güncelleme
-                self.rov_gostergeleri[rid].position = (map_x, map_y, -0.02)
-                # Ursina rotation_y (dünya) -> Harita rotation_z (2D)
-                # 180 derece ofset ROV'un burnunun doğru yöne bakmasını sağlar
-                self.rov_gostergeleri[rid].rotation_z = -rov.rotation_y + 180
+                rov_renk = self._rov_renk_al(rov)
+                # Yön oku: beyaz (her ROV renginde okunaklı)
+                ok_renk = color.white
 
-            # Silinen ROV'ları haritadan kaldır
-            for rid in list(self.rov_gostergeleri.keys()):
+                target_pos = self.dunya_to_harita(rov.x, rov.z)
+                target_pos.z = -0.4 # En üstte (Z negatif bize yakın demek UI'da)
+
+                if rid not in self.rov_ikonlari:
+                    # ROV Gövdesi (Daire) - 3D ile aynı renk
+                    govde = Entity(parent=self, model='circle', scale=0.04, color=rov_renk, position=target_pos)
+                    # Yön Oku (yön göstergesi, açık tonda)
+                    ok = Entity(parent=govde, model='quad', scale=(0.2, 0.8), y=0.4, color=ok_renk)
+                    self.rov_ikonlari[rid] = govde
+                else:
+                    current_entity = self.rov_ikonlari[rid]
+                    current_entity.color = rov_renk
+                    if current_entity.children:
+                        current_entity.children[0].color = ok_renk
+
+                # Pozisyonu yumuşak güncelle (Lerp)
+                current_entity = self.rov_ikonlari[rid]
+                current_entity.position = lerp(current_entity.position, target_pos, time.dt * 15)
+                
+                # Rotasyonu güncelle (Simülasyon Rotation Y -> Harita Rotation Z)
+                # Simülasyon 0 derece = İleri (Z+). Harita 0 derece = Yukarı (Y+). Uyumlular.
+                # Ancak Ursina dönüş yönleri farklı olabilir, -rotasyon genelde çözer.
+                current_entity.rotation_z = -rov.rotation_y
+
+            # Silinenleri Temizle
+            for rid in list(self.rov_ikonlari.keys()):
                 if rid not in active_ids:
-                    destroy(self.rov_gostergeleri[rid])
-                    del self.rov_gostergeleri[rid]
+                    destroy(self.rov_ikonlari[rid])
+                    del self.rov_ikonlari[rid]
+
+    def engel_ekle(self, x, z):
+        """engel_bul() fonksiyonundan gelen tespitleri kırmızı nokta olarak ekler."""
+        if not self.visible: return
+        
+        pos = self.dunya_to_harita(x, z)
+        # Harita sınırları içinde mi? (-0.5 ile 0.5 arası)
+        if abs(pos.x) > 0.5 or abs(pos.y) > 0.5: return
+        
+        # Nokta Ekle
+        nokta = Entity(
+            parent=self,
+            model='circle',
+            scale=0.015,
+            color=color.red,
+            position=(pos.x, pos.y, -0.35),
+            alpha=0.8
+        )
+        self.engel_noktalari.append(nokta)
+        
+        # Performans: Çok fazla nokta varsa eskileri sil (FIFO)
+        if len(self.engel_noktalari) > 150:
+            eski = self.engel_noktalari.pop(0)
+            destroy(eski)
+
+    def temizle_engeller(self):
+        for e in self.engel_noktalari:
+            destroy(e)
+        self.engel_noktalari.clear()
 
     def goster(self, durum=True, convex=False, a_star=False):
-        """filo.minimap() tarafından çağrılan ana fonksiyon"""
-        self.visible = bool(durum)
-        self.goster_convex = bool(convex)
-        self.goster_a_star = bool(a_star)
-        
-        status = "AÇIK" if self.visible else "KAPALI"
-        if getattr(self.ortam_ref, "verbose", False):
-            print(f"📡 [RADAR] Sistem: {status} | Havuz: {self.havuz_genisligi}m")
+        """Görünürlüğü ayarlar. convex/a_star Harita.update() ile senkronize edilir; API uyumluluğu için kabul edilir."""
+        self.visible = durum
+        # Çocukları da gizle/göster (Ursina bazen bunu otomatik yapmayabilir parent UI ise)
+        for child in self.children:
+            child.enabled = durum
+        # Açılırken mevcut A* yolunu ve convex çevresini çiz
+        if durum and hasattr(self.ortam_ref, 'harita') and self.ortam_ref.harita:
+            harita = self.ortam_ref.harita
+            path = getattr(harita, 'a_star_yolu', None)
+            if path and len(path) >= 2:
+                try:
+                    self.update_path(path)
+                except Exception:
+                    pass
+            # Hesaplanmış convex hull varsa uygun renkte göster (cyan)
+            hull_data = getattr(harita, 'convex_hull_data', None)
+            if hull_data and isinstance(hull_data, dict):
+                points = hull_data.get('points')
+                if points is not None and len(points) >= 3:
+                    try:
+                        import numpy as np
+                        pts = np.asarray(points)
+                        if len(pts.shape) == 2 and pts.shape[1] >= 2:
+                            pts_2d = pts[:, :2].tolist() if pts.shape[1] > 2 else pts.tolist()
+                            self.update_hull(pts_2d)
+                    except Exception:
+                        pass
 # ============================================================
 # HARİTA SİSTEMİ (Matplotlib - Ayrı Pencere)
 # ============================================================
@@ -1503,6 +1638,7 @@ class Harita:
         self.filo_ref = filo_ref  # Filo referansı (ada_cevre için)
         self.pencere_boyutu = pencere_boyutu
         self.manuel_engeller = []  # Elle eklenen engeller [(x_2d, y_2d), ...]
+        self.tespit_edilen_engeller = []  # engel_bul ile tespit edilen noktalar [(x_2d, y_2d), ...] (kırmızı nokta)
         
         # Durum Değişkenleri
         self.gorunur = False
@@ -2024,6 +2160,13 @@ class Harita:
             ey = [p[1] for p in self.manuel_engeller]
             self.ax.scatter(ex, ey, c='red', marker='X', s=80, label="Engel", zorder=10,
                           edgecolors='darkred', linewidths=2)
+
+        # Tespit edilen engeller (engel_bul sonucu — kırmızı noktalar)
+        if self.tespit_edilen_engeller:
+            tx = [p[0] for p in self.tespit_edilen_engeller]
+            ty = [p[1] for p in self.tespit_edilen_engeller]
+            self.ax.scatter(tx, ty, c='red', marker='o', s=40, label="Tespit", zorder=10,
+                          edgecolors='darkred', linewidths=1, alpha=0.9)
         
         # Convex Hull Çizimi
         if self.goster_convex:
@@ -2114,6 +2257,8 @@ class Harita:
         legend_items = []
         if self.manuel_engeller:
             legend_items.append('Engel')
+        if self.tespit_edilen_engeller:
+            legend_items.append('Tespit')
         if self.goster_convex and self.convex_hull_data and self.convex_hull_data.get('hull') is not None:
             legend_items.append('Convex Hull')
             legend_items.append('Hull Merkezi')
@@ -2284,6 +2429,12 @@ class Harita:
             if path:
                 self.a_star_yolu = path
                 print(f"✅ [HARITA] A* yolu hesaplandı: {len(path)} nokta")
+                # Minimap açıksa A* rotasını hemen çiz (filo.minimap() ile açılan haritada)
+                if hasattr(self.ortam_ref, 'minimap') and self.ortam_ref.minimap and getattr(self.ortam_ref.minimap, 'visible', False):
+                    try:
+                        self.ortam_ref.minimap.update_path(path)
+                    except Exception:
+                        pass
                 return path
             else:
                 self.a_star_yolu = None
@@ -2334,6 +2485,23 @@ class Harita:
                     print(f"❌ [HARITA] Harita açılırken hata: {e}")
                     import traceback
                     traceback.print_exc()
+
+        # 2.5 Minimap convex hull senkronizasyonu (ana harita kapalı olsa bile minimap açıksa güncelle)
+        if hasattr(self.ortam_ref, 'minimap') and self.ortam_ref.minimap and getattr(self.ortam_ref.minimap, 'visible', False) and self.convex_hull_data:
+            if not hasattr(self, '_minimap_hull_cnt'):
+                self._minimap_hull_cnt = 0
+            self._minimap_hull_cnt += 1
+            if self._minimap_hull_cnt >= 30:
+                self._minimap_hull_cnt = 0
+                try:
+                    points = self.convex_hull_data.get('points')
+                    if points is not None and len(points) >= 3:
+                        pts = np.asarray(points)
+                        if len(pts.shape) == 2 and pts.shape[1] >= 2:
+                            pts_2d = pts[:, :2] if pts.shape[1] > 2 else pts
+                            self.ortam_ref.minimap.update_hull(pts_2d)
+                except Exception:
+                    pass
 
         # 3. Rutin Çizim Güncellemesi
         if self.gorunur and self.fig is not None:
@@ -2496,6 +2664,37 @@ class Harita:
             return True
         
         return False
+
+    def tespit_engelleri_guncelle(self, noktalar_2d, debug=False):
+        """
+        engel_bul ile tespit edilen engelleri haritada kırmızı noktalar olarak günceller.
+        debug=True ise önce eski tespit noktalarını siler, sonra yenilerini ekler.
+        noktalar_2d: [(x, y), ...] simülasyon 2D koordinatları (x = Ursina x, y = Ursina z).
+        """
+        if debug:
+            self.tespit_edilen_engeller.clear()
+        if noktalar_2d:
+            new_list = [(float(p[0]), float(p[1])) for p in noktalar_2d if len(p) >= 2]
+            if debug:
+                self.tespit_edilen_engeller = new_list
+            else:
+                self.tespit_edilen_engeller.extend(new_list)
+        if self.gorunur and self.fig is not None:
+            try:
+                self._ciz()
+                self.fig.canvas.draw_idle()
+            except Exception as e:
+                print(f"⚠️ [HARITA] Tespit engelleri çizilirken hata: {e}")
+
+    def tespit_engelleri_temizle(self):
+        """Haritadaki tespit edilen engel noktalarını (kırmızı noktalar) siler."""
+        self.tespit_edilen_engeller.clear()
+        if self.gorunur and self.fig is not None:
+            try:
+                self._ciz()
+                self.fig.canvas.draw_idle()
+            except Exception as e:
+                print(f"⚠️ [HARITA] Tespit engelleri temizlenirken hata: {e}")
     
     def temizle(self):
         """Haritayı temizler (elle eklenen engelleri siler)"""

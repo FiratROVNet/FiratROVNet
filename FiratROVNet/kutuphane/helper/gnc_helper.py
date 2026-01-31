@@ -212,6 +212,227 @@ class FiloHelper:
 
         return obstacles
 
+    def _engel_bul_cache_sonuc(self, rov, rov_id: int, menzil: float) -> list:
+        """
+        Ana thread dışından engel_bul çağrıldığında: ROV'un sonar/lidar önbelleğinden
+        (son_sonar_mesafesi, son_lidar_mesafeleri) engel listesi oluşturur. Raycast atılmaz.
+        """
+        try:
+            from ursina import Vec3
+        except ImportError:
+            return []
+        sonar = getattr(rov, 'son_sonar_mesafesi', -1)
+        lidar = getattr(rov, 'son_lidar_mesafeleri', None)
+        if lidar is None:
+            lidar = {}
+        # Önbellekte geçerli mesafe var mı?
+        lidar_0 = lidar.get(0, -1)
+        lidar_1 = lidar.get(1, -1)
+        lidar_2 = lidar.get(2, -1)
+        if sonar < 0 and lidar_0 < 0 and lidar_1 < 0 and lidar_2 < 0:
+            return []
+        # ROV konumu ve yaw (derece) — ana engel_bul ile aynı koordinat dönüşümü
+        origin = Vec3(rov.world_position.x, rov.world_position.y, rov.world_position.z) + Vec3(0, 0.5, 0)
+        yaw_deg = 0.0
+        if hasattr(rov, 'rotation') and rov.rotation is not None:
+            if hasattr(rov.rotation, 'y'):
+                yaw_deg = float(rov.rotation.y)
+            elif isinstance(rov.rotation, (tuple, list)) and len(rov.rotation) >= 2:
+                yaw_deg = float(rov.rotation[1])
+        yaw_rad = math.radians(yaw_deg)
+        c, s = math.cos(yaw_rad), math.sin(yaw_rad)
+        # Ursina: Z=ileri, X=sağ, Y=yukarı. Lokal ileri=(0,0,1), sag=(1,0,0), sol=(-1,0,0)
+        def global_vektor(lx, ly, lz):
+            gx = lx * c + lz * s
+            gz = -lx * s + lz * c
+            return Vec3(gx, ly, gz).normalized()
+        ileri = global_vektor(0, 0, 1)
+        sag = global_vektor(1, 0, 0)
+        sol = global_vektor(-1, 0, 0)
+        sonuclar = []
+        if sonar > 0 and sonar <= menzil:
+            sonuclar.append({
+                'koordinat': origin + ileri * sonar,
+                'mesafe': sonar,
+                'vektor': ileri,
+                'yon': 'ileri',
+            })
+        if lidar_0 > 0 and lidar_0 <= menzil:
+            sonuclar.append({
+                'koordinat': origin + ileri * lidar_0,
+                'mesafe': lidar_0,
+                'vektor': ileri,
+                'yon': 'on_lidar',
+            })
+        if lidar_1 > 0 and lidar_1 <= menzil:
+            sonuclar.append({
+                'koordinat': origin + sol * lidar_1,
+                'mesafe': lidar_1,
+                'vektor': sol,
+                'yon': 'sol_lidar',
+            })
+        if lidar_2 > 0 and lidar_2 <= menzil:
+            sonuclar.append({
+                'koordinat': origin + sag * lidar_2,
+                'mesafe': lidar_2,
+                'vektor': sag,
+                'yon': 'sag_lidar',
+            })
+        return sonuclar
+
+    def engel_bul(self, rov_id: int, menzil: float = 10.0, debug: bool = False, _sonuc_yazdir: bool = False) -> list:
+        """
+        ROV için çevresel tarama (sonar/lidar benzeri). İleri, sağ, sol, sağ-çapraz,
+        sol-çapraz, yukarı, aşağı yönlerinde raycast atar; engellerin dünya koordinatlarını döndürür.
+        debug=True ise çarpışma noktalarında kırmızı küre oluşturur (önceki debug noktaları temizlenir).
+        Ursina/Panda3D thread-safe değildir: Ana thread dışından (örn. konsol) çağrılırsa raycast
+        atılmaz; ROV'un sonar/lidar önbelleğinden engel listesi oluşturulur (filo.get(0,\"sonar\") ile aynı kaynak).
+        """
+        # --- ROV ve Filo kontrolleri (hem ana thread hem konsol path için) ---
+        if not getattr(self.filo, 'sistemler', None) or rov_id < 0 or rov_id >= len(self.filo.sistemler):
+            return []
+        gnc_sistem = self.filo.sistemler[rov_id]
+        rov = getattr(gnc_sistem, 'rov', None)
+        if rov is None:
+            return []
+
+        # --- 1. Thread güvenliği: Ana thread değilse raycast atma; ROV önbelleğindeki sonar/lidar ile engel listesi döndür ---
+        if not getattr(self.filo, '_is_main_thread', lambda: True)():
+            _cache = self._engel_bul_cache_sonuc(rov, rov_id, menzil)
+            if _cache and getattr(self.filo, 'ortam_ref', None) and getattr(self.filo.ortam_ref, 'harita', None):
+                try:
+                    harita = self.filo.ortam_ref.harita
+                    noktalar_2d = [(s['koordinat'].x, s['koordinat'].z) for s in _cache if s.get('koordinat')]
+                    if noktalar_2d and hasattr(harita, 'tespit_engelleri_guncelle'):
+                        harita.tespit_engelleri_guncelle(noktalar_2d, debug=debug)
+                except Exception:
+                    pass
+            if not getattr(self.filo, '_engel_bul_console_warned', False):
+                self.filo._engel_bul_console_warned = True
+                print("⚠️ [ENGEL_BUL] Konsol thread'den çağrıldı; sonuçlar ROV sonar/lidar önbelleğinden. Canlı raycast için ana thread'de veya simülasyon update döngüsünde çağırın.")
+            return _cache
+
+        # --- 3. Debug yönetimi: Yeni raycast öncesi eski debug Entity'leri yok et, listeyi temizle ---
+        if not hasattr(self.filo, '_debug_noktalari'):
+            self.filo._debug_noktalari = []
+        try:
+            from ursina import destroy
+            for obj in list(self.filo._debug_noktalari):
+                try:
+                    destroy(obj)
+                except Exception:
+                    pass
+            self.filo._debug_noktalari.clear()
+        except ImportError:
+            pass
+
+        # --- Ursina raycast ve görsel için import ---
+        try:
+            from ursina import raycast, Vec3, Entity, color
+        except ImportError:
+            return []
+
+        # --- 4. ROV konumu ve yaw (derece) — rotasyon matrisi ile vektör döndürme ---
+        origin = Vec3(rov.world_position.x, rov.world_position.y, rov.world_position.z) + Vec3(0, 0.5, 0)
+        yaw_deg = 0.0
+        if hasattr(rov, 'rotation') and rov.rotation is not None:
+            if hasattr(rov.rotation, 'y'):
+                yaw_deg = float(rov.rotation.y)
+            elif isinstance(rov.rotation, (tuple, list)) and len(rov.rotation) >= 2:
+                yaw_deg = float(rov.rotation[1])
+        yaw_rad = math.radians(yaw_deg)
+        c, s = math.cos(yaw_rad), math.sin(yaw_rad)
+
+        # --- Lokal yönler (ROV'a göre): Ursina'da X=sağ, Y=yukarı, Z=ileri ---
+        lokal_yonler = [
+            ('ileri', Vec3(0, 0, 1)),
+            ('sag', Vec3(1, 0, 0)),
+            ('sol', Vec3(-1, 0, 0)),
+            ('sag_capraz', Vec3(1, 0, 1).normalized()),
+            ('sol_capraz', Vec3(-1, 0, 1).normalized()),
+            ('yukari', Vec3(0, 1, 0)),
+            ('asagi', Vec3(0, -1, 0)),
+        ]
+
+        # --- Ignore listesi (ROV ve safety_zone) ---
+        ignore_list = [rov]
+        if getattr(rov, 'safety_zone', None) is not None:
+            ignore_list.append(rov.safety_zone)
+        ignore_tuple = tuple(ignore_list)
+
+        sonuclar = []
+        for _ad, lok in lokal_yonler:
+            # Lokal vektörü yaw ile global (yatay düzlem) dönüştür: world_x = lx*c + lz*s, world_z = -lx*s + lz*c, world_y = ly
+            gx = lok.x * c + lok.z * s
+            gz = -lok.x * s + lok.z * c
+            gy = lok.y
+            global_vektor = Vec3(gx, gy, gz)
+            if global_vektor.length() < 0.001:
+                continue
+            global_vektor = global_vektor.normalized()
+
+            try:
+                hit_info = raycast(
+                    origin,
+                    global_vektor,
+                    distance=menzil,
+                    ignore=ignore_tuple,
+                    debug=False,
+                )
+            except Exception:
+                continue
+
+            if hit_info and getattr(hit_info, 'hit', False):
+                mesafe = getattr(hit_info, 'distance', 0.0) or 0.0
+                # Engel koordinatı: raycast world_point varsa onu kullan, yoksa vektörel hesaplama
+                if getattr(hit_info, 'world_point', None) is not None:
+                    koordinat = Vec3(
+                        hit_info.world_point.x,
+                        hit_info.world_point.y,
+                        hit_info.world_point.z,
+                    )
+                else:
+                    koordinat = origin + global_vektor * mesafe
+                sonuclar.append({'koordinat': koordinat, 'mesafe': mesafe, 'vektor': global_vektor, 'yon': _ad})
+
+                # --- Debug: Çarpışma noktasında kırmızı küre ---
+                if debug:
+                    try:
+                        nokta = Entity(
+                            model='sphere',
+                            color=color.red,
+                            scale=0.2,
+                            position=koordinat,
+                            unlit=True,
+                        )
+                        self.filo._debug_noktalari.append(nokta)
+                    except Exception:
+                        pass
+
+        # --- 2. Sonuç gösterimi (callback): invoke ile çağrıldığında sonuçlar konsola yazdırılır ---
+        if _sonuc_yazdir and sonuclar:
+            print(f"✅ [ENGEL_BUL] ROV-{rov_id} — {len(sonuclar)} engel tespit edildi (menzil={menzil}m):")
+            for i, s in enumerate(sonuclar):
+                k = s.get('koordinat')
+                koord_str = f"({k.x:.2f}, {k.y:.2f}, {k.z:.2f})" if k else "—"
+                print(f"   {i+1}. yön={s.get('yon', '—')} mesafe={s.get('mesafe', 0):.2f}m koordinat={koord_str}")
+
+        # --- Haritada tespit edilen engelleri kırmızı noktalar olarak güncelle (Ursina x,z -> harita 2D) ---
+        if sonuclar and getattr(self.filo, 'ortam_ref', None) and getattr(self.filo.ortam_ref, 'harita', None):
+            try:
+                harita = self.filo.ortam_ref.harita
+                noktalar_2d = []
+                for s in sonuclar:
+                    k = s.get('koordinat')
+                    if k is not None and hasattr(k, 'x') and hasattr(k, 'z'):
+                        noktalar_2d.append((k.x, k.z))
+                if noktalar_2d and hasattr(harita, 'tespit_engelleri_guncelle'):
+                    harita.tespit_engelleri_guncelle(noktalar_2d, debug=debug)
+            except Exception as e:
+                pass  # Harita güncellemesi başarısız olursa sessizce devam et
+
+        return sonuclar
+
     def get_100_samples(self, hull_output=None, sample_count=100):
         """
         yeni_hull çıktısındaki noktaları alır ve çevre uzunluğu üzerinden
@@ -1404,7 +1625,7 @@ class FiloHelper:
                 
                 custom_hull = SahteHull(kontur_noktalari_np, yeni_poly)
                 
-                # Haritaya gönder
+                # Haritaya gönder (convex_hull_data; harita otomatik açılmaz — filo.harita() / filo.minimap() ile açılır)
                 if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'harita') and self.filo.ortam_ref.harita:
                     hull_data = {
                         'hull': custom_hull,
@@ -1412,7 +1633,6 @@ class FiloHelper:
                         'center': yeni_hull_merkez
                     }
                     self.filo.ortam_ref.harita.convex_hull_data = hull_data
-                    self.filo.ortam_ref.harita.goster(True, True)
                 
                 return {
                     'hull': custom_hull,

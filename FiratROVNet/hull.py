@@ -512,19 +512,19 @@ class HullManager:
         
         try:
             # 1. Tüm pozisyonlar hull içinde mi?
+            # test_points: Ursina formatında (x, z, y) = (sim_x, sim_z, sim_y)
+            # Hull 2D yatay düzlemde (sim_x, sim_y) ile tanımlı; 2D nokta (tp[0], tp[2])
             for tp in test_points:
-                # formasyon() fonksiyonu (ursina_x, ursina_z, ursina_y) döner.
-                # Bu zaten (Sim X, Sim Y, Sim Z) demektir.
-                # Sadece ilk iki bileşeni (X, Y) kontrol etmek yeterli.
-                if not self.is_point_inside_hull(tp, hull):
+                point_2d = (tp[0], tp[2])  # (sim_x, sim_y)
+                if not self.is_point_inside_hull(point_2d, hull):
                     return False
             
-            # 2. Mesafe kontrolü
+            # 2. Mesafe kontrolü (yatay düzlemde)
             for i in range(len(test_points)):
                 for j in range(i + 1, len(test_points)):
-                    p1 = np.array(test_points[i])
-                    p2 = np.array(test_points[j])
-                    if np.linalg.norm(p1 - p2) < formasyon_aralik:
+                    p1 = (test_points[i][0], test_points[i][2])  # (sim_x, sim_y)
+                    p2 = (test_points[j][0], test_points[j][2])
+                    if np.linalg.norm(np.array(p1) - np.array(p2)) < formasyon_aralik:
                         return False
             return True
         except Exception as e:

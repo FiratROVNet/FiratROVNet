@@ -115,6 +115,11 @@ class Filo:
         self._git_mevcut_nokta_indeksi = {}  # {rov_id: 0, ...} - Hangi noktaya gidiyor
         self._git_hedef_mesafe_toleransi = 2.0  # Hedefe ulaşma toleransı (metre)
         
+        # engel_bul(debug=True) için görsel debug noktaları (kırmızı küreler)
+        self._debug_noktalari = []
+        # engel_bul konsol thread'den çağrıldığında uyarıyı sadece bir kez bas
+        self._engel_bul_console_warned = False
+        
         # Helper instance for complex calculations
         self.helper = FiloHelper(self)
     
@@ -747,6 +752,22 @@ class Filo:
             result = filo.ConvexHull(points, test_point, margin=0.2)
         """
         return self.helper.points()
+
+    def engel_bul(self, rov_id: int, menzil: float = 10.0, debug: bool = False) -> list:
+        """
+        Belirtilen ROV için çevresel tarama yapar (sonar/lidar benzeri).
+        İleri, sağ, sol, sağ-çapraz, sol-çapraz, yukarı, aşağı yönlerinde raycast atar;
+        tespit edilen engellerin dünya koordinatlarını döndürür.
+        
+        Args:
+            rov_id (int): ROV ID.
+            menzil (float): Tarama menzili (metre, varsayılan 10.0).
+            debug (bool): True ise çarpışma noktalarında kırmızı küre gösterir.
+        
+        Returns:
+            list: [{'koordinat': Vec3(x,y,z), 'mesafe': float, 'vektor': Vec3}, ...]; engel yoksa [].
+        """
+        return self.helper.engel_bul(rov_id=rov_id, menzil=menzil, debug=debug)
     
     def _compute_obstacle_positions(self, rov_id):
         """
@@ -1350,16 +1371,22 @@ class TemelGNC:
         return self.helper.guncelle(gat_kodu=gat_kodu)
 
     def _hedefe_varis_islemleri(self, fark):
-        """Hedefe ulaşıldığında yapılacak işlemler."""
-        self.rov.velocity *= 0.1
-        self.helper.yaw_ayarla(fark, ani=True)  # Son düzeltme
-        
-        # Çoklu nokta geçiş mantığı (Filo ref üzerinden)
+        """Hedefe ulaşıldığında yapılacak işlemler. Sonraki nokta yoksa hedefi temizler, hızı sıfırlar ve log basar."""
+        # Çoklu nokta geçiş mantığı: sonraki waypoint varsa ona geç, bu frame'de durma
         if self.filo_ref:
-            self._siradaki_noktaya_gec()
+            had_next = self._siradaki_noktaya_gec()
+            if had_next:
+                return
+        # Tek nokta veya son nokta: hedefi kaldır, dur, otonom sürüşü sonlandır
+        rov_id = self.filo_ref.sistemler.index(self) if self.filo_ref else None
+        self.hedef = None
+        self.rov.velocity = Vec3(0, 0, 0)
+        self.ai_aktif = False
+        id_msg = f"ROV-{rov_id}" if rov_id is not None else "ROV"
+        print(f"✅ [FİLO] {id_msg} Hedefe ulaştı.")
 
     def _siradaki_noktaya_gec(self):
-        """Çoklu nokta takibinde sonraki noktaya geçer."""
+        """Çoklu nokta takibinde sonraki noktaya geçer. Sonraki nokta atandıysa True, yoksa False döner."""
         try:
             my_id = self.filo_ref.sistemler.index(self)
             nokta_listesi = self.filo_ref._git_nokta_listesi.get(my_id)
@@ -1370,11 +1397,13 @@ class TemelGNC:
                 nxt = nokta_listesi[yeni_indeks]
                 self.filo_ref._git_mevcut_nokta_indeksi[my_id] = yeni_indeks
                 self.hedef = Vec3(nxt[0], nxt[1], self.hedef.z)
+                return True
             elif nokta_listesi:
                 # Liste bitti
                 self.filo_ref._git_nokta_listesi.pop(my_id, None)
-        except:
+        except Exception:
             pass
+        return False
 
     def _hiz_hesapla(self, mesafe: float) -> float:
         """Hedefe yaklaşırken hızı azaltır (wrapper for helper)."""
