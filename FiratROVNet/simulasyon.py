@@ -224,9 +224,12 @@ class ROV(Entity):
         
         # Manuel hareket kontrolü (sürekli hareket için)
         self.manuel_hareket = {
-            'yon': None,  # 'ileri', 'geri', 'sag', 'sol', 'cik', 'bat', 'dur'
+            'yon': None,  # 'ileri', 'geri', 'sag', 'sol', 'cik', 'bat', 'dur', 'yaw'
             'guc': 0.0    # 0.0 - 1.0 arası güç
         }
+        # Eşzamanlı hareket: her eksendeki güç (sadece ilgili eksen move() ile güncellenir)
+        # surge: ileri/geri, sway: sağ/sol, heave: çık/bat, yaw: dönüş hızı (-1..1)
+        self.active_forces = {'surge': 0.0, 'sway': 0.0, 'heave': 0.0, 'yaw': 0.0}
         
         # Engel tespit bilgisi (kesikli çizgi için)
         self.tespit_edilen_engel = None  # En yakın engel referansı
@@ -427,61 +430,71 @@ class ROV(Entity):
         return True
 
     def update(self):
-        # Manuel hareket kontrolü (sürekli hareket için)
+        # Manuel hareket kontrolü (sürekli hareket için) — active_forces ile eşzamanlı hareket
         if self.manuel_hareket['yon'] is not None:
             if self.manuel_hareket['yon'] == 'dur':
-                self.velocity *= FizikSabitleri.VELOCITY_DURMA_CARPANI  # Yavaşça dur (momentum korunumu)
+                # Tüm kuvvetleri sıfırla ve yavaşça dur
+                if hasattr(self, 'active_forces'):
+                    for k in self.active_forces:
+                        self.active_forces[k] = 0.0
+                self.velocity *= FizikSabitleri.VELOCITY_DURMA_CARPANI
                 if self.velocity.length() < FizikSabitleri.VELOCITY_DURMA_ESIGI:
                     self.velocity = Vec3(0, 0, 0)
                     self.manuel_hareket['yon'] = None
                     self.manuel_hareket['guc'] = 0.0
             elif self.manuel_hareket['yon'] == 'yaw':
-                # Yaw rotasyonu için sürekli dönme
-                guc = self.manuel_hareket['guc']
-                if abs(guc) > 0:
-                    # Yaw rotasyonu için rotation.y güncelle
-                    # Güç değeri: 1.0 = saat yönünün tersine, -1.0 = saat yönünde
-                    yaw_hizi = abs(guc) * 90.0  # Derece/saniye (maksimum 90 derece/saniye)
-                    yaw_delta = yaw_hizi * time.dt  # Bu frame'de döndürülecek açı (küçük adım)
-                    
-                    # Mevcut rotation değerini al ve Vec3 olarak ayarla
+                # Yaw: active_forces['yaw'] ile sürekli dönme (derece/saniye)
+                yaw_guc = self.active_forces.get('yaw', 0.0)
+                if abs(yaw_guc) > 0:
+                    yaw_hizi = abs(yaw_guc) * 90.0
+                    yaw_delta = yaw_hizi * time.dt
                     if not hasattr(self, 'rotation') or self.rotation is None:
                         self.rotation = Vec3(0, 0, 0)
                     elif not isinstance(self.rotation, Vec3):
-                        # Tuple veya list ise Vec3'e dönüştür
-                        if isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 3:
-                            self.rotation = Vec3(self.rotation[0], self.rotation[1], self.rotation[2])
-                        else:
-                            self.rotation = Vec3(0, 0, 0)
-                    
-                    # Mevcut rotation değerlerini al
+                        self.rotation = Vec3(self.rotation[0], self.rotation[1], self.rotation[2]) if isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 3 else Vec3(0, 0, 0)
                     current_x = self.rotation.x if isinstance(self.rotation, Vec3) else 0
                     current_y = self.rotation.y if isinstance(self.rotation, Vec3) else 0
                     current_z = self.rotation.z if isinstance(self.rotation, Vec3) else 0
-                    
-                    # Y ekseni etrafında döndür (yaw) - küçük adımlarla
-                    if guc > 0:
-                        # Pozitif güç: saat yönünün tersine (pozitif yaw)
-                        new_y = current_y + yaw_delta
-                    elif guc < 0:
-                        # Negatif güç: saat yönünde (negatif yaw)
-                        new_y = current_y - yaw_delta
-                    else:
-                        new_y = current_y
-                    
-                    # Rotation'ı normalize et (0-360 arası tutmak için)
+                    new_y = current_y + (yaw_delta if yaw_guc > 0 else -yaw_delta)
                     while new_y >= 360:
                         new_y -= 360
                     while new_y < 0:
                         new_y += 360
-                    
-                    # Rotation'ı yeni Vec3 olarak atama (küçük adımlarla güncelleme)
                     self.rotation = Vec3(current_x, new_y, current_z)
-            elif self.manuel_hareket['guc'] > 0:
-                # Sürekli hareket: move metodunu çağır
-                yon = self.manuel_hareket['yon']
-                guc = self.manuel_hareket['guc']
-                self.move(yon, guc)
+            elif self.manuel_hareket['guc'] > 0 or any(self.active_forces.get(k, 0) != 0 for k in ('surge', 'sway', 'heave')):
+                # Hibrit: Manuel kuvvet velocity'e eklenir (AI çıktısı guncelle() ile zaten eklenmiş olabilir)
+                # Final_Force = AI_Output + Manual_Input (vektörel toplama)
+                # Eşzamanlı hareket: active_forces'tan vektör hesapla (surge, sway, heave)
+                af = getattr(self, 'active_forces', {'surge': 0.0, 'sway': 0.0, 'heave': 0.0})
+                surge = af.get('surge', 0.0)
+                sway = af.get('sway', 0.0)
+                heave = af.get('heave', 0.0)
+                yaw_acisi = 0.0
+                if hasattr(self, 'rotation') and self.rotation is not None:
+                    yaw_acisi = self.rotation.y if isinstance(self.rotation, Vec3) else (self.rotation[1] if isinstance(self.rotation, (tuple, list)) and len(self.rotation) >= 2 else 0)
+                yaw_rad = radians(yaw_acisi)
+                # Lokal eksenler (Ursina: X sağ, Z ileri, Y yukarı). İleri = (sin(yaw), 0, cos(yaw)), Sağ = (cos(yaw), 0, -sin(yaw))
+                ileri_x = sin(yaw_rad)
+                ileri_z = cos(yaw_rad)
+                sag_x = cos(yaw_rad)
+                sag_z = -sin(yaw_rad)
+                # Global hareket vektörü = surge*ileri + sway*sağ + heave*yukarı
+                hareket_x = surge * ileri_x + sway * sag_x
+                hareket_z = surge * ileri_z + sway * sag_z
+                hareket_y = heave
+                # Büyüklük 1.0'ı geçerse normalize et (çaprazda motor limitini aşmasın)
+                toplam_len = (hareket_x ** 2 + hareket_z ** 2 + hareket_y ** 2) ** 0.5
+                if toplam_len > 1.0:
+                    hareket_x /= toplam_len
+                    hareket_z /= toplam_len
+                    hareket_y /= toplam_len
+                max_guc = 100.0
+                thrust = max_guc * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
+                self.velocity.x += hareket_x * thrust
+                self.velocity.z += hareket_z * thrust
+                self.velocity.y += hareket_y * thrust
+                if self.velocity.length() > max_guc:
+                    self.velocity = self.velocity.normalized() * max_guc
         
         # --- SENSÖR GÜNCELLEME (Ana Thread'de - Thread-Safe) ---
         # Tüm fiziksel raycast işlemleri burada yapılır

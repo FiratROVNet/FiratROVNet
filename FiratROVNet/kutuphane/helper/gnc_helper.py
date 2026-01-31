@@ -556,7 +556,10 @@ class FiloHelper:
     def hedef_gorsel_olustur(self, x, y, z):
         """
         Hedef pozisyonunu Ursina'da büyük X işareti olarak gösterir.
+        (x, y, z) Ursina koordinatlarıdır (çağıran Koordinator.sim_to_ursina ile geçirir).
         """
+
+        x,y,z=(x,z,y)
         if not self.filo.ortam_ref:
             return
 
@@ -567,11 +570,10 @@ class FiloHelper:
             except:
                 pass
 
-        ursina_pos = (x, z, y)
         from ursina import Entity, color
 
         self.filo.hedef_gorsel = Entity()
-        self.filo.hedef_gorsel.position = ursina_pos
+        self.filo.hedef_gorsel.position = (x, y, z)
 
         x_boyutu = HareketAyarlari.HEDEF_X_BOYUTU
         kalinlik = HareketAyarlari.HEDEF_KALINLIK
@@ -888,8 +890,11 @@ class FiloHelper:
 
     def move(self, rov_id: int, yon: str, guc: float = 1.0) -> None:
         """
-        ROV'a güç bazlı hareket komutu verir (gerçek dünya gibi, gerçekçi fizik ile).
+        ROV'a güç bazlı hareket komutu verir. Eşzamanlı hareket: sadece ilgili eksen güncellenir,
+        diğer eksenler korunur (örn. ileri + sağ = çapraz hareket).
+        State: rov.active_forces = {'surge', 'sway', 'heave', 'yaw'} — her frame ROV.update() bunlardan velocity hesaplar.
         """
+        # --- Hata kontrolleri (mevcut kontroller korunur) ---
         if len(self.filo.sistemler) == 0:
             print("❌ [HATA] GNC sistemleri henüz kurulmamış!")
             print("   💡 Çözüm: filo.ekle() ile GNC sistemleri ekleyin")
@@ -922,56 +927,38 @@ class FiloHelper:
             guc = max(0.0, min(1.0, float(guc)))
 
         try:
-            self.filo.sistemler[rov_id].manuel_kontrol = True
+            # Hibrit kontrol: move() otonom (AI) sistemini kapatmaz; sadece manuel kuvvet hafızasını günceller.
+            # Final_Force = AI_Output + Manual_Input (guncelle() ve ROV.update() içinde vektörel toplanır).
             gnc = self.filo.sistemler[rov_id]
             rov = gnc.rov
 
+            # --- State: active_forces (yoksa oluştur, sadece ilgili eksen güncellenir) ---
+            if not hasattr(rov, 'active_forces') or rov.active_forces is None:
+                rov.active_forces = {'surge': 0.0, 'sway': 0.0, 'heave': 0.0, 'yaw': 0.0}
+
+            # --- dur: Sadece manuel kuvvetleri (active_forces) sıfırla; otonom hedefe dokunulmaz ---
+            if yon == 'dur':
+                for k in rov.active_forces:
+                    rov.active_forces[k] = 0.0
+                if hasattr(rov, 'manuel_hareket'):
+                    rov.manuel_hareket['yon'] = 'dur'
+                    rov.manuel_hareket['guc'] = 0.0
+                # velocity'a dokunmuyoruz: AI hâlâ hedefe gidiyorsa devam eder (hibrit)
+                print(f"🛑 [FİLO] ROV-{rov_id} manuel giriş sıfırlandı (otonom devam edebilir)")
+                return
+
+            # --- yaw: Sadece dönüş hızı güncelle (ROV.update() her frame uygular) ---
             if yon == 'yaw':
-                yaw_hizi = abs(guc) * 90.0
-                yaw_delta = yaw_hizi * time.dt
-                if not hasattr(rov, 'rotation') or rov.rotation is None:
-                    rov.rotation = Vec3(0, 0, 0)
-                elif not isinstance(rov.rotation, Vec3):
-                    if isinstance(rov.rotation, (tuple, list)) and len(rov.rotation) >= 3:
-                        rov.rotation = Vec3(rov.rotation[0], rov.rotation[1], rov.rotation[2])
-                    else:
-                        rov.rotation = Vec3(0, 0, 0)
-
-                current_x = rov.rotation.x if isinstance(rov.rotation, Vec3) else 0
-                current_y = rov.rotation.y if isinstance(rov.rotation, Vec3) else 0
-                current_z = rov.rotation.z if isinstance(rov.rotation, Vec3) else 0
-
-                if guc > 0:
-                    new_y = current_y + yaw_delta
-                elif guc < 0:
-                    new_y = current_y - yaw_delta
-                else:
-                    new_y = current_y
-
-                while new_y >= 360:
-                    new_y -= 360
-                while new_y < 0:
-                    new_y += 360
-
-                rov.rotation = Vec3(current_x, new_y, current_z)
-
+                rov.active_forces['yaw'] = guc
                 if hasattr(rov, 'manuel_hareket'):
                     rov.manuel_hareket['yon'] = 'yaw'
                     rov.manuel_hareket['guc'] = guc
-
                 guc_yuzdesi = int(abs(guc) * 100)
                 yon_metni = "saat yönünün tersine" if guc > 0 else "saat yönünde"
                 print(f"🔄 [FİLO] ROV-{rov_id} {yon_metni} %{guc_yuzdesi} güçle döndürülüyor (yaw)")
                 return
 
-            if yon == 'dur' or guc == 0.0:
-                if hasattr(rov, 'manuel_hareket'):
-                    rov.manuel_hareket['yon'] = None
-                    rov.manuel_hareket['guc'] = 0.0
-                rov.velocity *= 0.9
-                print(f"🛑 [FİLO] ROV-{rov_id} durduruluyor")
-                return
-
+            # --- Havuz / güvenlik sınırları (mevcut kontroller korunur) ---
             if yon == 'bat' and rov.role == 1:
                 print(f"⚠️ [FİLO] ROV-{rov_id} lider, batırılamaz!")
                 return
@@ -1003,57 +990,28 @@ class FiloHelper:
                     print(f"⚠️ [FİLO] ROV-{rov_id} deniz tabanında, aşağı hareket engellendi")
                     return
 
+            # --- Sadece ilgili ekseni güncelle (diğer eksenlere dokunma) ---
+            # Mapping: ileri/geri -> surge, sag/sol -> sway, cik/bat -> heave. guc=0 ise sadece o ekseni sıfırla.
+            if yon == 'ileri':
+                rov.active_forces['surge'] = guc
+            elif yon == 'geri':
+                rov.active_forces['surge'] = -guc
+            elif yon == 'sag':
+                rov.active_forces['sway'] = guc
+            elif yon == 'sol':
+                rov.active_forces['sway'] = -guc
+            elif yon == 'cik':
+                rov.active_forces['heave'] = guc
+            elif yon == 'bat' and rov.role != 1:
+                rov.active_forces['heave'] = -guc
+
+            # Manuel mod: ROV.update() her frame active_forces'tan velocity hesaplayacak
             if hasattr(rov, 'manuel_hareket'):
                 rov.manuel_hareket['yon'] = yon
                 rov.manuel_hareket['guc'] = guc
-                guc_yuzdesi = int(guc * 100)
-                print(f"🔵 [FİLO] ROV-{rov_id} {yon} yönünde %{guc_yuzdesi} güçle hareket ediyor (sürekli mod)")
-                return
 
-            if hasattr(rov, 'move'):
-                try:
-                    rov.move(yon, guc)
-                    guc_yuzdesi = int(guc * 100)
-                    print(f"🔵 [FİLO] ROV-{rov_id} {yon} yönünde %{guc_yuzdesi} güçle hareket ediyor")
-                    return
-                except Exception:
-                    pass
-
-            yaw_acisi = 0.0
-            if hasattr(rov, 'rotation') and rov.rotation is not None:
-                if isinstance(rov.rotation, Vec3):
-                    yaw_acisi = rov.rotation.y
-                elif isinstance(rov.rotation, (tuple, list)) and len(rov.rotation) >= 2:
-                    yaw_acisi = rov.rotation[1]
-
-            from math import sin, cos, radians
-            yaw_radyan = radians(yaw_acisi)
-            hareket_vektoru = Vec3(0, 0, 0)
-            if yon == 'ileri':
-                hareket_vektoru.x = sin(yaw_radyan)
-                hareket_vektoru.z = cos(yaw_radyan)
-            elif yon == 'geri':
-                hareket_vektoru.x = -sin(yaw_radyan)
-                hareket_vektoru.z = -cos(yaw_radyan)
-            elif yon == 'sag':
-                hareket_vektoru.x = cos(yaw_radyan)
-                hareket_vektoru.z = -sin(yaw_radyan)
-            elif yon == 'sol':
-                hareket_vektoru.x = -cos(yaw_radyan)
-                hareket_vektoru.z = sin(yaw_radyan)
-            elif yon == 'cik':
-                hareket_vektoru.y = 1.0
-            elif yon == 'bat' and rov.role != 1:
-                hareket_vektoru.y = -1.0
-
-            max_guc = 100.0 * guc
-            if hareket_vektoru.length() > 0:
-                rov.velocity += hareket_vektoru.normalized() * max_guc * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
-                if rov.velocity.length() > max_guc:
-                    rov.velocity = rov.velocity.normalized() * max_guc
-
-            guc_yuzdesi = int(guc * 100)
-            print(f"🔵 [FİLO] ROV-{rov_id} {yon} yönünde %{guc_yuzdesi} güçle hareket ediyor")
+            guc_yuzdesi = int(abs(guc) * 100)
+            print(f"🔵 [FİLO] ROV-{rov_id} {yon} yönünde %{guc_yuzdesi} güçle hareket ediyor (eşzamanlı mod)")
         except AttributeError as e:
             print(f"❌ [HATA] ROV-{rov_id} için gerekli özellik bulunamadı: {e}")
             print(f"   💡 Debug: GNC sistemi tipi: {type(self.filo.sistemler[rov_id])}")
@@ -1710,13 +1668,16 @@ class TemelGNCHelper:
 
     def guncelle(self, gat_kodu=None):
         """
-        GNC Güncelleme: Hedef varsa ve manuel kontrol kapalıysa hedefe git.
-        GAT kodlarına göre manevra yapılır.
-        Sensör verilerine göre GAT kodu otomatik belirlenir.
+        GNC Güncelleme: Hedef varsa hedefe doğru kuvvet uygular (AI çıktısı).
+        Hibrit mod: AI çıktısı velocity'e eklenir; move() sadece active_forces günceller,
+        manuel_kontrol = True yapmaz, bu yüzden move() ile birlikte AI da çalışır.
+        Final_Force = AI_Output + Manual_Input (vektörel toplama).
+        manuel_kontrol sadece manuel_kontrol_all(True) ile True yapılır; o zaman AI kapalı olur.
         """
         if self.gnc_ref is None or self.rov is None:
             return
 
+        # manuel_kontrol True ise AI katkısı yok (manuel_kontrol_all ile toplu kapatma)
         if self.gnc_ref.manuel_kontrol:
             return
 
@@ -1738,23 +1699,6 @@ class TemelGNCHelper:
 
         hiz_carpani = self.hiz_hesapla(mesafe)
         hareket_vektoru = fark / mesafe if mesafe > 0.01 else Vec3(0, 0, 0)
-
-        if gat_kodu is None:
-            gat_kodu = 0
-
-        if self.gnc_ref.gat_manevra:
-            if self.filo_ref and self.gnc_ref.gat_manevra.rov_id is None:
-                try:
-                    self.gnc_ref.gat_manevra.rov_id = self.filo_ref.sistemler.index(self.gnc_ref)
-                except (ValueError, AttributeError):
-                    pass
-
-            if gat_kodu != 4 or self.gnc_ref.gat_manevra.rov_id is not None:
-                final_vektor, gat_hiz_carpani, _ = self.gnc_ref.gat_manevra.manevra_hesapla(
-                    gat_kodu, hareket_vektoru
-                )
-                hareket_vektoru = final_vektor
-                hiz_carpani *= gat_hiz_carpani
 
         self.yaw_ayarla(hareket_vektoru, ani=False)
 
