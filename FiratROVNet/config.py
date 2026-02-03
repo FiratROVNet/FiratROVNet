@@ -79,7 +79,7 @@ class HareketAyarlari:
     FORMASYON_MESAFESI = GATLimitleri.ENGEL
     FORMASYON_MIN_ARALIK = GATLimitleri.ENGEL
     FORMASYON_VARSAYILAN_ARALIK = GATLimitleri.ENGEL
-    FORMASYON_OFFSET = GATLimitleri.ENGEL
+    FORMASYON_OFFSET = 60
 
     YAKIN_MESAFE_ESIGI = GATLimitleri.KOPMA * 0.375
 
@@ -90,7 +90,43 @@ class HareketAyarlari:
     # Senaryo: Adalardan min mesafe (GAT.ENGEL * 3)
     RANDOM_HEDEF_MIN_MESAFE_ADA = GATLimitleri.ENGEL * 3
 
-    MOTOR_GUC_KATSAYISI = 0.5
+    # Havuz sınırları
+    HAVUZ_SINIR_TOLERANS = 0.95        # Havuz sınır toleransı (%95)
+    HAVUZ_SINIR_Y_UST = 0.3            # Üst yüzey sınırı
+    HAVUZ_SINIR_Y_ALT = -95.0          # Alt derinlik sınırı
+    
+    # Formasyon şekil katsayıları
+    V_FORMASYON_X_KATSAYISI = 0.8      # V formasyonu X ekseni katsayısı
+    V_FORMASYON_Z_KATSAYISI = 0.6      # V formasyonu Z ekseni katsayısı
+    OK_FORMASYON_X_KATSAYISI = 0.8     # Ok formasyonu X ekseni katsayısı
+    OK_FORMASYON_Z_KATSAYISI = 1.5     # Ok formasyonu Z ekseni katsayısı
+    
+    # Uzaklaşma gücü katsayıları (0.0-1.0)
+    UZAKLASMA_GUC_KATSAYISI = 0.3      # Uzaklaşma gücü katsayısı (%30)
+    YUMUSAKLIK_CARPANI = 0.2            # Yumuşaklık çarpanı (%20)
+    
+    # Diğer ayarlar
+    PASIF_MOD_MIN_HAREKET_MESAFESI = 5.0  # Pasif modda minimal hareket mesafesi (metre)
+    VELOCITY_THRESHOLD = 0.1              # Hız eşiği (normalize edilmiş)
+    # Havuz sınırları
+    HAVUZ_SINIR_TOLERANS = 0.95        # Havuz sınır toleransı (%95)
+    HAVUZ_SINIR_Y_UST = 0.3            # Üst yüzey sınırı
+    HAVUZ_SINIR_Y_ALT = -95.0          # Alt derinlik sınırı
+    
+    # Formasyon şekil katsayıları
+    V_FORMASYON_X_KATSAYISI = 0.8      # V formasyonu X ekseni katsayısı
+    V_FORMASYON_Z_KATSAYISI = 0.6      # V formasyonu Z ekseni katsayısı
+    OK_FORMASYON_X_KATSAYISI = 0.8     # Ok formasyonu X ekseni katsayısı
+    OK_FORMASYON_Z_KATSAYISI = 1.5     # Ok formasyonu Z ekseni katsayısı
+    
+    # Uzaklaşma gücü katsayıları (0.0-1.0)
+    UZAKLASMA_GUC_KATSAYISI = 0.3      # Uzaklaşma gücü katsayısı (%30)
+    YUMUSAKLIK_CARPANI = 0.2            # Yumuşaklık çarpanı (%20)
+    
+    # Diğer ayarlar
+    PASIF_MOD_MIN_HAREKET_MESAFESI = 5.0  # Pasif modda minimal hareket mesafesi (metre)
+    VELOCITY_THRESHOLD = 0.1              # Hız eşiği (normalize edilmiş)
+    MOTOR_GUC_KATSAYISI = 0.5              # Manuel hareket güç katsayısı              # Manuel hareket güç katsayısı
 
 
 class FizikSabitleri:
@@ -239,7 +275,8 @@ class Formasyon:
         "RECTANGLE",     # 16: Dikdörtgen formasyonu
         "HEXAGON",       # 17: Altıgen formasyonu
         "WAVE",          # 18: Dalga formasyonu
-        "SPIRAL"         # 19: Spiral formasyonu
+        "SPIRAL",        # 19: Spiral formasyonu
+        "TSHAPE"         # 20: T formasyonu (yeni)
     ]
     
     
@@ -621,6 +658,29 @@ class Formasyon:
                     radius = aralik * (1.0 + idx * 0.3)  # Yarıçap artarak büyür
                     x_offset = radius * math.cos(angle)
                     y_offset = radius * math.sin(angle)
+                    z_3d = hesapla_z_3d(i, tip_index)
+                    yerel_ofsetler[i] = (x_offset, y_offset, z_3d)
+        
+        elif tip_index == 20:  # TSHAPE (T Şekli)
+            # T formasyonu: bir grup dikey, bir grup yatay
+            if len(takipci_listesi) > 0:
+                # Yarısı dikey (gövde), yarısı yatay (baş)
+                split_idx = len(takipci_listesi) // 2
+                for idx, i in enumerate(takipci_listesi):
+                    if idx < split_idx:
+                        # Gövde (dikey arka)
+                        x_offset = 0.0
+                        y_offset = -aralik * (idx + 1)
+                    else:
+                        # Baş (yatay yanlar)
+                        # split_idx'ten sonraki indeksler için (0, 1, 2...)
+                        head_idx = idx - split_idx
+                        # Sağ, sol, sağ, sol...
+                        side = 1 if head_idx % 2 == 0 else -1
+                        dist = ((head_idx // 2) + 1) * aralik
+                        x_offset = side * dist
+                        y_offset = 0.0
+                    
                     z_3d = hesapla_z_3d(i, tip_index)
                     yerel_ofsetler[i] = (x_offset, y_offset, z_3d)
             

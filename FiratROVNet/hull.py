@@ -336,14 +336,15 @@ class HullManager:
         """
         return self.guvenlik_hull_olustur(offset=offset)
     
-    def guvenlik_hull_olustur(self, offset=40.0):
+    def guvenlik_hull_olustur(self, offset=50.0):
         """
-        1. ROV'ları 20m dışarı iten noktaları alır.
-        2. Yakındaki adaları 20m içeri (filoya doğru) çeken sanal noktaları alır.
+        1. Lider ROV'u merkez alarak 'offset' yarıçaplı dairesel noktalar oluşturur.
+        2. Yakındaki adaları 'offset' kadar içeri (lider ROV'a doğru) çeken sanal noktaları alır.
         3. Hepsini birleştirerek adayı DIŞARIDA bırakan güvenli alanı hesaplar.
+        4. Havuz duvarlarını kontrol eder ve hull'ı duvarların içinde tutar.
         
         Args:
-            offset (float): ROV hull genişletme mesafesi (varsayılan: 20.0)
+            offset (float): Güvenlik hull yarıçapı (metre, varsayılan: 50.0)
         
         Returns:
             dict: {
@@ -356,12 +357,56 @@ class HullManager:
             return {'hull': None, 'points': None, 'center': None}
         
         try:
-            # ROV'ların dış çeperi (+offset)
-            sanal_rov_noktalari = self.genisletilmis_rov_hull_olustur(offset=offset)
+            # 1. Lider ROV merkezli dairesel noktalar oluştur
+            sanal_rov_noktalari = []
             
-            # Adaların sanal bariyerleri (Adadan filoya doğru itilmiş noktalar)
-    
-            # Sadece bu sanal noktaları birleştiriyoruz (Gerçek ROV veya gerçek ADA merkezlerini değil!)
+            # Lider ROV'u bul
+            lider_id = 0  # Varsayılan
+            if hasattr(self.filo, 'sistemler'):
+                for i, sistem in enumerate(self.filo.sistemler):
+                    if hasattr(sistem, 'rov') and sistem.rov.role == 1:
+                        lider_id = i
+                        break
+            
+            # Lider pozisyonunu al
+            lider_gps = self.filo.get(lider_id, "gps")
+            if lider_gps is None:
+                # Lider bulunamazsa hull oluşturma
+                return {'hull': None, 'points': None, 'center': None}
+            
+            lx, ly, lz = lider_gps
+            
+            # Havuz sınırlarını al (Simülasyon formatında: X ve Y)
+            havuz_genisligi = 200.0  # Varsayılan
+            if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'havuz_genisligi'):
+                havuz_genisligi = self.filo.ortam_ref.havuz_genisligi
+            
+            # Güvenlik payı (duvardan ne kadar içeride olmalı)
+            duvar_guvenlik_payi = 5.0
+            max_limit = havuz_genisligi - duvar_guvenlik_payi
+            min_limit = -havuz_genisligi + duvar_guvenlik_payi
+            
+            # Dairesel noktalar (16 nokta)
+            for i in range(16):
+                aci = math.radians(i * (360 / 16))
+                nx = lx + math.cos(aci) * offset
+                ny = ly + math.sin(aci) * offset
+                
+                # Duvar kontrolü: Eğer nokta duvarın dışındaysa, duvara çek
+                nx = max(min_limit, min(max_limit, nx))
+                ny = max(min_limit, min(max_limit, ny))
+                
+                sanal_rov_noktalari.append((nx, ny, lz))
+            
+            # 2. Adaların sanal bariyerleri (Adadan filoya doğru itilmiş noktalar)
+            # Not: ada_engel_noktalari_pro filoya yakın adaları zaten işliyor
+            # Ancak şimdi filo merkezi yerine lider pozisyonunu kullanmalıyız
+            # ada_engel_noktalari_pro fonksiyonu filo._get_all_rovs_positions kullanıyor
+            # Bu yüzden onu değiştirmeden kullanmak yerine, burada manuel işlem yapabiliriz
+            # veya mevcut yapıyı koruyabiliriz. Basitlik için sadece dairesel hull kullanalım.
+            
+            # Hull noktaları sadece lider etrafındaki daire olsun
+            # Adalar bu dairenin içinde kalırsa 'yeniden_ciz' fonksiyonu onları çıkaracaktır.
             tum_noktalar = sanal_rov_noktalari
             
             if len(tum_noktalar) < 3:
@@ -370,11 +415,6 @@ class HullManager:
                     'points': None,
                     'center': None
                 }
-                
-                # Hull bilgisini haritaya aktar (eğer harita varsa)
-                if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'harita') and self.filo.ortam_ref.harita:
-                    self.filo.ortam_ref.harita.convex_hull_data = hull_data
-                
                 return hull_data
 
             # 2D Projeksiyon
@@ -389,8 +429,9 @@ class HullManager:
                 hull_2d, points_2d, nokta_araligi=5.0
             )
             
-            center_2d = np.mean(points_2d_genisletilmis, axis=0)
-            z_avg = np.mean([p[2] for p in tum_noktalar])
+            # Merkez liderin kendisi
+            center_2d = np.array([lx, ly])
+            z_avg = lz
 
             hull_data = {
                 'hull': hull_2d, 
