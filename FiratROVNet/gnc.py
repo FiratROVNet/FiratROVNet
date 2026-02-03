@@ -1264,6 +1264,23 @@ class Filo:
             """
             return self.helper.lider_sec_veri_uret(asil_hedef=self.asil_hedef)
     
+    def gat_veri_uret(self):
+        """
+        GAT eğitimi için senaryo verisi üretir.
+        Senaryo.py kullanarak 8, 6, 4 rastgele ROV ve 2-5 arası ada ile ortam oluşturur.
+        
+        Returns:
+            dict: {
+                'senaryo': Senaryo instance,
+                'filo': Filo instance,
+                'ortam': Ortam instance,
+                'n_rovs': int,
+                'n_adalar': int,
+                'n_engels': int
+            } veya None (hata durumunda)
+        """
+        return self.helper.gat_veri_uret()
+    
     def _prepare_forbidden_points(self) -> list:
         """Ada çevre noktalarını yasaklı nokta listesine dönüştürür."""
         return self.helper.prepare_forbidden_points()
@@ -1601,8 +1618,11 @@ class Filo:
         
         if komut == "ekle":
             # Eğer bu ID'de zaten ROV varsa, ekleme yapma
+            # Sessiz mod kontrolü (GAT eğitimi için)
             if rov_id < len(ortam.rovs) and ortam.rovs[rov_id] is not None:
-                print(f"⚠️ ROV-{rov_id} zaten mevcut. Önce çıkarmak için: filo.rov({rov_id}, 'cikar')")
+                # Sessiz mod aktif değilse uyarı göster
+                if not getattr(self, '_sessiz_mod', False):
+                    print(f"⚠️ ROV-{rov_id} zaten mevcut. Önce çıkarmak için: filo.rov({rov_id}, 'cikar')")
                 return False
             
             # Yeni ROV oluştur
@@ -1611,6 +1631,12 @@ class Filo:
                 rov = ROV(rov_id, position=(x, y, z))
             else:
                 rov = ROV(rov_id)
+            
+            # Environment referansını ayarla (ekle() çağrılmadan önce)
+            if hasattr(self, 'ortam_ref') and self.ortam_ref is not None:
+                rov.environment_ref = self.ortam_ref
+            elif hasattr(self, 'environment_ref') and self.environment_ref is not None:
+                rov.environment_ref = self.environment_ref
             
             # ROV'u ekle
             success = rov.ekle(konum)
@@ -1625,8 +1651,11 @@ class Filo:
         
         elif komut == "cikar":
             # ROV'u bul
+            # Sessiz mod kontrolü (GAT eğitimi için)
             if rov_id >= len(ortam.rovs) or ortam.rovs[rov_id] is None:
-                print(f"⚠️ ROV-{rov_id} bulunamadı")
+                # Sessiz mod aktif değilse uyarı göster
+                if not getattr(self, '_sessiz_mod', False):
+                    print(f"⚠️ ROV-{rov_id} bulunamadı")
                 return False
             
             rov = ortam.rovs[rov_id]
