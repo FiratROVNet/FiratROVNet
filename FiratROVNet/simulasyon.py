@@ -47,10 +47,14 @@ from .config import (
     MinimapAyarlari,
     ROVModelleri
 )
-from .simulasyon_yardimci import (
+from .kutuphane.helper.simulasyon_helper import (
+    OrtamHelper,
+    dunya_to_harita as helper_dunya_to_harita,
+    grid_step_metre as helper_grid_step_metre,
     kayalari_olustur,
+    load_obj_as_mesh,
     sim_to_ursina,
-    ursina_to_sim
+    ursina_to_sim,
 )
 
 
@@ -539,6 +543,7 @@ class ROV(Entity):
         # 10 metre güvenlik mesafesi: ROV'lar sınırlardan 10 metre içeride kalmalı
         HAVUZ_GUVENLIK_MESAFESI = 10.0  # Metre cinsinden güvenlik mesafesi
         if self.environment_ref:
+            # --- 2. HAVUZ SINIR KONTROLÜ ---
             havuz_genisligi = getattr(self.environment_ref, 'havuz_genisligi', 200)
             havuz_sinir = havuz_genisligi  # +-havuz_genisligi
             guvenli_sinir = havuz_sinir - HAVUZ_GUVENLIK_MESAFESI  # 10 metre içerideki sınır
@@ -1378,25 +1383,14 @@ class Minimap(Entity):
             self.position = window.bottom_right + Vec2(-effective/2 - 0.02, effective/2 + 0.02)
 
     def dunya_to_harita(self, x, z):
-        """
-        Dünya koordinatlarını (Metre) Harita lokal koordinatlarına (-0.5, 0.5) çevirir.
-        Ursina UI'da Y ekseni yukarıdır, bu yüzden Dünya Z'si Harita Y'si olur.
-        """
-        # Ölçekleme faktörü: Havuzun toplam genişliği (genislik * 2)
-        factor = 1/(self.havuz_genisligi*2)
-        mx = x * factor
-        my = z * factor
-        return Vec3(mx, my, 0)
+        """Dünya koordinatlarını (metre) harita lokal koordinatlarına çevirir."""
+        return helper_dunya_to_harita(x, z, self.havuz_genisligi)
 
-    # Grid: varsayılan her çizgi bu kadar metre (grid_sayisi verilmezse)
     GRID_UNIT = 50
 
     def _grid_step_metre(self):
-        """Grid başına mesafe (m). grid_sayisi verilmişse (2*havuz)/N, yoksa GRID_UNIT."""
-        half = self.havuz_genisligi
-        if self._grid_sayisi is not None and self._grid_sayisi > 0:
-            return (2.0 * half) / self._grid_sayisi
-        return float(self.GRID_UNIT)
+        """Grid başına mesafe (m)."""
+        return helper_grid_step_metre(self.havuz_genisligi, self._grid_sayisi, self.GRID_UNIT)
 
     def _grid_olustur(self):
         """Radar görünümü için grid çizgileri ve eksenleri oluşturur. Merkez (0,0) harita ortasındadır."""
@@ -2631,73 +2625,33 @@ class Harita:
 
     def a_star_yolu_hesapla(self, start: Tuple[float, float], goal: Tuple[float, float],
                             safety_margin: float = 2.0) -> Optional[List[Tuple[float, float]]]:
-        """
-        A* algoritması kullanarak başlangıçtan hedefe yol hesaplar.
-        
-        Args:
-            start: (x, y) başlangıç koordinatları (metre)
-            goal: (x, y) hedef koordinatları (metre)
-            safety_margin: Engel etrafında güvenlik mesafesi (metre, varsayılan: 2.0)
-        
-        Returns:
-            Optional[List[Tuple[float, float]]]: Bulunan yol [(x1, y1), (x2, y2), ...] veya None
-        """
+        """A* ile başlangıçtan hedefe yol hesaplar. Engeller: manuel + adalar."""
         try:
-            from .a_star import AStarPlanner
-            
-            # Harita sınırlarını al
-            min_x = -self.havuz_genisligi
-            max_x = self.havuz_genisligi
-            min_y = -self.havuz_genisligi
-            max_y = self.havuz_genisligi
-            map_bounds = (min_x, max_x, min_y, max_y)
-            
-            # Engelleri topla
+            from .kutuphane.helper.simulasyon_helper import a_star_yol_bul
+            h = self.havuz_genisligi
+            map_bounds = (-h, h, -h, h)
             obstacles = []
-            
-            # Manuel engeller
-            for engel in self.manuel_engeller:
-                if len(engel) >= 2:
-                    # Engel formatı: (x, y) veya (x, y, radius)
-                    if len(engel) >= 3:
-                        obstacles.append((engel[0], engel[1], engel[2]))
-                    else:
-                        # Varsayılan yarıçap
-                        obstacles.append((engel[0], engel[1], 5.0))
-            
-            # Adalar - Sadece dairesel engel olarak ekle (sadeleştirilmiş versiyon)
-            if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
-                import math
-                for is_pos in self.ortam_ref.island_positions:
-                    if len(is_pos) >= 3:
-                        # Ada merkez ve yarıçap - içi tamamen kapalı (içinden geçilemez)
-                        obstacles.append((is_pos[0], is_pos[1], is_pos[2]))
-            
-            # A* planner oluştur - 10x10 grid (sadeleştirilmiş)
-            planner = AStarPlanner()
-            
-            # Yolu hesapla (sadece dairesel engeller)
-            path = planner.find_path(start, goal, obstacles, map_bounds, safety_margin)
-            
+            for e in self.manuel_engeller:
+                if len(e) >= 3:
+                    obstacles.append((e[0], e[1], e[2]))
+                elif len(e) >= 2:
+                    obstacles.append((e[0], e[1], 5.0))
+            for is_pos in getattr(self.ortam_ref, 'island_positions', []) or []:
+                if len(is_pos) >= 3:
+                    obstacles.append((is_pos[0], is_pos[1], is_pos[2]))
+            path = a_star_yol_bul(start, goal, obstacles, map_bounds)
+            self.a_star_yolu = path
             if path:
-                self.a_star_yolu = path
-                print(f"✅ [HARITA] A* yolu hesaplandı: {len(path)} nokta")
-                # Minimap açıksa A* rotasını hemen çiz (filo.minimap() ile açılan haritada)
                 if hasattr(self.ortam_ref, 'minimap') and self.ortam_ref.minimap and getattr(self.ortam_ref.minimap, 'visible', False):
                     try:
                         self.ortam_ref.minimap.update_path(path)
                     except Exception:
                         pass
                 return path
-            else:
-                self.a_star_yolu = None
-                print(f"❌ [HARITA] A* yolu bulunamadı!")
-                return None
-                
+            return None
         except Exception as e:
-            print(f"❌ [HARITA] A* yolu hesaplanırken hata: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ [HARITA] A* hata: {e}")
+            self.a_star_yolu = None
             return None
     
     
@@ -2962,85 +2916,10 @@ class Harita:
         self.goster(False)
 
 
-def _load_obj_as_mesh(obj_path):
-    """
-    OBJ dosyasını yükler, quad yüzleri üçgene çevirir; Ursina 7.x mesh uyumsuzluğunu giderir.
-    Cinema 4D / v/vt formatı ve quad face'leri destekler.
-    Returns:
-        Ursina Mesh veya None (hata/boş dosya).
-    """
-    if not obj_path or not os.path.exists(obj_path):
-        return None
-    v_list = []
-    vt_list = []
-    vertices = []
-    uvs = []
-    triangles = []
-    try:
-        with open(obj_path, 'r', encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                parts = line.split()
-                if not parts:
-                    continue
-                if parts[0] == 'v' and len(parts) >= 4:
-                    v_list.append((float(parts[1]), float(parts[2]), float(parts[3])))
-                elif parts[0] == 'vt' and len(parts) >= 3:
-                    vt_list.append((float(parts[1]), float(parts[2])))
-                elif parts[0] == 'f':
-                    face_verts = []
-                    for i in range(1, len(parts)):
-                        seg = parts[i].split('/')
-                        try:
-                            vi = int(seg[0])
-                        except (ValueError, IndexError):
-                            continue
-                        if vi < 0:
-                            vi = len(v_list) + vi
-                        else:
-                            vi -= 1
-                        vti = 0
-                        if len(seg) > 1 and seg[1].strip():
-                            try:
-                                vti = int(seg[1])
-                            except ValueError:
-                                pass
-                        if vti < 0:
-                            vti = len(vt_list) + vti
-                        elif vti > 0:
-                            vti -= 1
-                        if vi < 0 or vi >= len(v_list):
-                            continue
-                        u, v = vt_list[vti] if vti < len(vt_list) else (0.0, 0.0)
-                        face_verts.append((vi, u, v))
-                    if len(face_verts) == 3:
-                        base = len(vertices)
-                        for vi, u, v in face_verts:
-                            vertices.append(v_list[vi])
-                            uvs.append((u, v))
-                        triangles.append((base, base + 1, base + 2))
-                    elif len(face_verts) == 4:
-                        base = len(vertices)
-                        for vi, u, v in face_verts:
-                            vertices.append(v_list[vi])
-                            uvs.append((u, v))
-                        triangles.append((base, base + 1, base + 2))
-                        triangles.append((base, base + 2, base + 3))
-    except Exception:
-        return None
-    if not vertices or not triangles:
-        return None
-    try:
-        return Mesh(vertices=vertices, triangles=triangles, uvs=uvs, mode='triangle', static=True)
-    except Exception:
-        return None
-
-
 class Ortam:
     def __init__(self, verbose=False):
         self.verbose = verbose  # Log mesajlarını kontrol eder
+        self.helper = OrtamHelper(self)
         # --- Ursina Ayarları ---
         self.app = Ursina(
             vsync=False,
@@ -3273,7 +3152,7 @@ class Ortam:
             # ============================================================
             # ADA OLUŞTURMA AYARLARI
             # ============================================================
-            n_islands = random.randint(2, 4)  # Azaltıldı: 1-3 arası random ada sayısı
+            n_islands = random.randint(4, 6)  # 4-6 arası random ada sayısı
             
             # Engel listesini hazırla (eğer yoksa oluştur)
             if not hasattr(self, 'engeller'):
@@ -3327,14 +3206,10 @@ class Ortam:
                     island_x = 0.0
                     island_z = 0.0
                 else:
-                    island_x, island_z = self._find_safe_island_position(
-                        placed_island_positions=placed_island_positions,
-                        min_x=min_x_safe,
-                        max_x=max_x_safe,
-                        min_z=min_z_safe,
-                        max_z=max_z_safe,
-                        min_distance=min_distance_between_islands,
-                        max_attempts=100
+                    island_x, island_z = self.helper.find_safe_island_position(
+                        placed_island_positions,
+                        min_x_safe, max_x_safe, min_z_safe, max_z_safe,
+                        min_distance_between_islands, 100
                     )
                 
                 # --- 3. ADA ENTITY OLUŞTUR ---
@@ -3366,7 +3241,7 @@ class Ortam:
                 except Exception:
                     island = None
                 if island is None and island_model_path:
-                    island_model_for_entity = _load_obj_as_mesh(island_model_path)
+                    island_model_for_entity = load_obj_as_mesh(island_model_path)
                 if island is None and island_model_for_entity is not None:
                     try:
                         island = Entity(
@@ -3375,6 +3250,7 @@ class Ortam:
                             scale=visual_scale,
                             texture=island_texture_path if (texture_exists or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs)) else None,
                             collider='mesh',
+                            collider_scale=(0.5, 1.0, 0.5), # Collider'ı %50 küçült (X ve Z ekseninde)
                             unlit=False,
                             double_sided=True,
                             color=color.white,
@@ -3392,6 +3268,7 @@ class Ortam:
                         position=(island_x, island_y_position, island_z),
                         scale=visual_scale,
                         collider='mesh',
+                        collider_scale=(0.5, 1.0, 0.5), # Collider'ı %50 küçült (X ve Z ekseninde)
                         color=color.white,
                         alpha=1.0
                     )
@@ -3493,6 +3370,8 @@ class Ortam:
         if not hasattr(self, 'engel_bulutu'):
             self.engel_bulutu = []  # Raycast hit noktaları [(x,z), ...], her yerden erişilebilir
 
+        # self.helper yukarıda init edildi (OrtamHelper(self))
+
         # Konsol verileri
         self.konsol_verileri = {}
         
@@ -3521,79 +3400,6 @@ class Ortam:
             import traceback
             traceback.print_exc()
             self.minimap = None
-    
-    # ============================================================
-    # YARDIMCI FONKSİYONLAR: ADA OLUŞTURMA
-    # ============================================================
-    
-    def _find_safe_island_position(self, placed_island_positions, min_x, max_x, min_z, max_z, min_distance, max_attempts=100):
-        """
-        Adaların birbirine çakışmaması için güvenli (X, Z) pozisyonu bulur.
-        Y ekseni su yüzeyinin üstünde sabit (island_y_position).
-        
-        Args:
-            placed_island_positions: Mevcut ada pozisyonları listesi [(x, z), ...]
-            min_x, max_x: Havuz X sınırları
-            min_z, max_z: Havuz Z sınırları
-            min_distance: Minimum mesafe (ada yarıçapı * güvenlik payı)
-            max_attempts: Maksimum deneme sayısı
-            
-        Returns:
-            (island_x, island_z): Güvenli ada pozisyonu (X ve Z random)
-        """
-        # İlk ada ise, güvenli sınırlar içinde rastgele yerleştir
-        if not placed_island_positions:
-            # Sınırlar zaten ada yarıçapı hesaba katılarak daraltılmış (min_x_safe, max_x_safe vb.)
-            return (
-                random.uniform(min_x, max_x),
-                random.uniform(min_z, max_z)
-            )
-        
-        # Güvenli pozisyon bul (maksimum deneme sayısı kadar)
-        for attempt in range(max_attempts):
-            # Random X ve Z pozisyonları (havuz sınırları içinde)
-            candidate_x = random.uniform(min_x, max_x)
-            candidate_z = random.uniform(min_z, max_z)
-            
-            # Mevcut adalardan yeterince uzak mı kontrol et (2D mesafe: X-Z düzlemi)
-            too_close = False
-            for existing_x, existing_z in placed_island_positions:
-                # 2D yatay mesafe hesabı (X-Z düzlemi)
-                dx = candidate_x - existing_x
-                dz = candidate_z - existing_z
-                distance = (dx**2 + dz**2)**0.5  # 2D Öklid mesafesi
-                
-                if distance < min_distance:
-                    too_close = True
-                    break
-            
-            if not too_close:
-                return (candidate_x, candidate_z)
-        
-        # Eğer güvenli pozisyon bulunamadıysa, mevcut adalardan en uzak noktayı seç
-        if placed_island_positions:
-            # Mevcut adaların X ve Z ortalaması
-            avg_x = sum(x for x, z in placed_island_positions) / len(placed_island_positions)
-            avg_z = sum(z for x, z in placed_island_positions) / len(placed_island_positions)
-            
-            # Ortalamadan uzak bir nokta bul
-            if avg_x > 0:
-                fallback_x = max(min_x + 20, avg_x - min_distance)
-            else:
-                fallback_x = min(max_x - 20, avg_x + min_distance)
-            
-            if avg_z > 0:
-                fallback_z = max(min_z + 20, avg_z - min_distance)
-            else:
-                fallback_z = min(max_z - 20, avg_z + min_distance)
-            
-            return (fallback_x, fallback_z)
-        
-        # Son çare: Merkezden uzak bir yere yerleştir
-        return (
-            random.choice([min_x + 20, max_x - 20]),
-            random.choice([min_z + 20, max_z - 20])
-        )
     
     # ============================================================
     # SİMÜLASYON OLUŞTURMA
@@ -3938,7 +3744,7 @@ class Ortam:
             except Exception:
                 island = None
             if island is None:
-                mesh = _load_obj_as_mesh(model_path)
+                mesh = load_obj_as_mesh(model_path)
                 if mesh:
                     try:
                         island = Entity(
@@ -4339,84 +4145,8 @@ class Ortam:
 
     # --- Veri Toplama Fonksiyonu (GAT Girdisi) ---
     def simden_veriye(self):
-        """
-        Fiziksel dünyayı Matematiksel matrise çevirir (GAT Girdisi)
-        
-        Returns:
-            MiniData: GAT modeli için hazırlanmış veri yapısı (x, edge_index)
-        """
-        engeller = self.engeller
-        
-        # None olmayan ROV'ları filtrele (çıkarılmış ROV'ları atla)
-        aktif_rovs = [r for r in self.rovs if r is not None]
-        
-        if not aktif_rovs:
-            # Hiç aktif ROV yoksa boş veri döndür (GAT modeli 9 özellik bekliyor)
-            class MiniData:
-                def __init__(self, x, edge_index):
-                    self.x, self.edge_index = x, edge_index
-            return MiniData(x=torch.zeros((0, 9), dtype=torch.float), edge_index=torch.zeros((2, 0), dtype=torch.long))
-
-        n = len(aktif_rovs)
-        x = torch.zeros((n, 9), dtype=torch.float)
-        positions = [r.position for r in aktif_rovs]
-        sources, targets = [], []
-
-        L = {'LEADER': 60.0, 'DISCONNECT': 35.0, 'OBSTACLE': 20.0, 'COLLISION': 8.0}
-
-        # Mesafe matrisi (min_rov_dist ve lider_dist için)
-        dist_matrix = [[0.0] * n for _ in range(n)]
-        for i in range(n):
-            for j in range(n):
-                if i != j:
-                    dist_matrix[i][j] = distance(positions[i], positions[j])
-
-        for i in range(n):
-            code = 0
-            if i != 0 and distance(positions[i], positions[0]) > L['LEADER']:
-                code = 5
-            dists = [distance(positions[i], positions[j]) for j in range(n) if i != j]
-            if dists and min(dists) > L['DISCONNECT']:
-                code = 3
-
-            min_engel = 999
-            for engel in engeller:
-                d = distance(positions[i], engel.position) - 6
-                if d < min_engel:
-                    min_engel = d
-            if min_engel < L['OBSTACLE']:
-                code = 1
-
-            for j in range(n):
-                if i != j and distance(positions[i], positions[j]) < L['COLLISION']:
-                    code = 2
-                    break
-
-            x[i][0] = code / 5.0
-            x[i][1] = aktif_rovs[i].battery
-            x[i][2] = 0.9
-            x[i][3] = min(1.0, abs(aktif_rovs[i].y) / 100.0)
-            x[i][4] = getattr(aktif_rovs[i].velocity, 'x', 0.0)
-            x[i][5] = getattr(aktif_rovs[i].velocity, 'z', 0.0)
-            x[i][6] = 1.0 if getattr(aktif_rovs[i], 'role', 0) == 1 else 0.0
-            # [7] En yakın ROV mesafesi (normalize 0–100 -> 0–1), GAT ile uyumlu
-            if n > 1:
-                min_rov_d = min(dist_matrix[i][j] for j in range(n) if j != i)
-                x[i][7] = float(min(min_rov_d / 100.0, 1.0))
-            # [8] Lider mesafesi (takipçiler için, normalize 0–100 -> 0–1)
-            if i != 0 and n > 0:
-                x[i][8] = float(min(dist_matrix[i][0] / 100.0, 1.0))
-
-            for j in range(n):
-                if i != j and distance(positions[i], positions[j]) < L['DISCONNECT']:
-                    sources.append(i)
-                    targets.append(j)
-
-        edge_index = torch.tensor([sources, targets], dtype=torch.long)
-        class MiniData:
-            def __init__(self, x, edge_index): 
-                self.x, self.edge_index = x, edge_index
-        return MiniData(x, edge_index)
+        """Fiziksel dünyayı GAT modeli girdisine çevirir. Helper üzerinden hesaplanır."""
+        return self.helper.simden_veriye()
 
     # --- Main Run Fonksiyonu ---
     def run(self, interaktif=False):

@@ -53,33 +53,153 @@ class Koordinator:
     """
     @staticmethod
     def sim_to_ursina(sim_x, sim_y, sim_z):
-        """
-        Sim (X:Sağ, Y:İleri, Z:Derinlik) -> Ursina (X, Y:Yukarı, Z:İleri)
-        
-        Args:
-            sim_x: Sağ-Sol koordinatı
-            sim_y: İleri-Geri koordinatı
-            sim_z: Derinlik koordinatı
-        
-        Returns:
-            tuple: (ursina_x, ursina_y, ursina_z)
-        """
-        return (sim_x, sim_z, sim_y)
-    
+        """Sim (X:Sağ, Y:İleri, Z:Derinlik) -> Ursina (X, Y:Yukarı, Z:İleri)."""
+        from FiratROVNet.kutuphane.helper.simulasyon_helper import sim_to_ursina as _stou
+        return _stou(sim_x, sim_y, sim_z)
+
     @staticmethod
     def ursina_to_sim(u_x, u_y, u_z):
+        """Ursina (X, Y:Yukarı, Z:İleri) -> Sim (X, Y:İleri, Z:Derinlik)."""
+        from FiratROVNet.kutuphane.helper.simulasyon_helper import ursina_to_sim as _utot
+        return _utot(u_x, u_y, u_z)
+
+
+# ==========================================
+# 0.5 DEBUG (APF / GNC Yardımcı Fonksiyonları)
+# ==========================================
+class Debug:
+    """
+    APF ve GNC yardımcı fonksiyonlarına debug erişimi.
+    filo.helper üzerindeki apf, engel_vektor, rov_vektor, hedef_vektor, vektor,
+    vektor_normalize, apf_temizle fonksiyonlarını sarmalar.
+
+    Kullanım:
+        debug = Debug(filo)
+        debug.list()           # Tüm fonksiyon isimlerini listeler
+        debug.apf()            # Kullanım bilgisi döner (parametresiz)
+        debug.apf(0)           # ROV-0 için APF hesaplar
+    """
+    _FONKSIYONLAR = [
+        'apf', 'engel_vektor', 'rov_vektor', 'hedef_vektor',
+        'vektor', 'vektor_normalize', 'apf_temizle'
+    ]
+
+    def __init__(self, filo_ref):
+        self._filo = filo_ref
+        self._helper = getattr(filo_ref, 'helper', None)
+
+    def list(self):
+        """Tüm debug fonksiyon isimlerini döndürür ve yazdırır."""
+        names = self._FONKSIYONLAR
+        print("🔧 [DEBUG] Mevcut fonksiyonlar:", ", ".join(names))
+        return names
+
+    def _usage(self, name: str):
+        """Fonksiyon kullanım bilgisini döndürür."""
+        method = getattr(self, name, None)
+        doc = getattr(method, '__doc__', 'Bilgi yok') if method else 'Bilgi yok'
+        print(doc)
+        return doc
+
+    def apf(self, rov_id=None):
         """
-        Ursina (X, Y:Yukarı, Z:İleri) -> Sim (X, Y:İleri, Z:Derinlik)
-        
-        Args:
-            u_x: Ursina X (sağ-sol)
-            u_y: Ursina Y (yukarı-aşağı, derinlik)
-            u_z: Ursina Z (ileri-geri)
-        
-        Returns:
-            tuple: (sim_x, sim_y, sim_z)
+        APF (Artificial Potential Field) hesaplaması.
+        Parametreler: rov_id (int)
+        Örnek: debug.apf(0) -> dict; filo.apf_birim_vektor(0) -> (ux, uz) sadece birim vektör
         """
-        return (u_x, u_z, u_y)
+        if rov_id is None:
+            return self._usage('apf')
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return None
+        return self._helper.apf(rov_id)
+
+    def engel_vektor(self, rov_id=None, menzil=None):
+        """
+        ROV'un engellere olan vektör bilgilerini döndürür.
+        Parametreler: rov_id (int), menzil=10.0
+        Örnek: debug.engel_vektor(0) veya debug.engel_vektor(0, menzil=30)
+        """
+        if rov_id is None:
+            return self._usage('engel_vektor')
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return []
+        return self._helper.engel_vektor(rov_id, menzil)
+
+    def rov_vektor(self, rov_id=None, menzil=None):
+        """
+        ROV'un diğer ROV'lara olan vektör bilgilerini döndürür.
+        Parametreler: rov_id (int), menzil=10.0
+        Örnek: debug.rov_vektor(0) veya debug.rov_vektor(1, menzil=25)
+        """
+        if rov_id is None:
+            return self._usage('rov_vektor')
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return []
+        return self._helper.rov_vektor(rov_id, menzil)
+
+    def hedef_vektor(self, rov_id=None, menzil=None):
+        """
+        ROV'un hedefine olan vektör bilgisini döndürür.
+        Parametreler: rov_id (int), menzil=10.0
+        Örnek: debug.hedef_vektor(0) veya debug.hedef_vektor(0, menzil=30)
+        """
+        if rov_id is None:
+            return self._usage('hedef_vektor')
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return None
+        return self._helper.hedef_vektor(rov_id, menzil)
+
+    def vektor(self, ilk=None, ikinci=None,
+               rov_id_ilk=None, rov_id_ikinci=None,
+               baslangic_noktasi=None, bitis_noktasi=None, vektor=None,
+               renk='m', uzunluk=20, reverse=False, debug=False, ciz=True):
+        """
+        Minimap üzerinde vektör çizer. Keyword ile: rov_id_ilk, rov_id_ikinci, baslangic_noktasi, bitis_noktasi, vektor=().
+        Örnek: debug.vektor(rov_id_ilk=2, rov_id_ikinci=5)
+               debug.vektor(rov_id_ilk=5, vektor=(0.76,-0.65), uzunluk=20)  # ROV-5'ten birim vektör yönünde
+               debug.vektor(baslangic_noktasi=(-174,115), vektor=(0.83,-0.55), uzunluk=30)
+               debug.vektor(0, 1)  # Eski API
+        """
+        if (ilk is None and ikinci is None and rov_id_ilk is None and rov_id_ikinci is None
+                and baslangic_noktasi is None and bitis_noktasi is None and vektor is None):
+            return self._usage('vektor')
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return None
+        return self._helper.vektor(
+            ilk=ilk, ikinci=ikinci,
+            rov_id_ilk=rov_id_ilk, rov_id_ikinci=rov_id_ikinci,
+            baslangic_noktasi=baslangic_noktasi, bitis_noktasi=bitis_noktasi, vektor=vektor,
+            renk=renk, uzunluk=uzunluk, reverse=reverse, debug=debug, ciz=ciz
+        )
+
+    def vektor_normalize(self, ux=None, uz=None, uy=None, max_mag=1.0, vektor=None):
+        """
+        Vektörü normalize eder ve max_mag ile sınırlar.
+        Parametreler: ux, uz (2D) veya ux, uy, uz (3D), max_mag=1.0, vektor=(ux,uz) veya (ux,uy,uz)
+        Örnek: debug.vektor_normalize(3, 4) veya debug.vektor_normalize(vektor=(3, 4))
+        """
+        if ux is None and uz is None and vektor is None:
+            return self._usage('vektor_normalize')
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return None
+        return self._helper.vektor_normalize(ux, uz, uy, max_mag, vektor)
+
+    def apf_temizle(self, rov_id=None):
+        """
+        APF vektörlerini temizler. rov_id verilirse sadece o ROV'un vektörlerini siler;
+        boş bırakılırsa hepsini temizler. Örnek: debug.apf_temizle() veya debug.apf_temizle(0)
+        """
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return
+        self._helper.apf_temizle(rov_id=rov_id)
+
 
 
 # ==========================================
@@ -240,6 +360,8 @@ class Filo:
         # Formasyon ID shuffle mekanizması
         self._formasyon_id_pool = []  # Shuffle edilmiş formasyon ID'leri
         self._formasyon_id_pool_olustur()  # İlk pool'u oluştur
+        # Formasyon parametreleri (aktif formasyon takibi için)
+        self.aktif_formasyon = None  # {'id': str/int, 'aralik': float, 'is_3d': bool}
         # Formasyon hedef takibi (ROV ID -> {'pozisyon': (x, y, z), 'hedef_yaw': float})
         self._formasyon_hedefleri = {}  # Takipçi ROV'ların formasyon hedefleri ve hedef yaw açıları
         self._formasyon_yaw_senkronizasyon_mesafesi = 5.0  # Yaw senkronizasyonu için mesafe eşiği (metre)
@@ -342,6 +464,9 @@ class Filo:
         return [s.rov for s in self.sistemler if hasattr(s, 'rov')]
 
     def ekle(self, gnc_objesi):
+        gnc_objesi.filo_ref = self
+        if hasattr(gnc_objesi, 'helper') and gnc_objesi.helper is not None:
+            gnc_objesi.helper.filo_ref = self
         self.sistemler.append(gnc_objesi)
 
     def rehber_dagit(self, modem_rehberi):
@@ -617,6 +742,60 @@ class Filo:
         
         # Lider ROV'u bul
         lider_rov_id, lider_gnc, lider_rov = self._find_leader()
+        
+        # --- AKTİF FORMASYON GÜNCELLEMESİ ---
+        # Eğer aktif bir formasyon varsa, liderin konumuna göre takipçilerin hedeflerini güncelle
+        if self.aktif_formasyon and lider_rov_id is not None:
+            try:
+                # Liderin güncel durumunu al
+                lider_gps = self.get(lider_rov_id, "gps")
+                lider_yaw = self.get(lider_rov_id, "yaw")
+                
+                if lider_gps is not None:
+                    # Formasyon pozisyonlarını hesapla
+                    # Not: Formasyon sınıfı her çağrıda yeniden oluşturuluyor, bu maliyetli olabilir ama güvenli
+                    formasyon_obj = Formasyon(self)
+                    # Liderin mevcut konumuna göre pozisyonları hesapla
+                    pozisyonlar = formasyon_obj.pozisyonlar(
+                        self.aktif_formasyon['id'], 
+                        self.aktif_formasyon['aralik'], 
+                        is_3d=self.aktif_formasyon['is_3d'], 
+                        lider_koordinat=lider_gps,  # Liderin güncel konumu
+                        yaw=lider_yaw
+                    )
+                    
+                    if pozisyonlar:
+                        # Her takipçi için yeni hedefi ata
+                        for i, pozisyon in enumerate(pozisyonlar):
+                            # Liderin kendisine hedef atama (kendi rotasında gitsin)
+                            if i == lider_rov_id:
+                                continue
+                                
+                            if i >= len(self.sistemler):
+                                break
+                                
+                            # Simülasyon koordinatları (x, y, z)
+                            sim_x, sim_y, sim_z = pozisyon
+                            
+                            # Derinlik kontrolü (opsiyonel, formasyona göre değişebilir)
+                            # Eğer 3D değilse ve z pozitifse (yüzey), -10m derinlikte tut
+                            if not self.aktif_formasyon['is_3d'] and sim_z >= 0:
+                                sim_z = -10.0
+                                
+                            # Takipçiye git komutu ver (sessiz modda)
+                            # Not: Sürekli git komutu göndermek performansı etkileyebilir
+                            # Bu yüzden mevcut hedeften farkı kontrol edilebilir
+                            mevcut_hedef = self.hedef(rov_id=i)
+                            mesafe_farki = 999.0
+                            if mevcut_hedef:
+                                mesafe_farki = math.sqrt((sim_x - mevcut_hedef[0])**2 + (sim_y - mevcut_hedef[1])**2)
+                            
+                            # Eğer hedef önemli ölçüde değiştiyse güncelle (>0.5m)
+                            if mesafe_farki > 0.5:
+                                # AI açık, sessiz mod
+                                self.git(i, sim_x, sim_y, sim_z, ai=True, sessiz=True)
+            except Exception as e:
+                print(f"⚠️ [FİLO] Formasyon güncelleme hatası: {e}")
         
         # Tüm GNC sistemlerini güncelle (doğrudan helper.guncelle çağrısı)
         for i, gnc in enumerate(self.sistemler):
@@ -1037,7 +1216,7 @@ class Filo:
         """
         return self.helper.compute_obstacle_positions(rov_id)
 
-    def formasyon(self, formasyon_id="LINE", aralik=None, is_3d=False, lider_koordinat=None):
+    def formasyon(self, formasyon_id="LINE", aralik=None, is_3d=False, lider_koordinat=None, dinamik=False):
         """
         Filoyu belirtilen formasyona sokar.
         Formasyon.pozisyonlar() ile pozisyonları alır ve filo.git() ile uygular.
@@ -1055,6 +1234,9 @@ class Filo:
                 - Format: (x, y, z) - x,y: 2D koordinatlar, z: derinlik
                 - None ise liderin gerçek pozisyonu kullanılır ve ROV'lar hareket eder
                 - Verilirse, sadece pozisyonlar hesaplanır ve döndürülür (ROV'lar hareket etmez)
+            dinamik (bool): Formasyonun lideri dinamik olarak takip edip etmeyeceği (varsayılan: True)
+                - True: Formasyon liderin hareketine göre sürekli güncellenir
+                - False: Formasyon o anki konuma göre bir kez hesaplanır ve sabit kalır
         
         Returns:
             None: lider_koordinat verilmediğinde (ROV'lar hareket eder)
@@ -1070,8 +1252,8 @@ class Filo:
             pozisyonlar = filo.formasyon("V_SHAPE", aralik=20, lider_koordinat=(10, 20, -5))
             # Çıktı: [(x1, z1, y1), (x2, z2, y2), ...] - Ursina formatında
         """
-        return self.helper.formasyon(formasyon_id=formasyon_id, aralik=aralik, is_3d=is_3d, lider_koordinat=lider_koordinat)
-    def formasyon_sec(self, margin=None, is_3d=False, offset=None, harita=False, yaw_senkronizasyon_mesafesi=5.0, maksimum_yaw_donme_hizi=45.0):
+        return self.helper.formasyon(formasyon_id=formasyon_id, aralik=aralik, is_3d=is_3d, lider_koordinat=lider_koordinat, dinamik=dinamik)
+    def formasyon_sec(self, margin=None, is_3d=False, offset=None, harita=False, yaw_senkronizasyon_mesafesi=5.0, maksimum_yaw_donme_hizi=45.0, dinamik=False):
         """
         Convex hull kullanarak en uygun formasyonu seçer (Thread-safe).
 
@@ -1092,6 +1274,7 @@ class Filo:
             yaw_senkronizasyon_mesafesi (float): Takipçi ROV'ların hedefe yaklaştığında liderin yaw açısına 
                 göre yönlenmesi için mesafe eşiği (metre, varsayılan: 5.0)
             maksimum_yaw_donme_hizi (float): Maksimum yaw dönme hızı (derece/saniye, varsayılan: 60.0)
+            dinamik (bool): Formasyonun lideri dinamik olarak takip edip etmeyeceği (varsayılan: True)
 
         Returns:
             tuple | None: Seçilen formasyon bilgileri (formasyon_id, aralik, yaw, koordinat) veya None (uygun formasyon bulunamazsa)
@@ -1107,6 +1290,7 @@ class Filo:
             harita=harita,
             yaw_senkronizasyon_mesafesi=yaw_senkronizasyon_mesafesi,
             maksimum_yaw_donme_hizi=maksimum_yaw_donme_hizi,
+            dinamik=dinamik
         )
 
     def lidere_don(self, rov_id=None, sessiz=True):
@@ -1257,11 +1441,11 @@ class Filo:
     
     def _try_formation_fit(self, formasyon_id: int, aralik: float, is_3d: bool, 
                           merkez_koordinat: tuple, deneme_yaw: float, hull, 
-                          lider_rov_id: int, nokta_adi: str, sessiz: bool = False) -> bool:
+                          lider_rov_id: int, nokta_adi: str, sessiz: bool = False, dinamik: bool = False) -> bool:
         """Formasyonun geçerli olup olmadığını kontrol eder ve uygular."""
         return self.helper.try_formation_fit(formasyon_id, aralik, is_3d,
                                             merkez_koordinat, deneme_yaw, hull,
-                                            lider_rov_id, nokta_adi, sessiz=sessiz)
+                                            lider_rov_id, nokta_adi, sessiz=sessiz, dinamik=dinamik)
 
     
 
@@ -1656,25 +1840,6 @@ class Filo:
 
     
     
-    def gidilecek_noktalar(self, path=None, r=10, derece_threshold=15):
-        """
-        A* yolu üzerinden gidilecek noktaları filtreler.
-        Mesafe ve eğim açısına göre gereksiz noktaları çıkarır.
-
-        Args:
-            path: [(x1, y1), (x2, y2), ...] şeklindeki orijinal yol
-                (None ise haritadaki A* yolunu kullanır)
-            r: Örnekleme mesafesi (yarıçap, metre, varsayılan: 10)
-            derece_threshold: Kabul edilen minimum eğim açısı
-                            (derece, varsayılan: 15)
-        
-        Returns:
-            List[List[float, float]]: [[x, y], [x, y], ...]
-            şeklinde filtrelenmiş koordinat dizisi
-        """
-
-        return self.helper.gidilecek_noktalar(path=path, r=r, derece_threshold=derece_threshold)
-
     def gidilecek_noktalar_n(self, path=None, n=10):
         """
         A* yolu üzerinde başlangıçtan itibaren her n metre (adım) sonra bir rota noktası alır.
