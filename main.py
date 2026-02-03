@@ -1,5 +1,5 @@
 from FiratROVNet.simulasyon import Ortam
-from FiratROVNet.gnc import Filo
+from FiratROVNet.gnc import Filo, Debug
 from GAT.gat_test import FiratAnalizci
 from FiratROVNet.config import cfg
 from ursina import *
@@ -9,7 +9,8 @@ import os
 # 1. KURULUM
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
-app.sim_olustur(n_rovs=6, n_engels=15)
+# rov_model: 'bluerov2' (varsayılan), 'submarine'
+app.sim_olustur(n_rovs=6, n_engels=15, rov_model='submarine')
 
 # GAT Modeli Yükleme
 try: 
@@ -30,6 +31,12 @@ filo.otomatik_kurulum(
 )
 app.filo = filo
 
+# Debug sınıfı (APF/GNC fonksiyonları: debug.list(), debug.apf(0), debug.apf() ile kullanım)
+debug = Debug(filo)
+
+# Minimap otomatik açık (ölçek 1.0)
+filo.minimap(scale=1.0)
+
 # Konsol fonksiyonları (interaktif Python konsolu için)
 app.konsola_ekle("git", lambda rov_id, x, z, y=None, ai=True: filo.git(rov_id, x, z, y, ai))
 app.konsola_ekle("move", lambda rov_id, yon, guc=1.0: filo.move(rov_id, yon, guc))
@@ -41,17 +48,25 @@ app.konsola_ekle("filo", filo)
 app.konsola_ekle("rovs", app.rovs)
 app.konsola_ekle("cfg", cfg)
 app.konsola_ekle("harita", app.harita)
+app.konsola_ekle("debug", debug)
 
 print("✅ Sistem aktif.")
 print("🗺️  Harita aktif! Kullanım: harita.ekle(x_2d, y_2d)")
 print("🏝️  Ada yönetimi aktif! Kullanım: Ada(0, 50, 60)")
 print("🤖 ROV yönetimi aktif! Kullanım: ROV(0, 10, -5, 20)")
+print("🔧 Debug aktif! Kullanım: debug.list(), debug.apf(0), debug.apf() ile kullanım bilgisi")
 
 
 # 2. ANA DÖNGÜ
 def update():
     """Ana simülasyon döngüsü - GAT kodlarını hesaplar ve ROV'ları günceller."""
     try:
+        # Önce kuyruktaki komutları işle (git vb.) — hedef ataması güncellemeden önce yapılsın
+        if hasattr(app, 'filo') and app.filo is not None:
+            try:
+                app.filo.execute_queued_commands()
+            except Exception:
+                pass
         # Simülasyon verilerini al
         veri = app.simden_veriye()
         
@@ -107,6 +122,17 @@ def update():
         if hasattr(app, 'harita') and app.harita is not None:
             try:
                 app.harita.update()
+            except Exception:
+                pass
+        # engel_bulutu'nu doldur (ROV sensörleri minimap'ten önce çalışsın)
+        if hasattr(app, 'rovs') and hasattr(app, 'engel_bulutu'):
+            for rov in app.rovs:
+                if rov and hasattr(rov, '_engel_tespiti'):
+                    rov._engel_tespiti()
+        # Minimap güncelle (vektör okları, engel_bulutu dahil)
+        if hasattr(app, 'minimap') and app.minimap is not None and getattr(app.minimap, 'visible', False):
+            try:
+                app.minimap.update()
             except Exception:
                 pass
         

@@ -22,8 +22,8 @@ class GATLimitleri:
     Bu limitler gnc.py ve simulasyon.py (kullanım) tarafından kullanılır.
     """
     # GAT Kod Limitleri (metre cinsinden)
-    CARPISMA = 5.0    # Kod 2: Çarpışma riski mesafesi
-    ENGEL = 10.0      # Kod 1: Engel yakınlığı mesafesi
+    CARPISMA = 10    # Kod 2: Çarpışma riski mesafesi
+    ENGEL = 20.0      # Kod 1: Engel yakınlığı mesafesi
     KOPMA = 40.0      # Kod 3: Bağlantı kopması mesafesi
     UZAK = 60.0       # Kod 5: Liderden uzaklık mesafesi
     
@@ -73,66 +73,24 @@ class SensorAyarlari:
 
 class HareketAyarlari:
     """
-    Hareket ve formasyon ayarları - Tüm sistemde kullanılan katsayılar ve mesafeler.
+    Hareket ve formasyon ayarları - GAT limitlerine bağlı, sadece kullanılan değerler.
     """
-    # Takipçi hareket eşikleri
-    HAREKET_ESIGI_KATSAYISI = 0.7      # İletişim menzilinin %70'i (lider uzaklaşma eşiği)
-    HISTERESIS_KATSAYISI = 0.9         # Aktif moddan pasif moda geçiş toleransı
-    
-    # Hedef toleransları (metre)
-    HEDEF_TOLERANS_LIDER = 1         # Lider için hedef toleransı
-    HEDEF_TOLERANS_TAKIPCI = 2.0       # Takipçi için hedef toleransı
-    
-    # Formasyon ayarları
-    FORMASYON_MESAFESI = 15.0          # Varsayılan formasyon mesafesi (metre)
-    FORMASYON_VARSAYILAN_ARALIK = 15.0  # Formasyon aralığı (metre)
-    
-    # Kaçınma ayarları
-    KACINMA_MESAFESI_FALLBACK_KATSAYISI = 0.2  # Engel mesafesinin %20'si (fallback)
-    MINIMUM_MESAFE_KACINMA = 5.0       # Minimum mesafe (çok yakınsa kaçınma yok)
-    YAKIN_MESAFE_ESIGI = 15.0          # Yakın mesafe eşiği (iletişim kopmasını önleme)
-    
-    # Dikey toleranslar (metre)
-    DIKEY_TOLERANS_ENGEL = 10.0         # Engel algılama için dikey tolerans
-    DIKEY_TOLERANS_ADA = 5.0            # Ada algılama için dikey tolerans
-    
-    # Vektör birleştirme katsayıları (0.0-1.0)
-    VEKTOR_BIRLESTIRME_NORMAL_KACINMA = 0.8      # Normal durumda kaçınma ağırlığı
-    VEKTOR_BIRLESTIRME_TAKIPCI_KACINMA = 0.8      # Takipçi için kaçınma ağırlığı
-    VEKTOR_BIRLESTIRME_TAKIPCI_HEDEF = 0.2        # Takipçi için hedef ağırlığı
-    
-    # Güç ayarları (0.0-1.0)
-    GUC_ENGEL = 0.5                    # Engel durumunda motor gücü
-    GUC_PASIF_MOD = 0.5                # Pasif modda motor gücü
-    GUC_UZAK = 1.0                     # Uzak durumda motor gücü (takipçi)
-    
+    # Formasyon (GAT.ENGEL ile uyumlu tek aralık)
+    FORMASYON_MESAFESI = GATLimitleri.ENGEL
+    FORMASYON_MIN_ARALIK = GATLimitleri.ENGEL
+    FORMASYON_VARSAYILAN_ARALIK = GATLimitleri.ENGEL
+    FORMASYON_OFFSET = GATLimitleri.ENGEL
+
+    YAKIN_MESAFE_ESIGI = GATLimitleri.KOPMA * 0.375
+
     # Hedef görselleştirme
-    HEDEF_X_BOYUTU = 10.0              # Hedef X işareti boyutu
-    HEDEF_KALINLIK = 1.0               # Hedef X işareti kalınlığı
-    
-    # Random hedef oluşturma
-    RANDOM_HEDEF_HAVUZ_KATSAYISI = 0.7  # Havuz genişliğinin %70'i içinde
-    RANDOM_HEDEF_MIN_MESAFE_ADA = 30.0  # Adalardan minimum mesafe
-    
-    # Havuz sınırları
-    HAVUZ_SINIR_TOLERANS = 0.95        # Havuz sınır toleransı (%95)
-    HAVUZ_SINIR_Y_UST = 0.3            # Üst yüzey sınırı
-    HAVUZ_SINIR_Y_ALT = -95.0          # Alt derinlik sınırı
-    
-    # Formasyon şekil katsayıları
-    V_FORMASYON_X_KATSAYISI = 0.8      # V formasyonu X ekseni katsayısı
-    V_FORMASYON_Z_KATSAYISI = 0.6      # V formasyonu Z ekseni katsayısı
-    OK_FORMASYON_X_KATSAYISI = 0.8     # Ok formasyonu X ekseni katsayısı
-    OK_FORMASYON_Z_KATSAYISI = 1.5     # Ok formasyonu Z ekseni katsayısı
-    
-    # Uzaklaşma gücü katsayıları (0.0-1.0)
-    UZAKLASMA_GUC_KATSAYISI = 0.3      # Uzaklaşma gücü katsayısı (%30)
-    YUMUSAKLIK_CARPANI = 0.2            # Yumuşaklık çarpanı (%20)
-    
-    # Diğer ayarlar
-    PASIF_MOD_MIN_HAREKET_MESAFESI = 5.0  # Pasif modda minimal hareket mesafesi (metre)
-    VELOCITY_THRESHOLD = 0.1              # Hız eşiği (normalize edilmiş)
-    MOTOR_GUC_KATSAYISI = 0.5              # Manuel hareket güç katsayısı
+    HEDEF_X_BOYUTU = 10.0
+    HEDEF_KALINLIK = 1.0
+
+    # Senaryo: Adalardan min mesafe (GAT.ENGEL * 3)
+    RANDOM_HEDEF_MIN_MESAFE_ADA = GATLimitleri.ENGEL * 3
+
+    MOTOR_GUC_KATSAYISI = 0.5
 
 
 class FizikSabitleri:
@@ -170,6 +128,24 @@ class FizikSabitleri:
     TAKIPCI_MAX_DERINLIK = -100.0        # Takipçi için maksimum derinlik
 
 
+class ROVModelleri:
+    """
+    ROV 3D model seçenekleri. sim_olustur(rov_model='bluerov2') veya rov_model='submarine' ile seçilebilir.
+    """
+    # Mevcut modeller: 'bluerov2' (varsayılan), 'submarine'
+    VARSAYILAN = 'bluerov2'
+    MODELLER = {
+        'bluerov2': {
+            'path': 'Models-3D/BlueRov2/Bluerov2.glb',
+            'scale': (0.025, 0.025, 0.025),  # 100x küçültme + 2x büyütme
+        },
+        'submarine': {
+            'path': 'Models-3D/water/my_models/submarine/submarine1.fbx',
+            'scale': (0.013, 0.013, 0.013),  # FBX 1000x küçültme + %25 büyütme
+        },
+    }
+
+
 class SimulasyonSabitleri:
     """
     Simülasyon ortamı oluşturma ve yerleştirme sabitleri.
@@ -197,6 +173,16 @@ class SimulasyonSabitleri:
     LIDAR_RAYCAST_SAYISI = 5             # Lidar için raycast sayısı (her yön için)
     LIDAR_GORUS_ACISI_DERECE = 60        # Lidar koni taraması açısı (derece)
     ENGEL_TESPITI_MIN_MESAFE = 999.0    # Engel tespiti için başlangıç minimum mesafesi
+
+
+class MinimapAyarlari:
+    """
+    Minimap ROV ikon güncelleme ayarları — jitter azaltma ve takip hızı.
+    """
+    # Jitter önleme: Hedef ile ikon arası bu mesafeden küçükse (harita birimi) anında hizala
+    JITTER_THRESHOLD = 0.0015   # ~0.6 m (400 m havuzda)
+    # Lerp hızı: time.dt * LERP_SPEED — yüksek = daha hızlı takip (varsayılan 35)
+    LERP_SPEED = 35.0
 
 
 class ModemAyarlari:
@@ -257,7 +243,7 @@ class Formasyon:
     ]
     
     
-    def pozisyonlar(self, tip, aralik=15.0, is_3d=False, lider_koordinat=None, yaw=None):
+    def pozisyonlar(self, tip, aralik=None, is_3d=False, lider_koordinat=None, yaw=None):
         """
         Liderin Yaw açısını dikkate alarak formasyon pozisyonlarını hesaplar.
         
@@ -287,6 +273,9 @@ class Formasyon:
             # Lider 45 derece döndüğünde formasyon pozisyonları
         """
         import math
+        
+        if aralik is None:
+            aralik = HareketAyarlari.FORMASYON_VARSAYILAN_ARALIK
         
         if isinstance(tip, str):
             tip = tip.upper()
@@ -319,11 +308,9 @@ class Formasyon:
             if lider_koordinat is not None:
                 lider_global_pos = (float(lider_koordinat[0]), float(lider_koordinat[1]), float(lider_koordinat[2]))
             else:
-                gps = self.Filo.get(lider_id, "gps")  # Tercüman sayesinde (x, y, z) geliyor
+                gps = self.Filo.get(lider_id, "gps")  # Sim formatında (x, y, z) döner
                 if gps:
-                    # Ursina formatından (x, y, z) -> Bizim format (x, y, z) çevir
-                    # Ursina: (x, y, z) -> x: sağ-sol, y: derinlik, z: ileri-geri
-                    # Bizim: (x, y, z) -> x: sağ-sol, y: ileri-geri, z: derinlik
+                    # Sim formatı: x=sağ-sol, y=ileri-geri, z=derinlik (Filo.get zaten Sim döndürür)
                     lider_global_pos = (float(gps[0]), float(gps[1]), float(gps[2]))
             
             # Liderin Yaw açısını al

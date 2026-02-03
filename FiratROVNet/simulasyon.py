@@ -43,7 +43,9 @@ from .config import (
     GATLimitleri,
     HareketAyarlari,
     FizikSabitleri,
-    SimulasyonSabitleri
+    SimulasyonSabitleri,
+    MinimapAyarlari,
+    ROVModelleri
 )
 from .simulasyon_yardimci import (
     kayalari_olustur,
@@ -57,43 +59,37 @@ class ROV(Entity):
     def __init__(self, rov_id, **kwargs):
         super().__init__()
         
-        # FBX model kontrolü (Windows uyumlu path - geliştirilmiş)
-        # Models-3D klasörü proje kök dizininde (CWD'de)
-        # Ursina relative path'i tercih eder, bu yüzden önce relative path dene
+        # ROV model seçimi: kwargs'tan veya varsayılan (ROVModelleri.VARSAYILAN = bluerov2)
+        rov_model_key = kwargs.pop('rov_model', ROVModelleri.VARSAYILAN)
+        if isinstance(rov_model_key, str):
+            rov_model_key = rov_model_key.lower().strip()
+        if rov_model_key not in ROVModelleri.MODELLER:
+            rov_model_key = ROVModelleri.VARSAYILAN
+        model_info = ROVModelleri.MODELLER[rov_model_key]
+        rov_model_path_rel = model_info['path']
+        model_scale = model_info['scale']
         
-        # 1. Relative path (CWD'den)
-        rov_model_path_rel = "Models-3D/water/my_models/submarine/submarine1.fbx"
-        
-        # 2. Absolute path (script'in bulunduğu yerden)
+        # Path çözümleme (CWD, script_dir, relative)
         script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        rov_model_path_abs = os.path.join(script_dir, "Models-3D", "water", "my_models", "submarine", "submarine1.fbx")
-        
-        # 3. CWD'den absolute path (Windows için ek kontrol)
+        rov_model_path_abs = os.path.join(script_dir, *rov_model_path_rel.split('/'))
         cwd = os.getcwd()
-        rov_model_path_cwd_abs = os.path.join(cwd, "Models-3D", "water", "my_models", "submarine", "submarine1.fbx")
+        rov_model_path_cwd_abs = os.path.join(cwd, *rov_model_path_rel.split('/'))
         
-        # Path seçimi: Önce relative path'i kontrol et (Ursina için tercih edilen)
         rov_model_path = None
         model_found = False
-        
-        # Kontrol sırası: relative -> script_abs -> cwd_abs
         if os.path.exists(rov_model_path_rel):
             rov_model_path = rov_model_path_rel
             model_found = True
         elif os.path.exists(rov_model_path_abs):
-            # Absolute path varsa, CWD'ye göre relative path'e çevir
             try:
                 rov_model_path = os.path.relpath(rov_model_path_abs, cwd)
-                # Eğer relative path oluşturulamazsa veya dosya yoksa, absolute kullan
                 if not os.path.exists(rov_model_path):
                     rov_model_path = rov_model_path_abs
                 model_found = True
             except (ValueError, OSError):
-                # Relative path oluşturulamazsa absolute kullan
                 rov_model_path = rov_model_path_abs
                 model_found = True
         elif os.path.exists(rov_model_path_cwd_abs):
-            # CWD'den absolute path varsa kullan
             try:
                 rov_model_path = os.path.relpath(rov_model_path_cwd_abs, cwd)
                 if not os.path.exists(rov_model_path):
@@ -103,73 +99,51 @@ class ROV(Entity):
                 rov_model_path = rov_model_path_cwd_abs
                 model_found = True
         
-        # Hiçbiri bulunamazsa relative path'i kullan (Ursina kendi path çözümlemesini yapacak)
         if not model_found:
             rov_model_path = rov_model_path_rel
         
-        # Ursina için path'i normalize et (forward slash kullan)
-        if os.path.sep == '\\':  # Windows
+        if os.path.sep == '\\':
             rov_model_path = rov_model_path.replace('\\', '/')
         
-        # Model dosyası kontrolü (en az bir yerde varsa kullan)
         model_exists = os.path.exists(rov_model_path) if rov_model_path else False
+        if not model_exists and os.path.sep == '\\':
+            for p in [rov_model_path_rel, rov_model_path_abs, rov_model_path_cwd_abs]:
+                for sep in ['/', '\\']:
+                    pn = p.replace('/', sep).replace('\\', sep)
+                    if os.path.exists(pn):
+                        rov_model_path = pn.replace('\\', '/')
+                        model_exists = True
+                        break
         
-        # Windows için ek path kontrolü: normalize edilmiş path'leri de kontrol et
-        if not model_exists and os.path.sep == '\\':  # Windows
-            # Windows'ta path'leri normalize et ve tekrar kontrol et
-            normalized_paths = [
-                rov_model_path_rel.replace('/', '\\'),
-                rov_model_path_rel.replace('\\', '/'),
-                rov_model_path_abs.replace('/', '\\'),
-                rov_model_path_abs.replace('\\', '/'),
-                rov_model_path_cwd_abs.replace('/', '\\'),
-                rov_model_path_cwd_abs.replace('\\', '/'),
-            ]
-            for norm_path in normalized_paths:
-                if os.path.exists(norm_path):
-                    rov_model_path = norm_path.replace('\\', '/')  # Ursina için forward slash
-                    model_exists = True
-                    break
-        
-        if model_exists or os.path.exists(rov_model_path_rel) or os.path.exists(rov_model_path_abs) or os.path.exists(rov_model_path_cwd_abs):
-            # FBX model kullan - Model çok büyük olduğu için yaklaşık 1000 kat küçültülüyor
-            # Ursina için path'i normalize et (forward slash kullan)
-            if os.path.sep == '\\':  # Windows
+        if model_exists or any(os.path.exists(p) for p in [rov_model_path_rel, rov_model_path_abs, rov_model_path_cwd_abs]):
+            if os.path.sep == '\\':
                 rov_model_path = rov_model_path.replace('\\', '/')
-            
-            # Model dosyasının gerçekten var olduğundan emin ol (Windows için ek kontrol)
             final_model_path = rov_model_path
             if not os.path.exists(final_model_path):
-                # Windows'ta backslash ile de dene
                 final_model_path_win = final_model_path.replace('/', '\\')
                 if os.path.exists(final_model_path_win):
-                    final_model_path = final_model_path_win.replace('\\', '/')  # Ursina için forward slash
+                    final_model_path = final_model_path_win.replace('\\', '/')
                 else:
-                    # Model bulunamadı, fallback kullan (sessizce)
                     self.model = 'cube'
-                    self.scale = (1.5, 0.8, 2.5)
+                    self.scale = (1.875, 1.0, 3.125)
                     self.color = color.orange
                     self.collider = 'box'
                     self.unlit = True
                     self.gat_kodu = 0
-                    return  # Erken çıkış, aşağıdaki FBX ayarlarını atla
-            
+                    return
             self.model = final_model_path
-            self.scale = (0.01, 0.01, 0.01)  # FBX model için çok küçük scale (1000 kat küçültme)
-            # Mesh collider intersects() ile çalışmaz, bu yüzden box collider kullanıyoruz
-            # Görsel model mesh, ama çarpışma kontrolü için box kullanılıyor
-            self.collider = 'box'  # Primitive collider (intersects() için gerekli)
-            self.unlit = False  # FBX model için lighting açık
-            self.color = color.white  # FBX model için beyaz (GAT kodları için override edilebilir)
-            self.gat_kodu = 0  # GAT kodu için değişken (başlangıç: 0 = OK)
+            self.scale = model_scale
+            self.collider = 'box'
+            self.unlit = False  # 3D model için lighting açık
+            self.color = color.white
+            self.gat_kodu = 0
         else:
-            # Fallback: Mevcut cube model
             self.model = 'cube'
-            self.color = color.orange  # Turuncu her zaman görünür
-            self.scale = (1.5, 0.8, 2.5)
+            self.color = color.orange
+            self.scale = (1.875, 1.0, 3.125)
             self.collider = 'box'
             self.unlit = True
-            self.gat_kodu = 0  # GAT kodu için değişken 
+            self.gat_kodu = 0 
         
         # Pozisyon: (x_2d, y_2d, z_depth) formatında
         # Ursina'ya dönüştürülerek atanır: (x_2d, z_depth, y_2d)
@@ -185,7 +159,8 @@ class ROV(Entity):
             # Varsayılan pozisyon: (x_2d=-100, y_2d=0, z_depth=-10)
             self.position = sim_to_ursina(-100, 0, -10)
 
-        self.label = Text(text=f"ROV-{rov_id}", parent=self, y=3.0, scale=20, billboard=True, color=color.white, origin=(0, 0))
+        # Label: billboard=False ile ROV ile birlikte döner; rotation=(0,-90,0) ile yazı boyu ön-arka eksene paralel
+        self.label = Text(text=f"ROV-{rov_id}", parent=self, y=3.0, scale=20, billboard=False, color=color.white, origin=(0, 0), rotation=(0, -90, 0))
         
         self.id = rov_id
         self.velocity = Vec3(0, 0, 0)
@@ -205,7 +180,7 @@ class ROV(Entity):
         # ROV'un etrafında görünmez bir küre: "Yakınlık Sensörü"
         # Bu alan içindeki objeleri tespit etmek için kullanılır
         # NOT: collider=None yapıldı - intersects() çarpışma sorunlarını önlemek için
-        safety_zone_radius = self.sensor_config.get("engel_mesafesi", 20.0) / 2.0  # Yarıçap = menzil / 2
+        safety_zone_radius = self.sensor_config.get("engel_mesafesi", GATLimitleri.ENGEL) / 2.0  # Yarıçap = menzil / 2
         self.safety_zone = Entity(
             parent=self,
             model='sphere',
@@ -277,9 +252,8 @@ class ROV(Entity):
         # Pozisyon ayarla
         if konum is not None:
             if isinstance(konum, (tuple, list)) and len(konum) == 3:
-                x, y, z = konum  # Simülasyon koordinat sistemi: (x_2d, y_2d, z_depth)
-                # ROV için koordinat dönüşümü: sim_to_ursina(x, z, y) -> (x, z_depth, y_2d)
-                ursina_x, ursina_y, ursina_z = sim_to_ursina(x, z, y)
+                x_2d, y_2d, z_depth = konum  # Simülasyon koordinat sistemi: (x_2d, y_2d, z_depth)
+                ursina_x, ursina_y, ursina_z = sim_to_ursina(x_2d, y_2d, z_depth)
                 self.position = Vec3(ursina_x, ursina_y, ursina_z)
         
         # Environment referansını ayarla
@@ -443,10 +417,10 @@ class ROV(Entity):
                     self.manuel_hareket['yon'] = None
                     self.manuel_hareket['guc'] = 0.0
             elif self.manuel_hareket['yon'] == 'yaw':
-                # Yaw: active_forces['yaw'] ile sürekli dönme (derece/saniye)
+                # Yaw: active_forces['yaw'] ile sürekli dönme (derece/saniye) - 2x yavaşlatıldı
                 yaw_guc = self.active_forces.get('yaw', 0.0)
                 if abs(yaw_guc) > 0:
-                    yaw_hizi = abs(yaw_guc) * 90.0
+                    yaw_hizi = abs(yaw_guc) * 45.0  # Önceden 90.0 idi
                     yaw_delta = yaw_hizi * time.dt
                     if not hasattr(self, 'rotation') or self.rotation is None:
                         self.rotation = Vec3(0, 0, 0)
@@ -857,12 +831,37 @@ class ROV(Entity):
             # Cache'e kaydet
             self.son_lidar_mesafeleri[yon_id] = min_dist if min_dist >= 0 else -1
     
+    def _is_rov_entity(self, entity):
+        """Entity bir ROV mu kontrol eder (engel_bulutu'na ROV'lar eklenmez)."""
+        if entity is None:
+            return False
+        rovs = getattr(self.environment_ref, 'rovs', None)
+        if not rovs:
+            return False
+        return entity in rovs
+
+    def _engel_bulutu_ekle(self, world_point):
+        """Raycast hit noktasını engel_bulutu'na ekler. Kendi konumu veya çok yakın noktalar eklenmez."""
+        ortam = self.environment_ref
+        if not ortam or not hasattr(ortam, 'engel_bulutu'):
+            return
+        if world_point is None:
+            return
+        x, z = float(getattr(world_point, 'x', world_point[0])), float(getattr(world_point, 'z', world_point[2]))
+        # Kendi konumuna çok yakın noktaları ekleme (ROV kendini engel olarak göstermesin)
+        px = getattr(self.world_position, 'x', self.position.x)
+        pz = getattr(self.world_position, 'z', self.position.z)
+        dist_sq = (x - px) ** 2 + (z - pz) ** 2
+        if dist_sq < 1.0:  # ~1m içi (ROV gövdesi)
+            return
+        ortam.engel_bulutu.append((x, z))
+
     def _engel_tespiti(self):
         """
         FİZİK MOTORU TABANLI: Raycast kullanarak en yakın engeli tespit eder.
         Çizgiyi engelin yüzeyine (raycast hit noktasına) çizer.
         Havuz sınırları da engel olarak algılanır.
-        OPTİMİZE EDİLMİŞ: Segmentation fault önleme için origin kaydırıldı ve tuple döngü dışında oluşturuldu.
+        engel_bulutu: Tüm ROV'lardan gelen raycast hit noktaları (ROV hariç) ortam.engel_bulutu listesinde toplanır.
         """
         if not self.environment_ref:
             return
@@ -871,98 +870,55 @@ class ROV(Entity):
         min_mesafe = SimulasyonSabitleri.ENGEL_TESPITI_MIN_MESAFE
         en_yakin_engel = None
         en_yakin_nokta = None  # Raycast hit noktası
-        
+        ortam = self.environment_ref
+
         # ROV'un yönünü al (forward vektörü)
         if hasattr(self, 'forward') and self.forward:
             forward_vec = Vec3(self.forward.x, 0, self.forward.z).normalized()
         else:
-            # Varsayılan yön (z ekseni pozitif yönü - ileri)
             forward_vec = Vec3(0, 0, 1)
             
-        # Raycast origin: ROV'un kendi box collider'ından dışarı kaydır (segfault önleme)
-        # ROV merkezinden 1.5 birim ileri kaydırıyoruz
         raycast_origin = self.world_position + Vec3(0, 0.5, 0) + (forward_vec * 1.5)
-        
-        # Ignore tuple'ı döngü dışında oluştur (Bellek yönetimi için kritik)
         ignore_tuple = (self, self.safety_zone) if hasattr(self, 'safety_zone') and self.safety_zone else (self,)
-        
-        # Önce ön yönde raycast yap (en önemli yön)
-        hit_info = raycast(
-            raycast_origin,
-            forward_vec,
-            distance=engel_mesafesi_limit,
-            ignore=ignore_tuple,
-            debug=False  # Segfault riskini azaltmak için debug'ı kapatın
-        )
-        
-        if hit_info.hit:
-            mesafe = hit_info.distance
-            if mesafe < min_mesafe:
-                min_mesafe = mesafe
-                en_yakin_engel = hit_info.entity if hasattr(hit_info, 'entity') else None
-                en_yakin_nokta = hit_info.world_point if hasattr(hit_info, 'world_point') else None
-        
-        # Eğer ön yönde engel yoksa, diğer yönleri de kontrol et (sağ, sol, arka)
-        if not hit_info.hit or min_mesafe >= engel_mesafesi_limit:
-            # Sağ yön
-            right_vec = Vec3(forward_vec.z, 0, -forward_vec.x).normalized()
-            hit_info = raycast(
-                raycast_origin,
-                right_vec,
-                distance=engel_mesafesi_limit,
-                ignore=ignore_tuple,
-                debug=False
-            )
-            if hit_info.hit and hit_info.distance < min_mesafe:
-                min_mesafe = hit_info.distance
-                en_yakin_engel = hit_info.entity if hasattr(hit_info, 'entity') else None
-                en_yakin_nokta = hit_info.world_point if hasattr(hit_info, 'world_point') else None
-            
-            # Sol yön
-            left_vec = Vec3(-forward_vec.z, 0, forward_vec.x).normalized()
-            hit_info = raycast(
-                raycast_origin,
-                left_vec,
-                distance=engel_mesafesi_limit,
-                ignore=ignore_tuple,
-                debug=False
-            )
-            if hit_info.hit and hit_info.distance < min_mesafe:
-                min_mesafe = hit_info.distance
-                en_yakin_engel = hit_info.entity if hasattr(hit_info, 'entity') else None
-                en_yakin_nokta = hit_info.world_point if hasattr(hit_info, 'world_point') else None
-            
-            # Arka yön
-            back_vec = -forward_vec
-            hit_info = raycast(
-                raycast_origin,
-                back_vec,
-                distance=engel_mesafesi_limit,
-                ignore=ignore_tuple,
-                debug=False
-            )
-            if hit_info.hit and hit_info.distance < min_mesafe:
-                min_mesafe = hit_info.distance
-                en_yakin_engel = hit_info.entity if hasattr(hit_info, 'entity') else None
-                en_yakin_nokta = hit_info.world_point if hasattr(hit_info, 'world_point') else None
-        
+
+        def _raycast_ve_ekle(direction):
+            nonlocal min_mesafe, en_yakin_engel, en_yakin_nokta
+            hi = raycast(raycast_origin, direction, distance=engel_mesafesi_limit, ignore=ignore_tuple, debug=False)
+            if hi and hi.hit:
+                ent = hi.entity if hasattr(hi, 'entity') else None
+                pt = hi.world_point if hasattr(hi, 'world_point') else None
+                # Kendini engel olarak algılama
+                if ent is self:
+                    return hi
+                if not self._is_rov_entity(ent) and pt:
+                    self._engel_bulutu_ekle(pt)
+                if hi.distance < min_mesafe:
+                    min_mesafe = hi.distance
+                    en_yakin_engel = ent
+                    en_yakin_nokta = pt
+            return hi
+
+        # Dört yönde raycast (önce ön)
+        _raycast_ve_ekle(forward_vec)
+        right_vec = Vec3(forward_vec.z, 0, -forward_vec.x).normalized()
+        _raycast_ve_ekle(right_vec)
+        left_vec = Vec3(-forward_vec.z, 0, forward_vec.x).normalized()
+        _raycast_ve_ekle(left_vec)
+        _raycast_ve_ekle(-forward_vec)
+
         # Havuz sınırlarını da kontrol et (fallback - raycast duvarları algılamazsa)
-            if hasattr(self.environment_ref, 'havuz_genisligi'):
-                havuz_genisligi = self.environment_ref.havuz_genisligi
-                havuz_sinir = havuz_genisligi
-                
+        havuz_sinir = None
+        if hasattr(ortam, 'havuz_genisligi'):
+            havuz_sinir = ortam.havuz_genisligi
+        if havuz_sinir is not None:
             x_mesafe_sag = havuz_sinir - self.position.x
             x_mesafe_sol = self.position.x - (-havuz_sinir)
             z_mesafe_on = havuz_sinir - self.position.z
             z_mesafe_arka = self.position.z - (-havuz_sinir)
-            
             en_yakin_sinir_mesafe = min(x_mesafe_sag, x_mesafe_sol, z_mesafe_on, z_mesafe_arka)
-            
             if en_yakin_sinir_mesafe < min_mesafe and en_yakin_sinir_mesafe < engel_mesafesi_limit:
                 min_mesafe = en_yakin_sinir_mesafe
                 en_yakin_engel = "havuz_siniri"
-                
-                # En yakın sınırın pozisyonunu hesapla
                 if en_yakin_sinir_mesafe == x_mesafe_sag:
                     en_yakin_nokta = Vec3(havuz_sinir, self.position.y, self.position.z)
                 elif en_yakin_sinir_mesafe == x_mesafe_sol:
@@ -971,6 +927,7 @@ class ROV(Entity):
                     en_yakin_nokta = Vec3(self.position.x, self.position.y, havuz_sinir)
                 else:
                     en_yakin_nokta = Vec3(self.position.x, self.position.y, -havuz_sinir)
+                self._engel_bulutu_ekle(en_yakin_nokta)
 
         # Tespit Sonucu
         if en_yakin_engel and min_mesafe < engel_mesafesi_limit:
@@ -1395,10 +1352,16 @@ class Minimap(Entity):
         self.rov_ikonlari = {}      # {id: Entity}
         self.engel_noktalari = []   # [Entity, ...]
         self.statik_nesneler = []   # [Entity, ...] (Adalar, Grid)
+        self.vektor_cizgi_entity = None  # Tek vektör çizgisi (filo.vektor ile)
+        self.vektor_cizgi_entities = []  # APF çoklu vektörler (filo.apf ile; kırmızı/turuncu/yeşil)
+        self._apf_cache_sig = None       # APF yeniden çizimi için imza (gereksiz destroy/create önleme)
+        self._engel_bulutu_cizilen_len = 0  # Engel bulutu incremental çizim için
         
         # Çizgi Meshleri (A* ve Hull için)
         self.path_entity = None
         self.hull_entity = None
+        self.ada_cevre_entity = None  # filo.minimap("ekle", filo.ada_cevre()) ile çizilen ada çevre çizgisi
+        self.git_hedef_isaret_entities = {}  # {rov_id: Entity} - git_path(isaret=True) ile bir sonraki waypoint
         
         # Başlangıç Kurulumu
         self._grid_olustur()
@@ -1420,7 +1383,7 @@ class Minimap(Entity):
         Ursina UI'da Y ekseni yukarıdır, bu yüzden Dünya Z'si Harita Y'si olur.
         """
         # Ölçekleme faktörü: Havuzun toplam genişliği (genislik * 2)
-        factor = 1.0 / (self.havuz_genisligi * 2)
+        factor = 1/(self.havuz_genisligi*2)
         mx = x * factor
         my = z * factor
         return Vec3(mx, my, 0)
@@ -1526,22 +1489,56 @@ class Minimap(Entity):
             ))
 
     def _adalari_ciz(self):
-        """Simülasyondaki adaları haritada kahverengi daireler olarak gösterir."""
+        """Simülasyondaki adaları haritada filo.ada_cevre(offset=0) ile uyumlu şekilde çizer (çevre çizgisi)."""
+        filo = getattr(self.ortam_ref, 'filo', None)
+        if filo and hasattr(filo, 'ada_cevre'):
+            try:
+                noktalar = filo.ada_cevre(offset=0.0, sessiz=True)
+            except Exception:
+                noktalar = []
+        else:
+            noktalar = []
+        # Ada sayısı (ada_cevre her ada için 12 nokta döndürür)
+        ada_sayisi = 0
+        if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
+            ada_sayisi = sum(1 for p in self.ortam_ref.island_positions if p is not None)
+        nokta_per_ada = (len(noktalar) // ada_sayisi) if ada_sayisi and noktalar else 0
+        if noktalar and ada_sayisi and nokta_per_ada >= 3:
+            # Her ada için çevre noktalarından kapalı polygon çiz (ada_cevre ile birebir uyumlu)
+            for ada_idx in range(ada_sayisi):
+                baslangic = ada_idx * nokta_per_ada
+                bitis = baslangic + nokta_per_ada
+                if bitis > len(noktalar):
+                    bitis = len(noktalar)
+                ada_noktalari = noktalar[baslangic:bitis]
+                verts = []
+                for p in ada_noktalari:
+                    px, pz = p[0], p[1] if len(p) > 1 else 0
+                    mp = self.dunya_to_harita(px, pz)
+                    verts.append((mp.x, mp.y, -0.2))
+                if len(verts) >= 3:
+                    verts.append(verts[0])  # Kapalı çizgi
+                    ada_entity = Entity(
+                        parent=self,
+                        model=Mesh(vertices=verts, mode='line', thickness=2),
+                        color=color.hex('#8B5A3C'),
+                        alpha=0.8
+                    )
+                    self.statik_nesneler.append(ada_entity)
+            return
+        # Fallback: filo/ada_cevre yoksa veya nokta yoksa eski daire çizimi
         if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
             for pos in self.ortam_ref.island_positions:
-                # Format: [x, z, radius] veya [x, z]
+                if pos is None:
+                    continue
                 x, z = pos[0], pos[1]
                 r = pos[2] if len(pos) > 2 else 10.0
-                
-                # Konum ve Ölçek Hesapla
                 map_pos = self.dunya_to_harita(x, z)
-                # Yarıçap ölçeği (Harita 1 birim = 2*havuz_genisligi)
-                map_scale = (r * 2) / (self.havuz_genisligi * 2)
-                
+                map_scale = (r * 2) / (self.havuz_genisligi)
                 ada = Entity(
                     parent=self,
                     model='circle',
-                    color=color.hex('#8B5A3C'), # Kahverengi
+                    color=color.hex('#8B5A3C'),
                     position=(map_pos.x, map_pos.y, -0.2),
                     scale=(map_scale, map_scale),
                     alpha=0.8
@@ -1591,6 +1588,39 @@ class Minimap(Entity):
             color=color.cyan,
             alpha=0.6
         )
+
+    def update_ada_cevre(self, points):
+        """
+        Ada çevre noktalarını minimapte nokta nokta çizer (filo.minimap("ekle", filo.ada_cevre()) ile).
+        points: filo.ada_cevre() çıktısı — [(x, y, z), ...] sim koordinat; 2D için (x, y) kullanılır.
+        Renk: turuncu-kahverengi (ada çevresi). Her nokta küçük bir daire olarak gösterilir.
+        """
+        if self.ada_cevre_entity:
+            try:
+                for child in list(self.ada_cevre_entity.children):
+                    destroy(child)
+                destroy(self.ada_cevre_entity)
+            except Exception:
+                pass
+            self.ada_cevre_entity = None
+        if not points:
+            return
+        # Konteyner (tüm noktaların parent'ı)
+        self.ada_cevre_entity = Entity(parent=self)
+        ada_renk = color.hex('#CD853F')  # Peru / ada çevresi turuncu-kahverengi
+        nokta_scale = 0.008  # ROV ikonundan (~0.02) küçük, ekranı kaplamaz
+        for p in points:
+            px = p[0]
+            py = p[1] if len(p) > 1 else 0
+            mp = self.dunya_to_harita(px, py)
+            Entity(
+                parent=self.ada_cevre_entity,
+                model='circle',
+                scale=nokta_scale,
+                position=(mp.x, mp.y, -0.28),
+                color=ada_renk,
+                alpha=0.85
+            )
 
     def update_path(self, path_points):
         """
@@ -1645,12 +1675,12 @@ class Minimap(Entity):
                 target_pos.z = -0.4 # En üstte (Z negatif bize yakın demek UI'da)
 
                 if rid not in self.rov_ikonlari:
-                    # ROV Gövdesi (Daire) - 3D ile aynı renk
-                    govde = Entity(parent=self, model='circle', scale=0.04, color=rov_renk, position=target_pos)
+                    # ROV Gövdesi (Daire) - 3D ile aynı renk; scale 0.02 * 1.1
+                    govde = Entity(parent=self, model='circle', scale=0.022, color=rov_renk, position=target_pos)
                     # Yön Oku (yön göstergesi, açık tonda)
-                    ok = Entity(parent=govde, model='quad', scale=(0.2, 0.8), y=0.4, color=ok_renk)
+                    ok = Entity(parent=govde, model='quad', scale=(0.1, 0.4), y=0.2, color=ok_renk)
                     # ROV ID etiketi (ikonun üstünde)
-                    Text(parent=govde, text=str(rid), position=(0, 1.5, 0), scale=50, color=rov_renk, origin=(0.5, 0.5))
+                    Text(parent=govde, text=str(rid), position=(0, 1.5, 0), scale=25, color=rov_renk, origin=(0.5, 0.5))
                     self.rov_ikonlari[rid] = govde
                 else:
                     current_entity = self.rov_ikonlari[rid]
@@ -1658,9 +1688,25 @@ class Minimap(Entity):
                     if current_entity.children:
                         current_entity.children[0].color = ok_renk
 
-                # Pozisyonu yumuşak güncelle (Lerp)
+                # Pozisyon güncelle: Dead zone (jitter önleme) + hızlı lerp (takip)
                 current_entity = self.rov_ikonlari[rid]
-                current_entity.position = lerp(current_entity.position, target_pos, time.dt * 15)
+                cur = current_entity.position
+                dx = target_pos.x - cur.x
+                dy = target_pos.y - cur.y
+                dist_sq = dx * dx + dy * dy
+                thresh = getattr(MinimapAyarlari, 'JITTER_THRESHOLD', 0.0015)
+                if abs(cur.x) > 1.0 or abs(cur.y) > 1.0:
+                    current_entity.position = Vec3(target_pos.x, target_pos.y, target_pos.z)
+                elif dist_sq < thresh * thresh:
+                    # Dead zone: çok yakınsa anında hizala (jitter önleme)
+                    current_entity.position = Vec3(target_pos.x, target_pos.y, target_pos.z)
+                else:
+                    # Hareket halindeyse hızlı lerp ile takip
+                    spd = getattr(MinimapAyarlari, 'LERP_SPEED', 35.0)
+                    new_pos = lerp(cur, target_pos, min(1.0, time.dt * spd))
+                    new_pos.x = max(-0.6, min(0.6, new_pos.x))
+                    new_pos.y = max(-0.6, min(0.6, new_pos.y))
+                    current_entity.position = new_pos
                 
                 # Rotasyonu güncelle (Simülasyon Rotation Y -> Harita Rotation Z)
                 # Simülasyon 0 derece = İleri (Z+). Harita 0 derece = Yukarı (Y+). Uyumlular.
@@ -1672,6 +1718,119 @@ class Minimap(Entity):
                 if rid not in active_ids:
                     destroy(self.rov_ikonlari[rid])
                     del self.rov_ikonlari[rid]
+
+            # Vektör çizgisi: APF — sadece veri değiştiğinde yeniden çiz (kasma önleme)
+            filo = getattr(self.ortam_ref, 'filo', None)
+            helper = getattr(filo, 'helper', None) if filo else None
+            apf_list = helper.get_apf_vektor_verts_list(self) if helper else []
+            # apf_list boşsa tek vektör modu (her frame değişir) — cache kullanma
+            if apf_list:
+                apf_sig = (len(apf_list), (apf_list[0][0][0][0] if apf_list[0][0] else 0.0))
+            else:
+                verts_single = helper.get_vektor_verts(self) if helper else None
+                v0 = (verts_single[0][0] if verts_single and len(verts_single) > 0 else 0.0)
+                apf_sig = (-1, v0)  # -1 = tek vektör modu, v0 ile hareket takibi
+            if getattr(self, '_apf_cache_sig', None) != apf_sig:
+                self._apf_cache_sig = apf_sig
+                if self.vektor_cizgi_entity is not None:
+                    try:
+                        destroy(self.vektor_cizgi_entity)
+                    except Exception:
+                        pass
+                    self.vektor_cizgi_entity = None
+                for e in list(self.vektor_cizgi_entities):
+                    try:
+                        destroy(e)
+                    except Exception:
+                        pass
+                self.vektor_cizgi_entities.clear()
+                vektor_renkler = {'k': color.red, 'y': color.green, 'm': color.blue, 's': color.yellow, 't': color.orange}
+                if apf_list:
+                    for verts, renk_kodu in apf_list:
+                        try:
+                            vektor_renk = vektor_renkler.get(renk_kodu, color.blue)
+                            ent = Entity(
+                                parent=self,
+                                model=Mesh(vertices=verts, mode='line', thickness=2),
+                                color=vektor_renk,
+                                alpha=0.95
+                            )
+                            self.vektor_cizgi_entities.append(ent)
+                        except Exception:
+                            pass
+                else:
+                    verts = helper.get_vektor_verts(self) if helper else None
+                    renk_kodu = helper.get_vektor_renk() if helper else 'm'
+                    vektor_renk = vektor_renkler.get(renk_kodu, color.blue)
+                    if verts:
+                        try:
+                            self.vektor_cizgi_entity = Entity(
+                                parent=self,
+                                model=Mesh(vertices=verts, mode='line', thickness=2),
+                                color=vektor_renk,
+                                alpha=0.95
+                            )
+                        except Exception:
+                            pass
+
+            # git_path(isaret=True) — bir sonraki waypoint'i minimapte göster
+            _git_isaret = getattr(filo, '_git_isaret', {})
+            _git_nokta_listesi = getattr(filo, '_git_nokta_listesi', {})
+            _git_mevcut_indeks = getattr(filo, '_git_mevcut_nokta_indeksi', {})
+            hedef_isaret_renk = color.hex('#00CED1')  # Dark turquoise / koyu turkuaz
+            for rid in list(self.git_hedef_isaret_entities.keys()):
+                if not _git_isaret.get(rid):
+                    try:
+                        destroy(self.git_hedef_isaret_entities[rid])
+                    except Exception:
+                        pass
+                    del self.git_hedef_isaret_entities[rid]
+            if filo:
+                for rid, aktif in _git_isaret.items():
+                    if not aktif:
+                        continue
+                    nokta_listesi = _git_nokta_listesi.get(rid)
+                    mevcut_indeks = _git_mevcut_indeks.get(rid, 0)
+                    if not nokta_listesi or not (0 <= mevcut_indeks < len(nokta_listesi)):
+                        if rid in self.git_hedef_isaret_entities:
+                            try:
+                                destroy(self.git_hedef_isaret_entities[rid])
+                            except Exception:
+                                pass
+                            del self.git_hedef_isaret_entities[rid]
+                        continue
+                    pt = nokta_listesi[mevcut_indeks]
+                    px, py = float(pt[0]), float(pt[1])
+                    mp = self.dunya_to_harita(px, py)
+                    if rid in self.git_hedef_isaret_entities:
+                        self.git_hedef_isaret_entities[rid].position = (mp.x, mp.y, -0.32)
+                    else:
+                        ent = Entity(
+                            parent=self,
+                            model='circle',
+                            scale=0.02,
+                            color=hedef_isaret_renk,
+                            position=(mp.x, mp.y, -0.32),
+                            alpha=0.9
+                        )
+                        self.git_hedef_isaret_entities[rid] = ent
+
+            # engel_bulutu — incremental güncelleme (her frame destroy/create yerine sadece yeni noktalar)
+            ortam = getattr(self, 'ortam_ref', None)
+            if ortam and hasattr(ortam, 'engel_bulutu'):
+                bulut = ortam.engel_bulutu
+                cizilen = getattr(self, '_engel_bulutu_cizilen_len', 0)
+                if len(bulut) < cizilen:
+                    self.temizle_engeller()
+                    cizilen = 0
+                for i in range(cizilen, len(bulut)):
+                    pt = bulut[i]
+                    if pt and len(pt) >= 2:
+                        try:
+                            self.engel_ekle(float(pt[0]), float(pt[1]))
+                        except (TypeError, ValueError):
+                            pass
+                self._engel_bulutu_cizilen_len = len(bulut)
 
     def engel_ekle(self, x, z):
         """engel_bul() fonksiyonundan gelen tespitleri kırmızı nokta olarak ekler."""
@@ -1699,8 +1858,28 @@ class Minimap(Entity):
 
     def temizle_engeller(self):
         for e in self.engel_noktalari:
-            destroy(e)
+            try:
+                destroy(e)
+            except Exception:
+                pass
         self.engel_noktalari.clear()
+        self._engel_bulutu_cizilen_len = 0
+
+    def _apf_vektorlari_temizle(self):
+        """APF vektör entity'lerini siler. apf_temizle() tarafından çağrılır."""
+        if self.vektor_cizgi_entity is not None:
+            try:
+                destroy(self.vektor_cizgi_entity)
+            except Exception:
+                pass
+            self.vektor_cizgi_entity = None
+        for e in list(self.vektor_cizgi_entities):
+            try:
+                destroy(e)
+            except Exception:
+                pass
+        self.vektor_cizgi_entities.clear()
+        self._apf_cache_sig = None
 
     def goster(self, durum=True, convex=False, a_star=False, scale=None, grid=None):
         """Görünürlüğü ayarlar. scale: çarpan; grid: grid sayısı (None=varsayılan GRID_UNIT m). convex/a_star Harita.update() ile senkronize edilir."""
@@ -2448,7 +2627,7 @@ class Harita:
             if self.a_star_yolu:
                 print(f"   A* yolu mevcut: {len(self.a_star_yolu)} nokta")
             else:
-                print(f"   ⚠️ A* yolu henüz hesaplanmamış. a_star_yolu_hesapla() çağırın.")
+                print(f"   ⚠️ A* yolu henüz hesaplanmamış.  () çağırın.")
 
     def a_star_yolu_hesapla(self, start: Tuple[float, float], goal: Tuple[float, float],
                             safety_margin: float = 2.0) -> Optional[List[Tuple[float, float]]]:
@@ -2486,65 +2665,19 @@ class Harita:
                         # Varsayılan yarıçap
                         obstacles.append((engel[0], engel[1], 5.0))
             
-            # Adalar - ada_cevre() fonksiyonunu kullanarak çevre noktalarını al
-            # Bu, adaların gerçek şeklini daha doğru temsil eder
-            polygon_obstacles = []  # Polygon engeller (ada çevre noktaları)
-            
-            if self.filo_ref and hasattr(self.filo_ref, 'ada_cevre'):
-                try:
-                    # Ada çevre noktalarını al (offset=0 ile tam çevre)
-                    ada_cevre_noktalari = self.filo_ref.ada_cevre(offset=0.0)
-                    
-                    # Her ada için çevre noktalarını polygon olarak ekle
-                    # ada_cevre() her ada için 12 nokta döndürür
-                    if ada_cevre_noktalari and len(ada_cevre_noktalari) > 0:
-                        nokta_sayisi_per_ada = 12
-                        ada_sayisi = len(ada_cevre_noktalari) // nokta_sayisi_per_ada
-                        
-                        for ada_idx in range(ada_sayisi):
-                            baslangic_idx = ada_idx * nokta_sayisi_per_ada
-                            bitis_idx = baslangic_idx + nokta_sayisi_per_ada
-                            ada_noktalari = ada_cevre_noktalari[baslangic_idx:bitis_idx]
-                            
-                            if len(ada_noktalari) >= 3:
-                                # Polygon olarak ekle (sadece x, y koordinatları)
-                                polygon = [(n[0], n[1]) for n in ada_noktalari]
-                                polygon_obstacles.append(polygon)
-                                
-                                # Ayrıca dairesel engel olarak da ekle (fallback için)
-                                # Ada konumunu al
-                                if hasattr(self.ortam_ref, 'Ada'):
-                                    try:
-                                        ada_konum = self.ortam_ref.Ada(ada_idx)
-                                        if ada_konum:
-                                            ada_x, ada_y = ada_konum
-                                            # Yarıçapı çevre noktalarından hesapla
-                                            import math
-                                            max_radius = 0.0
-                                            for nokta in ada_noktalari:
-                                                dist = math.sqrt((nokta[0] - ada_x)**2 + (nokta[1] - ada_y)**2)
-                                                max_radius = max(max_radius, dist)
-                                            obstacles.append((ada_x, ada_y, max_radius))
-                                    except:
-                                        pass
-                except Exception as e:
-                    print(f"⚠️ [HARITA] Ada çevre noktaları alınırken hata: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            # Fallback: Eski yöntem (sadece merkez ve yarıçap) - polygon yoksa
-            if not polygon_obstacles and hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
+            # Adalar - Sadece dairesel engel olarak ekle (sadeleştirilmiş versiyon)
+            if hasattr(self.ortam_ref, 'island_positions') and self.ortam_ref.island_positions:
+                import math
                 for is_pos in self.ortam_ref.island_positions:
                     if len(is_pos) >= 3:
-                        # Güvenlik mesafesi ile genişletilmiş yarıçap
-                        obstacles.append((is_pos[0], is_pos[1], is_pos[2] + safety_margin))
+                        # Ada merkez ve yarıçap - içi tamamen kapalı (içinden geçilemez)
+                        obstacles.append((is_pos[0], is_pos[1], is_pos[2]))
             
-            # A* planner oluştur
-            planner = AStarPlanner(grid_size=1.0)  # 1 metre grid çözünürlüğü
+            # A* planner oluştur - 10x10 grid (sadeleştirilmiş)
+            planner = AStarPlanner()
             
-            # Yolu hesapla (polygon engelleri ile)
-            path = planner.find_path(start, goal, obstacles, map_bounds, safety_margin, 
-                                   polygon_obstacles=polygon_obstacles if polygon_obstacles else None)
+            # Yolu hesapla (sadece dairesel engeller)
+            path = planner.find_path(start, goal, obstacles, map_bounds, safety_margin)
             
             if path:
                 self.a_star_yolu = path
@@ -2566,6 +2699,7 @@ class Harita:
             import traceback
             traceback.print_exc()
             return None
+    
     
     def update(self):
         """Ursina tarafından her karede (Main Thread) çağrılır."""
@@ -3119,8 +3253,9 @@ class Ortam:
         # =============================
         # ADA BOYUT AYARLARI (TEK YER)
         # =============================
+        # ADA BOYUT AYARLARI (TEK YER) — sadece base scale kullanılır
+        # =============================
         ISLAND_BASE_SCALE = 0.25      # Genel ada boyutu
-        ISLAND_SCALE_RANDOM = (0.7, 1.1)  # Random çeşitlilik
         
         # Ada pozisyonlarını sakla (ROV yerleştirme için)
         self.island_positions = []
@@ -3143,6 +3278,8 @@ class Ortam:
             # Engel listesini hazırla (eğer yoksa oluştur)
             if not hasattr(self, 'engeller'):
                 self.engeller = []
+            if not hasattr(self, 'engel_bulutu'):
+                self.engel_bulutu = []  # Raycast hit noktaları [(x,z), ...], her yerden erişilebilir
             
             # Ada Y pozisyonu (su yüzeyinin üstünde sabit)
             max_wave_height = self.WATER_SURFACE_Y_BASE + 1.5
@@ -3165,13 +3302,13 @@ class Ortam:
             # HER ADA İÇİN OLUŞTURMA DÖNGÜSÜ
             # ============================================================
             for island_idx in range(n_islands):
-                # --- 1. ÖLÇEK HESAPLAMA (TEK PARAMETRE) ---
-                scale_factor = ISLAND_BASE_SCALE * random.uniform(*ISLAND_SCALE_RANDOM)
-                visual_scale = (scale_factor, scale_factor, scale_factor)
+                # --- 1. ÖLÇEK HESAPLAMA (sadece base scale; x=y=z eşit) ---
+                scale_xy = ISLAND_BASE_SCALE
+                visual_scale = (scale_xy*0.85, scale_xy, scale_xy)
                 
                 # Tahmini yarıçap (pozisyon hesaplamak için, sonra gerçek değerle güncellenecek)
                 # Varsayılan model genişliği 140 birim (fallback)
-                estimated_radius = (140.0 * scale_factor) / 2
+                estimated_radius = (140.0 * scale_xy) / 2
                 
                 # Minimum mesafe (tahmini ada yarıçapı kadar)
                 min_distance_between_islands = estimated_radius
@@ -3211,7 +3348,7 @@ class Ortam:
                         position=(island_x, island_y_position, island_z),
                         scale=visual_scale,
                         texture=island_texture_path if (texture_exists or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs)) else None,
-                        collider='box',
+                        collider='mesh',
                         unlit=False,
                         double_sided=True,
                         color=color.white,
@@ -3237,7 +3374,7 @@ class Ortam:
                             position=(island_x, island_y_position, island_z),
                             scale=visual_scale,
                             texture=island_texture_path if (texture_exists or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs)) else None,
-                            collider='box',
+                            collider='mesh',
                             unlit=False,
                             double_sided=True,
                             color=color.white,
@@ -3254,7 +3391,7 @@ class Ortam:
                         model='cube',
                         position=(island_x, island_y_position, island_z),
                         scale=visual_scale,
-                        collider='box',
+                        collider='mesh',
                         color=color.white,
                         alpha=1.0
                     )
@@ -3353,6 +3490,8 @@ class Ortam:
         # Eğer ada yoksa veya engeller listesi oluşturulmadıysa, şimdi oluştur
         if not hasattr(self, 'engeller'):
             self.engeller = []
+        if not hasattr(self, 'engel_bulutu'):
+            self.engel_bulutu = []  # Raycast hit noktaları [(x,z), ...], her yerden erişilebilir
 
         # Konsol verileri
         self.konsol_verileri = {}
@@ -3459,7 +3598,7 @@ class Ortam:
     # ============================================================
     # SİMÜLASYON OLUŞTURMA
     # ============================================================
-    def sim_olustur(self, n_rovs=3, n_engels=15, havuz_genisligi=200):
+    def sim_olustur(self, n_rovs=3, n_engels=15, havuz_genisligi=200, rov_model=None):
         """
         Simülasyon ortamını oluşturur: ROV'lar, kayalar, havuz sınırları.
         
@@ -3467,7 +3606,9 @@ class Ortam:
             n_rovs: Oluşturulacak ROV sayısı (varsayılan: 3)
             n_engels: Oluşturulacak kaya sayısı (varsayılan: 15)
             havuz_genisligi: Havuz genişliği (varsayılan: 200)
+            rov_model: ROV modeli ('bluerov2' varsayılan, 'submarine' alternatif)
         """
+        self._rov_model = rov_model if rov_model is not None else ROVModelleri.VARSAYILAN
         # Havuz genişliğini güncelle
         self.havuz_genisligi = havuz_genisligi
         
@@ -3520,6 +3661,7 @@ class Ortam:
         
         # Engeller (Kayalar) - Listeyi sıfırla
         self.engeller = []
+        self.engel_bulutu = []  # Raycast hit noktaları [(x,z), ...], her yerden erişilebilir
         
         # Ada pozisyonlarını geri yükle (eğer varsa)
         if ada_positions_backup:
@@ -3654,9 +3796,9 @@ class Ortam:
                 
                 # Güvenli pozisyon bulundu
                 if not too_close_to_island:
-                    # Ursina'ya dönüştür: (x_2d, z_depth, y_2d)
-                    x, z, y = sim_to_ursina(x_2d, y_2d, z_depth)
-                    new_rov = ROV(rov_id=i, position=(x, y, z))
+                    # ROV position Sim formatında (x_2d, y_2d, z_depth) bekler
+                    rov_model = getattr(self, '_rov_model', ROVModelleri.VARSAYILAN)
+                    new_rov = ROV(rov_id=i, position=(x_2d, y_2d, z_depth), rov_model=rov_model)
                     new_rov.environment_ref = self
                     if hasattr(self, 'filo'):   
                         new_rov.filo_ref = self.filo
@@ -3692,18 +3834,17 @@ class Ortam:
                     if best_x is not None and best_y is not None:
                         x_2d, y_2d = best_x, best_y
                     else:
-                        # Son çare: Merkezden uzak bir nokta
                         x_2d = random.uniform(min_x, max_x)
                         y_2d = random.uniform(min_z, max_z)
                 else:
-                    # Ada yoksa normal rastgele yerleştir
                     x_2d = random.uniform(min_x, max_x)
                     y_2d = random.uniform(min_z, max_z)
                 
                 # Tüm ROV'lar (Lider dahil) -10 ile -20 metre arasında doğsun
                 z_depth = random.uniform(-20.0, -10.0)
-                x, y, z = sim_to_ursina(x_2d, y_2d, z_depth)
-                new_rov = ROV(rov_id=i, position=(x, y, z))
+                # ROV position Sim formatında (x_2d, y_2d, z_depth) bekler
+                rov_model = getattr(self, '_rov_model', ROVModelleri.VARSAYILAN)
+                new_rov = ROV(rov_id=i, position=(x_2d, y_2d, z_depth), rov_model=rov_model)
                 new_rov.environment_ref = self
                 if hasattr(self, 'filo'):
                     new_rov.filo_ref = self.filo
@@ -3762,421 +3903,218 @@ class Ortam:
             print(f"🌊 Simülasyon Hazır: {n_rovs} ROV, {n_engels} Gri Kaya.")
     
     # --- Ada ve ROV Konum Yönetimi (Senaryo Modülü İçin) ---
+    def _ada_verbose(self):
+        return getattr(getattr(self, 'ortam', None), 'verbose', None) or getattr(self, 'verbose', False)
+
+    def _ada_path(self, rel, *rel_parts):
+        """Mevcut olan path'i döndür (rel veya abs), Windows için slash normalize."""
+        p = rel if os.path.exists(rel) else os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), *rel_parts)
+        if not os.path.exists(p) and os.path.exists(rel):
+            p = rel
+        try:
+            r = os.path.relpath(p, os.getcwd())
+            p = r if os.path.exists(r) else p
+        except (ValueError, OSError):
+            pass
+        return p.replace('\\', '/') if os.path.sep == '\\' else p
+
+    def _ada_entity_olustur(self, model_path, texture_path, pos_ursina, scale_xy, island_y, radius):
+        """Ada Entity oluştur: OBJ -> mesh fallback -> cube fallback. Döner: (entity, island_radius)."""
+        scale = (scale_xy, scale_xy, scale_xy)
+        island = None
+        if model_path and os.path.exists(model_path):
+            try:
+                island = Entity(
+                    model=model_path, position=(pos_ursina[0], island_y, pos_ursina[2]),
+                    scale=scale, texture=texture_path, collider='mesh', unlit=False, double_sided=True,
+                    color=color.white, alpha=1.0, transparent=True, render_queue=0
+                )
+                tri = getattr(island.model, 'triangles', None) if getattr(island, 'model', None) else None
+                idx = getattr(island.model, 'indices', None) if getattr(island, 'model', None) else None
+                n_tri = (len(tri) if tri else 0) or (len(idx) // 3 if idx else 0)
+                if n_tri == 0:
+                    destroy(island)
+                    island = None
+            except Exception:
+                island = None
+            if island is None:
+                mesh = _load_obj_as_mesh(model_path)
+                if mesh:
+                    try:
+                        island = Entity(
+                            model=mesh, position=(pos_ursina[0], island_y, pos_ursina[2]),
+                            scale=scale, texture=texture_path, collider='mesh', unlit=False, double_sided=True,
+                            color=color.white, alpha=1.0, transparent=True, render_queue=0
+                        )
+                    except Exception:
+                        pass
+        if island is None:
+            island = Entity(
+                model='cube', position=(pos_ursina[0], island_y, pos_ursina[2]),
+                scale=scale, collider='mesh', color=color.white, alpha=1.0
+            )
+            return island, radius
+        try:
+            if getattr(island.model, 'bounds', None):
+                min_b, max_b = island.model.bounds
+                sz = max_b - min_b
+                radius = max(sz.x, sz.z) * island.world_scale.x / 2
+        except Exception:
+            pass
+        return island, radius
+
     def Ada(self, ada_id, x=None, y=None):
         """
         Ada pozisyonunu değiştirir, konumunu döndürür, yeni ada ekler veya var olan adayı çıkarır.
-        Z (derinlik) değeri mevcut değerinden korunur, değiştirilmez.
-        
-        Args:
-            ada_id: Ada ID'si
-            x: Yeni X koordinatı veya "ekle"/"cikar" komutu
-                - "ekle": Yeni ada ekle (y parametresi konum tuple'ı olmalı: (x, y) veya (x, y, radius))
-                - "cikar": Var olan adayı çıkar
-                - None: Mevcut konumu döndürür
-                - Sayı: Yeni X koordinatı (y parametresi de verilmeli)
-            y: Yeni Y koordinatı (Simülasyon koordinat sistemi - İleri-Geri) veya konum tuple'ı (x="ekle" ise)
-        
-        Returns:
-            tuple: (x, y) koordinatları veya None veya True/False (işlem başarılı/başarısız)
-        
-        Örnek:
-            # Ada konumunu değiştir (z değeri korunur)
-            app.Ada(0, 50, 60)  # X=50, Y=60, Z değeri mevcut değerinden korunur
-            
-            # Ada konumunu al
-            konum = app.Ada(0)  # (x, y) tuple döner
-            
-            # Yeni ada ekle
-            app.Ada(5, "ekle", (50, 60))  # Ada ID=5, X=50, Y=60, varsayılan radius
-            app.Ada(6, "ekle", (70, 80, 40.0))  # Ada ID=6, X=70, Y=80, radius=40.0
-            
-            # Var olan adayı çıkar
-            app.Ada(5, "cikar")  # Ada ID=5'i çıkar
+        Z (derinlik) mevcut değerden korunur.
+        x: "ekle" | "cikar" | sayı (y ile birlikte) | None (konum döndür)
+        y: (x,y) veya (x,y,radius) (ekle için) veya Y koordinatı (konum değiştir için)
         """
-        # Ada ekleme işlemi
+        verbose = self._ada_verbose()
+
         if x == "ekle":
             if not isinstance(y, (tuple, list)) or len(y) < 2:
-                if getattr(self, 'verbose', False):
-                    print(f"⚠️ Ada ekleme hatası: Konum tuple'ı (x, y) veya (x, y, radius) formatında olmalı")
+                if verbose:
+                    print("⚠️ Ada ekleme: Konum (x, y) veya (x, y, radius) olmalı")
                 return False
-            
-            # Konum bilgisini al
             konum_x, konum_y = y[0], y[1]
-            radius_verildi = len(y) >= 3
-            if radius_verildi:
-                radius = y[2]
-            else:
-                radius = None  # Scale'den hesaplanacak
-            
-            # Ada pozisyonları ve entity listelerini başlat
+            radius = y[2] if len(y) >= 3 else None
             if not hasattr(self, 'island_positions'):
                 self.island_positions = []
             if not hasattr(self, 'island_entities'):
                 self.island_entities = []
-            
-            # Ada ID'si için yeterli kapasite yoksa genişlet
             while len(self.island_positions) <= ada_id:
-                self.island_positions.append(None)  # Placeholder
+                self.island_positions.append(None)
             while len(self.island_entities) <= ada_id:
-                self.island_entities.append(None)  # Placeholder
-            
-            # Eğer bu ID'de zaten ada varsa, ekleme yapma
-            if ada_id < len(self.island_entities) and self.island_entities[ada_id] is not None:
-                if getattr(self, 'verbose', False):
-                    print(f"⚠️ Ada-{ada_id} zaten mevcut. Önce çıkarmak için: Ada({ada_id}, 'cikar')")
+                self.island_entities.append(None)
+            if self.island_entities[ada_id] is not None or self.island_positions[ada_id] is not None:
+                if verbose:
+                    print(f"⚠️ Ada-{ada_id} zaten mevcut. Önce Ada({ada_id}, 'cikar')")
                 return False
-            
-            if ada_id < len(self.island_positions) and self.island_positions[ada_id] is not None:
-                if getattr(self, 'verbose', False):
-                    print(f"⚠️ Ada-{ada_id} zaten mevcut. Önce çıkarmak için: Ada({ada_id}, 'cikar')")
-                return False
-            
-            # Ada modeli ve texture yolları (Windows uyumlu path)
-            island_model_path_rel = "Models-3D/lowpoly-island/source/island1_design2_c4d.obj"
-            island_texture_path_rel = "Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg"
-            
-            # Absolute path'i de kontrol et (script'in bulunduğu yerden)
-            script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            island_model_path_abs = os.path.join(script_dir, "Models-3D", "lowpoly-island", "source", "island1_design2_c4d.obj")
-            island_texture_path_abs = os.path.join(script_dir, "Models-3D", "lowpoly-island", "textures", "textureSurface_Color_2.jpg")
-            
-            # Path seçimi: Önce relative path'i kontrol et
-            island_model_path = None
-            island_texture_path = None
-            
-            if os.path.exists(island_model_path_rel):
-                island_model_path = island_model_path_rel
-            elif os.path.exists(island_model_path_abs):
-                try:
-                    cwd = os.getcwd()
-                    island_model_path = os.path.relpath(island_model_path_abs, cwd)
-                    if not os.path.exists(island_model_path):
-                        island_model_path = island_model_path_abs
-                except (ValueError, OSError):
-                    island_model_path = island_model_path_abs
-            else:
-                island_model_path = island_model_path_rel
-            
-            if os.path.exists(island_texture_path_rel):
-                island_texture_path = island_texture_path_rel
-            elif os.path.exists(island_texture_path_abs):
-                try:
-                    cwd = os.getcwd()
-                    island_texture_path = os.path.relpath(island_texture_path_abs, cwd)
-                    if not os.path.exists(island_texture_path):
-                        island_texture_path = island_texture_path_abs
-                except (ValueError, OSError):
-                    island_texture_path = island_texture_path_abs
-            else:
-                island_texture_path = island_texture_path_rel
-            
-            # Ursina için path'leri normalize et (forward slash kullan)
-            if os.path.sep == '\\':  # Windows
-                if island_model_path:
-                    island_model_path = island_model_path.replace('\\', '/')
-                if island_texture_path:
-                    island_texture_path = island_texture_path.replace('\\', '/')
-            
-            # Ada Y pozisyonu (su yüzeyinin üstünde sabit)
-            if hasattr(self, 'WATER_SURFACE_Y_BASE'):
-                max_wave_height = self.WATER_SURFACE_Y_BASE + 1.5
-            else:
-                max_wave_height = 0.0
-            island_y_position = max_wave_height + 5
-            
-            # Ada ölçek faktörü (normal sistemdeki gibi)
-            # Normal sistemde: ISLAND_BASE_SCALE * random.uniform(0.7, 1.1)
-            ISLAND_BASE_SCALE = 0.25
-            ISLAND_SCALE_RANDOM = (0.7, 1.1)
-            
-            # Scale ve radius hesaplama (normal sistemdeki mantık)
-            if radius_verildi:
-                # Radius verilmiş, scale'i radius'a göre hesapla
-                # Normal sistemde: estimated_radius = (140.0 * scale_factor) / 2
-                # Tersine: scale_factor = (radius * 2) / 140.0
-                estimated_scale = (radius * 2) / 140.0
-                # Normal sistemdeki sınırlar içinde tut
-                min_scale = ISLAND_BASE_SCALE * ISLAND_SCALE_RANDOM[0]  # 0.175
-                max_scale = ISLAND_BASE_SCALE * ISLAND_SCALE_RANDOM[1]  # 0.275
-                scale_factor = max(min_scale, min(max_scale, estimated_scale))
-                # Scale'e göre gerçek radius'u hesapla (normal sistemdeki gibi)
-                radius = (140.0 * scale_factor) / 2
-            else:
-                # Radius verilmemiş, normal sistemdeki gibi random scale kullan
-                scale_factor = ISLAND_BASE_SCALE * random.uniform(*ISLAND_SCALE_RANDOM)
-                # Scale'den radius hesapla (normal sistemdeki gibi)
-                radius = (140.0 * scale_factor) / 2
-            
-            visual_scale = (scale_factor, scale_factor, scale_factor)
-            
-            # Simülasyon koordinat sisteminden Ursina'ya dönüştür
-            # Sim: (x, y_forward, z_depth) -> Ursina: (x, z_depth, y_forward)
-            # Ada için z_depth = 0 (su yüzeyinin üstünde)
-            z_depth = 0
-            ursina_x, ursina_y, ursina_z = sim_to_ursina(konum_x, konum_y, z_depth)
-            
-            # Ada entity oluştur
-            # Model ve texture kontrolü (en az bir yerde varsa kullan)
-            model_exists_ada = os.path.exists(island_model_path) if island_model_path else False
-            texture_exists_ada = os.path.exists(island_texture_path) if island_texture_path else False
 
-            if model_exists_ada or os.path.exists(island_model_path_rel) or os.path.exists(island_model_path_abs):
-                texture_path_final = None
-                if texture_exists_ada or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs):
-                    texture_path_final = island_texture_path
-                island_radius = radius
-                island = None
-                try:
-                    island = Entity(
-                        model=island_model_path,
-                        position=(ursina_x, island_y_position, ursina_z),
-                        scale=visual_scale,
-                        texture=texture_path_final,
-                        collider='box',
-                        unlit=False,
-                        double_sided=True,
-                        color=color.white,
-                        alpha=1.0,
-                        transparent=True,
-                        render_queue=0
-                    )
-                    if hasattr(island, 'model') and island.model:
-                        tri = getattr(island.model, 'triangles', None)
-                        idx = getattr(island.model, 'indices', None)
-                        n_tri = (len(tri) if tri is not None else 0) or (len(idx) // 3 if idx is not None else 0)
-                        if n_tri == 0:
-                            destroy(island)
-                            island = None
-                except Exception:
-                    island = None
-                if island is None and island_model_path:
-                    island_mesh = _load_obj_as_mesh(island_model_path)
-                    if island_mesh is not None:
-                        try:
-                            island = Entity(
-                                model=island_mesh,
-                                position=(ursina_x, island_y_position, ursina_z),
-                                scale=visual_scale,
-                                texture=texture_path_final,
-                                collider='box',
-                                unlit=False,
-                                double_sided=True,
-                                color=color.white,
-                                alpha=1.0,
-                                transparent=True,
-                                render_queue=0
-                            )
-                        except Exception:
-                            island = None
-                if island is None:
-                    island = Entity(
-                        model='cube',
-                        position=(ursina_x, island_y_position, ursina_z),
-                        scale=visual_scale,
-                        collider='box',
-                        color=color.white,
-                        alpha=1.0
-                    )
-                    island_radius = radius
-                else:
-                    try:
-                        if hasattr(island.model, 'bounds') and island.model.bounds:
-                            min_b, max_b = island.model.bounds
-                            model_size = max_b - min_b
-                            island_radius = max(model_size.x, model_size.z) * island.world_scale.x / 2
-                    except Exception:
-                        pass
+            ISLAND_BASE_SCALE = 0.25
+            if radius is not None:
+                est = (radius * 2) / 140.0
+                scale_xy =ISLAND_BASE_SCALE 
+                radius = (140.0 * scale_xy) / 2
             else:
-                # Fallback: Cube model
-                island = Entity(
-                    model='cube',
-                    position=(ursina_x, island_y_position, ursina_z),
-                    scale=(radius * 2, 10, radius * 2),
-                    color=color.green,
-                    collider='box',
-                    unlit=True
-                )
-                island_radius = radius
-            
-            # İlk adayı self.island olarak sakla (geriye uyumluluk için)
+                scale_xy = ISLAND_BASE_SCALE
+                radius = (140.0 * scale_xy) / 2
+            island_y = (getattr(self, 'WATER_SURFACE_Y_BASE', 0) + 1.5) + 5
+            model_path = self._ada_path("Models-3D/lowpoly-island/source/island1_design2_c4d.obj", "Models-3D", "lowpoly-island", "source", "island1_design2_c4d.obj")
+            texture_path = self._ada_path("Models-3D/lowpoly-island/textures/textureSurface_Color_2.jpg", "Models-3D", "lowpoly-island", "textures", "textureSurface_Color_2.jpg")
+            if not os.path.exists(texture_path):
+                texture_path = None
+            pos_u = sim_to_ursina(konum_x, konum_y, 0)
+            pos_ursina = (pos_u[0], pos_u[1], pos_u[2])
+            island, island_radius = self._ada_entity_olustur(model_path, texture_path, pos_ursina, scale_xy, island_y, radius)
             if ada_id == 0:
                 self.island = island
-            
-            # Ada entity'sini ve pozisyonunu sakla
             self.island_entities[ada_id] = island
             self.island_positions[ada_id] = (konum_x, konum_y, island_radius)
-            
-            # Verbose kontrolü
-            verbose = False
-            if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose'):
-                verbose = self.ortam.verbose
-            elif hasattr(self, 'verbose'):
-                verbose = self.verbose
-            
             if verbose:
                 print(f"✅ Ada-{ada_id} eklendi: ({konum_x}, {konum_y}), radius={island_radius:.2f}")
-            
+            try:
+                m = getattr(self, 'minimap', None)
+                if m and getattr(m, 'visible', False):
+                    if hasattr(m, '_statik_yeniden_ciz'):
+                        m._statik_yeniden_ciz()
+                    if getattr(self, 'filo', None) and hasattr(m, 'update_ada_cevre'):
+                        m.update_ada_cevre(self.filo.ada_cevre(offset=0.0, sessiz=True))
+            except Exception:
+                pass
             return True
-        
-        # Ada çıkarma işlemi
-        elif x == "cikar":
-            # Verbose kontrolü (başta yapılmalı)
-            verbose = False
-            if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose'):
-                verbose = self.ortam.verbose
-            elif hasattr(self, 'verbose'):
-                verbose = self.verbose
-            
-            # Ada pozisyonları kontrolü
-            if not hasattr(self, 'island_positions') or not self.island_positions:
-                print(f"⚠️ Ada-{ada_id} bulunamadı (ada listesi boş)")
+
+        if x == "cikar":
+            if not getattr(self, 'island_positions', None) or ada_id >= len(self.island_positions) or self.island_positions[ada_id] is None:
+                if verbose:
+                    print(f"⚠️ Ada-{ada_id} bulunamadı")
                 return False
-            
-            if ada_id >= len(self.island_positions) or self.island_positions[ada_id] is None:
-                print(f"⚠️ Ada-{ada_id} bulunamadı")
-                return False
-            
-            # Ada entity'sini destroy et
-            if hasattr(self, 'island_entities') and self.island_entities:
-                if ada_id < len(self.island_entities) and self.island_entities[ada_id] is not None:
-                    island_entity = self.island_entities[ada_id]
-                    try:
-                        # Görünürlüğü kapat
-                        if hasattr(island_entity, 'visible'):
-                            island_entity.visible = False
-                        if hasattr(island_entity, 'enabled'):
-                            island_entity.enabled = False
-                        # Parent'ı kaldır
-                        if hasattr(island_entity, 'parent'):
-                            island_entity.parent = None
-                        # Entity'yi destroy et
-                        if hasattr(island_entity, 'destroy'):
-                            island_entity.destroy()
-                        # Scene'den de kaldırmayı dene (eğer mümkünse)
+            ent = getattr(self, 'island_entities', None)
+            if ent and ada_id < len(ent) and ent[ada_id] is not None:
+                try:
+                    e = ent[ada_id]
+                    if getattr(e, 'visible', None) is not None: e.visible = False
+                    if getattr(e, 'enabled', None) is not None: e.enabled = False
+                    if getattr(e, 'parent', None) is not None: e.parent = None
+                    if hasattr(e, 'destroy'): e.destroy()
+                except Exception as err:
+                    if verbose:
+                        print(f"⚠️ Ada-{ada_id} destroy hatası: {err}")
+                self.island_entities[ada_id] = None
+            hb = getattr(self, 'island_hitboxes', None)
+            if hb:
+                for i in range(ada_id * 5, min(ada_id * 5 + 5, len(hb))):
+                    if hb[i] is not None:
                         try:
-                            from ursina import scene
-                            if hasattr(scene, 'entities') and island_entity in scene.entities:
-                                scene.entities.remove(island_entity)
+                            if getattr(hb[i], 'destroy', None): hb[i].destroy()
                         except Exception:
                             pass
-                    except Exception as e:
-                        # Hata olsa bile devam et
-                        if verbose:
-                            print(f"⚠️ Ada-{ada_id} destroy hatası: {e}")
-                    finally:
-                        self.island_entities[ada_id] = None
-            
-            # Ada hitbox'larını sil (eğer varsa)
-            # Not: Hitbox'ları destroy etmek yeterli, listeyi değiştirmeye gerek yok
-            # Çünkü hitbox'lar None kontrolü ile zaten atlanır
-            if hasattr(self, 'island_hitboxes') and self.island_hitboxes:
-                ada_hitbox_start = ada_id * 5
-                for hitbox_idx in range(ada_hitbox_start, min(ada_hitbox_start + 5, len(self.island_hitboxes))):
-                    if hitbox_idx < len(self.island_hitboxes):
-                        hitbox = self.island_hitboxes[hitbox_idx]
-                        if hitbox is not None:
-                            try:
-                                if hasattr(hitbox, 'visible'):
-                                    hitbox.visible = False
-                                if hasattr(hitbox, 'enabled'):
-                                    hitbox.enabled = False
-                                if hasattr(hitbox, 'parent'):
-                                    hitbox.parent = None
-                                if hasattr(hitbox, 'destroy'):
-                                    hitbox.destroy()
-                            except Exception:
-                                pass
-                        self.island_hitboxes[hitbox_idx] = None
-            
-            # Pozisyon listesinden çıkar
+                    hb[i] = None
             self.island_positions[ada_id] = None
-            
-            # İlk ada silindiyse self.island'ı None yap
-            if ada_id == 0 and hasattr(self, 'island'):
+            if ada_id == 0:
                 self.island = None
-            
             if verbose:
                 print(f"✅ Ada-{ada_id} çıkarıldı")
-            
+            try:
+                m = getattr(self, 'minimap', None)
+                if m and getattr(m, 'visible', False):
+                    if hasattr(m, '_statik_yeniden_ciz'):
+                        m._statik_yeniden_ciz()
+                    if getattr(self, 'filo', None) and hasattr(m, 'update_ada_cevre'):
+                        m.update_ada_cevre(self.filo.ada_cevre(offset=0.0, sessiz=True))
+            except Exception:
+                pass
             return True
-        
-        # Ada pozisyonları kontrolü
-        if not hasattr(self, 'island_positions') or not self.island_positions:
-            # Ada yoksa oluştur
-            if not hasattr(self, 'island_positions'):
-                self.island_positions = []
-            # Ada ID'si için yeterli kapasite yoksa genişlet
-            while len(self.island_positions) <= ada_id:
-                self.island_positions.append((0, 0, 50.0))  # Varsayılan pozisyon ve radius
-        
-        # Konum değiştirme
+
+        if not hasattr(self, 'island_positions'):
+            self.island_positions = []
+        while len(self.island_positions) <= ada_id:
+            self.island_positions.append((0, 0, 50.0))
+
         if x is not None and y is not None:
-            # Ada pozisyonunu güncelle (z değerini koru)
             radius = self.island_positions[ada_id][2] if len(self.island_positions[ada_id]) > 2 else 50.0
-            old_pos = self.island_positions[ada_id]
-            # Mevcut z değerini entity'den al (eğer varsa), yoksa 0 kullan
-            z = 0  # Varsayılan
-            if hasattr(self, 'island_entities') and ada_id < len(self.island_entities):
-                island_entity = self.island_entities[ada_id]
-                if hasattr(island_entity, 'position') and hasattr(island_entity.position, 'y'):
-                    # Ursina koordinat sisteminden simülasyon koordinat sistemine dönüştür
-                    # Ursina: (x, y_up, z_forward) -> Sim: (x, z_forward, y_up)
-                    # z değeri Ursina'da y ekseninde (y_up), Sim'de z ekseninde (z_depth)
-                    _, _, z = ursina_to_sim(island_entity.position.x, island_entity.position.y, island_entity.position.z)
-                elif hasattr(island_entity, 'y'):
-                    # Ursina koordinat sisteminden simülasyon koordinat sistemine dönüştür
-                    _, _, z = ursina_to_sim(island_entity.x, island_entity.y, island_entity.z)
-            
-            # island_positions formatı: (x, y, radius) - z bilgisi entity'de saklanıyor
+            z = 0
+            ent = getattr(self, 'island_entities', None)
+            if ent and ada_id < len(ent) and ent[ada_id] is not None:
+                e = ent[ada_id]
+                p = getattr(e, 'position', None)
+                if p is not None:
+                    _, _, z = ursina_to_sim(p.x, p.y, p.z)
+                else:
+                    _, _, z = ursina_to_sim(getattr(e, 'x', 0), getattr(e, 'y', 0), getattr(e, 'z', 0))
             self.island_positions[ada_id] = (x, y, radius)
-            
-            # Ada entity'sini güncelle (Ursina koordinat sistemine dönüştür)
-            # Sim: (x, y, z) -> Ursina: (x, z, y)
-            if hasattr(self, 'island_entities') and ada_id < len(self.island_entities):
-                island_entity = self.island_entities[ada_id]
-                # Simülasyon koordinat sisteminden Ursina'ya dönüştür
-                # Sim: (x, y_forward, z_depth) -> Ursina: (x, z_depth, y_forward)
-                ursina_x, ursina_y, ursina_z = sim_to_ursina(x, y, z)
-                
-                if hasattr(island_entity, 'position'):
-                    island_entity.position = Vec3(ursina_x, ursina_y, ursina_z)
-                elif hasattr(island_entity, 'x'):
-                    island_entity.x = ursina_x
-                    island_entity.y = ursina_y
-                    island_entity.z = ursina_z
-            
-            # Ada hitbox'larını güncelle (eğer varsa)
-            if hasattr(self, 'island_hitboxes') and self.island_hitboxes:
-                # Her ada için 5 hitbox var (varsayılan)
-                ada_hitbox_start = ada_id * 5
-                # Simülasyon koordinat sisteminden Ursina'ya dönüştür
-                ursina_x, ursina_y, ursina_z = sim_to_ursina(x, y, z)
-                for hitbox_idx in range(ada_hitbox_start, min(ada_hitbox_start + 5, len(self.island_hitboxes))):
-                    hitbox = self.island_hitboxes[hitbox_idx]
-                    if hasattr(hitbox, 'position'):
-                        hitbox.position = Vec3(ursina_x, ursina_y, ursina_z)
-                    elif hasattr(hitbox, 'x'):
-                        hitbox.x = ursina_x
-                        hitbox.y = ursina_y
-                        hitbox.z = ursina_z
-            
-            # Verbose kontrolü için ortam referansı gerekli
-            verbose = False
-            if hasattr(self, 'ortam') and hasattr(self.ortam, 'verbose'):
-                verbose = self.ortam.verbose
-            elif hasattr(self, 'verbose'):
-                verbose = self.verbose
-            
+            ux, uy, uz = sim_to_ursina(x, y, z)
+            if ent and ada_id < len(ent) and ent[ada_id] is not None:
+                e = ent[ada_id]
+                if hasattr(e, 'position'):
+                    e.position = Vec3(ux, uy, uz)
+                else:
+                    e.x, e.y, e.z = ux, uy, uz
+            hb = getattr(self, 'island_hitboxes', None)
+            if hb:
+                for i in range(ada_id * 5, min(ada_id * 5 + 5, len(hb))):
+                    if hb[i] is not None:
+                        if hasattr(hb[i], 'position'):
+                            hb[i].position = Vec3(ux, uy, uz)
+                        else:
+                            hb[i].x, hb[i].y, hb[i].z = ux, uy, uz
             if verbose:
                 print(f"✅ Ada-{ada_id} pozisyonu güncellendi: ({x}, {y}, z=0)")
+            try:
+                m = getattr(self, 'minimap', None)
+                if m and getattr(m, 'visible', False):
+                    if hasattr(m, '_statik_yeniden_ciz'):
+                        m._statik_yeniden_ciz()
+                    if getattr(self, 'filo', None) and hasattr(m, 'update_ada_cevre'):
+                        m.update_ada_cevre(self.filo.ada_cevre(offset=0.0, sessiz=True))
+            except Exception:
+                pass
             return (x, y)
-        else:
-            # Mevcut konumu döndür
-            if ada_id < len(self.island_positions):
-                ada_pos = self.island_positions[ada_id]
-                return (ada_pos[0], ada_pos[1])
-            else:
-                return None
+        if ada_id < len(self.island_positions) and self.island_positions[ada_id] is not None:
+            p = self.island_positions[ada_id]
+            return (p[0], p[1])
+        return None
     
     def _rov_id_yeniden_numaralandir(self):
         """
@@ -4290,7 +4228,14 @@ class Ortam:
                     if eski_id in id_eslestirme:
                         yeni_git_mevcut_nokta_indeksi[id_eslestirme[eski_id]] = indeks
                 self.filo._git_mevcut_nokta_indeksi = yeni_git_mevcut_nokta_indeksi
-        
+
+            if hasattr(self.filo, '_git_isaret'):
+                yeni_git_isaret = {}
+                for eski_id, aktif in self.filo._git_isaret.items():
+                    if eski_id in id_eslestirme:
+                        yeni_git_isaret[id_eslestirme[eski_id]] = aktif
+                self.filo._git_isaret = yeni_git_isaret
+
         # Verbose kontrolü
         verbose = False
         if hasattr(self, 'verbose'):
