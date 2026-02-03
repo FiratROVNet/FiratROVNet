@@ -342,6 +342,9 @@ class Filo:
         return [s.rov for s in self.sistemler if hasattr(s, 'rov')]
 
     def ekle(self, gnc_objesi):
+        gnc_objesi.filo_ref = self
+        if hasattr(gnc_objesi, 'helper') and gnc_objesi.helper is not None:
+            gnc_objesi.helper.filo_ref = self
         self.sistemler.append(gnc_objesi)
 
     def rehber_dagit(self, modem_rehberi):
