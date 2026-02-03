@@ -53,33 +53,15 @@ class Koordinator:
     """
     @staticmethod
     def sim_to_ursina(sim_x, sim_y, sim_z):
-        """
-        Sim (X:Sağ, Y:İleri, Z:Derinlik) -> Ursina (X, Y:Yukarı, Z:İleri)
-        
-        Args:
-            sim_x: Sağ-Sol koordinatı
-            sim_y: İleri-Geri koordinatı
-            sim_z: Derinlik koordinatı
-        
-        Returns:
-            tuple: (ursina_x, ursina_y, ursina_z)
-        """
-        return (sim_x, sim_z, sim_y)
-    
+        """Sim (X:Sağ, Y:İleri, Z:Derinlik) -> Ursina (X, Y:Yukarı, Z:İleri)."""
+        from FiratROVNet.kutuphane.helper.simulasyon_helper import sim_to_ursina as _stou
+        return _stou(sim_x, sim_y, sim_z)
+
     @staticmethod
     def ursina_to_sim(u_x, u_y, u_z):
-        """
-        Ursina (X, Y:Yukarı, Z:İleri) -> Sim (X, Y:İleri, Z:Derinlik)
-        
-        Args:
-            u_x: Ursina X (sağ-sol)
-            u_y: Ursina Y (yukarı-aşağı, derinlik)
-            u_z: Ursina Z (ileri-geri)
-        
-        Returns:
-            tuple: (sim_x, sim_y, sim_z)
-        """
-        return (u_x, u_z, u_y)
+        """Ursina (X, Y:Yukarı, Z:İleri) -> Sim (X, Y:İleri, Z:Derinlik)."""
+        from FiratROVNet.kutuphane.helper.simulasyon_helper import ursina_to_sim as _utot
+        return _utot(u_x, u_y, u_z)
 
 
 # ==========================================
@@ -240,6 +222,8 @@ class Filo:
         # Formasyon ID shuffle mekanizması
         self._formasyon_id_pool = []  # Shuffle edilmiş formasyon ID'leri
         self._formasyon_id_pool_olustur()  # İlk pool'u oluştur
+        # Formasyon parametreleri (aktif formasyon takibi için)
+        self.aktif_formasyon = None  # {'id': str/int, 'aralik': float, 'is_3d': bool}
         # Formasyon hedef takibi (ROV ID -> {'pozisyon': (x, y, z), 'hedef_yaw': float})
         self._formasyon_hedefleri = {}  # Takipçi ROV'ların formasyon hedefleri ve hedef yaw açıları
         self._formasyon_yaw_senkronizasyon_mesafesi = 5.0  # Yaw senkronizasyonu için mesafe eşiği (metre)
@@ -620,6 +604,60 @@ class Filo:
         
         # Lider ROV'u bul
         lider_rov_id, lider_gnc, lider_rov = self._find_leader()
+        
+        # --- AKTİF FORMASYON GÜNCELLEMESİ ---
+        # Eğer aktif bir formasyon varsa, liderin konumuna göre takipçilerin hedeflerini güncelle
+        if self.aktif_formasyon and lider_rov_id is not None:
+            try:
+                # Liderin güncel durumunu al
+                lider_gps = self.get(lider_rov_id, "gps")
+                lider_yaw = self.get(lider_rov_id, "yaw")
+                
+                if lider_gps is not None:
+                    # Formasyon pozisyonlarını hesapla
+                    # Not: Formasyon sınıfı her çağrıda yeniden oluşturuluyor, bu maliyetli olabilir ama güvenli
+                    formasyon_obj = Formasyon(self)
+                    # Liderin mevcut konumuna göre pozisyonları hesapla
+                    pozisyonlar = formasyon_obj.pozisyonlar(
+                        self.aktif_formasyon['id'], 
+                        self.aktif_formasyon['aralik'], 
+                        is_3d=self.aktif_formasyon['is_3d'], 
+                        lider_koordinat=lider_gps,  # Liderin güncel konumu
+                        yaw=lider_yaw
+                    )
+                    
+                    if pozisyonlar:
+                        # Her takipçi için yeni hedefi ata
+                        for i, pozisyon in enumerate(pozisyonlar):
+                            # Liderin kendisine hedef atama (kendi rotasında gitsin)
+                            if i == lider_rov_id:
+                                continue
+                                
+                            if i >= len(self.sistemler):
+                                break
+                                
+                            # Simülasyon koordinatları (x, y, z)
+                            sim_x, sim_y, sim_z = pozisyon
+                            
+                            # Derinlik kontrolü (opsiyonel, formasyona göre değişebilir)
+                            # Eğer 3D değilse ve z pozitifse (yüzey), -10m derinlikte tut
+                            if not self.aktif_formasyon['is_3d'] and sim_z >= 0:
+                                sim_z = -10.0
+                                
+                            # Takipçiye git komutu ver (sessiz modda)
+                            # Not: Sürekli git komutu göndermek performansı etkileyebilir
+                            # Bu yüzden mevcut hedeften farkı kontrol edilebilir
+                            mevcut_hedef = self.hedef(rov_id=i)
+                            mesafe_farki = 999.0
+                            if mevcut_hedef:
+                                mesafe_farki = math.sqrt((sim_x - mevcut_hedef[0])**2 + (sim_y - mevcut_hedef[1])**2)
+                            
+                            # Eğer hedef önemli ölçüde değiştiyse güncelle (>0.5m)
+                            if mesafe_farki > 0.5:
+                                # AI açık, sessiz mod
+                                self.git(i, sim_x, sim_y, sim_z, ai=True, sessiz=True)
+            except Exception as e:
+                print(f"⚠️ [FİLO] Formasyon güncelleme hatası: {e}")
         
         # Tüm GNC sistemlerini güncelle (doğrudan helper.guncelle çağrısı)
         for i, gnc in enumerate(self.sistemler):
@@ -1040,7 +1078,7 @@ class Filo:
         """
         return self.helper.compute_obstacle_positions(rov_id)
 
-    def formasyon(self, formasyon_id="LINE", aralik=None, is_3d=False, lider_koordinat=None):
+    def formasyon(self, formasyon_id="LINE", aralik=None, is_3d=False, lider_koordinat=None, dinamik=False):
         """
         Filoyu belirtilen formasyona sokar.
         Formasyon.pozisyonlar() ile pozisyonları alır ve filo.git() ile uygular.
@@ -1058,6 +1096,9 @@ class Filo:
                 - Format: (x, y, z) - x,y: 2D koordinatlar, z: derinlik
                 - None ise liderin gerçek pozisyonu kullanılır ve ROV'lar hareket eder
                 - Verilirse, sadece pozisyonlar hesaplanır ve döndürülür (ROV'lar hareket etmez)
+            dinamik (bool): Formasyonun lideri dinamik olarak takip edip etmeyeceği (varsayılan: True)
+                - True: Formasyon liderin hareketine göre sürekli güncellenir
+                - False: Formasyon o anki konuma göre bir kez hesaplanır ve sabit kalır
         
         Returns:
             None: lider_koordinat verilmediğinde (ROV'lar hareket eder)
@@ -1073,8 +1114,8 @@ class Filo:
             pozisyonlar = filo.formasyon("V_SHAPE", aralik=20, lider_koordinat=(10, 20, -5))
             # Çıktı: [(x1, z1, y1), (x2, z2, y2), ...] - Ursina formatında
         """
-        return self.helper.formasyon(formasyon_id=formasyon_id, aralik=aralik, is_3d=is_3d, lider_koordinat=lider_koordinat)
-    def formasyon_sec(self, margin=None, is_3d=False, offset=None, harita=False, yaw_senkronizasyon_mesafesi=5.0, maksimum_yaw_donme_hizi=45.0):
+        return self.helper.formasyon(formasyon_id=formasyon_id, aralik=aralik, is_3d=is_3d, lider_koordinat=lider_koordinat, dinamik=dinamik)
+    def formasyon_sec(self, margin=None, is_3d=False, offset=None, harita=False, yaw_senkronizasyon_mesafesi=5.0, maksimum_yaw_donme_hizi=45.0, dinamik=False):
         """
         Convex hull kullanarak en uygun formasyonu seçer (Thread-safe).
 
@@ -1095,6 +1136,7 @@ class Filo:
             yaw_senkronizasyon_mesafesi (float): Takipçi ROV'ların hedefe yaklaştığında liderin yaw açısına 
                 göre yönlenmesi için mesafe eşiği (metre, varsayılan: 5.0)
             maksimum_yaw_donme_hizi (float): Maksimum yaw dönme hızı (derece/saniye, varsayılan: 60.0)
+            dinamik (bool): Formasyonun lideri dinamik olarak takip edip etmeyeceği (varsayılan: True)
 
         Returns:
             tuple | None: Seçilen formasyon bilgileri (formasyon_id, aralik, yaw, koordinat) veya None (uygun formasyon bulunamazsa)
@@ -1110,6 +1152,7 @@ class Filo:
             harita=harita,
             yaw_senkronizasyon_mesafesi=yaw_senkronizasyon_mesafesi,
             maksimum_yaw_donme_hizi=maksimum_yaw_donme_hizi,
+            dinamik=dinamik
         )
 
     def lidere_don(self, rov_id=None, sessiz=True):
@@ -1243,11 +1286,11 @@ class Filo:
     
     def _try_formation_fit(self, formasyon_id: int, aralik: float, is_3d: bool, 
                           merkez_koordinat: tuple, deneme_yaw: float, hull, 
-                          lider_rov_id: int, nokta_adi: str, sessiz: bool = False) -> bool:
+                          lider_rov_id: int, nokta_adi: str, sessiz: bool = False, dinamik: bool = False) -> bool:
         """Formasyonun geçerli olup olmadığını kontrol eder ve uygular."""
         return self.helper.try_formation_fit(formasyon_id, aralik, is_3d,
                                             merkez_koordinat, deneme_yaw, hull,
-                                            lider_rov_id, nokta_adi, sessiz=sessiz)
+                                            lider_rov_id, nokta_adi, sessiz=sessiz, dinamik=dinamik)
 
     
 
@@ -1630,25 +1673,6 @@ class Filo:
 
     
     
-    def gidilecek_noktalar(self, path=None, r=10, derece_threshold=15):
-        """
-        A* yolu üzerinden gidilecek noktaları filtreler.
-        Mesafe ve eğim açısına göre gereksiz noktaları çıkarır.
-
-        Args:
-            path: [(x1, y1), (x2, y2), ...] şeklindeki orijinal yol
-                (None ise haritadaki A* yolunu kullanır)
-            r: Örnekleme mesafesi (yarıçap, metre, varsayılan: 10)
-            derece_threshold: Kabul edilen minimum eğim açısı
-                            (derece, varsayılan: 15)
-        
-        Returns:
-            List[List[float, float]]: [[x, y], [x, y], ...]
-            şeklinde filtrelenmiş koordinat dizisi
-        """
-
-        return self.helper.gidilecek_noktalar(path=path, r=r, derece_threshold=derece_threshold)
-
     def gidilecek_noktalar_n(self, path=None, n=10):
         """
         A* yolu üzerinde başlangıçtan itibaren her n metre (adım) sonra bir rota noktası alır.
