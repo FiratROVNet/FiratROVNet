@@ -201,6 +201,144 @@ class Debug:
         self._helper.apf_temizle(rov_id=rov_id)
 
 
+
+# ==========================================
+# 0.5 DEBUG (APF / GNC Yardımcı Fonksiyonları)
+# ==========================================
+class Debug:
+    """
+    APF ve GNC yardımcı fonksiyonlarına debug erişimi.
+    filo.helper üzerindeki apf, engel_vektor, rov_vektor, hedef_vektor, vektor,
+    vektor_normalize, apf_temizle fonksiyonlarını sarmalar.
+
+    Kullanım:
+        debug = Debug(filo)
+        debug.list()           # Tüm fonksiyon isimlerini listeler
+        debug.apf()            # Kullanım bilgisi döner (parametresiz)
+        debug.apf(0)           # ROV-0 için APF hesaplar
+    """
+    _FONKSIYONLAR = [
+        'apf', 'engel_vektor', 'rov_vektor', 'hedef_vektor',
+        'vektor', 'vektor_normalize', 'apf_temizle'
+    ]
+
+    def __init__(self, filo_ref):
+        self._filo = filo_ref
+        self._helper = getattr(filo_ref, 'helper', None)
+
+    def list(self):
+        """Tüm debug fonksiyon isimlerini döndürür ve yazdırır."""
+        names = self._FONKSIYONLAR
+        print("🔧 [DEBUG] Mevcut fonksiyonlar:", ", ".join(names))
+        return names
+
+    def _usage(self, name: str):
+        """Fonksiyon kullanım bilgisini döndürür."""
+        method = getattr(self, name, None)
+        doc = getattr(method, '__doc__', 'Bilgi yok') if method else 'Bilgi yok'
+        print(doc)
+        return doc
+
+    def apf(self, rov_id=None):
+        """
+        APF (Artificial Potential Field) hesaplaması.
+        Parametreler: rov_id (int)
+        Örnek: debug.apf(0) -> dict; filo.apf_birim_vektor(0) -> (ux, uz) sadece birim vektör
+        """
+        if rov_id is None:
+            return self._usage('apf')
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return None
+        return self._helper.apf(rov_id)
+
+    def engel_vektor(self, rov_id=None, menzil=None):
+        """
+        ROV'un engellere olan vektör bilgilerini döndürür.
+        Parametreler: rov_id (int), menzil=10.0
+        Örnek: debug.engel_vektor(0) veya debug.engel_vektor(0, menzil=30)
+        """
+        if rov_id is None:
+            return self._usage('engel_vektor')
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return []
+        return self._helper.engel_vektor(rov_id, menzil)
+
+    def rov_vektor(self, rov_id=None, menzil=None):
+        """
+        ROV'un diğer ROV'lara olan vektör bilgilerini döndürür.
+        Parametreler: rov_id (int), menzil=10.0
+        Örnek: debug.rov_vektor(0) veya debug.rov_vektor(1, menzil=25)
+        """
+        if rov_id is None:
+            return self._usage('rov_vektor')
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return []
+        return self._helper.rov_vektor(rov_id, menzil)
+
+    def hedef_vektor(self, rov_id=None, menzil=None):
+        """
+        ROV'un hedefine olan vektör bilgisini döndürür.
+        Parametreler: rov_id (int), menzil=10.0
+        Örnek: debug.hedef_vektor(0) veya debug.hedef_vektor(0, menzil=30)
+        """
+        if rov_id is None:
+            return self._usage('hedef_vektor')
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return None
+        return self._helper.hedef_vektor(rov_id, menzil)
+
+    def vektor(self, ilk=None, ikinci=None,
+               rov_id_ilk=None, rov_id_ikinci=None,
+               baslangic_noktasi=None, bitis_noktasi=None, vektor=None,
+               renk='m', uzunluk=20, reverse=False, debug=False, ciz=True):
+        """
+        Minimap üzerinde vektör çizer. Keyword ile: rov_id_ilk, rov_id_ikinci, baslangic_noktasi, bitis_noktasi, vektor=().
+        Örnek: debug.vektor(rov_id_ilk=2, rov_id_ikinci=5)
+               debug.vektor(rov_id_ilk=5, vektor=(0.76,-0.65), uzunluk=20)  # ROV-5'ten birim vektör yönünde
+               debug.vektor(baslangic_noktasi=(-174,115), vektor=(0.83,-0.55), uzunluk=30)
+               debug.vektor(0, 1)  # Eski API
+        """
+        if (ilk is None and ikinci is None and rov_id_ilk is None and rov_id_ikinci is None
+                and baslangic_noktasi is None and bitis_noktasi is None and vektor is None):
+            return self._usage('vektor')
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return None
+        return self._helper.vektor(
+            ilk=ilk, ikinci=ikinci,
+            rov_id_ilk=rov_id_ilk, rov_id_ikinci=rov_id_ikinci,
+            baslangic_noktasi=baslangic_noktasi, bitis_noktasi=bitis_noktasi, vektor=vektor,
+            renk=renk, uzunluk=uzunluk, reverse=reverse, debug=debug, ciz=ciz
+        )
+
+    def vektor_normalize(self, ux=None, uz=None, uy=None, max_mag=1.0, vektor=None):
+        """
+        Vektörü normalize eder ve max_mag ile sınırlar.
+        Parametreler: ux, uz (2D) veya ux, uy, uz (3D), max_mag=1.0, vektor=(ux,uz) veya (ux,uy,uz)
+        Örnek: debug.vektor_normalize(3, 4) veya debug.vektor_normalize(vektor=(3, 4))
+        """
+        if ux is None and uz is None and vektor is None:
+            return self._usage('vektor_normalize')
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return None
+        return self._helper.vektor_normalize(ux, uz, uy, max_mag, vektor)
+
+    def apf_temizle(self, rov_id=None):
+        """
+        APF vektörlerini temizler. rov_id verilirse sadece o ROV'un vektörlerini siler;
+        boş bırakılırsa hepsini temizler. Örnek: debug.apf_temizle() veya debug.apf_temizle(0)
+        """
+        if self._helper is None:
+            print("❌ [DEBUG] filo.helper bulunamadı.")
+            return
+        self._helper.apf_temizle(rov_id=rov_id)
+
+
 # ==========================================
 # 1. FİLO (ROV FİLO YÖNETİCİSİ)
 # ==========================================

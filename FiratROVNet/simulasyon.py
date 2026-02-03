@@ -3223,7 +3223,7 @@ class Ortam:
                         position=(island_x, island_y_position, island_z),
                         scale=visual_scale,
                         texture=island_texture_path if (texture_exists or os.path.exists(island_texture_path_rel) or os.path.exists(island_texture_path_abs)) else None,
-                        collider='box',
+                        collider='mesh',
                         unlit=False,
                         double_sided=True,
                         color=color.white,
