@@ -3321,9 +3321,8 @@ class TemelGNCHelper:
         # Temel kontroller
         if not self._guncelle_kontroller():
             return
-        
-
-        self.filo_ref.apf_temizle(rov_id=self.rov.id)
+        if self.filo_ref is not None:
+            self.filo_ref.apf_temizle(rov_id=self.rov.id)
         # APF ile vektör hesapla, motor komutunu uygula ve yaw ayarla
         self._guncelle_hareket_uygula(rov_id=self.rov.id)
 
