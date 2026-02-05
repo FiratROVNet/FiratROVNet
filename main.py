@@ -80,6 +80,8 @@ def update():
                 tahminler = np.zeros(len(app.rovs), dtype=int)
         else:
             tahminler = np.zeros(len(app.rovs), dtype=int)
+        #print(tahminler)
+        filo.guncelle_hepsi(tahminler)
 
         # GAT kodlarına göre görselleştirme
         # Kod 0: OK (turuncu), Kod 1: ENGEL (kırmızı), Kod 2: CARPISMA (siyah), 
@@ -114,27 +116,6 @@ def update():
             durum_metni = durum_txts[gat_kodu] if 0 <= gat_kodu < len(durum_txts) else f"GAT:{gat_kodu}"
             ai_durum = "" if ai_aktif else "\n[AI OFF]"
             app.rovs[i].label.text = f"{durum_metni}{i}{ai_durum}"
-        
-        # GNC sistemlerini güncelle (GAT kodları ile)
-        filo.guncelle_hepsi(tahminler)
-        
-        # Harita güncelle
-        if hasattr(app, 'harita') and app.harita is not None:
-            try:
-                app.harita.update()
-            except Exception:
-                pass
-        # engel_bulutu'nu doldur (ROV sensörleri minimap'ten önce çalışsın)
-        if hasattr(app, 'rovs') and hasattr(app, 'engel_bulutu'):
-            for rov in app.rovs:
-                if rov and hasattr(rov, '_engel_tespiti'):
-                    rov._engel_tespiti()
-        # Minimap güncelle (vektör okları, engel_bulutu dahil)
-        if hasattr(app, 'minimap') and app.minimap is not None and getattr(app.minimap, 'visible', False):
-            try:
-                app.minimap.update()
-            except Exception:
-                pass
         
     except Exception as e:
         print(f"❌ [HATA] Update döngüsü: {e}")

@@ -61,6 +61,24 @@ def _agent_log(location, message, data, hypothesis_id, run_id="run1"):
 # #endregion
 
 
+class Hidrodinamik:
+    # --- Ortam Sabitleri ---
+    SU_YOGUNLUGU = 1000.0  # kg/m^3 (Tatlı su için 1000, Tuzlu su için 1025)
+    YER_CEKIMI = 9.81      # m/s^2
+
+    # --- ROV Fiziksel Özellikleri ---
+    KUTLE = 12.0           # kg (ROV'un ağırlığı)
+    HACIM = 0.0122         # m^3 (Batması/Çıkması için: Hacim * Su Yoğunluğu > Kütle ise yüzer)
+                           # Örn: 0.0122 * 1000 = 12.2 kg kaldırma kuvveti (Nötr'e yakın ama hafif pozitif)
+    
+    # --- Motor Özellikleri ---
+    MAX_ITME_KUVVETI = 50.0 # Newton (Toplam motor gücü, örn: T200 motorlar için ~5kgf)
+    
+    # --- Sürtünme (Drag) Katsayısı ---
+    # F_drag = 0.5 * rho * v^2 * Cd * A
+    DRAG_KATSAYISI_CD = 0.8  # Kutu gibi şekiller için 0.8 - 1.0 arası
+    ON_YUZEY_ALANI = 0.15    # m^2 (ROV'un suyla temas eden ön yüzeyi)
+
 
 
 class BasitKalmanFiltresi:
@@ -362,191 +380,94 @@ class FiloHelper:
             })
         return sonuclar
 
-    def engel_bul(self, rov_id: int, menzil: float = None, debug: bool = False, _sonuc_yazdir: bool = False) -> list:
-        """
-        ROV için çevresel tarama (sonar/lidar benzeri). İleri, sağ, sol, sağ-çapraz,
-        sol-çapraz, yukarı, aşağı yönlerinde raycast atar; engellerin dünya koordinatlarını döndürür.
-        debug=True ise çarpışma noktalarında kırmızı küre oluşturur (önceki debug noktaları temizlenir).
-        Ursina/Panda3D thread-safe değildir: Ana thread dışından (örn. konsol) çağrılırsa raycast
-        atılmaz; ROV'un sonar/lidar önbelleğinden engel listesi oluşturulur (filo.get(0,\"sonar\") ile aynı kaynak).
-        """
-        if menzil is None:
-            menzil = GATLimitleri.ENGEL
-        # --- ROV ve Filo kontrolleri (hem ana thread hem konsol path için) ---
-        if not getattr(self.filo, 'sistemler', None) or rov_id < 0 or rov_id >= len(self.filo.sistemler):
-            return []
-        gnc_sistem = self.filo.sistemler[rov_id]
-        rov = getattr(gnc_sistem, 'rov', None)
-        if rov is None:
-            return []
+    def engel_bul(self, rov_id: int, menzil: float = None, debug: bool = False) -> list:
+            """
+            ROV için 3D çevresel tarama yapar (Çapraz yönler kaldırıldı).
+            Aşağı yönlü sensör menzili GATLimitleri.CARPISMA (10m) ile sınırlıdır.
+            """
+            import math
+            from ursina import raycast, Vec3, color, Entity, destroy
 
-        # --- 1. Thread güvenliği: Ana thread değilse raycast atma; ROV önbelleğindeki sonar/lidar ile engel listesi döndür ---
-        if not getattr(self.filo, '_is_main_thread', lambda: True)():
-            _cache = self._engel_bul_cache_sonuc(rov, rov_id, menzil)
-            noktalar_2d = [(s['koordinat'].x, s['koordinat'].z) for s in _cache if s.get('koordinat')] if _cache else []
-            if _cache and getattr(self.filo, 'ortam_ref', None):
-                ortam = self.filo.ortam_ref
-                try:
-                    if getattr(ortam, 'harita', None) and noktalar_2d and hasattr(ortam.harita, 'tespit_engelleri_guncelle'):
-                        ortam.harita.tespit_engelleri_guncelle(noktalar_2d, debug=debug)
-                except Exception:
-                    pass
-                # engel_bulutu'na ekle (Minimap.update() engel_bulutu'ndan çizer)
-                try:
-                    if ortam and hasattr(ortam, 'engel_bulutu') and noktalar_2d:
-                        for pt in noktalar_2d:
-                            if pt and len(pt) >= 2:
-                                ortam.engel_bulutu.append((float(pt[0]), float(pt[1])))
-                except Exception:
-                    pass
-            if not getattr(self.filo, '_engel_bul_console_warned', False):
-                self.filo._engel_bul_console_warned = True
-                print("⚠️ [ENGEL_BUL] Konsol thread'den çağrıldı; sonuçlar ROV sonar/lidar önbelleğinden. Canlı raycast için ana thread'de veya simülasyon update döngüsünde çağırın.")
-            return _cache
+            # 1. PARAMETRE VE ROV KONTROLÜ
+            if menzil is None: menzil = GATLimitleri.ENGEL
+            ASAGI_MENZIL = GATLimitleri.CARPISMA 
 
-        # --- 3. Debug yönetimi: Yeni raycast öncesi eski debug Entity'leri yok et, listeyi temizle ---
-        if not hasattr(self.filo, '_debug_noktalari'):
-            self.filo._debug_noktalari = []
-        try:
-            from ursina import destroy
-            for obj in list(self.filo._debug_noktalari):
-                try:
-                    destroy(obj)
-                except Exception:
-                    pass
+            gnc_sistemi = self.filo.sistemler[rov_id] if 0 <= rov_id < len(self.filo.sistemler) else None
+            rov = getattr(gnc_sistemi, 'rov', None)
+            if not rov: return []
+
+            # 2. THREAD KONTROLÜ (Konsol Uyumu - Cache Döner)
+            if not self.filo._is_main_thread():
+                son_tespitler = getattr(rov, '_son_engeller', [])
+                return [e for e in son_tespitler if e['mesafe'] <= menzil]
+
+            # 3. DEBUG VE IGNORE LİSTESİ TEMİZLİĞİ
+            if not hasattr(self.filo, '_debug_noktalari'): self.filo._debug_noktalari = []
+            for obj in self.filo._debug_noktalari: destroy(obj)
             self.filo._debug_noktalari.clear()
-        except ImportError:
-            pass
 
-        # --- Ursina raycast ve görsel için import ---
-        try:
-            from ursina import raycast, Vec3, Entity, color
-        except ImportError:
-            return []
-
-        # --- 4. ROV konumu ve yaw (derece) — rotasyon matrisi ile vektör döndürme ---
-        origin = Vec3(rov.world_position.x, rov.world_position.y, rov.world_position.z) + Vec3(0, 0.5, 0)
-        yaw_deg = 0.0
-        if hasattr(rov, 'rotation') and rov.rotation is not None:
-            if hasattr(rov.rotation, 'y'):
-                yaw_deg = float(rov.rotation.y)
-            elif isinstance(rov.rotation, (tuple, list)) and len(rov.rotation) >= 2:
-                yaw_deg = float(rov.rotation[1])
-        yaw_rad = math.radians(yaw_deg)
-        c, s = math.cos(yaw_rad), math.sin(yaw_rad)
-
-        # --- Lokal yönler (ROV'a göre): Ursina'da X=sağ, Y=yukarı, Z=ileri ---
-        lokal_yonler = [
-            ('ileri', Vec3(0, 0, 1)),
-            ('sag', Vec3(1, 0, 0)),
-            ('sol', Vec3(-1, 0, 0)),
-            ('sag_capraz', Vec3(1, 0, 1).normalized()),
-            ('sol_capraz', Vec3(-1, 0, 1).normalized()),
-            ('yukari', Vec3(0, 1, 0)),
-            ('asagi', Vec3(0, -1, 0)),
-        ]
-
-        # --- Ignore listesi (ROV ve safety_zone) ---
-        ignore_list = [rov]
-        if getattr(rov, 'safety_zone', None) is not None:
-            ignore_list.append(rov.safety_zone)
-        ignore_tuple = tuple(ignore_list)
-
-        sonuclar = []
-        for _ad, lok in lokal_yonler:
-            # Lokal vektörü yaw ile global (yatay düzlem) dönüştür: world_x = lx*c + lz*s, world_z = -lx*s + lz*c, world_y = ly
-            gx = lok.x * c + lok.z * s
-            gz = -lok.x * s + lok.z * c
-            gy = lok.y
-            global_vektor = Vec3(gx, gy, gz)
-            if global_vektor.length() < 0.001:
-                continue
-            global_vektor = global_vektor.normalized()
-
-            try:
-                hit_info = raycast(
-                    origin,
-                    global_vektor,
-                    distance=menzil,
-                    ignore=ignore_tuple,
-                    debug=False,
-                )
-            except Exception:
-                continue
-
-            if hit_info and getattr(hit_info, 'hit', False):
-                hit_ent = getattr(hit_info, 'entity', None)
-                ortam = getattr(self.filo, 'ortam_ref', None)
-                # ROV'ları engel olarak sayma (kendisi veya diğer ROV'lar)
-                if ortam and hasattr(ortam, 'rovs') and ortam.rovs and hit_ent in ortam.rovs:
-                    continue
-                mesafe = getattr(hit_info, 'distance', 0.0) or 0.0
-                # Engel koordinatı: raycast world_point varsa onu kullan, yoksa vektörel hesaplama
-                if getattr(hit_info, 'world_point', None) is not None:
-                    koordinat = Vec3(
-                        hit_info.world_point.x,
-                        hit_info.world_point.y,
-                        hit_info.world_point.z,
-                    )
-                else:
-                    koordinat = origin + global_vektor * mesafe
-                # Kendi konumuna çok yakın noktaları ekleme (ROV gövdesi ~1m)
-                dx = koordinat.x - origin.x
-                dz = koordinat.z - origin.z
-                if dx * dx + dz * dz < 1.0:  # ~1m içi
-                    continue
-                # Radius: hit entity'den veya ortam.island_positions'tan
-                radius = self._engel_radius_al(
-                    hit_ent,
-                    (koordinat.x, koordinat.z),
-                )
-                sonuclar.append({'koordinat': koordinat, 'mesafe': mesafe, 'vektor': global_vektor, 'yon': _ad, 'radius': radius})
-
-                # --- Debug: Çarpışma noktasında kırmızı küre ---
-                if debug:
-                    try:
-                        nokta = Entity(
-                            model='sphere',
-                            color=color.red,
-                            scale=0.2,
-                            position=koordinat,
-                            unlit=True,
-                        )
-                        self.filo._debug_noktalari.append(nokta)
-                    except Exception:
-                        pass
-
-        # --- 2. Sonuç gösterimi (callback): invoke ile çağrıldığında sonuçlar konsola yazdırılır ---
-        if _sonuc_yazdir and sonuclar:
-            print(f"✅ [ENGEL_BUL] ROV-{rov_id} — {len(sonuclar)} engel tespit edildi (menzil={menzil}m):")
-            for i, s in enumerate(sonuclar):
-                k = s.get('koordinat')
-                koord_str = f"({k.x:.2f}, {k.y:.2f}, {k.z:.2f})" if k else "—"
-                print(f"   {i+1}. yön={s.get('yon', '—')} mesafe={s.get('mesafe', 0):.2f}m koordinat={koord_str}")
-
-        # --- Haritada tespit edilen engelleri kırmızı noktalar olarak güncelle (Ursina x,z -> harita 2D) ---
-        noktalar_2d = []
-        for s in sonuclar:
-            k = s.get('koordinat')
-            if k is not None and hasattr(k, 'x') and hasattr(k, 'z'):
-                noktalar_2d.append((k.x, k.z))
-        if sonuclar and getattr(self.filo, 'ortam_ref', None):
+            # ROV'un kendisini ve diğer tüm ROV'ları görmezden gel
+            ignore_list = [rov]
+            if getattr(rov, 'safety_zone', None): ignore_list.append(rov.safety_zone)
             ortam = self.filo.ortam_ref
-            try:
-                if getattr(ortam, 'harita', None) and noktalar_2d and hasattr(ortam.harita, 'tespit_engelleri_guncelle'):
-                    ortam.harita.tespit_engelleri_guncelle(noktalar_2d, debug=debug)
-            except Exception:
-                pass
-            # engel_bulutu'na ekle (Minimap.update() engel_bulutu'ndan çizer)
-            try:
-                if ortam and hasattr(ortam, 'engel_bulutu') and noktalar_2d:
-                    for pt in noktalar_2d:
-                        if pt and len(pt) >= 2:
-                            ortam.engel_bulutu.append((float(pt[0]), float(pt[1])))
-            except Exception:
-                pass
+            if ortam and hasattr(ortam, 'rovs'):
+                for other in ortam.rovs:
+                    if other and other != rov: ignore_list.append(other)
+            ignore_tuple = tuple(ignore_list)
 
-        return sonuclar
+            # 4. TARAMA YÖNLERİ (Sadece Ana Eksenler)
+            tarama_yonleri = {
+                'ileri': rov.forward,
+                'geri': -rov.forward,
+                'sag': rov.right,
+                'sol': -rov.right,
+                'yukari': rov.up,
+                'asagi': -rov.up
+            }
+
+            origin = rov.world_position + Vec3(0, 0.5, 0)
+            sonuclar = []
+
+            # 5. RAYCAST DÖNGÜSÜ
+            for ad, yon in tarama_yonleri.items():
+                # Aşağı bakarken 10m, diğer yönlerde tam menzil kullan
+                aktif_menzil = ASAGI_MENZIL if ad == 'asagi' else menzil
+
+                hit = raycast(origin, yon, distance=aktif_menzil, ignore=ignore_tuple, debug=False)
+                
+                if hit.hit:
+                    pt = hit.world_point
+                    # Ursina (x, y, z) -> Simülasyon (x, z, -y)
+                    sim_koord = (pt.x, pt.z, -pt.y) 
+                    
+                    res = {
+                        'yon': ad,
+                        'mesafe': hit.distance,
+                        'koordinat': sim_koord,
+                        'radius': self._engel_radius_al(hit.entity, (pt.x, pt.z))
+                    }
+                    sonuclar.append(res)
+
+                    # 6. HARİTAYA (MİNİMAP) EKLEME KOŞULLARI
+                    # 'yukari' ve 'asagi' (zemin/tavan) haritada kirlilik yapmasın diye eklenmez
+                    if ad not in ['yukari', 'asagi'] and ortam and hasattr(ortam, 'engel_bulutu'):
+                        # Yoğunluk filtresi: Aynı noktaya çok yakın (2m) başka nokta yoksa ekle
+                        is_unique = True
+                        for old_pt in ortam.engel_bulutu[-50:]:
+                            if (old_pt[0]-sim_koord[0])**2 + (old_pt[1]-sim_koord[1])**2 < 4.0:
+                                is_unique = False
+                                break
+                        if is_unique:
+                            ortam.engel_bulutu.append((sim_koord[0], sim_koord[1]))
+
+                    # 3D Debug Görseli (Kırmızı Küreler)
+                    if debug:
+                        dot = Entity(model='sphere', color=color.red, scale=0.3, position=pt, unlit=True)
+                        self.filo._debug_noktalari.append(dot)
+
+            # 7. CACHE GÜNCELLEME
+            rov._son_engeller = sonuclar
+            return sonuclar
 
     def yakinlastir(self, rov_id1: int, rov_id2: int, mesafe: float) -> bool:
         """
@@ -604,186 +525,112 @@ class FiloHelper:
         except (TypeError, ValueError, IndexError):
             pass
         return int(arg)
-
     def vektor(self, ilk=None, ikinci=None,
-               rov_id_ilk=None, rov_id_ikinci=None,
-               baslangic_noktasi=None, bitis_noktasi=None, vektor=None,
-               renk='m', uzunluk=20, reverse=False, debug=False, ciz=True):
-        """
-        Minimap üzerinde vektör çizer. Keyword argümanlarla net kullanım.
+                    rov_id_ilk=None, rov_id_ikinci=None,
+                    baslangic_noktasi=None, bitis_noktasi=None, vektor=None,
+                    renk='m', uzunluk=20.0, reverse=False, debug=False, ciz=False):
+            """
+            Gelişmiş 3D Vektör Metodu.
+            - Okun uzunluğu her zaman 'uzunluk' parametresine eşittir.
+            - Okun yönü, verilen hedef noktasına (bitis_noktasi) doğrudur.
+            - Koordinatlar 'filo.get(id, "gps")' üzerinden (x, y, z) birebir alınır.
+            """
+            import math
+            from ursina import Vec3
+            
+            # 1. PARAMETRE AYARLARI
+            self._vektor_renk = renk if renk in self.VEKTOR_RENK_KODLARI else 'm'
+            self._vektor_reverse = bool(reverse)
+            # Eğer uzunluk verilmemişse varsayılan 20 birim
+            self._vektor_uzunluk_metre = float(uzunluk) if uzunluk is not None else 20.0
+            
+            ortam = getattr(self.filo, 'ortam_ref', None)
 
-        Modlar:
-        1. İki nokta: rov_id_ilk + rov_id_ikinci | baslangic_noktasi + bitis_noktasi | karışık
-        2. Nokta + vektör: baslangic_noktasi/rov_id_ilk + vektor=(vx,vz) → başlangıçtan o yönde uzunluk kadar
+            # 2. BAŞLANGIÇ NOKTASI (POS1) - GPS'ten Birebir
+            pos1 = None
+            rid1 = rov_id_ilk if rov_id_ilk is not None else (ilk if isinstance(ilk, int) else None)
+            
+            if baslangic_noktasi is not None:
+                pos1 = (float(baslangic_noktasi[0]), float(baslangic_noktasi[1]), float(baslangic_noktasi[2]))
+            elif rid1 is not None:
+                pos1 = self.filo.get(rid1, "gps") # (x, y, z)
 
-        Args:
-            rov_id_ilk (int): Başlangıç ROV ID.
-            rov_id_ikinci (int): Bitiş ROV ID.
-            baslangic_noktasi ((x,z)): Başlangıç noktası (metre, dünya koordinatı).
-            bitis_noktasi ((x,z)): Bitiş noktası (metre).
-            vektor ((vx,vz)): Yön vektörü (birim olması gerekmez). baslangic_noktasi veya rov_id_ilk ile kullan.
-            ilk, ikinci: Eski pozisyonel API (geriye uyumluluk).
-            renk: 'k','y','m','s','t'. uzunluk: ok uzunluğu (m). reverse, debug, ciz: bool.
+            if pos1 is None: return None
 
-        Returns:
-            dict | None: baslangic, bitis, birim_vektor, uzunluk veya None.
+            # 3. YÖN (BİRİM VEKTÖR) HESABI
+            ux, uy, uz = 0.0, 0.0, 0.0
+            gercek_hedef_pos = None
+            gercek_mesafe = 0.0
 
-        Örnekler:
-            debug.vektor(rov_id_ilk=2, rov_id_ikinci=5)
-            debug.vektor(baslangic_noktasi=(-174, 115), vektor=(0.83, -0.55), uzunluk=20)
-            debug.vektor(rov_id_ilk=5, vektor=(0.76, -0.65), uzunluk=30)
-            debug.vektor(0, 1)  # Eski API
-        """
-        if renk in self.VEKTOR_RENK_KODLARI:
-            self._vektor_renk = renk
-        self._vektor_uzunluk_metre = max(0.0, float(uzunluk))
-        self._vektor_reverse = bool(reverse)
+            # DURUM A: Yön Vektörü Modu (Başlangıç + Yön)
+            if vektor is not None:
+                try:
+                    vx, vy, vz = float(vektor[0]), float(vektor[1]), float(vektor[2])
+                    mag = math.sqrt(vx**2 + vy**2 + vz**2)
+                    if mag > 1e-9:
+                        ux, uy, uz = vx/mag, vy/mag, vz/mag
+                    gercek_mesafe = self._vektor_uzunluk_metre
+                    gercek_hedef_pos = (pos1[0] + ux * mag, pos1[1] + uy * mag, pos1[2] + uz * mag)
+                except: return None
 
-        # Geriye uyumluluk: positional ilk, ikinci
-        if ilk is not None or ikinci is not None:
-            if rov_id_ilk is None and baslangic_noktasi is None:
-                if isinstance(ilk, int):
-                    rov_id_ilk = ilk
-                elif hasattr(ilk, '__len__') and len(ilk) >= 2:
-                    try:
-                        baslangic_noktasi = (float(ilk[0]), float(ilk[1]))
-                    except (TypeError, ValueError, IndexError):
-                        pass
-            if rov_id_ikinci is None and bitis_noktasi is None and vektor is None and ikinci is not None:
-                if isinstance(ikinci, int):
-                    rov_id_ikinci = ikinci
-                elif hasattr(ikinci, '__len__') and len(ikinci) >= 2:
-                    try:
-                        v0, v1 = float(ikinci[0]), float(ikinci[1])
-                        mag = math.sqrt(v0 * v0 + v1 * v1)
-                        # Birim vektör: uzunluk ~1 ve bileşenler [-1.2, 1.2]
-                        if mag >= 1e-6 and 0.7 <= mag <= 1.3 and abs(v0) <= 1.2 and abs(v1) <= 1.2:
-                            vektor = (v0, v1)
-                        else:
-                            bitis_noktasi = (v0, v1)
-                    except (TypeError, ValueError, IndexError):
-                        pass
-
-        ortam = getattr(self.filo, 'ortam_ref', None)
-        havuz_genisligi = getattr(ortam, 'havuz_genisligi', 200.0) if ortam else 200.0
-        h = max(float(havuz_genisligi), 1.0)
-        kosegen = 2.0 * h * math.sqrt(2.0)
-
-        # Başlangıç pozisyonu
-        pos1 = None
-        if baslangic_noktasi is not None:
-            try:
-                pos1 = (float(baslangic_noktasi[0]), float(baslangic_noktasi[1]))
-            except (TypeError, IndexError, ValueError):
-                pass
-        if pos1 is None and rov_id_ilk is not None:
-            pos1 = self._vektor_poz_al(int(rov_id_ilk), ortam)
-
-        # vektor modu: başlangıç + yön vektörü
-        if vektor is not None:
-            if pos1 is None:
-                if debug:
-                    self._apf_vektor_list = []
-                return None
-            try:
-                vx, vz = float(vektor[0]), float(vektor[1])
-            except (TypeError, IndexError, ValueError):
-                return None
-            v_mag = math.sqrt(vx * vx + vz * vz)
-            if v_mag < 1e-9:
-                ret = {
-                    'baslangic': (float(pos1[0]) / h, float(pos1[1]) / h),
-                    'bitis': (float(pos1[0]) / h, float(pos1[1]) / h),
-                    'birim_vektor': (0.0, 0.0),
-                    'uzunluk': 0.0,
-                }
-                pos2 = pos1
+            # DURUM B: İki Nokta Modu (Başlangıç + Hedef)
             else:
-                ux, uz = vx / v_mag, vz / v_mag
-                if self._vektor_reverse:
-                    ux, uz = -ux, -uz
-                pos2 = (pos1[0] + ux * self._vektor_uzunluk_metre, pos1[1] + uz * self._vektor_uzunluk_metre)
-                ret = {
-                    'baslangic': (float(pos1[0]) / h, float(pos1[1]) / h),
-                    'bitis': (float(pos2[0]) / h, float(pos2[1]) / h),
-                    'birim_vektor': (ux, uz),
-                    'uzunluk': self._vektor_uzunluk_metre / kosegen,
-                }
+                rid2 = rov_id_ikinci if rov_id_ikinci is not None else (ikinci if isinstance(ikinci, int) else None)
+                if bitis_noktasi is not None:
+                    gercek_hedef_pos = (float(bitis_noktasi[0]), float(bitis_noktasi[1]), float(bitis_noktasi[2]))
+                elif rid2 is not None:
+                    gercek_hedef_pos = self.filo.get(rid2, "gps")
+
+                if gercek_hedef_pos is not None:
+                    dx, dy, dz = gercek_hedef_pos[0]-pos1[0], gercek_hedef_pos[1]-pos1[1], gercek_hedef_pos[2]-pos1[2]
+                    gercek_mesafe = math.sqrt(dx**2 + dy**2 + dz**2)
+                    if gercek_mesafe > 1e-9:
+                        ux, uy, uz = dx/gercek_mesafe, dy/gercek_mesafe, dz/gercek_mesafe
+                else:
+                    return None
+
+            # Ters Çevirme (Reverse)
+            if self._vektor_reverse:
+                ux, uy, uz = -ux, -uy, -uz
+
+            # 4. GÖRSEL ÇİZİM NOKTASI (POS2)
+            # Okun bittiği yer: Başlangıç + (Yön * Senin İstediğin Sabit Uzunluk)
+            pos2_cizim = (
+                pos1[0] + ux * self._vektor_uzunluk_metre,
+                pos1[1] + uy * self._vektor_uzunluk_metre,
+                pos1[2] + uz * self._vektor_uzunluk_metre
+            )
+
+            # 5. SONUÇLAR
+            ret = {
+                'baslangic_3d': pos1,
+                'bitis_3d': gercek_hedef_pos,    # Gerçek hedef koordinatın (Data için)
+                'birim_vektor_3d': (ux, uy, uz),
+                'uzaklik_metre': float(gercek_mesafe)
+            }
+
+            # 6. MİNİMAP ÇİZİM LİSTESİ
             if ciz:
-                if debug:
-                    self._apf_vektor_list = []
-                item = {
-                    'baslangic': (float(pos1[0]), float(pos1[1])),
-                    'bitis': (float(pos2[0]), float(pos2[1])),
+                if debug: self._apf_vektor_list = []
+                self._apf_vektor_list.append({
+                    'baslangic': pos1,
+                    'bitis': pos2_cizim,       # Minimap sadece 'uzunluk' kadar çizer
                     'renk': self._vektor_renk,
                     'uzunluk': self._vektor_uzunluk_metre,
-                    'reverse': self._vektor_reverse,
-                }
-                if rov_id_ilk is not None:
-                    item['rov_id'] = int(rov_id_ilk)
-                self._apf_vektor_list.append(item)
+                    'rov_id': rid1
+                })
+
             return ret
 
-        # İki nokta modu
-        if pos1 is None:
-            self._vektor_baslangic = None
-            self._vektor_bitis = None
-            if debug:
-                self._apf_vektor_list = []
+    def _vektor_poz_al_3d(self, rov_id, ortam):
+            """ROV'un 3D pozisyonunu simülasyon formatında döner."""
+            if not ortam or not hasattr(ortam, 'rovs'): return None
+            for r in ortam.rovs:
+                if r and getattr(r, 'id', None) == rov_id:
+                    # Ursina (x, y, z) -> Simülasyon (x, y_ileri, z_derinlik)
+                    # Ursina Y yukarıdır, Simülasyonda Derinlik (Z) aşağıdır.
+                    return (r.x, r.z, -r.y)
             return None
-
-        pos2 = None
-        if bitis_noktasi is not None:
-            try:
-                pos2 = (float(bitis_noktasi[0]), float(bitis_noktasi[1]))
-            except (TypeError, IndexError, ValueError):
-                pass
-        if pos2 is None and rov_id_ikinci is not None:
-            pos2 = self._vektor_poz_al(int(rov_id_ikinci), ortam)
-
-        if pos2 is None:
-            if debug:
-                self._apf_vektor_list = []
-            return None
-
-        dx = pos2[0] - pos1[0]
-        dz = pos2[1] - pos1[1]
-        d = math.sqrt(dx * dx + dz * dz)
-        if d < 1e-9:
-            ret = {
-                'baslangic': (float(pos1[0]) / h, float(pos1[1]) / h),
-                'bitis': (float(pos2[0]) / h, float(pos2[1]) / h),
-                'birim_vektor': (0.0, 0.0),
-                'uzunluk': 0.0,
-                'uzaklik_metre': 0.0,
-            }
-        else:
-            ux, uz = dx / d, dz / d
-            if self._vektor_reverse:
-                ux, uz = -ux, -uz
-            ret = {
-                'baslangic': (float(pos1[0]) / h, float(pos1[1]) / h),
-                'bitis': (float(pos2[0]) / h, float(pos2[1]) / h),
-                'birim_vektor': (ux, uz),
-                'uzunluk': d / kosegen,
-                'uzaklik_metre': float(d),
-            }
-
-        if ciz:
-            if debug:
-                self._apf_vektor_list = []
-            item = {
-                'baslangic': (float(pos1[0]), float(pos1[1])),
-                'bitis': (float(pos2[0]), float(pos2[1])),
-                'renk': self._vektor_renk,
-                'uzunluk': self._vektor_uzunluk_metre,
-                'reverse': self._vektor_reverse,
-            }
-            if rov_id_ilk is not None:
-                item['rov_id'] = int(rov_id_ilk)
-            self._apf_vektor_list.append(item)
-        return ret
-
     def get_vektor_renk(self):
         """Minimap vektör çizgisi için renk kodu döner: k, y, m, s, t (varsayılan m)."""
         return getattr(self, '_vektor_renk', 'm')
@@ -826,10 +673,15 @@ class FiloHelper:
         return [(p1.x, p1.y, z_line), (p1.x, p1.y, z_line)]
 
     def _vektor_poz_al(self, arg, ortam):
-        """Tek vektör argümanını (ROV id veya (x,z) nokta) dünya (x, z) koordinatına çevirir. Bulunamazsa None."""
+        """Tek vektör argümanını (ROV id veya (x,z) veya (x,y,z) nokta) dünya koordinatına çevirir. Bulunamazsa None.
+        - Eğer arg tuple/list ise: 3 elemanlıyse (x,y,z) döner, 2 elemanlıysa (x,z) döner.
+        - Eğer arg ROV id ise, geriye uyumluluk için (x,z) döner (y mevcutsa kullanılmaz).
+        """
         if arg is None:
             return None
         try:
+            if isinstance(arg, (tuple, list)) and len(arg) >= 3:
+                return (float(arg[0]), float(arg[1]), float(arg[2]))
             if isinstance(arg, (tuple, list)) and len(arg) >= 2:
                 return (float(arg[0]), float(arg[1]))
         except (TypeError, ValueError, IndexError):
@@ -872,6 +724,21 @@ class FiloHelper:
     def _yatay_mesafe(self, p1, p2):
         """İki nokta (x, z) arasındaki yatay mesafeyi metre cinsinden döner."""
         return math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+
+    def _mesafe(self, p1, p2, is_3d: bool = False):
+        """
+        İki nokta arasındaki mesafeyi hesaplar. is_3d True ise 3B, değilse 2B (x,z) kullanır.
+        p1/p2: (x,z) veya (x,y,z) tuple olabilir.
+        """
+        try:
+            if is_3d:
+                x1, y1, z1 = float(p1[0]), float(p1[1]), float(p1[2])
+                x2, y2, z2 = float(p2[0]), float(p2[1]), float(p2[2])
+                return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2 + (z2 - z1) ** 2)
+            else:
+                return math.sqrt((float(p2[0]) - float(p1[0])) ** 2 + (float(p2[1]) - float(p1[1])) ** 2)
+        except Exception:
+            return float('inf')
 
     def _apf_rep_factor_hesapla(self, mesafe: float, r_etki: float, d_min: float = 0.5):
         """
@@ -1145,116 +1012,107 @@ class FiloHelper:
         return self._koordinator
 
     def apf(self, rov_id: int, hedef: bool = True, engel: bool = False, rov: bool = False):
-        """
-        APF: ROV'un mevcut konumundan hedefine/engellere/diğer ROV'lara yönelik vektörleri döndürür.
-        Hangi bileşenlerin hesaplanacağı hedef/engel/rov parametreleriyle seçilir.
+            """
+            3D APF Hesaplama. KeyError korumalı versiyon.
+            """
+           
+            self.apf_temizle(rov_id=rov_id)
+                
+            toplam_vec = [0.0, 0.0, 0.0]
+            out_hedef = None
+            out_engeller = []
+            out_rovs = []
 
-        Args:
-            rov_id: ROV ID
-            hedef: True ise hedef vektörü hesaplanır (varsayılan True)
-            engel: True ise engellere yönelik vektörler hesaplanır
-            rov: True ise diğer ROV'lara yönelik vektörler hesaplanır
+            def add_vec(res_dict):
+                if res_dict and 'birim_vektor_3d' in res_dict:
+                    bv = res_dict['birim_vektor_3d']
+                    toplam_vec[0] += bv[0]
+                    toplam_vec[1] += bv[1]
+                    toplam_vec[2] += bv[2]
+                    return True
+                return False
 
-        Returns:
-            dict: {
-                'birim_vektor': (ux, uz),
-                'mesafe': mag,
-                'hedef': {...} veya None,
-                'engeller': [...],
-                'rovs': [...]
+            # Hedef
+            if hedef:
+                h_koord = self.filo.hedef(rov_id=rov_id)
+                if h_koord:
+                    res = self.vektor(rov_id_ilk=rov_id, bitis_noktasi=h_koord, renk='y', ciz=True)
+                    if add_vec(res):
+                        out_hedef = {
+                            'birim_vektor': res.get('birim_vektor_3d', (0,0,0)),
+                            'mesafe': res.get('uzaklik_metre', 0.0) # HATA BURADAYDI, .get eklendi
+                        }
+
+            # Engeller
+            if engel:
+                # Doğrudan engel_bul fonksiyonunu çağırıyoruz (Raycast taraması yapar)
+                tespit_edilenler = self.engel_bul(rov_id=rov_id, menzil=GATLimitleri.ENGEL)
+                
+                for e in tespit_edilenler:
+                    # Engel koordinatı (Simülasyon formatında: x, y_ileri, z_derinlik)
+                    target = e.get('koordinat')
+                    
+                    if target:
+                        # KRİTİK: Mesafeyi doğrudan engel_bul sonucundaki 'mesafe' anahtarından alıyoruz.
+                        # Bu değer Ursina'nın raycast hit.distance değeridir ve en hassas veridir.
+                        sensor_mesafesi = float(e.get('mesafe', 0.0))
+                        
+                        # 'vektor' metodunu sadece itme yönünü (birim_vektor_3d) hesaplamak 
+                        # ve minimap üzerinde 'k' (kara) renginde ok çizmek için kullanıyoruz.
+                        # reverse=True olduğu için vektör engelden dışarı doğru (itme) oluşur.
+                        res = self.vektor(
+                            rov_id_ilk=rov_id, 
+                            bitis_noktasi=target, 
+                            reverse=True, 
+                            renk='k', 
+                            ciz=True
+                        )
+                        
+                        if add_vec(res):
+                            out_engeller.append({
+                                'birim_vektor': res.get('birim_vektor_3d', (0,0,0)),
+                                'mesafe': sensor_mesafesi, # Doğrudan engel_bul'dan gelen ham mesafe
+                                'radius': e.get('radius', 0.0)
+                            })
+
+            # --- DİĞER ROV'LAR (Collision Avoidance) ---
+            if rov:
+                # rov_vektor fonksiyonu menzil içindeki ROV'ları ve gerçek mesafelerini bulur
+                for r in self.rov_vektor(rov_id=rov_id, menzil=GATLimitleri.CARPISMA):
+                    target = r.get('koordinat')
+                    
+                    if target:
+                        # KRİTİK DÜZELTME: Mesafeyi vektor() çıktısından değil, 
+                        # rov_vektor'ün halihazırda hesapladığı 'mesafe' anahtarından alıyoruz.
+                        gercek_mesafe = float(r.get('mesafe', 0.0))
+                        
+                        # vektor() metodunu sadece yön (itme vektörü) ve Minimap çizimi ('t' turuncu) için kullanıyoruz.
+                        res = self.vektor(
+                            rov_id_ilk=rov_id, 
+                            bitis_noktasi=target, 
+                            reverse=True, # Diğer ROV'dan kaçınmak için itme
+                            renk='t', 
+                            ciz=True
+                        )
+                        
+                        if add_vec(res):
+                            out_rovs.append({
+                                'birim_vektor': res.get('birim_vektor_3d', (0,0,0)),
+                                'mesafe': gercek_mesafe  # En doğru fiziksel mesafe
+                            })
+
+            # Bileşke Vektör
+            import math
+            mag = math.sqrt(sum(v**2 for v in toplam_vec))
+            birim = (toplam_vec[0]/mag, toplam_vec[1]/mag, toplam_vec[2]/mag) if mag > 1e-9 else (0,0,0)
+
+            return {
+                'birim_vektor': birim,
+                'mesafe': float(mag),
+                'hedef': out_hedef,
+                'engeller': out_engeller,
+                'rovs': out_rovs
             }
-        """
-        # _apf_vektor_list temizlenmez; vektörler birikir. Temizlemek için apf_temizle() çağrılır.
-
-        birim_vektor = (0.0, 0.0)
-        mag = 0.0
-        out_hedef = None
-
-        if hedef:
-            hedef_koord = self.filo.hedef(rov_id=rov_id)
-            if hedef_koord is not None:
-                Koordinator = self._koordinator_al()
-                h_ursina = Koordinator.sim_to_ursina(
-                    float(hedef_koord[0]), float(hedef_koord[1]),
-                    float(hedef_koord[2]) if len(hedef_koord) > 2 else 0.0
-                )
-                bitis_2d = (h_ursina[0], h_ursina[2])
-                vec = self.vektor(rov_id_ilk=rov_id, bitis_noktasi=bitis_2d, renk='y', reverse=False, ciz=True)
-                if vec is not None:
-                    birim_vektor = vec['birim_vektor']
-                    mag = vec.get('uzaklik_metre', vec.get('uzunluk', 0.0))
-                    out_hedef = {'birim_vektor': birim_vektor, 'mesafe': float(mag)}
-                else:
-                    out_hedef = {'birim_vektor': (0.0, 0.0), 'mesafe': 0.0}
-            else:
-                out_hedef = {'birim_vektor': (0.0, 0.0), 'mesafe': 0.0}
-
-        out_engeller = []
-        if engel:
-            engel_listesi = self.engel_vektor(rov_id=rov_id, menzil=GATLimitleri.ENGEL)
-            for engel in engel_listesi:
-                koord = engel.get('koordinat')
-                vb = engel.get('vektor_bilgi')
-                if not koord or len(koord) < 2 or not vb:
-                    continue
-                try:
-                    ex = float(koord[0])
-                    ez = float(koord[1])
-                except (TypeError, ValueError):
-                    continue
-                self.vektor(
-                    rov_id_ilk=rov_id,
-                    bitis_noktasi=(ex, ez),
-                    reverse=True,
-                    renk='k',
-                    ciz=True
-                )
-                out_engeller.append({
-                    'birim_vektor': vb.get('birim_vektor'),
-                    'mesafe': float(vb.get('uzaklik_metre', engel.get('mesafe', 0.0))),
-                    'radius': float(engel.get('radius', 0.0)),
-                })
-
-        out_rovs = []
-        if rov:
-            rov_listesi = self.rov_vektor(rov_id=rov_id, menzil=GATLimitleri.CARPISMA)
-            for diger in rov_listesi:
-                koord = diger.get('koordinat')
-                vb = diger.get('vektor_bilgi')
-                if not koord or len(koord) < 2 or not vb:
-                    continue
-                try:
-                    rx = float(koord[0])
-                    rz = float(koord[1])
-                except (TypeError, ValueError):
-                    continue
-                self.vektor(
-                    rov_id_ilk=rov_id,
-                    bitis_noktasi=(rx, rz),
-                    reverse=True,
-                    renk='t',
-                    ciz=True
-                )
-                out_rovs.append({
-                    'birim_vektor': vb.get('birim_vektor'),
-                    'mesafe': float(vb.get('uzaklik_metre', diger.get('mesafe', 0.0)))
-                })
-
-        out = {
-            'birim_vektor': birim_vektor,
-            'mesafe': float(mag),
-        }
-
-        if hedef:
-            out['hedef'] = out_hedef
-        if engel:
-            out['engeller'] = out_engeller
-        if rov:
-            out['rovs'] = out_rovs
-
-        return out
-
-
 
     def apf_temizle(self, rov_id=None) -> None:
         """
@@ -1274,122 +1132,71 @@ class FiloHelper:
             except Exception:
                 pass
 
-    def hedef_vektor(self, rov_id: int, menzil: float = None):
-        """
-        ROV'un hedefine olan vektör bilgisini döndürür (çizim yapılmaz).
-        
-        Args:
-            rov_id (int): ROV ID (0, 1, 2, ...)
-            menzil (float): Yatay düzlemde (X,Z) menzil (metre). Varsayılan GATLimitleri.ENGEL.
-        
-        Returns:
-            dict | None: Vektör bilgisi (baslangic, bitis, birim_vektor, uzunluk) veya None.
-                Hedef yoksa veya ROV konumu bulunamazsa None döner.
-        """
-        if menzil is None:
-            menzil = GATLimitleri.ENGEL
-        ortam = getattr(self.filo, 'ortam_ref', None)
-        pos_rov = self._rov_pozisyon_ursina(rov_id=rov_id, ortam=ortam)
-        if pos_rov is None:
-            return None
-        
-        sistemler = getattr(self.filo, 'sistemler', None)
-        if sistemler and 0 <= rov_id < len(sistemler):
-            hedef_obj = getattr(sistemler[rov_id], 'hedef', None)
-            if hedef_obj is not None:
-                hx_sim, hy_sim, hz_sim = self._koordinat_cikar(hedef_obj, x_attr='x', y_attr='y', z_attr='z')
-                if hx_sim is not None and hy_sim is not None:
-                    Koordinator = self._koordinator_al()
-                    hedef_ursina = Koordinator.sim_to_ursina(hx_sim, hy_sim, hz_sim if hz_sim is not None else 0.0)
-                    hedef_pt = (hedef_ursina[0], hedef_ursina[2])
-                    
-                    # Vektör bilgisini al (çizim yapılmaz)
-                    vb = self.vektor(pos_rov, hedef_pt, renk='y', uzunluk=20.0, reverse=False, debug=False, ciz=False)
-                    
-                    return vb
-        return None
+    def hedef_vektor(self, rov_id: int):
+            """
+            ROV'un hedefine olan 3B vektör bilgisini döndürür (Çizim yapmaz).
+            """
+            hedef_koord = self.filo.hedef(rov_id=rov_id) # Sim Format: (x, y, z)
+            if hedef_koord is None:
+                return None
+
+            # Yeni 3D 'vektor' metodunu kullanarak bilgileri al
+            # 'ciz=False' ile sadece hesaplama yapar, 'reverse=False' ile hedefe çeker.
+            return self.vektor(
+                rov_id_ilk=rov_id, 
+                bitis_noktasi=hedef_koord, 
+                renk='y', 
+                ciz=False
+            )
 
     def rov_vektor(self, rov_id: int, menzil: float = None):
         """
-        ROV'un diğer ROV'lara olan vektör bilgilerini liste olarak döndürür (çizim yapılmaz).
-        
-        Args:
-            rov_id (int): ROV ID (0, 1, 2, ...)
-            menzil (float): Yatay düzlemde (X,Z) menzil (metre). Varsayılan GATLimitleri.CARPISMA.
-        
-        Returns:
-            list: [{'rov_id': int, 'koordinat': (x, z), 'vektor_bilgi': {...}}, ...]
-                Her diğer ROV için vektör bilgisi içeren dict listesi.
-                ROV konumu bulunamazsa veya menzil içinde ROV yoksa boş liste döner.
+        ROV'un diğer ROV'lara olan 3B kaçınma vektörlerini döndürür (Çizim yapmaz).
         """
         if menzil is None:
             menzil = GATLimitleri.CARPISMA
+
         ortam = getattr(self.filo, 'ortam_ref', None)
-        pos_rov = self._rov_pozisyon_ursina(rov_id=rov_id, ortam=ortam)
-        if pos_rov is None:
+        if not ortam or not hasattr(ortam, 'rovs'):
             return []
-        
+
+        # Kendi 3D pozisyonumuzu al (Simülasyon formatı)
+        pos_self = self._vektor_poz_al_3d(rov_id, ortam)
+        if not pos_self: return []
+
         result = []
-        if ortam and getattr(ortam, 'rovs', None):
-            for rov_entity in ortam.rovs:
-                if rov_entity is None:
-                    continue
-                rid = getattr(rov_entity, 'id', None)
-                if rid is None or int(rid) == int(rov_id):
-                    continue
-                rx, _, rz = self._koordinat_cikar(rov_entity, x_attr='x', z_attr='z')
-                if rx is None or rz is None:
-                    continue
-                pt = (rx, rz)
-                mesafe = self._yatay_mesafe(pos_rov, pt)
-                if mesafe > menzil:
-                    continue
-                
-                # Vektör bilgisini al (çizim yapılmaz)
-                vb = self.vektor(pos_rov, pt, renk='t', uzunluk=20.0, reverse=True, debug=False, ciz=False)
-                if vb is not None:
-                    result.append({'rov_id': int(rid), 'koordinat': pt, 'vektor_bilgi': vb, 'mesafe': mesafe})
+        for r_ent in ortam.rovs:
+            if r_ent is None or getattr(r_ent, 'id', None) == rov_id:
+                continue
+
+            # Diğer ROV'un 3D pozisyonu (Simülasyon formatı: X, Y_ileri, Z_derinlik)
+            # Ursina (x, y, z) -> Sim (x, z, -y)
+            pos_other = (r_ent.x, r_ent.z, -r_ent.y)
+            
+            # 3D Öklid Mesafesi
+            dist = math.sqrt(
+                (pos_other[0]-pos_self[0])**2 + 
+                (pos_other[1]-pos_self[1])**2 + 
+                (pos_other[2]-pos_self[2])**2
+            )
+
+            if dist <= menzil:
+                # 'reverse=True' ile itme (repulsion) vektörü oluşturulur.
+                vb = self.vektor(
+                    baslangic_noktasi=pos_self, 
+                    bitis_noktasi=pos_other, 
+                    reverse=True, 
+                    ciz=False
+                )
+                if vb:
+                    result.append({
+                        'rov_id': int(r_ent.id),
+                        'koordinat': pos_other,
+                        'vektor_bilgi': vb,
+                        'mesafe': dist
+                    })
         return result
 
-    def engel_vektor(self, rov_id: int, menzil: float = None):
-        """
-        ROV'un engellere olan vektör bilgilerini liste olarak döndürür (çizim yapılmaz).
-        
-        Args:
-            rov_id (int): ROV ID (0, 1, 2, ...)
-            menzil (float): Yatay düzlemde (X,Z) menzil (metre). Varsayılan GATLimitleri.ENGEL.
-        
-        Returns:
-            list: [{'koordinat': (x, z), 'vektor_bilgi': {...}, 'mesafe': float, 'radius': float}, ...]
-                Her engel için vektör bilgisi ve yarıçap (metre) içeren dict listesi.
-                ROV konumu bulunamazsa veya menzil içinde engel yoksa boş liste döner.
-        """
-        if menzil is None:
-            menzil = GATLimitleri.ENGEL
-        ortam = getattr(self.filo, 'ortam_ref', None)
-        pos_rov = self._rov_pozisyon_ursina(rov_id=rov_id, ortam=ortam)
-        if pos_rov is None:
-            return []
-        
-        result = []
-        for s in self.engel_bul(rov_id, menzil=menzil):
-            koord = s.get('koordinat')
-            if koord is None:
-                continue
-            kx, _, kz = self._koordinat_cikar(koord, x_attr='x', z_attr='z')
-            if kx is None or kz is None:
-                continue
-            pt = (kx, kz)
-            mesafe = self._yatay_mesafe(pos_rov, pt)
-            if mesafe > menzil:
-                continue
-            
-            # Vektör bilgisini al (çizim yapılmaz)
-            vb = self.vektor(pos_rov, pt, renk='k', uzunluk=20.0, reverse=True, debug=False, ciz=False)
-            radius = s.get('radius', 0.0)
-            if vb is not None:
-                result.append({'koordinat': pt, 'vektor_bilgi': vb, 'mesafe': mesafe, 'radius': radius})
-        return result
 
 
     def get_apf_vektor_verts_list(self, minimap):
@@ -1875,46 +1682,37 @@ class FiloHelper:
 
     def git(self, rov_id: int, x, y: float = None, z: float = None, ai: bool = True, sessiz: bool = False) -> None:
         """
-        ROV'a hedef koordinatı atar ve otomatik moda geçirir (Thread-safe).
-        Tüm girişler Simülasyon formatındadır: (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
-        
-        Args:
-            sessiz: Log mesajlarını kapatır (RL eğitimi için)
+        ROV'a hedef koordinatı doğrudan atar. 
+        Koordinat Formatı: (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
         """
-        if isinstance(x, (list, tuple)) and len(x) > 0:
-            if isinstance(x[0], (list, tuple)) and len(x[0]) >= 2:
-                nokta_listesi = [[float(n[0]), float(n[1])] for n in x if len(n) >= 2]
-                if len(nokta_listesi) == 0:
-                    if not sessiz:
-                        print(f"❌ [FİLO] Geçersiz nokta listesi: {x}")
-                    return
-                self.filo._git_nokta_listesi[rov_id] = nokta_listesi
+        target_x, target_y, target_z = 0.0, 0.0, z
+
+        # 1. GİRDİ AYRIŞTIRMA (Nokta listesi, Liste veya Float)
+        if isinstance(x, (list, tuple)):
+            if not x: return # Boş liste kontrolü
+            
+            # Durum A: Çoklu Nokta Listesi (Rota) -> [[x1,y1], [x2,y2], ...]
+            if isinstance(x[0], (list, tuple)):
+                self.filo._git_nokta_listesi[rov_id] = [[float(n[0]), float(n[1])] for n in x if len(n) >= 2]
                 self.filo._git_mevcut_nokta_indeksi[rov_id] = 0
-                ilk_nokta = nokta_listesi[0]
-                self.filo._command_queue.put(('git', (rov_id, ilk_nokta[0], ilk_nokta[1], z, ai, sessiz), {}))
-                return
+                target_x, target_y = self.filo._git_nokta_listesi[rov_id][0]
+                
+            # Durum B: Tekil Koordinat Listesi -> [x, y] veya [x, y, z]
             else:
-                if len(x) >= 2:
-                    x_val, y_val = float(x[0]), float(x[1])
-                    z_val = float(x[2]) if len(x) >= 3 else z
-                else:
-                    if not sessiz:
-                        print(f"❌ [FİLO] Geçersiz koordinat formatı: {x}")
-                    return
+                target_x = float(x[0])
+                target_y = float(x[1])
+                if len(x) >= 3: target_z = float(x[2])
         else:
-            x_val, y_val = float(x), float(y) if y is not None else None
-            z_val = z
+            # Durum C: Doğrudan float değerler (x, y, z)
+            if y is None:
+                if not sessiz: print("❌ [FİLO] Y koordinatı eksik.")
+                return
+            target_x, target_y = float(x), float(y)
 
-        if y_val is None:
-            if not sessiz:
-                print("❌ [FİLO] Y koordinatı gerekli! (x liste değilse)")
-            return
-
-        if not self.filo._is_main_thread():
-            self.filo._command_queue.put(('git', (rov_id, x_val, y_val, z_val, ai, sessiz), {}))
-            return
-
-        self._git_impl(rov_id, x_val, y_val, z_val, ai, sessiz)
+        # 2. DOĞRUDAN UYGULAMA
+        # (Not: Harici log satırı kaldırıldı - hedef atamalarında fazladan stdout yazdırmamak için.)
+        # Hiçbir bekletme yapmadan asıl işi yapan alt fonksiyona gönder
+        self._git_impl(rov_id, target_x, target_y, target_z, ai, sessiz)
 
     def git_path(self, rov_id, hedef, ai=True, isaret=False):
         """
@@ -1980,74 +1778,45 @@ class FiloHelper:
         else:
             print(f"⚠️ [FİLO] Gidilecek nokta bulunamadı (yol çok kısa olabilir)")
 
-    def _git_impl(self, rov_id: int, x: float, y: float, z: float = None, ai: bool = True, sessiz: bool = False) -> None:
-        """git() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
-        from FiratROVNet.gnc import Koordinator
-
-        if len(self.filo.sistemler) == 0:
-            print("❌ [HATA] GNC sistemleri henüz kurulmamış!")
-            print("   💡 Çözüm: filo.ekle() ile GNC sistemleri ekleyin")
+    def _git_impl(self, rov_id: int, x: float, y: float, z: float = None, ai: bool = True, sessiz: bool = True) -> None:
+        """
+        git() fonksiyonunun sadeleştirilmiş implementasyonu.
+        Bağımlılıklar temizlendi, koordinat hesabı manuel yapıldı.
+        """
+        # 1. TEMEL KONTROLLER
+        if not (0 <= rov_id < len(self.filo.sistemler)):
+            print(f"❌ [FİLO] Geçersiz ROV ID: {rov_id}")
             return
 
-        if not isinstance(rov_id, int) or rov_id < 0:
-            print(f"❌ [HATA] Geçersiz ROV ID: {rov_id} (pozitif tam sayı olmalı)")
-            print(f"   Mevcut ROV sayısı: {len(self.filo.sistemler)} (0-{len(self.filo.sistemler)-1} arası)")
-            return
+        gnc_sistemi = self.filo.sistemler[rov_id]
 
-        if rov_id >= len(self.filo.sistemler):
-            print(f"❌ [HATA] ROV ID {rov_id} mevcut değil!")
-            print(f"   Mevcut ROV sayısı: {len(self.filo.sistemler)} (0-{len(self.filo.sistemler)-1} arası)")
-            print("   💡 Çözüm: filo.ekle() ile daha fazla GNC sistemi ekleyin")
-            return
+        # 2. DURUM AYARLARI
+        gnc_sistemi.manuel_kontrol = False
+        gnc_sistemi.ai_aktif = ai
 
-        # ROV'un helper'ının olup olmadığını kontrol et
-        if not hasattr(self.filo.sistemler[rov_id], 'helper') or self.filo.sistemler[rov_id].helper is None:
-            if not sessiz:
-                print(f"⚠️ [FİLO] ROV-{rov_id} için helper bulunamadı! Hedef atanamadı.")
-            return
-
-        self.filo.sistemler[rov_id].manuel_kontrol = False
-        self.filo.sistemler[rov_id].ai_aktif = ai
-
-        current_sim_pos = Koordinator.ursina_to_sim(
-            self.filo.sistemler[rov_id].rov.x,
-            self.filo.sistemler[rov_id].rov.y,
-            self.filo.sistemler[rov_id].rov.z
-        )
-        current_x, current_y, current_z = current_sim_pos
-
+        # 3. MANUEL DERİNLİK HESABI (Z verilmemişse)
         if z is None:
-            z = current_z
+            # Ursina'da Y dikey eksendir. Simülasyonda Z derinliktir.
+            # Ursina'da aşağı indikçe Y değeri negatifleşir.
+            # Simülasyon Z (derinlik) ise aşağı indikçe pozitif artar.
+            # Bu yüzden: Simülasyon_Z = -Ursina_Y
+            z = float(gnc_sistemi.rov.y)
 
-        dx = x - current_x
-        dy = y - current_y
-        mesafe = math.sqrt(dx**2 + dy**2)
-        if mesafe > 0.1:
-            yaw_rad = math.atan2(dx, dy)
-            yaw_deg = math.degrees(yaw_rad)
-            while yaw_deg >= 360:
-                yaw_deg -= 360
-            while yaw_deg < 0:
-                yaw_deg += 360
-            self.filo._git_hedef_yaw[rov_id] = yaw_deg
-
+        # 4. HEDEF ATAMA
         try:
-            # Sim formatında koordinatları direkt Vec3 olarak atama (Sim formatında tutulur)
-            self.filo.sistemler[rov_id].hedef_atama(x, y, z)
+            # GNC nesnesine hedefi Simülasyon formatında ilet
+            gnc_sistemi.hedef_atama(x, y, z)
             
-            # _rov_hedefleri dict'ine de kaydet (filo.hedef() fonksiyonu bunu kullanıyor)
+            # Takip için filo sözlüğüne kaydet
             if not hasattr(self.filo, '_rov_hedefleri'):
                 self.filo._rov_hedefleri = {}
             self.filo._rov_hedefleri[rov_id] = (x, y, z)
             
             if not sessiz:
-                ai_durum = "AÇIK" if ai else "KAPALI (Kör Mod)"
-                print(f"✅ [FİLO] ROV-{rov_id} Hedef: X:{x}, Y:{y}, Z:{z} (Sim Formatı) | AI: {ai_durum}")
+                print(f"✅ [FİLO] ROV-{rov_id} -> Hedef: ({x}, {y}, {z}) | AI: {'AÇIK' if ai else 'KAPALI'}")
+                
         except Exception as e:
-            if not sessiz:
-                print(f"❌ [HATA] Hedef atama sırasında hata: {e}")
-            import traceback
-            traceback.print_exc()
+            if not sessiz: print(f"❌ [HATA] Hedef atanamadı: {e}")
 
     def harita(self, goster=True, convex=True, a_star=True):
         """Harita penceresini açar, kapatır veya görünürlük ayarlarını yapar."""
@@ -2067,6 +1836,7 @@ class FiloHelper:
             if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'minimap') and self.filo.ortam_ref.minimap:
                 if hasattr(self.filo.ortam_ref.minimap, 'update_ada_cevre'):
                     self.filo.ortam_ref.minimap.update_ada_cevre(points)
+                    print(f"✅ [MİNİMAP] Ada çevre noktaları güncellendi: {points}")
                     if not self.filo.ortam_ref.minimap.visible:
                         self.filo.ortam_ref.minimap.goster(True)
                 else:
@@ -2409,55 +2179,40 @@ class FiloHelper:
         print(f"✅ [FORMASYON] Formasyon kuruldu: Tip={formasyon_id}, Aralık={aralik}, ROV Sayısı={len(pozisyonlar)}")
         return None
 
-    def formasyon_sec(self, margin=None, is_3d=False, offset=None, harita=False, yaw_senkronizasyon_mesafesi=5.0, maksimum_yaw_donme_hizi=45.0, dinamik=True):
-        """
-        Convex hull kullanarak en uygun formasyonu seçer (Thread-safe).
-        """
-        if harita:
-            if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'harita') and self.filo.ortam_ref.harita:
-                self.filo.ortam_ref.harita.goster(True, True)
 
-        self.filo._formasyon_yaw_senkronizasyon_mesafesi = yaw_senkronizasyon_mesafesi
-        self.filo._maksimum_yaw_donme_hizi = maksimum_yaw_donme_hizi
+    def formasyon_sec(self, margin=None, is_3d=False, offset=None, minimap=True, dinamik=True):
+            """
+            Convex hull kullanarak en uygun formasyonu seçer.
+            Yaw senkronizasyon mantığı tamamen kaldırılmıştır (Fizik motoruna devredildi).
+            minimap=True ise hesaplanan alan Ursina UI Minimap üzerinde gösterilir.
+            """
+            # 1. Minimap Kontrolü ve Açılması
+            if minimap and self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'minimap'):
+                m_ui = self.filo.ortam_ref.minimap
+                if m_ui:
+                    m_ui.goster(True) # Minimap'i görünür yap
 
-        if not self.filo._is_main_thread():
-            try:
-                from ursina import invoke
-                result = [None]
-                def wrapper():
-                    result[0] = self._formasyon_sec_impl(margin, is_3d, offset, dinamik=dinamik)
-                invoke(wrapper)
-                if result[0] is None:
-                    print("⚠️ [FORMASYON] Formasyon seçilemedi (thread-safe mod)")
-                return result[0]
-            except (ImportError, AttributeError):
-                self.filo._command_queue.put(('formasyon_sec', (margin, is_3d, offset), {'dinamik': dinamik}))
-                print("ℹ️ [FORMASYON] Formasyon seçimi komut kuyruğuna eklendi (thread-safe mod)")
+            # 2. Thread Güvenliği (Ursina/Panda3D senkronizasyonu)
+            if not self.filo._is_main_thread():
+                if hasattr(self.filo, '_command_queue'):
+                    self.filo._command_queue.put(('formasyon_sec', (margin, is_3d, offset), {'dinamik': dinamik}))
                 return None
 
-        result = self._formasyon_sec_impl(margin, is_3d, offset, dinamik=dinamik)
-        if result is None:
-            print("⚠️ [FORMASYON] Formasyon seçilemedi")
-        return result
+            # 3. Ana Hesaplama Fonksiyonunu Çağır
+            return self._formasyon_sec_impl(margin, is_3d, offset, dinamik=dinamik)
 
-    def _formasyon_sec_impl(self, margin: float = None, is_3d: bool = False, offset: float = None, sessiz: bool = False, dinamik: bool = True):
+    def _formasyon_sec_impl(self, margin=None, is_3d=False, offset=None, sessiz=True, dinamik=True):
         """
-        formasyon_sec() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır).
+        formasyon_sec() fonksiyonunun gerçek implementasyonu.
+        Hesaplanan Hull verisini doğrudan Minimap (Entity) nesnesine paslar.
+        """
+        if margin is None: margin = HareketAyarlari.FORMASYON_MESAFESI
+        if offset is None: offset = HareketAyarlari.FORMASYON_OFFSET
         
-        Args:
-            margin: Formasyon aralığı
-            is_3d: 3D formasyon modu
-            offset: Hull offset değeri
-            sessiz: Log mesajlarını kapatır (RL eğitimi için)
-            dinamik: Formasyonun lideri dinamik olarak takip edip etmeyeceği
-        """
-        if margin is None:
-            margin = HareketAyarlari.FORMASYON_MESAFESI
-        if offset is None:
-            offset = HareketAyarlari.FORMASYON_OFFSET
         try:
             self.filo._formasyon_hedefleri.clear()
 
+            # --- 1. GÜVENLİK ALANI (HULL) HESAPLAMA ---
             yasakli_noktalar = self.filo._prepare_forbidden_points()
             guvenlik_hull_dict = self.filo.yeni_hull(
                 yasakli_noktalar=yasakli_noktalar,
@@ -2467,51 +2222,65 @@ class FiloHelper:
                 channel_width=10.0
             )
 
-            hull = guvenlik_hull_dict.get("hull")
+            hull_noktalari = guvenlik_hull_dict.get("hull")
             hull_merkez = guvenlik_hull_dict.get("center")
-            if hull is None or hull_merkez is None:
-                if not sessiz:
-                    print("⚠️ [FORMASYON] Hull oluşturulamadı veya hull merkezi bulunamadı")
+
+            if hull_noktalari is None or hull_merkez is None:
+                if not sessiz: print("⚠️ [FORMASYON] Güvenlik alanı (Hull) oluşturulamadı.")
                 return None
 
+            # --- 2. MİNİMAP UI ÜZERİNDE GÖSTERİM ---
+            # Minimap sınıfındaki update_hull metodunu doğrudan tetikliyoruz
+            if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'minimap'):
+                m_ui = self.filo.ortam_ref.minimap
+                if m_ui and hasattr(m_ui, 'update_hull'):
+                    # Bu metod senin sınıfında: Eski hull'u siler, yenisini cyan mesh olarak çizer.
+                    m_ui.update_hull(hull_noktalari)
+            # ---------------------------------------
+
+            # 3. LİDER VE MERKEZ BİLGİLERİ
             hull_merkez = self.filo._normalize_hull_center(hull_merkez)
-            lider_rov_id, lider_gps = self.filo._find_leader_info(sessiz=sessiz)
-            if lider_rov_id is None:
-                if not sessiz:
-                    print("⚠️ [FORMASYON] Lider ROV bulunamadı")
+            lider_id, lider_gps = self.filo._find_leader_info(sessiz=sessiz)
+            
+            if lider_id is None:
+                if not sessiz: print("⚠️ [FORMASYON] Aktif bir lider bulunamadı.")
                 return None
-            if lider_gps is None:
-                lider_gps = hull_merkez
-                if not sessiz:
-                    print(f"ℹ️ [FORMASYON] Lider GPS bulunamadı, hull merkezi kullanılıyor: {hull_merkez}")
+            
+            # Lider konumu yoksa hull merkezini baz al
+            if lider_gps is None: lider_gps = hull_merkez
 
-            min_aralik = HareketAyarlari.FORMASYON_MIN_ARALIK  # Minimum formasyon mesafesi (config)
+            # 4. FORMASYON ARAMA VE YERLEŞTİRME
+            # (Yaw senkronizasyon değişkenleri buradan temizlendi)
+            min_aralik = HareketAyarlari.FORMASYON_MIN_ARALIK
             baslangic_aralik = margin
-            adim = 1.0
-            yaw_acilari = [0, 90, 180, 270]
-
+            
+            # Farklı yönlerden (0, 90, 180, 270 derece) sığdırma denemeleri
             arama_noktalari = self.filo._generate_search_points(lider_gps, hull_merkez)
-            for nokta_adi, merkez_koordinat in arama_noktalari:
-                for deneme_yaw in yaw_acilari:
-                    denenecek_formasyon_idleri = self.filo._get_formation_ids_to_try()
-                    for i in denenecek_formasyon_idleri:
+            
+            for nokta_adi, merkez_koord in arama_noktalari:
+                for deneme_yaw in [0, 90, 180, 270]:
+                    denenecek_ids = self.filo._get_formation_ids_to_try()
+                    
+                    for f_id in denenecek_ids:
                         aralik = baslangic_aralik
                         while aralik >= min_aralik:
-                            if self.filo._try_formation_fit(i, aralik, is_3d, merkez_koordinat,
-                                                            deneme_yaw, hull, lider_rov_id, nokta_adi, sessiz=sessiz, dinamik=dinamik):
-                                if i in self.filo._formasyon_id_pool:
-                                    self.filo._formasyon_id_pool.remove(i)
+                            # _try_formation_fit: Formasyonun hull içine sığıp sığmadığını kontrol eder
+                            if self.filo._try_formation_fit(f_id, aralik, is_3d, merkez_koord,
+                                                            deneme_yaw, hull_noktalari, lider_id, 
+                                                            nokta_adi, sessiz=sessiz, dinamik=dinamik):
+                                
                                 if not sessiz:
-                                    durum_msg = "Dinamik" if dinamik else "Sabit"
-                                    print(f"✅ [FORMASYON] Formasyon seçildi ({durum_msg}): Tip={i}, Aralık={aralik:.2f}, Yaw={deneme_yaw:.1f}°, Konum={nokta_adi}")
-                                return (i, aralik, deneme_yaw, merkez_koordinat)
-                            aralik -= adim
-            if not sessiz:
-                print("⚠️ [FORMASYON] Uygun formasyon bulunamadı (tüm denemeler başarısız)")
+                                    durum = "Dinamik" if dinamik else "Sabit"
+                                    print(f"✅ [MİNİMAP] {durum} {f_id} seçildi. Alan haritaya cyan olarak işlendi.")
+                                
+                                return (f_id, aralik, deneme_yaw, merkez_koord)
+                            aralik -= 1.0 # Aralığı daraltarak tekrar dene
+
+            if not sessiz: print("⚠️ [FORMASYON] Mevcut hull içine sığan formasyon bulunamadı.")
             return None
+
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            print(f"❌ [FORMASYON HATASI]: {e}")
             return None
     
     def ada_cevre(self, offset: float = 15.0, sessiz: bool = False) -> list:
@@ -2754,7 +2523,16 @@ class FiloHelper:
                         for i in range(len(points)):
                             self.simplices.append([i, (i + 1) % len(points)])
                         self.simplices = np.array(self.simplices)
-                
+
+                    def __len__(self):
+                        return len(self.points)
+
+                    def __iter__(self):
+                        return iter(self.points)
+
+                    def __getitem__(self, idx):
+                        return self.points[idx]
+
                 custom_hull = SahteHull(kontur_noktalari_np, yeni_poly)
                 
                 # Haritaya gönder (convex_hull_data; harita otomatik açılmaz — filo.harita() / filo.minimap() ile açılır)
@@ -2969,9 +2747,9 @@ class TemelGNCHelper:
         # Kalman Filtreleri (X, Y ve Z ekseni için ayrı ayrı)
         # R değerini artırırsan (örn: 0.5) ROV daha "ağır" ama pürüzsüz hareket eder.
         # R değerini azaltırsan (örn: 0.01) titreme artar ama tepki hızlanır.
-        self.kf_x = BasitKalmanFiltresi(R=0.4, Q=0.05)
-        self.kf_y = BasitKalmanFiltresi(R=0.4, Q=0.05)
-        self.kf_z = BasitKalmanFiltresi(R=0.4, Q=0.05)
+        self.kf_x = BasitKalmanFiltresi(R=0.4, Q=0.01)
+        self.kf_y = BasitKalmanFiltresi(R=0.4, Q=0.01)
+        self.kf_z = BasitKalmanFiltresi(R=0.4, Q=0.01)
 
 
         self.rov = rov_entity
@@ -3114,112 +2892,122 @@ class TemelGNCHelper:
             
             return Vec3(yeni_x, yeni_y, yeni_z)
 
-    
-    def vektor_to_motor_sim(self, v_sim: Vec3, mag: float = 0.2, _ic_gecis=False):
+    def batma_orani_hesapla(self):
         """
-        Vektörü Simülasyon eksenlerinden Ursina motor komutlarına çevirir.
-        Global koordinatlara göre direkt hareket eder (yaw açısından bağımsız).
-        
-        Args:
-            v_sim: Simülasyon formatında vektör (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
-        mag: Hedefe mesafe (APF'den, metre cinsinden)
-        _ic_gecis: İç çağrı (waypoint geçişinden); waypoint kontrolü atlanır
+        ROV gövdesinin suyun içindeki yüzdesini döner (0.0 - 1.0)
         """
-        mesafe = float(mag)  # APF mesafe artık metre (uzaklik_metre)
-        HEDEF_TOLERANS = 1.3  # Bu mesafeye (m) yaklaşınca waypoint tamamlanır
-        rov_id = getattr(self.rov, 'id', None)
-        if rov_id is None or not hasattr(self.filo_ref, '_rov_hedefleri'):
-            return
-
-        nokta_listesi = getattr(self.filo_ref, '_git_nokta_listesi', {}).get(rov_id)
-        mevcut_indeks = getattr(self.filo_ref, '_git_mevcut_nokta_indeksi', {}).get(rov_id, 0)
-        sonraki_var = nokta_listesi and mevcut_indeks + 1 < len(nokta_listesi)
-
-        izdusum_gecildi = False
-        if nokta_listesi and mevcut_indeks < len(nokta_listesi) and sonraki_var:
-            mevcut_wp = nokta_listesi[mevcut_indeks]
-            sonraki_wp = nokta_listesi[mevcut_indeks + 1]
-            izdusum_gecildi = self._waypoint_izdusum_gecildi_mi(rov_id, mevcut_wp, sonraki_wp)
-
-        if mesafe < HEDEF_TOLERANS or izdusum_gecildi:
-            if sonraki_var:
-                yeni_indeks = mevcut_indeks + 1
-                nxt = nokta_listesi[yeni_indeks]
-                self.filo_ref._git_mevcut_nokta_indeksi[rov_id] = yeni_indeks
-                current_sim = self._rov_pozisyon_sim()
-                current_z = current_sim.z if current_sim else 0.0
-                x, y, z = float(nxt[0]), float(nxt[1]), current_z
-                self.filo_ref._rov_hedefleri[rov_id] = (x, y, z)
-                if rov_id < len(self.filo_ref.sistemler):
-                    self.filo_ref.sistemler[rov_id].hedef_atama(x, y, z)
-                    self.filo_ref.formasyon_sec(dinamik=True)
-                return
-            else:
-                self.rov.velocity = Vec3(0, 0, 0)
-                self.filo_ref._rov_hedefleri[rov_id] = None
-                self.filo_ref.lidere_don(rov_id=rov_id)
-                if nokta_listesi:
-                    self.filo_ref._git_nokta_listesi.pop(rov_id, None)
-                    self.filo_ref._git_mevcut_nokta_indeksi.pop(rov_id, None)
-            return
+        su_yuzeyi = 0.0  # Su seviyesi Y ekseninde 0
         
-        if mesafe < HEDEF_TOLERANS*2:
-            guc = (np.log(max(mesafe, 4))) / 10.0
+        # ROV'un Ursina dünyasındaki yüksekliği (scale.y)
+        # Eğer modelin dikey ekseni Z ise bunu rov.scale.z yapmalısın
+        rov_yukseklik = self.rov.scale.y *100
+        
+        rov_y = self.rov.y  # Mevcut dikey pozisyon
+        
+        # Sınır noktalarını belirle
+        en_ust_nokta = rov_y + (rov_yukseklik / 2)
+        en_alt_nokta = rov_y - (rov_yukseklik / 2)
+        
+        # 1. Tamamen suyun üzerinde
+        if en_alt_nokta >= su_yuzeyi:
+            return 0.0
+            
+        # 2. Tamamen suyun altında
+        if en_ust_nokta <= su_yuzeyi:
+            return 1.0
+            
+        # 3. Kısmen suyun içinde (Yüzeyde dalgalanıyor)
+        # Suyun altında kalan kısmın uzunluğu:
+        suyun_altindaki_kisim = su_yuzeyi - en_alt_nokta
+        
+        # Oran = (Altta kalan uzunluk) / (Toplam uzunluk)
+        oran = suyun_altindaki_kisim / rov_yukseklik
+        
+        return max(0.0, min(1.0, oran)) # Güvenlik için 0-1 arasına sıkıştır
+
+    def fizik_uygula(self, hedef_yon_ursina: Vec3, guc_orani: float, dt: float, uygula: bool = True):
+            """
+            SAF FİZİK MOTORU: 
+            uygula=True ise: Newton fiziğini hesaplar ve yeni HIZ (velocity) vektörünü döndürür.
+            uygula=False ise: Gelen hedef vektörünü olduğu gibi döndürür.
+            """
+            # Eğer fizik uygulanmayacaksa gelen vektörü direkt geri gönder
+            if not uygula:
+                #ivme=guc_orani*Vec3(hedef_yon_ursina.x, hedef_yon_ursina.y, hedef_yon_ursina.z)
+                #yeni_hiz = self.rov.velocity + (ivme * dt)
+                return hedef_yon_ursina*guc_orani*2
+
+            # --- 1. KUVVET HESAPLAMALARI ---
+            # A) Motor İtme (Thrust)
+            f_thrust = hedef_yon_ursina * guc_orani * Hidrodinamik.MAX_ITME_KUVVETI
+
+            # B) Hidrodinamik Direnç (Drag)
+            mevcut_hiz = self.rov.velocity
+            hiz_buyuklugu = mevcut_hiz.length()
+            f_drag = Vec3(0, 0, 0)
+            if hiz_buyuklugu > 0.001:
+                drag_magnitude = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * \
+                                Hidrodinamik.ON_YUZEY_ALANI * (hiz_buyuklugu ** 2)
+                f_drag = -mevcut_hiz.normalized() * drag_magnitude
+
+            # C) Statik Kuvvetler (Yerçekimi ve Kaldırma)
+            batma = self.batma_orani_hesapla()
+            su_icindeki_hacim = Hidrodinamik.HACIM * batma
+            f_yercekimi = Vec3(0, -Hidrodinamik.KUTLE * Hidrodinamik.YER_CEKIMI, 0)
+            f_kaldirma  = Vec3(0, su_icindeki_hacim * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.YER_CEKIMI, 0)
+
+            # --- 2. ENTEGRASYON ---
+            f_net = f_thrust + f_drag + f_yercekimi + f_kaldirma
+            ivme = f_net / Hidrodinamik.KUTLE
+
+            # Yeni hızı hesapla (v = v0 + a*dt)
+            yeni_hiz = self.rov.velocity + (ivme * dt)
+            
+            return yeni_hiz
+
+    def vektor_to_motor_sim(self, v_sim_dir: Vec3, guc_orani: float):
+        """
+        GNC YÜRÜTÜCÜ:
+        Fizikten gelen vektörü ROV'un gövdesine (pozisyon ve rotasyon) uygular.
+        """
+        # 1. Koordinat Dönüşümü (Sim -> Ursina)
+        # X: Sağ, Z: İleri, Y: Derinlik (Kullanıcının tercih ettiği mapping)
+        hedef_yon_ursina = Vec3(v_sim_dir.x, v_sim_dir.z, v_sim_dir.y).normalized()
+        guc_orani = max(0.0, min(1.0, guc_orani))
+        dt = time.dt
+
+        # 2. Fizik Hesaplamasını Tetikle (Vektörü al)
+        hesaplanan_hiz = self.fizik_uygula(hedef_yon_ursina, guc_orani, dt, uygula=False)
+
+
+        self.rov.velocity = self._kalman_vektor_filtrele(hesaplanan_hiz)
+            
+            # Burnunu hareket yönüne çevir (Yaw)
+        if guc_orani > 0.01:
+            self.yaw_ayarla(v_sim_dir, ani=False)
+
+        # Pozisyonu Güncelle (Fiziksel yer değiştirme)
+
+        
+        GORSEL_HIZ_CARPANI = 10.0
+        self.rov.position += self.rov.velocity * dt * GORSEL_HIZ_CARPANI
+
+        # Hız Vektörünü Minimap'te Çiz
+        if guc_orani > 0.02 and hasattr(self.rov, 'velocity'):
+            #print(guc_orani,self.rov.velocity)
+            #v_sim_dir=self._kalman_vektor_filtrele(v_sim_dir)
+            if hasattr(self, 'filo_ref') and self.filo_ref.helper:
+                    self.filo_ref.helper.vektor(
+                        rov_id_ilk=self.rov.id, 
+                        vektor=v_sim_dir, 
+                        renk='m', 
+                        ciz=True
+                    )
+
         else:
-            guc = 0.15
-        guc = max(0.05, min(0.4,guc)) ## motor gucu minimum 0.08 olarak, maximum 0.4 olarak ayarlandı
-        #print(mesafe,guc)
-        v = v_sim.normalized()
-        v = self._kalman_vektor_filtrele(v)
-        
-        thrust = (guc * 100.0) * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
-        
-        if abs(v.x) > 0.01:
-            self.rov.velocity.x += v.x * thrust
-        if abs(v.y) > 0.01:
-            self.rov.velocity.z += v.y * thrust
-        if abs(v.z) > 0.01:
-            self.rov.velocity.y += v.z * thrust  # Sim Z -> Ursina Y
+            self.rov.hedef = None
 
-        # Hız limiti: hem güç bazlı hem sistem MAX_HIZ ile sınırla (jitter/patlama önleme)
-        limit = guc * 100.0
-        try:
-            max_hiz = getattr(FizikSabitleri, 'MAX_HIZ', 50.0)
-            limit = min(limit, max_hiz)
-        except Exception:
-            pass
-        if self.rov.velocity.length() > limit:
-            self.rov.velocity = self.rov.velocity.normalized() * limit
-
-    def _hedef_yok_sonumle(self):
-        """Hedef yokken ve manuel kuvvet yokken hızı sönümler."""
-        if not hasattr(self.rov, 'active_forces') or self.rov.active_forces is None:
-            if self.rov.velocity.length() > 1:
-                self.rov.velocity *= 0.4
-            return
-        for k in ('surge', 'sway', 'heave'):
-            if self.rov.active_forces.get(k, 0) != 0:
-                return
-        if self.rov.velocity.length() > 1:
-            self.rov.velocity *= 0.4
-
-    def _teget_hizi_kir_ve_limit_uygula(self, hareket_vektoru: Vec3, mesafe: float, guc: float):
-        """Hedefe yakın mesafede teğetsel hızı sönümleyip hız limiti uygular (orbit önleme)."""
-        v_sim = Vec3(self.rov.velocity.x, self.rov.velocity.z, self.rov.velocity.y)
-        radial_mag = v_sim.x * hareket_vektoru.x + v_sim.y * hareket_vektoru.y + v_sim.z * hareket_vektoru.z
-        radial = Vec3(radial_mag * hareket_vektoru.x, radial_mag * hareket_vektoru.y, radial_mag * hareket_vektoru.z)
-        tangential = Vec3(v_sim.x - radial.x, v_sim.y - radial.y, v_sim.z - radial.z)
-        teget_carpani = 0.04 if mesafe < 1.0 else (0.08 if mesafe < 2.0 else 0.16)
-        v_sim_new = Vec3(
-            radial.x + teget_carpani * tangential.x,
-            radial.y + teget_carpani * tangential.y,
-            radial.z + teget_carpani * tangential.z,
-        )
-        self.rov.velocity.x, self.rov.velocity.z, self.rov.velocity.y = v_sim_new.x, v_sim_new.y, v_sim_new.z
-        limit = min(guc * 100.0, getattr(FizikSabitleri, 'MAX_HIZ', 50.0))
-        if self.rov.velocity.length() > limit:
-            self.rov.velocity = self.rov.velocity.normalized() * limit
-
+        return hesaplanan_hiz
     def _guncelle_kontroller(self):
         """
         Temel kontrolleri yapar: gnc_ref, rov ve manuel_kontrol kontrolü.
@@ -3277,98 +3065,130 @@ class TemelGNCHelper:
         if n < 1e-9:
             return None
         return (toplam_x / n, toplam_y / n)
+    def _guc_orani_hesapla(self, mesafe: float):
+        # HEDEFE VARDI MI? (Ölü Bölge Kontrolü)
+        
 
+
+        if mesafe < 10: # 50 cm tolerans
+            guc=mesafe/(np.sqrt(3)*400)
+            guc=np.log(guc*10+1)/np.log(11) # Logaritmik azalma
+            
+            
+        # YANAŞMA MODU (3 metre kala yavaşla)
+        else:
+
+            guc= 1.0 # En az %5 güç ver ki akıntıya karşı direnebilsin
+            
+        return guc
+
+    def hedef_sifirla(self):
+        self.rov.hedef = None
+    def _formasyon_dinamik_guncelle(self, rov_id: int):
+            """
+            Eğer aktif bir formasyon varsa, takipçilerin hedeflerini 
+            liderin o anki konumuna ve yönüne göre günceller.
+            """
+            aktif = getattr(self.filo_ref, 'aktif_formasyon', None)
+            if not aktif:
+                return
+
+            # Lideri bul (role == 1)
+            lider = next((r for r in self.filo_ref.ortam_ref.rovs if r and r.role == 1), None)
+            if not lider:
+                return
+
+            # Lider kendisi ise hedef güncellemesi yapma (Lider özgürdür)
+            if self.rov.role == 1:
+                return
+
+            f_obj = Formasyon(self.filo_ref)
+            
+            # Liderin o anki GPS konumunu baz alarak tüm filo için olması gereken yerleri hesapla
+            lider_pos_sim = (lider.x, lider.z, lider.y) # Ursina -> Sim
+            yeni_pozisyonlar = f_obj.pozisyonlar(
+                aktif['id'], 
+                aktif['aralik'], 
+                is_3d=aktif['is_3d'], 
+                lider_koordinat=lider_pos_sim
+            )
+
+            # 2. Bu ROV'un payına düşen hedefi güncelle
+            if yeni_pozisyonlar and rov_id < len(yeni_pozisyonlar):
+                hedef = yeni_pozisyonlar[rov_id]
+                # GNC sistemine yeni hedefi sessizce ata (Sürekli print basmaması için sessiz)
+                self.filo_ref.hedef((hedef[0], hedef[1], hedef[2]),rov_id=self.rov.id)
+        
     def _guncelle_hareket_uygula(self, rov_id: int):
         """
-        APF'i önce çalıştırır; hedef, engel ve rov vektörlerini alır.
-        Hedef None ise git_path ile yol varsa bir sonraki waypoint hedefe atanır.
-        Hedef yoksa ama engel/rov varsa kaçınma vektörü kullanılır.
+        APF vektörlerini toplar ve ROV'u hedefe yönlendirir.
+        Gereksiz döngü içi tip kontrolleri temizlendi, vektörel matematik kullanıldı.
         """
+        """
+        APF öncesi dinamik formasyon kontrolü eklenmiş ana hareket döngüsü.
+        """
+        engel_tespiti=False
+        # --- KRİTİK EKLEME: DİNAMİK FORMASYON TAKİBİ ---
+        self._formasyon_dinamik_guncelle(rov_id)
+        # -----------------------------------------------
+
         hedef_koordinat = self.filo_ref.hedef(rov_id=rov_id)
-        if hedef_koordinat is None:
-            nokta_listesi = getattr(self.filo_ref, '_git_nokta_listesi', {}).get(rov_id)
-            mevcut_indeks = getattr(self.filo_ref, '_git_mevcut_nokta_indeksi', {}).get(rov_id, 0)
-            if nokta_listesi and mevcut_indeks + 1 < len(nokta_listesi):
-                yeni_indeks = mevcut_indeks + 1
-                nxt = nokta_listesi[yeni_indeks]
-                self.filo_ref._git_mevcut_nokta_indeksi[rov_id] = yeni_indeks
-                current_sim = self._rov_pozisyon_sim()
-                current_z = current_sim.z if current_sim else 0.0
-                x, y, z = float(nxt[0]), float(nxt[1]), current_z
-                self.filo_ref._rov_hedefleri[rov_id] = (x, y, z)
-                if rov_id < len(self.filo_ref.sistemler):
-                    self.filo_ref.sistemler[rov_id].hedef_atama(x, y, z)
-                hedef_koordinat = (x, y, z)
-            elif nokta_listesi:
-                self.filo_ref._git_nokta_listesi.pop(rov_id, None)
-                self.filo_ref._git_mevcut_nokta_indeksi.pop(rov_id, None)
-
-        # APF her zaman çalışır; hedef varsa hedef vektörü, yoksa engel/rov kaçınma
-        sonuc = self.filo_ref.helper.apf(
-            rov_id=rov_id,
-            hedef=(hedef_koordinat is not None),
-            engel=True,
-            rov=True
-        )
-        if not sonuc:
-            return
-
-        hedef_info = sonuc.get('hedef') or {
-            'birim_vektor': sonuc.get('birim_vektor'),
-            'mesafe': sonuc.get('mesafe', 0.0)
-        }
-        engel_listesi = sonuc.get("engeller", [])
-        rov_listesi = sonuc.get("rovs", [])
-        self._son_apf_hedef = hedef_info
-        self._son_apf_engeller = engel_listesi
-        self._son_apf_rovs = rov_listesi
-
-        # Birim vektörleri vektörel olarak topla — öncelik: engel (0.6) > rov (0.3) > hedef (0.1)
-        toplam_x, toplam_y = 0.0, 0.0
-        mag = 0.0
-        birim_mag1 = 1.0  # Varsayılan değer (engel yoksa)
-        birim_mag2 = 1.0  # Varsayılan değer (diğer rov yoksa)
-
-        for item in engel_listesi or []:
-            bv = item.get('birim_vektor')
-            mag=item.get('mesafe', 500)
-            birim_mag1=mag/GATLimitleri.ENGEL ##1-0 arasında bir değer"
-            ters_birim_mag=1-birim_mag1
-            carpan=0.55*ters_birim_mag
-
-            #print(f"ROV-{rov_id} engel mesafe: {ters_birim_mag}")
-            if bv and len(bv) >= 2:
-                toplam_x += float(bv[0]) * carpan
-                toplam_y += float(bv[1]) * carpan
-
-        for item in rov_listesi or []:
-            bv = item.get('birim_vektor')
-            mag=item.get('mesafe', 500)
-            birim_mag2=mag/GATLimitleri.CARPISMA
-            ters_birim_mag=1-birim_mag2
-            carpan=0.25*ters_birim_mag
         
+        # 1. APF Verilerini Al
+        sonuc = self.filo_ref.helper.apf(
+            rov_id=rov_id, hedef=(hedef_koordinat is not None),
+            engel=True, rov=True
+        )
+        if not sonuc: return
+
+        toplam=Vec3(0,0,0)
+
+        # Hedef bilgilerini güvenli bir şekilde al
+        h_info = sonuc.get('hedef') or {'birim_vektor': [0, 0, 0], 'mesafe': 0.0}
+
+        
+        mag = float(h_info.get('mesafe', 0.0))
+        mag1=0
+        mag2=0
+        guc = self._guc_orani_hesapla(mag)
+
+        hv=Vec3(*h_info.get('birim_vektor', [0, 0, 0]))
+        
+
+        for engel_info in sonuc.get('engeller', []):
+            bv = engel_info.get('birim_vektor')
             if bv and len(bv) >= 2:
-                toplam_x += float(bv[0]) * carpan
-                toplam_y += float(bv[1]) * carpan
 
-        hv = hedef_info.get('birim_vektor') if hedef_info else None
-        carpan=0.10*birim_mag1 + 0.10*birim_mag2
-        if hv and len(hv) >= 2:
-            toplam_x += float(hv[0]) * carpan
-            toplam_y += float(hv[1]) * carpan
-            mag = float(hedef_info.get('mesafe', 0.0)) or 0.0
-            birim_mag=mag/(400*2**(0.5))
-            
+                m = float(engel_info.get('mesafe', 0.0))
+                mag1=1-m/GATLimitleri.ENGEL
+                carpan=mag1*0.5
+                if not engel_tespiti and self.filo_ref.get(rov_id, 'rol')==1 and mag1>0.3:
+                    self.filo_ref.formasyon_sec(dinamik=True)
+                    engel_tespiti=True
 
-        n = math.sqrt(toplam_x * toplam_x + toplam_y * toplam_y)
-        if n < 1e-9:
-            return
-        b_vektor = (toplam_x / n, toplam_y / n)
-        # Yön vektörü: sadece yatay (ux, uz), derinlik bileşeni 0
-        new_sim_vektor = Vec3(b_vektor[0], b_vektor[1], 0.0)
-        self.yaw_ayarla(new_sim_vektor, ani=False)
-        self.vektor_to_motor_sim(new_sim_vektor, mag)
+                #print(f"ROV {rov_id} - Mag1: {m}")
+                bv=Vec3(bv[0], bv[1], 0)*carpan
+                toplam += Vec3(bv[0], bv[1], 0)
+                
+        for rov_info in sonuc.get('rovs', []):
+            bv = rov_info.get('birim_vektor')
+            if bv and len(bv) >= 2:
+
+                guc=0.5
+                m= float(rov_info.get('mesafe', 0.0))
+                mag2=1-m/GATLimitleri.CARPISMA
+                carpan2=mag2*0.3
+                #print(f"ROV {rov_id} - Mag2: {m}")
+                toplam += Vec3(bv[0], bv[1], 0)*carpan2
+              
+
+
+        hv=hv*(1-mag1)*0.1 + hv*(1-mag2)*0.1
+        toplam += hv
+        t_bv=toplam.normalized() if toplam.length() >0.001 else Vec3(0,0,0)
+        t_bv=t_bv/t_bv.length() if t_bv.length()>0.001 else Vec3(0,0,0)
+
+        self.vektor_to_motor_sim(t_bv, guc)
 
     def guncelle(self, gat_kodu=None):
         """
@@ -3378,8 +3198,7 @@ class TemelGNCHelper:
         # Temel kontroller
         if not self._guncelle_kontroller():
             return
-        if self.filo_ref is not None:
-            self.filo_ref.apf_temizle(rov_id=self.rov.id)
+
         # APF ile vektör hesapla, motor komutunu uygula ve yaw ayarla
         self._guncelle_hareket_uygula(rov_id=self.rov.id)
 

@@ -153,28 +153,46 @@ class Debug:
             return None
         return self._helper.hedef_vektor(rov_id, menzil)
 
-    def vektor(self, ilk=None, ikinci=None,
-               rov_id_ilk=None, rov_id_ikinci=None,
-               baslangic_noktasi=None, bitis_noktasi=None, vektor=None,
-               renk='m', uzunluk=20, reverse=False, debug=False, ciz=True):
+    def vektor(self, ilk=None, ikinci=None, **kwargs):
         """
-        Minimap üzerinde vektör çizer. Keyword ile: rov_id_ilk, rov_id_ikinci, baslangic_noktasi, bitis_noktasi, vektor=().
-        Örnek: debug.vektor(rov_id_ilk=2, rov_id_ikinci=5)
-               debug.vektor(rov_id_ilk=5, vektor=(0.76,-0.65), uzunluk=20)  # ROV-5'ten birim vektör yönünde
-               debug.vektor(baslangic_noktasi=(-174,115), vektor=(0.83,-0.55), uzunluk=30)
-               debug.vektor(0, 1)  # Eski API
+        Minimap üzerinde vektör çizer. 
+        Tüm parametreler (rov_id_ilk, rov_id_ikinci, baslangic_noktasi, bitis_noktasi, 
+        vektor, renk, uzunluk, reverse, debug, ciz, is_3d) **kwargs üzerinden alınır.
         """
-        if (ilk is None and ikinci is None and rov_id_ilk is None and rov_id_ikinci is None
-                and baslangic_noktasi is None and bitis_noktasi is None and vektor is None):
+        # 1. Kontrol edilecek anahtar kelimeler (Kullanım yardımı için)
+        print("kwargs:", kwargs)
+        check_keys = [
+            'rov_id_ilk', 'rov_id_ikinci', 'baslangic_noktasi', 
+            'bitis_noktasi', 'vektor'
+        ]
+
+        # Eğer hiçbir ana parametre gelmemişse yardım mesajını göster
+        if (ilk is None and ikinci is None and not any(k in kwargs for k in check_keys)):
             return self._usage('vektor')
+
         if self._helper is None:
             print("❌ [DEBUG] filo.helper bulunamadı.")
             return None
+
+        # 2. Varsayılan Değerleri Belirle (Eğer kwargs içinde yoksa)
+        # Bu sayede helper'a her zaman tam veri gider
+        params = {
+            'renk': 'm',
+            'uzunluk': 20,
+            'reverse': False,
+            'debug': False,
+            'ciz': True,
+        }
+        
+        # Kullanıcının gönderdiği değerleri varsayılanların üzerine yaz
+        params.update(kwargs)
+
+        # 3. Tüm paketi Helper'a pasla
+        # ilk ve ikinci positional olarak, diğerleri paketlenmiş (unpack) olarak gider
         return self._helper.vektor(
-            ilk=ilk, ikinci=ikinci,
-            rov_id_ilk=rov_id_ilk, rov_id_ikinci=rov_id_ikinci,
-            baslangic_noktasi=baslangic_noktasi, bitis_noktasi=bitis_noktasi, vektor=vektor,
-            renk=renk, uzunluk=uzunluk, reverse=reverse, debug=debug, ciz=ciz
+            ilk=ilk, 
+            ikinci=ikinci, 
+            **params
         )
 
     def vektor_normalize(self, ux=None, uz=None, uy=None, max_mag=1.0, vektor=None):
@@ -276,7 +294,9 @@ class Filo:
                 elif cmd_type == 'hull':
                     self._guvenlik_hull_olustur_impl(*args, **kwargs)
                 elif cmd_type == 'formasyon_sec':
-                    self._formasyon_sec_impl(*args, **kwargs)
+                    # formasyon selection live implementation lives in helper
+                    # delegate to helper to avoid AttributeError when running from separate thread
+                    self.helper._formasyon_sec_impl(*args, **kwargs)
                 elif cmd_type == 'set':
                     self._set_impl(*args, **kwargs)
                 elif cmd_type == 'hedef':
@@ -602,63 +622,6 @@ class Filo:
         # Ana thread'de queue'daki komutları işle (thread-safe)
         self._process_command_queue()
         
-        # Lider ROV'u bul
-        lider_rov_id, lider_gnc, lider_rov = self._find_leader()
-        
-        # --- AKTİF FORMASYON GÜNCELLEMESİ ---
-        # Eğer aktif bir formasyon varsa, liderin konumuna göre takipçilerin hedeflerini güncelle
-        if self.aktif_formasyon and lider_rov_id is not None:
-            try:
-                # Liderin güncel durumunu al
-                lider_gps = self.get(lider_rov_id, "gps")
-                lider_yaw = self.get(lider_rov_id, "yaw")
-                
-                if lider_gps is not None:
-                    # Formasyon pozisyonlarını hesapla
-                    # Not: Formasyon sınıfı her çağrıda yeniden oluşturuluyor, bu maliyetli olabilir ama güvenli
-                    formasyon_obj = Formasyon(self)
-                    # Liderin mevcut konumuna göre pozisyonları hesapla
-                    pozisyonlar = formasyon_obj.pozisyonlar(
-                        self.aktif_formasyon['id'], 
-                        self.aktif_formasyon['aralik'], 
-                        is_3d=self.aktif_formasyon['is_3d'], 
-                        lider_koordinat=lider_gps,  # Liderin güncel konumu
-                        yaw=lider_yaw
-                    )
-                    
-                    if pozisyonlar:
-                        # Her takipçi için yeni hedefi ata
-                        for i, pozisyon in enumerate(pozisyonlar):
-                            # Liderin kendisine hedef atama (kendi rotasında gitsin)
-                            if i == lider_rov_id:
-                                continue
-                                
-                            if i >= len(self.sistemler):
-                                break
-                                
-                            # Simülasyon koordinatları (x, y, z)
-                            sim_x, sim_y, sim_z = pozisyon
-                            
-                            # Derinlik kontrolü (opsiyonel, formasyona göre değişebilir)
-                            # Eğer 3D değilse ve z pozitifse (yüzey), -10m derinlikte tut
-                            if not self.aktif_formasyon['is_3d'] and sim_z >= 0:
-                                sim_z = -10.0
-                                
-                            # Takipçiye git komutu ver (sessiz modda)
-                            # Not: Sürekli git komutu göndermek performansı etkileyebilir
-                            # Bu yüzden mevcut hedeften farkı kontrol edilebilir
-                            mevcut_hedef = self.hedef(rov_id=i)
-                            mesafe_farki = 999.0
-                            if mevcut_hedef:
-                                mesafe_farki = math.sqrt((sim_x - mevcut_hedef[0])**2 + (sim_y - mevcut_hedef[1])**2)
-                            
-                            # Eğer hedef önemli ölçüde değiştiyse güncelle (>0.5m)
-                            if mesafe_farki > 0.5:
-                                # AI açık, sessiz mod
-                                self.git(i, sim_x, sim_y, sim_z, ai=True, sessiz=True)
-            except Exception as e:
-                print(f"⚠️ [FİLO] Formasyon güncelleme hatası: {e}")
-        
         # Tüm GNC sistemlerini güncelle (doğrudan helper.guncelle çağrısı)
         for i, gnc in enumerate(self.sistemler):
             if hasattr(gnc, 'helper') and gnc.helper is not None:
@@ -666,15 +629,9 @@ class Filo:
                 gat_kodu = tahminler[i] if i < len(tahminler) else None
                 gnc.helper.guncelle(gat_kodu=gat_kodu)
         
-        # Formasyon yaw senkronizasyonu
-        if lider_rov_id is not None and len(self._formasyon_hedefleri) > 0:
-            lider_yaw = self.get(lider_rov_id, 'yaw')
-            if lider_yaw is not None:
-                self._formasyon_yaw_senkronizasyonu(lider_rov_id, lider_yaw)
-        
-        # git() yaw senkronizasyonu
-        if len(self._git_hedef_yaw) > 0:
-            self._git_yaw_senkronizasyonu()
+
+
+        self.ortam_ref.minimap.gorsel_guncelle()
 
     def _find_leader(self) -> tuple:
         """Lider ROV'u bulur ve bilgilerini döndürür."""
@@ -1149,9 +1106,6 @@ class Filo:
             margin=margin,
             is_3d=is_3d,
             offset=offset,
-            harita=harita,
-            yaw_senkronizasyon_mesafesi=yaw_senkronizasyon_mesafesi,
-            maksimum_yaw_donme_hizi=maksimum_yaw_donme_hizi,
             dinamik=dinamik
         )
 
@@ -1419,7 +1373,7 @@ class Filo:
                 self.ortam_ref.harita.hedef_pozisyon = (x, y)
         
         depth_msg = "Su üstünde" if z >= 0 else f"{abs(z):.1f} m derinlik"
-        print(f"✅ [HEDEF] ROV-{rov_id} hedefi güncellendi: ({x:.2f}, {y:.2f}, {z:.2f}) - {depth_msg}.")
+        #print(f"✅ [HEDEF] ROV-{rov_id} hedefi güncellendi: ({x:.2f}, {y:.2f}, {z:.2f}) - {depth_msg}.")
         
         return (x, y, z)
 
@@ -1513,7 +1467,7 @@ class Filo:
         """
         return self.helper.hedef_gorsel_olustur(x, y, z)
 
-    def git(self, rov_id: int, x, y: float = None, z: float = None, ai: bool = True, sessiz: bool = False) -> None:
+    def git(self, rov_id: int, x, y: float = None, z: float = None, ai: bool = True, sessiz: bool = True) -> None:
         """
         ROV'a hedef koordinatı atar ve otomatik moda geçirir (Thread-safe).
         Tüm girişler Simülasyon formatındadır: (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
@@ -1715,7 +1669,78 @@ class Filo:
             list: [[x1, y1], [x2, y2], ...] — rota noktaları (başlangıç hariç; bitiş dahil).
         """
         return self.helper.gidilecek_noktalar_n(path=path, n=n)
+    def rota_bitir(self, rov_id: int):
+            """
+            ROV rotadaki son noktaya ulaştığında çağrılır.
+            Navigasyon verilerini temizler, ROV'u durdurur ve formasyon moduna sokar.
+            """
+            # 1. Navigasyon Listelerinden Kaydı Sil
+            # .pop(key, None) kullanıyoruz ki eğer key yoksa hata vermesin.
+            self._git_nokta_listesi.pop(rov_id, None)
+            self._git_mevcut_nokta_indeksi.pop(rov_id, None)
 
+            # 2. Hedef Verisini Sıfırla
+            if hasattr(self, '_rov_hedefleri') and self._rov_hedefleri:
+                self._rov_hedefleri[rov_id] = None
+
+            # 3. ROV Sistemini Durdur ve Sıfırla
+            if hasattr(self, 'sistemler') and 0 <= rov_id < len(self.sistemler):
+                sistem = self.sistemler[rov_id]
+                if sistem:
+                    # Fiziksel hızı sıfırla (Ursina Vec3)
+                    if hasattr(sistem, 'rov'):
+                        sistem.rov.velocity = Vec3(0, 0, 0)
+                    
+                    # Sistemin iç hedef değişkenini temizle (Varsa)
+                    # (Helper sınıfındaki hedef çizimlerini kapatmak için)
+                    if hasattr(sistem, 'hedef'):
+                        sistem.hedef = None
+
+            # 4. Formasyon Moduna Geri Dön
+            # Rota bittiğine göre artık lideri takip etmeli veya formasyona girmeli
+            self.lidere_don(rov_id=rov_id)
+            
+            # Bilgi mesajı (İsteğe bağlı)
+            # print(f"[BİLGİ] ROV-{rov_id} rotasını tamamladı.")
+
+    def hedef_guncelle(self, rov_id: int, koordinat: tuple):
+            """
+            ROV'un anlık hedefini günceller, filo hafızasına kaydeder 
+            ve ilgili ROV sistemine bildirir.
+            
+            Args:
+                rov_id (int): Hedefi değişecek ROV ID
+                koordinat (tuple): (x, y, z) formatında yeni hedef noktası
+            """
+            # 1. Koordinat Güvenliği (Z ekseni eksik gelirse tamamla)
+            if len(koordinat) == 3:
+                x, y, z = koordinat
+            elif len(koordinat) == 2:
+                x, y = koordinat
+                z = 0.0 # Z verilmezse 0 kabul et
+            else:
+                return # Geçersiz veri
+
+            # 2. Filo Hafızasını Güncelle (Helper sınıfının okuduğu yer)
+            if hasattr(self, '_rov_hedefleri'):
+                self._rov_hedefleri[rov_id] = (x, y, z)
+
+            # 3. ROV Nesnesine Bildir (Görsel çizimler ve iç mantık için)
+            if hasattr(self, 'sistemler') and 0 <= rov_id < len(self.sistemler):
+                sistem = self.sistemler[rov_id]
+                if sistem is not None:
+                    # Sistem sınıfında hedef_atama metodu varsa çağır
+                    if hasattr(sistem, 'hedef_atama'):
+                        sistem.hedef_atama(x, y, z)
+                    # Alternatif: Direkt hedef değişkenini set et
+                    elif hasattr(sistem, 'hedef'):
+                        from ursina import Vec3 # Gerekirse import
+                        sistem.hedef = Vec3(x, y, z)
+
+            # 4. Vektörleri Anlık Olarak Güncelle
+            # Hedef değiştiği için APF'nin hemen yeni rota çizmesi gerekir
+            if hasattr(self, 'formasyon_sec'):
+                self.formasyon_sec(dinamik=True)
 
 # ==========================================
 # 2. TEMEL GNC SINIFI
