@@ -58,7 +58,7 @@ print("🔧 Debug aktif! Kullanım: debug.list(), debug.apf(0), debug.apf() ile 
 
 
 # 2. ANA DÖNGÜ
-def update():
+def merkezi_update():
     """Ana simülasyon döngüsü - GAT kodlarını hesaplar ve ROV'ları günceller."""
     try:
         # Önce kuyruktaki komutları işle (git vb.) — hedef ataması güncellemeden önce yapılsın
@@ -118,21 +118,24 @@ def update():
         # GNC sistemlerini güncelle (GAT kodları ile)
         filo.guncelle_hepsi(tahminler)
         
+        # ROV Fizik Güncellemesi (Manuel Çağrı)
+        if hasattr(app, 'rovs'):
+            # print(f"[DEBUG] ROV Sayısı: {len(app.rovs)}") # Geçici debug
+            for rov in app.rovs:
+                if rov and hasattr(rov, 'fizik_guncelle'):
+                    rov.fizik_guncelle()
+        
         # Harita güncelle
         if hasattr(app, 'harita') and app.harita is not None:
             try:
                 app.harita.update()
             except Exception:
                 pass
-        # engel_bulutu'nu doldur (ROV sensörleri minimap'ten önce çalışsın)
-        if hasattr(app, 'rovs') and hasattr(app, 'engel_bulutu'):
-            for rov in app.rovs:
-                if rov and hasattr(rov, '_engel_tespiti'):
-                    rov._engel_tespiti()
+        
         # Minimap güncelle (vektör okları, engel_bulutu dahil)
         if hasattr(app, 'minimap') and app.minimap is not None and getattr(app.minimap, 'visible', False):
             try:
-                app.minimap.update()
+                app.minimap.gorsel_guncelle()
             except Exception:
                 pass
         
@@ -141,7 +144,7 @@ def update():
         import traceback
         traceback.print_exc()
 
-app.set_update_function(update)
+app.set_update_function(merkezi_update)
 
 # 3. ÇALIŞTIRMA
 if __name__ == "__main__":
