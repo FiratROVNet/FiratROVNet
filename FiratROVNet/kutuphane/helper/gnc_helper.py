@@ -107,6 +107,33 @@ class BasitKalmanFiltresi:
         
         return self.x
 
+
+class BasitKalmanFiltresi:
+    def __init__(self, R=0.1, Q=0.1, baslangic_degeri=0.0):
+        """
+        1 Boyutlu Basit Kalman Filtresi.
+        Args:
+            R: Ölçüm Gürültüsü (Yüksek R = Daha fazla yumuşatma, daha yavaş tepki)
+            Q: Süreç Gürültüsü (Yüksek Q = Daha hızlı tepki, daha az yumuşatma)
+        """
+        self.R = R  # Measurement Noise (Sensör/Girdi hatası varsayımı)
+        self.Q = Q  # Process Noise (Sistemin kendi değişim hızı)
+        self.P = 1.0  # Estimation Error Covariance (Başlangıç hatası)
+        self.x = baslangic_degeri  # State (Tahmin edilen değer)
+
+    def guncelle(self, olcum):
+        # 1. Tahmin (Prediction)
+        # Hareket komutlarında bir önceki durumun korunduğunu varsayıyoruz
+        x_pred = self.x
+        p_pred = self.P + self.Q
+
+        # 2. Güncelleme (Update)
+        K = p_pred / (p_pred + self.R)  # Kalman Kazancı (Gain)
+        self.x = x_pred + K * (olcum - x_pred)  # Yeni tahmin
+        self.P = (1 - K) * p_pred  # Hata kovaryansını güncelle
+        
+        return self.x
+
 class FiloHelper:
     """
     Helper class for Filo complex calculations and geometric operations.
@@ -1197,6 +1224,878 @@ class FiloHelper:
                     })
         return result
 
+
+
+    def get_apf_vektor_verts_list(self, minimap):
+        """
+        APF vektör listesi için minimap köşe ve renk listesi döner.
+        apf() çağrıldıktan sonra minimap birden fazla vektörü (engel kırmızı, rov turuncu, hedef yeşil) çizebilir.
+
+        Returns:
+            list: [(verts, renk_kodu), ...] veya [] (apf hiç çağrılmadıysa veya liste boşsa).
+        """
+        apf_list = getattr(self, '_apf_vektor_list', None)
+        if not apf_list:
+            return []
+        z_line = -0.37
+        havuz_genisligi = getattr(minimap, 'havuz_genisligi', 200.0)
+        sonuc = []
+        for item in apf_list:
+            p1_xyz = item.get('baslangic')
+            p2_xyz = item.get('bitis')
+            renk = item.get('renk', 'm')
+            uzunluk_metre = item.get('uzunluk', 20.0)
+            reverse = item.get('reverse', False)
+            if p1_xyz is None or p2_xyz is None or len(p1_xyz) < 2 or len(p2_xyz) < 2:
+                continue
+            p1 = minimap.dunya_to_harita(float(p1_xyz[0]), float(p1_xyz[1]))
+            p2 = minimap.dunya_to_harita(float(p2_xyz[0]), float(p2_xyz[1]))
+            verts = self._vektor_verts_birim(p1, p2, z_line, havuz_genisligi, uzunluk_metre=uzunluk_metre, reverse=reverse)
+            sonuc.append((verts, renk))  # renk: 'k' kırmızı, 'y' yeşil, 't' turuncu (minimap eşler)
+        return sonuc
+
+    def yakinlastir(self, rov_id1: int, rov_id2: int, mesafe: float) -> bool:
+        """
+        rov_id1'i rov_id2'ye yatay düzlemde (X,Z) mesafe kadar yaklaştırır.
+        Sadece rov_id1 hareket eder; hedef konum filo.git() ile atanır (ROV o noktaya gider).
+        Ursina: (x, z) yatay; Sim: (x: Sağ-Sol, y: İleri-Geri, z: Derinlik) => Sim(x, Ursina.z, Ursina.y).
+        """
+        if not getattr(self.filo, 'sistemler', None):
+            return False
+        n = len(self.filo.sistemler)
+        if rov_id1 < 0 or rov_id1 >= n or rov_id2 < 0 or rov_id2 >= n or rov_id1 == rov_id2:
+            return False
+        rov1 = getattr(self.filo.sistemler[rov_id1], 'rov', None)
+        rov2 = getattr(self.filo.sistemler[rov_id2], 'rov', None)
+        if rov1 is None or rov2 is None:
+            return False
+        pos1 = getattr(rov1, 'world_position', rov1)
+        pos2 = getattr(rov2, 'world_position', rov2)
+        x1 = getattr(pos1, 'x', getattr(rov1, 'x', 0.0))
+        y1 = getattr(pos1, 'y', getattr(rov1, 'y', 0.0))
+        z1 = getattr(pos1, 'z', getattr(rov1, 'z', 0.0))
+        x2 = getattr(pos2, 'x', getattr(rov2, 'x', 0.0))
+        z2 = getattr(pos2, 'z', getattr(rov2, 'z', 0.0))
+        dx = x2 - x1
+        dz = z2 - z1
+        d = math.sqrt(dx * dx + dz * dz)
+        if d < 1e-9:
+            return True
+        # rov_id1, rov_id2'ye mesafe kadar yaklaşacak (sadece rov1 hareket eder)
+        move = min(mesafe, d)
+        ux = dx / d
+        uz = dz / d
+        new_x1 = x1 + ux * move
+        new_z1 = z1 + uz * move
+        # Sim format: x = Sağ-Sol (Ursina x), y = İleri-Geri (Ursina z), z = Derinlik (Ursina y)
+        sim_x = new_x1
+        sim_y = new_z1
+        sim_z = y1
+        try:
+            self.filo.git(rov_id1, sim_x, sim_y, sim_z)
+        except Exception:
+            return False
+        return True
+
+    # Vektör renk kodu -> minimap'te kullanılır: k=kırmızı, y=yeşil, m=mavi, s=sarı, t=turuncu
+    VEKTOR_RENK_KODLARI = ('k', 'y', 'm', 's', 't')
+
+    def _vektor_arg_norm(self, arg):
+        """Tek argümanı normalize eder: ROV ID (int) veya nokta (x, z) tuple. Nokta = len>=2 sequence."""
+        if arg is None:
+            return None
+        try:
+            if hasattr(arg, '__len__') and len(arg) >= 2:
+                return (float(arg[0]), float(arg[1]))
+        except (TypeError, ValueError, IndexError):
+            pass
+        return int(arg)
+
+    def vektor(self, ilk=None, ikinci=None,
+               rov_id_ilk=None, rov_id_ikinci=None,
+               baslangic_noktasi=None, bitis_noktasi=None, vektor=None,
+               renk='m', uzunluk=20, reverse=False, debug=False, ciz=True):
+        """
+        Minimap üzerinde vektör çizer. Keyword argümanlarla net kullanım.
+
+        Modlar:
+        1. İki nokta: rov_id_ilk + rov_id_ikinci | baslangic_noktasi + bitis_noktasi | karışık
+        2. Nokta + vektör: baslangic_noktasi/rov_id_ilk + vektor=(vx,vz) → başlangıçtan o yönde uzunluk kadar
+
+        Args:
+            rov_id_ilk (int): Başlangıç ROV ID.
+            rov_id_ikinci (int): Bitiş ROV ID.
+            baslangic_noktasi ((x,z)): Başlangıç noktası (metre, dünya koordinatı).
+            bitis_noktasi ((x,z)): Bitiş noktası (metre).
+            vektor ((vx,vz)): Yön vektörü (birim olması gerekmez). baslangic_noktasi veya rov_id_ilk ile kullan.
+            ilk, ikinci: Eski pozisyonel API (geriye uyumluluk).
+            renk: 'k','y','m','s','t'. uzunluk: ok uzunluğu (m). reverse, debug, ciz: bool.
+
+        Returns:
+            dict | None: baslangic, bitis, birim_vektor, uzunluk veya None.
+
+        Örnekler:
+            debug.vektor(rov_id_ilk=2, rov_id_ikinci=5)
+            debug.vektor(baslangic_noktasi=(-174, 115), vektor=(0.83, -0.55), uzunluk=20)
+            debug.vektor(rov_id_ilk=5, vektor=(0.76, -0.65), uzunluk=30)
+            debug.vektor(0, 1)  # Eski API
+        """
+        if renk in self.VEKTOR_RENK_KODLARI:
+            self._vektor_renk = renk
+        self._vektor_uzunluk_metre = max(0.0, float(uzunluk))
+        self._vektor_reverse = bool(reverse)
+
+        # Geriye uyumluluk: positional ilk, ikinci
+        if ilk is not None or ikinci is not None:
+            if rov_id_ilk is None and baslangic_noktasi is None:
+                if isinstance(ilk, int):
+                    rov_id_ilk = ilk
+                elif hasattr(ilk, '__len__') and len(ilk) >= 2:
+                    try:
+                        baslangic_noktasi = (float(ilk[0]), float(ilk[1]))
+                    except (TypeError, ValueError, IndexError):
+                        pass
+            if rov_id_ikinci is None and bitis_noktasi is None and vektor is None and ikinci is not None:
+                if isinstance(ikinci, int):
+                    rov_id_ikinci = ikinci
+                elif hasattr(ikinci, '__len__') and len(ikinci) >= 2:
+                    try:
+                        v0, v1 = float(ikinci[0]), float(ikinci[1])
+                        mag = math.sqrt(v0 * v0 + v1 * v1)
+                        # Birim vektör: uzunluk ~1 ve bileşenler [-1.2, 1.2]
+                        if mag >= 1e-6 and 0.7 <= mag <= 1.3 and abs(v0) <= 1.2 and abs(v1) <= 1.2:
+                            vektor = (v0, v1)
+                        else:
+                            bitis_noktasi = (v0, v1)
+                    except (TypeError, ValueError, IndexError):
+                        pass
+
+        ortam = getattr(self.filo, 'ortam_ref', None)
+        havuz_genisligi = getattr(ortam, 'havuz_genisligi', 200.0) if ortam else 200.0
+        h = max(float(havuz_genisligi), 1.0)
+        kosegen = 2.0 * h * math.sqrt(2.0)
+
+        # Başlangıç pozisyonu
+        pos1 = None
+        if baslangic_noktasi is not None:
+            try:
+                pos1 = (float(baslangic_noktasi[0]), float(baslangic_noktasi[1]))
+            except (TypeError, IndexError, ValueError):
+                pass
+        if pos1 is None and rov_id_ilk is not None:
+            pos1 = self._vektor_poz_al(int(rov_id_ilk), ortam)
+
+        # vektor modu: başlangıç + yön vektörü
+        if vektor is not None:
+            if pos1 is None:
+                if debug:
+                    self._apf_vektor_list = []
+                return None
+            try:
+                vx, vz = float(vektor[0]), float(vektor[1])
+            except (TypeError, IndexError, ValueError):
+                return None
+            v_mag = math.sqrt(vx * vx + vz * vz)
+            if v_mag < 1e-9:
+                ret = {
+                    'baslangic': (float(pos1[0]) / h, float(pos1[1]) / h),
+                    'bitis': (float(pos1[0]) / h, float(pos1[1]) / h),
+                    'birim_vektor': (0.0, 0.0),
+                    'uzunluk': 0.0,
+                }
+                pos2 = pos1
+            else:
+                ux, uz = vx / v_mag, vz / v_mag
+                if self._vektor_reverse:
+                    ux, uz = -ux, -uz
+                pos2 = (pos1[0] + ux * self._vektor_uzunluk_metre, pos1[1] + uz * self._vektor_uzunluk_metre)
+                ret = {
+                    'baslangic': (float(pos1[0]) / h, float(pos1[1]) / h),
+                    'bitis': (float(pos2[0]) / h, float(pos2[1]) / h),
+                    'birim_vektor': (ux, uz),
+                    'uzunluk': self._vektor_uzunluk_metre / kosegen,
+                }
+            if ciz:
+                if debug:
+                    self._apf_vektor_list = []
+                item = {
+                    'baslangic': (float(pos1[0]), float(pos1[1])),
+                    'bitis': (float(pos2[0]), float(pos2[1])),
+                    'renk': self._vektor_renk,
+                    'uzunluk': self._vektor_uzunluk_metre,
+                    'reverse': self._vektor_reverse,
+                }
+                if rov_id_ilk is not None:
+                    item['rov_id'] = int(rov_id_ilk)
+                self._apf_vektor_list.append(item)
+            return ret
+
+        # İki nokta modu
+        if pos1 is None:
+            self._vektor_baslangic = None
+            self._vektor_bitis = None
+            if debug:
+                self._apf_vektor_list = []
+            return None
+
+        pos2 = None
+        if bitis_noktasi is not None:
+            try:
+                pos2 = (float(bitis_noktasi[0]), float(bitis_noktasi[1]))
+            except (TypeError, IndexError, ValueError):
+                pass
+        if pos2 is None and rov_id_ikinci is not None:
+            pos2 = self._vektor_poz_al(int(rov_id_ikinci), ortam)
+
+        if pos2 is None:
+            if debug:
+                self._apf_vektor_list = []
+            return None
+
+        dx = pos2[0] - pos1[0]
+        dz = pos2[1] - pos1[1]
+        d = math.sqrt(dx * dx + dz * dz)
+        if d < 1e-9:
+            ret = {
+                'baslangic': (float(pos1[0]) / h, float(pos1[1]) / h),
+                'bitis': (float(pos2[0]) / h, float(pos2[1]) / h),
+                'birim_vektor': (0.0, 0.0),
+                'uzunluk': 0.0,
+                'uzaklik_metre': 0.0,
+            }
+        else:
+            ux, uz = dx / d, dz / d
+            if self._vektor_reverse:
+                ux, uz = -ux, -uz
+            ret = {
+                'baslangic': (float(pos1[0]) / h, float(pos1[1]) / h),
+                'bitis': (float(pos2[0]) / h, float(pos2[1]) / h),
+                'birim_vektor': (ux, uz),
+                'uzunluk': d / kosegen,
+                'uzaklik_metre': float(d),
+            }
+
+        if ciz:
+            if debug:
+                self._apf_vektor_list = []
+            item = {
+                'baslangic': (float(pos1[0]), float(pos1[1])),
+                'bitis': (float(pos2[0]), float(pos2[1])),
+                'renk': self._vektor_renk,
+                'uzunluk': self._vektor_uzunluk_metre,
+                'reverse': self._vektor_reverse,
+            }
+            if rov_id_ilk is not None:
+                item['rov_id'] = int(rov_id_ilk)
+            self._apf_vektor_list.append(item)
+        return ret
+
+    def get_vektor_renk(self):
+        """Minimap vektör çizgisi için renk kodu döner: k, y, m, s, t (varsayılan m)."""
+        return getattr(self, '_vektor_renk', 'm')
+
+    def _vektor_verts_birim(self, p1, p2, z_line=-0.37, havuz_genisligi=200.0, uzunluk_metre=None, reverse=False):
+        """
+        Harita koordinatında p1 -> p2 yönünde (reverse=True ise ters yönde) sabit uzunlukta vektör köşe listesi döner.
+        Vektör uzunluğu: merkez–kenar = havuz_genisligi m, harita 0.5 birim;
+        birim_uzunluk = uzunluk_metre / (2*havuz_genisligi) harita birimi.
+        Ok ucu: vektör uzunluğunun 1/6'ı, 145° ve 225°.
+        """
+        dx = p2.x - p1.x
+        dy = p2.y - p1.y
+        d = math.sqrt(dx * dx + dy * dy)
+        if d >= 1e-9:
+            ux, uy = dx / d, dy / d
+            if reverse:
+                ux, uy = -ux, -uy
+            h = max(float(havuz_genisligi), 1.0)
+            if uzunluk_metre is None:
+                uzunluk_metre = getattr(self, '_vektor_uzunluk_metre', 10.0)
+            birim_uzunluk = float(uzunluk_metre) / (2.0 * h)  # harita birimi (metre ölçeğine göre)
+            ex = p1.x + ux * birim_uzunluk
+            ey = p1.y + uy * birim_uzunluk
+            # Vektör açısı (radyan), ok ucu kanatları bu açıya göre 145° ve 225°
+            vektor_aci = math.atan2(uy, ux)
+            kanat_uzunluk = birim_uzunluk / 6.0
+            aci_145 = vektor_aci + math.radians(145)
+            aci_225 = vektor_aci + math.radians(225)
+            w1x = ex + kanat_uzunluk * math.cos(aci_145)
+            w1y = ey + kanat_uzunluk * math.sin(aci_145)
+            w2x = ex + kanat_uzunluk * math.cos(aci_225)
+            w2y = ey + kanat_uzunluk * math.sin(aci_225)
+            # Ana çizgi + iki kanat (uc -> 145°, uc -> 225°)
+            return [
+                (p1.x, p1.y, z_line), (ex, ey, z_line),
+                (ex, ey, z_line), (w1x, w1y, z_line),
+                (ex, ey, z_line), (w2x, w2y, z_line),
+            ]
+        return [(p1.x, p1.y, z_line), (p1.x, p1.y, z_line)]
+
+    def _vektor_poz_al(self, arg, ortam):
+        """Tek vektör argümanını (ROV id veya (x,z) nokta) dünya (x, z) koordinatına çevirir. Bulunamazsa None."""
+        if arg is None:
+            return None
+        try:
+            if isinstance(arg, (tuple, list)) and len(arg) >= 2:
+                return (float(arg[0]), float(arg[1]))
+        except (TypeError, ValueError, IndexError):
+            pass
+        rid = int(arg)
+        if ortam is None or not hasattr(ortam, 'rovs') or not ortam.rovs:
+            return None
+        for rov in ortam.rovs:
+            if rov is None:
+                continue
+            if getattr(rov, 'id', None) == rid:
+                return (rov.x, rov.z)
+        return None
+
+    def get_vektor_verts(self, minimap):
+        """
+        Minimap için vektör çizgi köşe listesini hesaplar (birim vektör, sabit uzunluk).
+        Başlangıç/bitiş hibrit: ROV ID ise o ROV konumu, nokta ise verilen (x,z) kullanılır.
+
+        Returns:
+            list | None: [(x1,y1,z), (x2,y2,z)] veya None.
+        """
+        baslangic = getattr(self, '_vektor_baslangic', None)
+        bitis = getattr(self, '_vektor_bitis', None)
+        if baslangic is None or bitis is None:
+            return None
+        ortam = getattr(self.filo, 'ortam_ref', None)
+        pos1 = self._vektor_poz_al(baslangic, ortam)
+        pos2 = self._vektor_poz_al(bitis, ortam)
+        if pos1 is None or pos2 is None:
+            return None
+        z_line = -0.37
+        havuz_genisligi = getattr(minimap, 'havuz_genisligi', 200.0)
+        uzunluk_metre = getattr(self, '_vektor_uzunluk_metre', 10.0)
+        reverse = getattr(self, '_vektor_reverse', False)
+        p1 = minimap.dunya_to_harita(pos1[0], pos1[1])
+        p2 = minimap.dunya_to_harita(pos2[0], pos2[1])
+        return self._vektor_verts_birim(p1, p2, z_line, havuz_genisligi, uzunluk_metre=uzunluk_metre, reverse=reverse)
+
+    def _yatay_mesafe(self, p1, p2):
+        """İki nokta (x, z) arasındaki yatay mesafeyi metre cinsinden döner."""
+        return math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+
+    def _apf_rep_factor_hesapla(self, mesafe: float, r_etki: float, d_min: float = 0.5):
+        """
+        APF için repulsive factor hesaplar (mesafe ile ters orantılı).
+        
+        Args:
+            mesafe: ROV ile obje arasındaki mesafe (metre)
+            r_etki: Etki menzili (metre)
+            d_min: Minimum güvenli mesafe (metre, varsayılan 0.5)
+        
+        Returns:
+            float: Repulsive factor (mesafe azaldıkça artar)
+        """
+        d_safe = max(mesafe, d_min)
+        return (1.0 / d_safe - 1.0 / r_etki)
+
+    def _apf_kuvvet_hesapla(self, mesafe: float, birim_vektor: tuple, r_etki: float, 
+                           k_itme: float, k_teget: float, r_yakin_artis: float, 
+                           yakin_carpan: float, teget_carpan: float = 1.0):
+        """
+        APF için itme ve teğet kuvvetlerini hesaplar.
+        Engel vektörü karesel olarak artar (mesafe azaldıkça).
+        
+        Args:
+            mesafe: ROV ile obje arasındaki mesafe (metre)
+            birim_vektor: (ux, uz) birim vektör (ROV'dan objeye doğru)
+            r_etki: Etki menzili (metre)
+            k_itme: İtme katsayısı
+            k_teget: Teğet kuvvet katsayısı
+            r_yakin_artis: Yakın artış mesafesi (metre)
+            yakin_carpan: Yakın mesafede kuvvet çarpanı
+            teget_carpan: Teğet kuvvet çarpanı (varsayılan 1.0, ROV için 1.5)
+        
+        Returns:
+            tuple: (f_rep_ux, f_rep_uz, f_tan_ux, f_tan_uz) kuvvet bileşenleri
+        """
+        # Menzil dışındaki objeler sıfır kuvvet uygular
+        if mesafe >= r_etki:
+            return (0.0, 0.0, 0.0, 0.0)
+        
+        ux, uz = birim_vektor[:2]
+        rep_factor = self._apf_rep_factor_hesapla(mesafe, r_etki)
+        
+        # İtme kuvveti (karesel - mesafe azaldıkça karesel artar)
+        # birim_vektor ROV->Obstacle yönünde; itme kuvveti obje→ROV yönünde olmalı (repulsive)
+        f_rep = k_itme * rep_factor * rep_factor
+        if mesafe < r_yakin_artis:
+            # Yakın mesafede ekstra karesel artış
+            f_rep *= yakin_carpan * (r_yakin_artis / max(mesafe, 0.1)) ** 2
+        
+        # İtme vektörü: objeden uzağa (-ux, -uz) = itici yön
+        f_rep_ux = -ux * f_rep
+        f_rep_uz = -uz * f_rep
+        
+        # Teğet kuvveti (vortex): itici yön (-ux, -uz) ile 90° dik
+        # Perpendicular: (-uz, ux) veya (uz, -ux) — engel etrafında dolaşmak için
+        f_tan_ux, f_tan_uz = 0.0, 0.0
+        if mesafe < (r_etki / 2.0):
+            f_tan = (k_teget * teget_carpan) * (rep_factor * rep_factor)
+            if mesafe < r_yakin_artis:
+                # Yakın mesafede ekstra karesel artış
+                f_tan *= yakin_carpan * (r_yakin_artis / max(mesafe, 0.1)) ** 2
+            # Teğet: (-uz, ux) — itici yön (-ux,-uz)'ye dik
+            f_tan_ux = -uz * f_tan
+            f_tan_uz = ux * f_tan
+        
+        return (f_rep_ux, f_rep_uz, f_tan_ux, f_tan_uz)
+
+    def vektor_normalize(self, ux=None, uz=None, uy=None, max_mag: float = 1.0, vektor=None):
+        """
+        Vektörü normalize eder ve maksimum büyüklüğe sınırlar. Hem 2D hem 3D vektörleri destekler.
+        
+        Args:
+            ux: X bileşeni (2D veya 3D modu için)
+            uz: Z bileşeni (2D modu için) veya Y bileşeni (3D modu için)
+            uy: Y bileşeni (3D modu için, opsiyonel). None ise 2D modu kullanılır.
+            max_mag: Maksimum büyüklük (varsayılan 1.0)
+            vektor: Alternatif kullanım - vektör tuple/list olarak verilebilir.
+                - 2D: (ux, uz) veya [ux, uz]
+                - 3D: (ux, uy, uz) veya [ux, uy, uz]
+                vektor verilirse ux, uz, uy parametreleri göz ardı edilir.
+        
+        Returns:
+            tuple: 
+                - 2D modu: (ux_norm, uz_norm, mag) normalize edilmiş vektör ve büyüklüğü
+                - 3D modu: (ux_norm, uy_norm, uz_norm, mag) normalize edilmiş vektör ve büyüklüğü
+        
+        Örnekler:
+            # 2D vektör
+            ux, uz, mag = self.vektor_normalize(3.0, 4.0)  # (0.6, 0.8, 1.0)
+            ux, uz, mag = self.vektor_normalize(vektor=(3.0, 4.0))  # Tuple ile
+            
+            # 3D vektör
+            ux, uy, uz, mag = self.vektor_normalize(2.0, 3.0, 4.0)  # 3D
+            ux, uy, uz, mag = self.vektor_normalize(vektor=(2.0, 3.0, 4.0))  # Tuple ile
+        """
+        # Vektör tuple/list olarak verilmişse kullan
+        if vektor is not None:
+            try:
+                if isinstance(vektor, (tuple, list)):
+                    if len(vektor) >= 3:
+                        # 3D vektör
+                        ux, uy, uz = float(vektor[0]), float(vektor[1]), float(vektor[2])
+                    elif len(vektor) >= 2:
+                        # 2D vektör
+                        ux, uz = float(vektor[0]), float(vektor[1])
+                        uy = None
+                    else:
+                        return None
+            except (TypeError, ValueError, IndexError):
+                return None
+        
+        # Parametre kontrolü
+        if ux is None or uz is None:
+            return None
+        
+        # 3D modu: uy verilmişse
+        if uy is not None:
+            mag = math.sqrt(ux * ux + uy * uy + uz * uz)
+            if mag < 1e-9:
+                return (0.0, 0.0, 0.0, 0.0)
+            if mag > max_mag:
+                scale = max_mag / mag
+                ux_norm = ux * scale
+                uy_norm = uy * scale
+                uz_norm = uz * scale
+                mag = max_mag
+            else:
+                ux_norm = ux
+                uy_norm = uy
+                uz_norm = uz
+            return (ux_norm, uy_norm, uz_norm, mag)
+        
+        # 2D modu: uy verilmemişse
+        mag = math.sqrt(ux * ux + uz * uz)
+        if mag < 1e-9:
+            return (0.0, 0.0, 0.0)
+        if mag > max_mag:
+            scale = max_mag / mag
+            ux_norm = ux * scale
+            uz_norm = uz * scale
+            mag = max_mag
+        else:
+            ux_norm = ux
+            uz_norm = uz
+        return (ux_norm, uz_norm, mag)
+
+    def _apf_motor_guc_hesapla(self, min_dist_to_obj: float, r_guvenlik: float, 
+                               base_speed: float = 0.15, total_mag: float = 1.0):
+        """
+        APF için dinamik motor gücü hesaplar (mesafeye göre).
+        
+        Args:
+            min_dist_to_obj: En yakın objeye mesafe (metre)
+            r_guvenlik: Güvenlik mesafesi (metre)
+            base_speed: Temel hız (varsayılan 0.15)
+            total_mag: Toplam vektör büyüklüğü (varsayılan 1.0)
+        
+        Returns:
+            float: Motor gücü [0.0, 1.0] aralığında
+        """
+        current_power = base_speed
+        if min_dist_to_obj < r_guvenlik:
+            current_power = 0.35
+        elif min_dist_to_obj < (r_guvenlik * 2):
+            current_power = 0.25
+        
+        final_power = current_power * total_mag
+        return max(0.0, min(final_power, 1.0))
+
+    def _apf_hedef_gain_hesapla(self, min_dist_to_obj: float, r_yakin_hedef: float = 10.0, 
+                                r_etki: float = 20.0, k_hedef: float = 1.0):
+        """
+        APF için hedef kazancını hesaplar (engel yaklaştıkça azalır).
+        10 metreden yakın olduğunda neredeyse 0 olur.
+        
+        Args:
+            min_dist_to_obj: En yakın objeye mesafe (metre)
+            r_yakin_hedef: Yakın hedef mesafesi (metre, varsayılan 10.0) - bu mesafeden yakın olduğunda hedef neredeyse 0
+            r_etki: Etki menzili (metre, varsayılan 10.0)
+            k_hedef: Hedef katsayısı (varsayılan 1.0)
+        
+        Returns:
+            float: Hedef kazancı (0.0 - k_hedef aralığında)
+        """
+        # 10 metreden yakın olduğunda neredeyse 0
+        if min_dist_to_obj < r_yakin_hedef:
+            # Karesel azalma: (mesafe / r_yakin_hedef)^2 ile çarp
+            ratio = min_dist_to_obj / r_yakin_hedef
+            return k_hedef * (ratio ** 2) * 0.01  # Neredeyse 0 (maksimum %1)
+        
+        # 10 metreden uzakta normal karesel azalma
+        ratio_sq = (min_dist_to_obj / r_etki) ** 2
+        return min(k_hedef, k_hedef * ratio_sq)
+
+    def _koordinat_cikar(self, obj, x_attr='x', y_attr='y', z_attr='z'):
+        """
+        Bir objeden koordinatları çıkarır (getattr ile). 
+        Obje Vec3, tuple, list veya attribute'lara sahip bir obje olabilir.
+        
+        Args:
+            obj: Koordinat içeren obje (Vec3, tuple, list veya attribute'lara sahip obje)
+            x_attr: X koordinatı için attribute adı (varsayılan 'x')
+            y_attr: Y koordinatı için attribute adı (varsayılan 'y')
+            z_attr: Z koordinatı için attribute adı (varsayılan 'z')
+        
+        Returns:
+            tuple: (x, y, z) veya (x, z) eğer y bulunamazsa. Bulunamazsa (None, None, None).
+        """
+        if obj is None:
+            return (None, None, None)
+        
+        # Tuple veya list ise
+        if isinstance(obj, (tuple, list)):
+            if len(obj) >= 3:
+                return (float(obj[0]), float(obj[1]), float(obj[2]))
+            elif len(obj) >= 2:
+                return (float(obj[0]), None, float(obj[1]))
+            return (None, None, None)
+        
+        # Vec3 veya attribute'lara sahip obje ise
+        try:
+            x = getattr(obj, x_attr, None)
+            y = getattr(obj, y_attr, None)
+            z = getattr(obj, z_attr, None)
+            
+            # Eğer x veya z None ise, tuple/list olarak dene
+            if x is None or z is None:
+                if isinstance(obj, (tuple, list)) and len(obj) >= 2:
+                    x = obj[0] if x is None else x
+                    z = obj[1] if z is None else z
+            
+            if x is not None and z is not None:
+                return (float(x), float(y) if y is not None else None, float(z))
+        except (TypeError, ValueError, AttributeError):
+            pass
+        
+        return (None, None, None)
+
+    def _rov_pozisyon_ursina(self, rov_id=None, rov_entity=None, ortam=None):
+        """
+        ROV pozisyonunu Ursina koordinatlarında (x, z) döner.
+        Mevcut _vektor_poz_al() fonksiyonunu kullanır veya rov_entity'den direkt alır.
+        
+        Args:
+            rov_id: ROV ID (int) - ortam'dan ROV'u bulmak için
+            rov_entity: ROV entity objesi - direkt pozisyon almak için
+            ortam: Ortam referansı - ROV'u bulmak için
+        
+        Returns:
+            tuple: (x, z) Ursina koordinatları veya None
+        """
+        # Eğer rov_entity verilmişse direkt kullan
+        if rov_entity is not None:
+            x = getattr(rov_entity, 'x', None)
+            z = getattr(rov_entity, 'z', None)
+            if x is not None and z is not None:
+                return (float(x), float(z))
+        
+        # Eğer rov_id verilmişse _vektor_poz_al() kullan
+        if rov_id is not None and ortam is not None:
+            return self._vektor_poz_al(rov_id, ortam)
+        
+        return None
+
+    def _koordinator_al(self):
+        """Koordinator'u lazy import ile alır (circular import önleme)."""
+        if self._koordinator is None:
+            from FiratROVNet.gnc import Koordinator
+            self._koordinator = Koordinator
+        return self._koordinator
+
+    def apf(self, rov_id: int, hedef: bool = True, engel: bool = False, rov: bool = False):
+        """
+        APF: ROV'un mevcut konumundan hedefine/engellere/diğer ROV'lara yönelik vektörleri döndürür.
+        Hangi bileşenlerin hesaplanacağı hedef/engel/rov parametreleriyle seçilir.
+
+        Args:
+            rov_id: ROV ID
+            hedef: True ise hedef vektörü hesaplanır (varsayılan True)
+            engel: True ise engellere yönelik vektörler hesaplanır
+            rov: True ise diğer ROV'lara yönelik vektörler hesaplanır
+
+        Returns:
+            dict: {
+                'birim_vektor': (ux, uz),
+                'mesafe': mag,
+                'hedef': {...} veya None,
+                'engeller': [...],
+                'rovs': [...]
+            }
+        """
+        # _apf_vektor_list temizlenmez; vektörler birikir. Temizlemek için apf_temizle() çağrılır.
+
+        birim_vektor = (0.0, 0.0)
+        mag = 0.0
+        out_hedef = None
+
+        if hedef:
+            hedef_koord = self.filo.hedef(rov_id=rov_id)
+            if hedef_koord is not None:
+                Koordinator = self._koordinator_al()
+                h_ursina = Koordinator.sim_to_ursina(
+                    float(hedef_koord[0]), float(hedef_koord[1]),
+                    float(hedef_koord[2]) if len(hedef_koord) > 2 else 0.0
+                )
+                bitis_2d = (h_ursina[0], h_ursina[2])
+                vec = self.vektor(rov_id_ilk=rov_id, bitis_noktasi=bitis_2d, renk='y', reverse=False, ciz=True)
+                if vec is not None:
+                    birim_vektor = vec['birim_vektor']
+                    mag = vec.get('uzaklik_metre', vec.get('uzunluk', 0.0))
+                    out_hedef = {'birim_vektor': birim_vektor, 'mesafe': float(mag)}
+                else:
+                    out_hedef = {'birim_vektor': (0.0, 0.0), 'mesafe': 0.0}
+            else:
+                out_hedef = {'birim_vektor': (0.0, 0.0), 'mesafe': 0.0}
+
+        out_engeller = []
+        if engel:
+            engel_listesi = self.engel_vektor(rov_id=rov_id, menzil=GATLimitleri.ENGEL)
+            for engel in engel_listesi:
+                koord = engel.get('koordinat')
+                vb = engel.get('vektor_bilgi')
+                if not koord or len(koord) < 2 or not vb:
+                    continue
+                try:
+                    ex = float(koord[0])
+                    ez = float(koord[1])
+                except (TypeError, ValueError):
+                    continue
+                self.vektor(
+                    rov_id_ilk=rov_id,
+                    bitis_noktasi=(ex, ez),
+                    reverse=True,
+                    renk='k',
+                    ciz=True
+                )
+                out_engeller.append({
+                    'birim_vektor': vb.get('birim_vektor'),
+                    'mesafe': float(vb.get('uzaklik_metre', engel.get('mesafe', 0.0))),
+                    'radius': float(engel.get('radius', 0.0)),
+                })
+
+        out_rovs = []
+        if rov:
+            rov_listesi = self.rov_vektor(rov_id=rov_id, menzil=GATLimitleri.CARPISMA)
+            for diger in rov_listesi:
+                koord = diger.get('koordinat')
+                vb = diger.get('vektor_bilgi')
+                if not koord or len(koord) < 2 or not vb:
+                    continue
+                try:
+                    rx = float(koord[0])
+                    rz = float(koord[1])
+                except (TypeError, ValueError):
+                    continue
+                self.vektor(
+                    rov_id_ilk=rov_id,
+                    bitis_noktasi=(rx, rz),
+                    reverse=True,
+                    renk='t',
+                    ciz=True
+                )
+                out_rovs.append({
+                    'birim_vektor': vb.get('birim_vektor'),
+                    'mesafe': float(vb.get('uzaklik_metre', diger.get('mesafe', 0.0)))
+                })
+
+        out = {
+            'birim_vektor': birim_vektor,
+            'mesafe': float(mag),
+        }
+
+        if hedef:
+            out['hedef'] = out_hedef
+        if engel:
+            out['engeller'] = out_engeller
+        if rov:
+            out['rovs'] = out_rovs
+
+        return out
+
+
+
+    def apf_temizle(self, rov_id=None) -> None:
+        """
+        APF vektörlerini temizler. rov_id verilirse sadece o ROV'a ait vektörleri siler;
+        boş bırakılırsa hepsini temizler.
+        """
+        if rov_id is None:
+            self._apf_vektor_list = []
+        else:
+            rid = int(rov_id)
+            self._apf_vektor_list = [i for i in self._apf_vektor_list if i.get('rov_id') != rid]
+        # Minimap entity'lerini anında temizle (beklemeden görsel güncelleme)
+        ortam = getattr(self.filo, 'ortam_ref', None)
+        if ortam and hasattr(ortam, 'minimap') and ortam.minimap is not None:
+            try:
+                ortam.minimap._apf_vektorlari_temizle()
+            except Exception:
+                pass
+
+    def hedef_vektor(self, rov_id: int, menzil: float = None):
+        """
+        ROV'un hedefine olan vektör bilgisini döndürür (çizim yapılmaz).
+        
+        Args:
+            rov_id (int): ROV ID (0, 1, 2, ...)
+            menzil (float): Yatay düzlemde (X,Z) menzil (metre). Varsayılan GATLimitleri.ENGEL.
+        
+        Returns:
+            dict | None: Vektör bilgisi (baslangic, bitis, birim_vektor, uzunluk) veya None.
+                Hedef yoksa veya ROV konumu bulunamazsa None döner.
+        """
+        if menzil is None:
+            menzil = GATLimitleri.ENGEL
+        ortam = getattr(self.filo, 'ortam_ref', None)
+        pos_rov = self._rov_pozisyon_ursina(rov_id=rov_id, ortam=ortam)
+        if pos_rov is None:
+            return None
+        
+        sistemler = getattr(self.filo, 'sistemler', None)
+        if sistemler and 0 <= rov_id < len(sistemler):
+            hedef_obj = getattr(sistemler[rov_id], 'hedef', None)
+            if hedef_obj is not None:
+                hx_sim, hy_sim, hz_sim = self._koordinat_cikar(hedef_obj, x_attr='x', y_attr='y', z_attr='z')
+                if hx_sim is not None and hy_sim is not None:
+                    Koordinator = self._koordinator_al()
+                    hedef_ursina = Koordinator.sim_to_ursina(hx_sim, hy_sim, hz_sim if hz_sim is not None else 0.0)
+                    hedef_pt = (hedef_ursina[0], hedef_ursina[2])
+                    
+                    # Vektör bilgisini al (çizim yapılmaz)
+                    vb = self.vektor(pos_rov, hedef_pt, renk='y', uzunluk=20.0, reverse=False, debug=False, ciz=False)
+                    
+                    return vb
+        return None
+
+    def rov_vektor(self, rov_id: int, menzil: float = None):
+        """
+        ROV'un diğer ROV'lara olan vektör bilgilerini liste olarak döndürür (çizim yapılmaz).
+        
+        Args:
+            rov_id (int): ROV ID (0, 1, 2, ...)
+            menzil (float): Yatay düzlemde (X,Z) menzil (metre). Varsayılan GATLimitleri.CARPISMA.
+        
+        Returns:
+            list: [{'rov_id': int, 'koordinat': (x, z), 'vektor_bilgi': {...}}, ...]
+                Her diğer ROV için vektör bilgisi içeren dict listesi.
+                ROV konumu bulunamazsa veya menzil içinde ROV yoksa boş liste döner.
+        """
+        if menzil is None:
+            menzil = GATLimitleri.CARPISMA
+        ortam = getattr(self.filo, 'ortam_ref', None)
+        pos_rov = self._rov_pozisyon_ursina(rov_id=rov_id, ortam=ortam)
+        if pos_rov is None:
+            return []
+        
+        result = []
+        if ortam and getattr(ortam, 'rovs', None):
+            for rov_entity in ortam.rovs:
+                if rov_entity is None:
+                    continue
+                rid = getattr(rov_entity, 'id', None)
+                if rid is None or int(rid) == int(rov_id):
+                    continue
+                rx, _, rz = self._koordinat_cikar(rov_entity, x_attr='x', z_attr='z')
+                if rx is None or rz is None:
+                    continue
+                pt = (rx, rz)
+                mesafe = self._yatay_mesafe(pos_rov, pt)
+                if mesafe > menzil:
+                    continue
+                
+                # Vektör bilgisini al (çizim yapılmaz)
+                vb = self.vektor(pos_rov, pt, renk='t', uzunluk=20.0, reverse=True, debug=False, ciz=False)
+                if vb is not None:
+                    result.append({'rov_id': int(rid), 'koordinat': pt, 'vektor_bilgi': vb, 'mesafe': mesafe})
+        return result
+
+    def engel_vektor(self, rov_id: int, menzil: float = None):
+        """
+        ROV'un engellere olan vektör bilgilerini liste olarak döndürür (çizim yapılmaz).
+        
+        Args:
+            rov_id (int): ROV ID (0, 1, 2, ...)
+            menzil (float): Yatay düzlemde (X,Z) menzil (metre). Varsayılan GATLimitleri.ENGEL.
+        
+        Returns:
+            list: [{'koordinat': (x, z), 'vektor_bilgi': {...}, 'mesafe': float, 'radius': float}, ...]
+                Her engel için vektör bilgisi ve yarıçap (metre) içeren dict listesi.
+                ROV konumu bulunamazsa veya menzil içinde engel yoksa boş liste döner.
+        """
+        if menzil is None:
+            menzil = GATLimitleri.ENGEL
+        ortam = getattr(self.filo, 'ortam_ref', None)
+        pos_rov = self._rov_pozisyon_ursina(rov_id=rov_id, ortam=ortam)
+        if pos_rov is None:
+            return []
+        
+        result = []
+        for s in self.engel_bul(rov_id, menzil=menzil):
+            koord = s.get('koordinat')
+            if koord is None:
+                continue
+            kx, _, kz = self._koordinat_cikar(koord, x_attr='x', z_attr='z')
+            if kx is None or kz is None:
+                continue
+            pt = (kx, kz)
+            mesafe = self._yatay_mesafe(pos_rov, pt)
+            if mesafe > menzil:
+                continue
+            
+            # Vektör bilgisini al (çizim yapılmaz)
+            vb = self.vektor(pos_rov, pt, renk='k', uzunluk=20.0, reverse=True, debug=False, ciz=False)
+            radius = s.get('radius', 0.0)
+            if vb is not None:
+                result.append({'koordinat': pt, 'vektor_bilgi': vb, 'mesafe': mesafe, 'radius': radius})
+        return result
 
 
     def get_apf_vektor_verts_list(self, minimap):
