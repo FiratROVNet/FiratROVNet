@@ -61,6 +61,24 @@ def _agent_log(location, message, data, hypothesis_id, run_id="run1"):
 # #endregion
 
 
+class Hidrodinamik:
+    # --- Ortam Sabitleri ---
+    SU_YOGUNLUGU = 1000.0  # kg/m^3 (Tatlı su için 1000, Tuzlu su için 1025)
+    YER_CEKIMI = 9.81      # m/s^2
+
+    # --- ROV Fiziksel Özellikleri ---
+    KUTLE = 12.0           # kg (ROV'un ağırlığı)
+    HACIM = 0.0122         # m^3 (Batması/Çıkması için: Hacim * Su Yoğunluğu > Kütle ise yüzer)
+                           # Örn: 0.0122 * 1000 = 12.2 kg kaldırma kuvveti (Nötr'e yakın ama hafif pozitif)
+    
+    # --- Motor Özellikleri ---
+    MAX_ITME_KUVVETI = 100.0 # Newton (Toplam motor gücü, örn: T200 motorlar için ~5kgf)
+    
+    # --- Sürtünme (Drag) Katsayısı ---
+    # F_drag = 0.5 * rho * v^2 * Cd * A
+    DRAG_KATSAYISI_CD = 0.9  # Kutu gibi şekiller için 0.8 - 1.0 arası
+    ON_YUZEY_ALANI = 0.15    # m^2 (ROV'un suyla temas eden ön yüzeyi)
+
 
 
 class BasitKalmanFiltresi:
@@ -2969,9 +2987,9 @@ class TemelGNCHelper:
         # Kalman Filtreleri (X, Y ve Z ekseni için ayrı ayrı)
         # R değerini artırırsan (örn: 0.5) ROV daha "ağır" ama pürüzsüz hareket eder.
         # R değerini azaltırsan (örn: 0.01) titreme artar ama tepki hızlanır.
-        self.kf_x = BasitKalmanFiltresi(R=0.4, Q=0.05)
-        self.kf_y = BasitKalmanFiltresi(R=0.4, Q=0.05)
-        self.kf_z = BasitKalmanFiltresi(R=0.4, Q=0.05)
+        self.kf_x = BasitKalmanFiltresi(R=0.5, Q=0.01)
+        self.kf_y = BasitKalmanFiltresi(R=0.5, Q=0.01)
+        self.kf_z = BasitKalmanFiltresi(R=0.5, Q=0.01)
 
 
         self.rov = rov_entity
@@ -3114,82 +3132,139 @@ class TemelGNCHelper:
             
             return Vec3(yeni_x, yeni_y, yeni_z)
 
-    
-    def vektor_to_motor_sim(self, v_sim: Vec3, mag: float = 0.2, _ic_gecis=False):
+
+    def vektor_to_motor_sim(self, v_sim_dir: Vec3, guc_orani: float):
         """
-        Vektörü Simülasyon eksenlerinden Ursina motor komutlarına çevirir.
-        Global koordinatlara göre direkt hareket eder (yaw açısından bağımsız).
+        GNC Helper: Doğrudan fizik ve pozisyon güncellemesi yapar.
+        ROV sınıfı artık pasiftir, tüm fizik burada işlenir.
+        """
+        import math
+        from ursina import Vec3, time, lerp
+        dt = time.dt
         
-        Args:
-            v_sim: Simülasyon formatında vektör (X: Sağ-Sol, Y: İleri-Geri, Z: Derinlik)
-        mag: Hedefe mesafe (APF'den, metre cinsinden)
-        _ic_gecis: İç çağrı (waypoint geçişinden); waypoint kontrolü atlanır
-        """
-        mesafe = float(mag)  # APF mesafe artık metre (uzaklik_metre)
-        HEDEF_TOLERANS = 1.3  # Bu mesafeye (m) yaklaşınca waypoint tamamlanır
-        rov_id = getattr(self.rov, 'id', None)
-        if rov_id is None or not hasattr(self.filo_ref, '_rov_hedefleri'):
+        print(guc_orani)
+        # 1. Hedef Vektör
+        if v_sim_dir.length() < 0.001:
+            # Hedef yoksa yavaşla
+            if hasattr(self.rov, 'velocity'):
+                self.rov.velocity = lerp(self.rov.velocity, Vec3(0,0,0), 5.0 * dt)
             return
 
-        nokta_listesi = getattr(self.filo_ref, '_git_nokta_listesi', {}).get(rov_id)
-        mevcut_indeks = getattr(self.filo_ref, '_git_mevcut_nokta_indeksi', {}).get(rov_id, 0)
-        sonraki_var = nokta_listesi and mevcut_indeks + 1 < len(nokta_listesi)
-
-        izdusum_gecildi = False
-        if nokta_listesi and mevcut_indeks < len(nokta_listesi) and sonraki_var:
-            mevcut_wp = nokta_listesi[mevcut_indeks]
-            sonraki_wp = nokta_listesi[mevcut_indeks + 1]
-            izdusum_gecildi = self._waypoint_izdusum_gecildi_mi(rov_id, mevcut_wp, sonraki_wp)
-
-        if mesafe < HEDEF_TOLERANS or izdusum_gecildi:
-            if sonraki_var:
-                yeni_indeks = mevcut_indeks + 1
-                nxt = nokta_listesi[yeni_indeks]
-                self.filo_ref._git_mevcut_nokta_indeksi[rov_id] = yeni_indeks
-                current_sim = self._rov_pozisyon_sim()
-                current_z = current_sim.z if current_sim else 0.0
-                x, y, z = float(nxt[0]), float(nxt[1]), current_z
-                self.filo_ref._rov_hedefleri[rov_id] = (x, y, z)
-                if rov_id < len(self.filo_ref.sistemler):
-                    self.filo_ref.sistemler[rov_id].hedef_atama(x, y, z)
-                    self.filo_ref.formasyon_sec(dinamik=True)
+        hedef_yon = v_sim_dir.normalized()
+        guc_orani = max(0.0, min(1.0, guc_orani))
+        
+        # 2. İvme ve Hız (Basitleştirilmiş Fizik)
+        # Global simülasyon eksenleri: X (Sağ), Y (İleri), Z (Derinlik)
+        # Ursina eksenleri: X (Sağ), Z (İleri), Y (Yukarı/Derinlik)
+        
+        # Hedef hızı hesapla (Global) - Max Hız ~50 birim/s
+        MAX_SPEED = 50.0
+        target_velocity_sim = hedef_yon * (guc_orani * MAX_SPEED)
+        
+        # Ursina koordinatlarına çevir (Sim Y -> Ursina Z, Sim Z -> Ursina Y)
+        # v_sim_dir zaten Sim eksenlerinde (X:Sağ, Y:İleri, Z:Derinlik)
+        # Ursina: X:Sağ, Z:İleri, Y:Yukarı(Derinlik)
+        # Sim Z derinlik pozitif = aşağı (Ursina Y negatif)
+        # Ancak burada Sim Z (Derinlik) genellikle pozitiftir (derinlik arttıkça). 
+        # Ursina Y = -Sim Z olmalı.
+        # target_velocity_sim.z derinlik hızıdır. Aşağı iniyorsa pozitiftir. Ursina Y negatif olmalı.
+        # Kontrol edelim: Simülasyon Z+ derinlik. Ursina Y- derinlik.
+        # target_velocity_sim.z pozitifse (aşağı), target_velocity_ursina.y negatif olmalı.
+        
+        target_velocity_ursina = Vec3(target_velocity_sim.x, -target_velocity_sim.z, target_velocity_sim.y)
+        
+        # Hızlanma (Lerp ile yumuşak geçiş)
+        accel_factor = 2.0 * dt # Hızlanma katsayısı
+        if hasattr(self.rov, 'velocity'):
+            self.rov.velocity = lerp(self.rov.velocity, target_velocity_ursina, accel_factor)
+            # 3. Pozisyon Güncelleme
+            self.rov.position += self.rov.velocity * dt
+        
+    def vektor_to_motor_sim_eski(self, v_sim: Vec3, mesafe: float, rov_id: int = None):
+            """
+            Simülasyon vektörünü Ursina motor hızına çevirir ve Waypoint mantığını yönetir.
+            
+            Args:
+                v_sim: Simülasyon eksenlerinde yön vektörü (Vec3).
+                mesafe: Hedefe olan uzaklık (metre).
+                rov_id: Kontrol edilecek ROV ID (Opsiyonel, verilmezse self.rov.id kullanılır).
+            """
+            # 1. Kimlik Doğrulama
+            if rov_id is None:
+                rov_id = getattr(self.rov, 'id', None)
+            
+            if rov_id is None or not hasattr(self.filo_ref, '_rov_hedefleri'):
                 return
-            else:
-                self.rov.velocity = Vec3(0, 0, 0)
-                self.filo_ref._rov_hedefleri[rov_id] = None
-                self.filo_ref.lidere_don(rov_id=rov_id)
-                if nokta_listesi:
-                    self.filo_ref._git_nokta_listesi.pop(rov_id, None)
-                    self.filo_ref._git_mevcut_nokta_indeksi.pop(rov_id, None)
-            return
-        
-        if mesafe < HEDEF_TOLERANS*2:
-            guc = (np.log(max(mesafe, 4))) / 10.0
-        else:
-            guc = 0.15
-        guc = max(0.05, min(0.4,guc)) ## motor gucu minimum 0.08 olarak, maximum 0.4 olarak ayarlandı
-        #print(mesafe,guc)
-        v = v_sim.normalized()
-        v = self._kalman_vektor_filtrele(v)
-        
-        thrust = (guc * 100.0) * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
-        
-        if abs(v.x) > 0.01:
-            self.rov.velocity.x += v.x * thrust
-        if abs(v.y) > 0.01:
-            self.rov.velocity.z += v.y * thrust
-        if abs(v.z) > 0.01:
-            self.rov.velocity.y += v.z * thrust  # Sim Z -> Ursina Y
 
-        # Hız limiti: hem güç bazlı hem sistem MAX_HIZ ile sınırla (jitter/patlama önleme)
-        limit = guc * 100.0
-        try:
-            max_hiz = getattr(FizikSabitleri, 'MAX_HIZ', 50.0)
-            limit = min(limit, max_hiz)
-        except Exception:
-            pass
-        if self.rov.velocity.length() > limit:
-            self.rov.velocity = self.rov.velocity.normalized() * limit
+            # Sabitler
+            HEDEF_TOLERANS = 1.3  # Metre
+            MIN_GUC = 0.05
+            MAX_GUC = 0.4
+            
+            # ---------------------------------------------------------
+            # 2. NAVİGASYON MANTIĞI (Waypoint Geçiş Kontrolü)
+            # ---------------------------------------------------------
+            nokta_listesi = self.filo_ref._git_nokta_listesi.get(rov_id, [])
+            mevcut_indeks = self.filo_ref._git_mevcut_nokta_indeksi.get(rov_id, 0)
+            
+            # Hedefe vardık mı? (Mesafe toleransı VEYA İzdüşüm geçişi)
+            hedefe_varildi = mesafe < HEDEF_TOLERANS
+            
+            # Eğer izdüşüm kontrolü gerekiyorsa (dönemeçlerde takılmamak için)
+            if not hedefe_varildi and len(nokta_listesi) > mevcut_indeks + 1:
+                mevcut_wp = nokta_listesi[mevcut_indeks]
+                sonraki_wp = nokta_listesi[mevcut_indeks + 1]
+                if self._waypoint_izdusum_gecildi_mi(rov_id, mevcut_wp, sonraki_wp):
+                    hedefe_varildi = True
+
+            if hedefe_varildi:
+                # Sonraki nokta var mı?
+                if mevcut_indeks + 1 < len(nokta_listesi):
+                    # SONRAKİ NOKTAYA GEÇ
+                    yeni_indeks = mevcut_indeks + 1
+                    self.filo_ref._git_mevcut_nokta_indeksi[rov_id] = yeni_indeks
+                    
+                    nxt = nokta_listesi[yeni_indeks]
+                    # Z eksenini koru (Simülasyonda derinlik değişimi istenmiyorsa)
+                    current_z = self._rov_pozisyon_sim().z if self._rov_pozisyon_sim() else 0.0
+                    
+                    # Yeni hedefi ata
+                    self.filo_ref.hedef_guncelle(rov_id, (float(nxt[0]), float(nxt[1]), current_z))
+                    return # Bu karede hareket etme, hedef güncellendi
+                else:
+                    # ROTA BİTTİ -> DUR
+                    self.rov.velocity = Vec3(0, 0, 0)
+                    self.filo_ref.rota_bitir(rov_id) # Temizlik işlemlerini buraya taşıyabilirsin
+                    return
+
+            # ---------------------------------------------------------
+            # 3. FİZİK VE MOTOR KONTROLÜ
+            # ---------------------------------------------------------
+            
+            # Güç Hesaplama (Logaritmik frenleme)
+            if mesafe < HEDEF_TOLERANS * 3.0:
+                raw_guc = (np.log(max(mesafe, 1.0))) / 10.0
+                guc = max(MIN_GUC, min(MAX_GUC, raw_guc))
+            else:
+                guc = 0.2  # Seyir hızı
+
+            # Vektör Hazırlığı (Normalize et + Kalman Filtresi)
+            v_final = v_sim.normalized()
+            
+            # Thrust (İtme) Hesabı
+            thrust = (guc * 100.0) * time.dt * HareketAyarlari.MOTOR_GUC_KATSAYISI
+            
+            # Eksen Haritalama (Sim -> Ursina)
+            # Ursina: X=Sağ, Y=Yukarı, Z=İleri
+            # Sim   : X=Sağ, Y=İleri,  Z=Yukarı(Derinlik)
+            if abs(v_final.x) > 0.01: self.rov.velocity.x += v_final.x * thrust
+            if abs(v_final.y) > 0.01: self.rov.velocity.z += v_final.y * thrust # Sim Y -> Ursina Z
+            if abs(v_final.z) > 0.01: self.rov.velocity.y += v_final.z * thrust # Sim Z -> Ursina Y
+
+            # Hız Limitleme (Clamp)
+            max_hiz_limit = min(guc * 100.0, getattr(FizikSabitleri, 'MAX_HIZ', 50.0))
+            if self.rov.velocity.length() > max_hiz_limit:
+                self.rov.velocity = self.rov.velocity.normalized() * max_hiz_limit
 
     def _hedef_yok_sonumle(self):
         """Hedef yokken ve manuel kuvvet yokken hızı sönümler."""
@@ -3285,23 +3360,6 @@ class TemelGNCHelper:
         Hedef yoksa ama engel/rov varsa kaçınma vektörü kullanılır.
         """
         hedef_koordinat = self.filo_ref.hedef(rov_id=rov_id)
-        if hedef_koordinat is None:
-            nokta_listesi = getattr(self.filo_ref, '_git_nokta_listesi', {}).get(rov_id)
-            mevcut_indeks = getattr(self.filo_ref, '_git_mevcut_nokta_indeksi', {}).get(rov_id, 0)
-            if nokta_listesi and mevcut_indeks + 1 < len(nokta_listesi):
-                yeni_indeks = mevcut_indeks + 1
-                nxt = nokta_listesi[yeni_indeks]
-                self.filo_ref._git_mevcut_nokta_indeksi[rov_id] = yeni_indeks
-                current_sim = self._rov_pozisyon_sim()
-                current_z = current_sim.z if current_sim else 0.0
-                x, y, z = float(nxt[0]), float(nxt[1]), current_z
-                self.filo_ref._rov_hedefleri[rov_id] = (x, y, z)
-                if rov_id < len(self.filo_ref.sistemler):
-                    self.filo_ref.sistemler[rov_id].hedef_atama(x, y, z)
-                hedef_koordinat = (x, y, z)
-            elif nokta_listesi:
-                self.filo_ref._git_nokta_listesi.pop(rov_id, None)
-                self.filo_ref._git_mevcut_nokta_indeksi.pop(rov_id, None)
 
         # APF her zaman çalışır; hedef varsa hedef vektörü, yoksa engel/rov kaçınma
         sonuc = self.filo_ref.helper.apf(
@@ -3333,6 +3391,7 @@ class TemelGNCHelper:
             bv = item.get('birim_vektor')
             mag=item.get('mesafe', 500)
             birim_mag1=mag/GATLimitleri.ENGEL ##1-0 arasında bir değer"
+            #print(f"ROV-{rov_id} engel mesafe: {birim_mag1}")
             ters_birim_mag=1-birim_mag1
             carpan=0.55*ters_birim_mag
 
@@ -3354,10 +3413,12 @@ class TemelGNCHelper:
 
         hv = hedef_info.get('birim_vektor') if hedef_info else None
         carpan=0.10*birim_mag1 + 0.10*birim_mag2
-        if hv and len(hv) >= 2:
+        toplam_hv=(hv[0]**2+hv[1]**2)**(0.5)
+        if toplam_hv>0.1 and len(hv) >= 2:
             toplam_x += float(hv[0]) * carpan
             toplam_y += float(hv[1]) * carpan
             mag = float(hedef_info.get('mesafe', 0.0)) or 0.0
+            #print(f"ROV-{rov_id} carpan: {carpan}")
             birim_mag=mag/(400*2**(0.5))
             
 
@@ -3368,7 +3429,7 @@ class TemelGNCHelper:
         # Yön vektörü: sadece yatay (ux, uz), derinlik bileşeni 0
         new_sim_vektor = Vec3(b_vektor[0], b_vektor[1], 0.0)
         self.yaw_ayarla(new_sim_vektor, ani=False)
-        self.vektor_to_motor_sim(new_sim_vektor, mag)
+        self.vektor_to_motor_sim(new_sim_vektor, 1.0)
 
     def guncelle(self, gat_kodu=None):
         """
