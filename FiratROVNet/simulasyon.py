@@ -30,7 +30,6 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation
 import queue
-
 # Global Interactive Mode - Bir kez aç (thread-safe)
 try:
     plt.ion()
@@ -282,7 +281,7 @@ class ROV(Entity):
         # Sensörler ve Çarpışma Kontrolü
         if self.environment_ref:
             self._guncelle_sensorler()
-            self._carpisma_kontrolu_gelişmis()
+
             
         
         # Batarya (Hız varsa azalır)
@@ -314,26 +313,22 @@ class ROV(Entity):
             # İleri: ROV'un baktığı yön (Z ekseni pozitif yönü, yaw açısına göre döndürülmüş)
             hareket_x = sin(yaw_radyan) * thrust
             hareket_z = cos(yaw_radyan) * thrust
-            self.velocity.x += hareket_x
-            self.velocity.z += hareket_z
+
+
         elif komut == "geri":
             # Geri: ROV'un arkası (Z ekseni negatif yönü, yaw açısına göre döndürülmüş)
             hareket_x = -sin(yaw_radyan) * thrust
             hareket_z = -cos(yaw_radyan) * thrust
-            self.velocity.x += hareket_x
-            self.velocity.z += hareket_z
+
         elif komut == "sag":
             # Sağ: ROV'un sağ tarafı (X ekseni pozitif yönü, yaw açısına göre döndürülmüş)
             hareket_x = cos(yaw_radyan) * thrust
             hareket_z = -sin(yaw_radyan) * thrust
-            self.velocity.x += hareket_x
-            self.velocity.z += hareket_z
+
         elif komut == "sol":
             # Sol: ROV'un sol tarafı (X ekseni negatif yönü, yaw açısına göre döndürülmüş)
             hareket_x = -cos(yaw_radyan) * thrust
             hareket_z = sin(yaw_radyan) * thrust
-            self.velocity.x += hareket_x
-            self.velocity.z += hareket_z
         elif komut == "cik":
             # Yukarı: Y ekseni pozitif (yaw'dan etkilenmez)
             self.velocity.y += thrust 
@@ -3600,60 +3595,7 @@ class Ortam:
         if verbose:
             print(f"✅ ROV ID'leri yeniden numaralandırıldı: {len(aktif_rovs)} aktif ROV")
     
-    def ROV(self, rov_id, x=None, y=None, z=None):
-        """
-        ROV pozisyonunu değiştirir veya konumunu döndürür.
-        
-        Args:
-            rov_id: ROV ID'si
-            x: Yeni X koordinatı (None ise mevcut konumu döndürür)
-            y: Yeni Y koordinatı (derinlik, None ise mevcut konumu döndürür)
-            z: Yeni Z koordinatı (None ise mevcut konumu döndürür)
-        
-        Returns:
-            tuple: (x, y, z) koordinatları veya None
-        
-        Örnek:
-            # ROV konumunu değiştir
-            app.ROV(0, 10, -5, 20)
-            
-            # ROV konumunu al
-            konum = app.ROV(0)  # (x, y, z) tuple döner
-        """
-        if rov_id >= len(self.rovs):
-            print(f"⚠️ ROV ID {rov_id} bulunamadı.")
-            return None
-        
-        rov = self.rovs[rov_id]
-        
-        # Konum değiştirme
-        if x is not None and y is not None and z is not None:
-            # Ursina koordinat sistemine dönüştür: (x_2d, z_depth, y_2d)
-            ursina_x, ursina_y, ursina_z = sim_to_ursina(x, z, y)
-            
-            # ROV pozisyonunu güncelle
-            if hasattr(rov, 'position'):
-                rov.position = Vec3(ursina_x, ursina_y, ursina_z)
-            if hasattr(rov, 'x'):
-                rov.x = ursina_x
-                rov.y = ursina_y
-                rov.z = ursina_z
-            
-            print(f"✅ ROV-{rov_id} pozisyonu güncellendi: ({x}, {y}, {z})")
-            return (x, y, z)
-        else:
-            # Mevcut konumu döndür (simülasyon koordinat sistemine dönüştür)
-            if hasattr(rov, 'position') and hasattr(rov.position, 'x'):
-                ursina_x, ursina_y, ursina_z = rov.position.x, rov.position.y, rov.position.z
-                x_2d, y_2d, z_depth = ursina_to_sim(ursina_x, ursina_y, ursina_z)
-                return (x_2d, z_depth, y_2d)
-            elif hasattr(rov, 'x'):
-                ursina_x, ursina_y, ursina_z = rov.x, rov.y, rov.z
-                x_2d, y_2d, z_depth = ursina_to_sim(ursina_x, ursina_y, ursina_z)
-                return (x_2d, z_depth, y_2d)
-            else:
-                return None
-    
+
     # --- İnteraktif Shell ---
     def _start_shell(self):
         import time
