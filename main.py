@@ -57,7 +57,7 @@ print("🔧 Debug aktif! Kullanım: debug.list(), debug.apf(0), debug.apf() ile 
 
 
 # 2. ANA DÖNGÜ
-def update():
+def merkezi_update():
     """Ana simülasyon döngüsü - GAT kodlarını hesaplar ve ROV'ları günceller."""
     try:
         # Sonar iletişim çizgilerini güncelle
@@ -124,7 +124,7 @@ def update():
         import traceback
         traceback.print_exc()
 
-app.set_update_function(update)
+app.set_update_function(merkezi_update)
 
 # 3. ÇALIŞTIRMA
 if __name__ == "__main__":
