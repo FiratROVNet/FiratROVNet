@@ -78,9 +78,8 @@ class HareketAyarlari:
     Hareket ve formasyon ayarları - GAT limitlerine bağlı, sadece kullanılan değerler.
     """
     # Formasyon (GAT.ENGEL ile uyumlu tek aralık)
-    FORMASYON_MESAFESI = GATLimitleri.ENGEL
-    FORMASYON_MIN_ARALIK = GATLimitleri.ENGEL
-    FORMASYON_VARSAYILAN_ARALIK = GATLimitleri.ENGEL
+    FORMASYON_MIN_ARALIK = GATLimitleri.CARPISMA
+    FORMASYON_VARSAYILAN_ARALIK = GATLimitleri.CARPISMA
     FORMASYON_OFFSET = 60
 
     YAKIN_MESAFE_ESIGI = GATLimitleri.KOPMA * 0.375

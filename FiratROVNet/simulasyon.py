@@ -172,8 +172,15 @@ class Minimap(Entity):
         self._statik_yeniden_ciz()
         self.visible = False
 
+<<<<<<< HEAD
 
 
+=======
+        # (Minimap __init__ metodunun en alt kısmına ekle)
+        self.hedef_ikonlari = {}       # ID bazlı kalıcı hedefler için sözlük
+        self.gecici_hedef_ikonu = None # debug=True iken kullanılan geçici hedef
+
+>>>>>>> develop
     # --- KRİTİK GÜNCELLEME: goster metodu ---
     def goster(self, durum=True, convex=False, a_star=False, scale=None, **kwargs):
         """GNC sisteminden gelen convex ve a_star parametrelerini karşılar."""
@@ -328,6 +335,78 @@ class Minimap(Entity):
                     alpha=0.85
                 )
 
+<<<<<<< HEAD
+=======
+    def hedef_isaretle(self, x, z, id=None, debug=True):
+        """3D ortamda oluşturulan hedefi Minimap üzerinde 2D olarak çizer."""
+        from ursina import Entity, destroy, color, Text
+        
+        # Dünya (3D) koordinatını Minimap (2D) koordinatına çevir
+        mp = self.dunya_to_harita(x, z)
+        
+        # --- DURUM 1: GEÇİCİ HEDEF (debug=True) ---
+        if debug:
+            if hasattr(self, 'gecici_hedef_ikonu') and self.gecici_hedef_ikonu:
+                destroy(self.gecici_hedef_ikonu)
+                
+            self.gecici_hedef_ikonu = Entity(
+                parent=self,
+                model='circle',
+                color=color.red,
+                scale=0.035, # Harita üzerindeki boyutu
+                position=(mp.x, mp.y, -0.35), # Z ekseninde ikonların vs. üstünde durması için
+                enabled=self.visible # Minimap kapalıysa gizli kalsın
+            )
+            
+        # --- DURUM 2: KALICI ID'Lİ HEDEF (debug=False) ---
+        else:
+            if id is None: return
+            
+            # Aynı ID varsa önce eskisini sil
+            self.hedef_sil(id)
+            
+            yeni_ikon = Entity(
+                parent=self,
+                model='circle',
+                color=color.cyan,
+                scale=0.03,
+                position=(mp.x, mp.y, -0.35),
+                enabled=self.visible
+            )
+            
+            # Noktanın yanına haritada ID numarasını yaz
+            Text(
+                parent=yeni_ikon,
+                text=str(id),
+                scale=35, # İkonun (0.03) child'ı olduğu için scale'i yüksek veriyoruz
+                color=color.black,
+                origin=(0, 0),
+                y=1 # Çemberin hafif üstünde dursun
+            )
+            
+            self.hedef_ikonlari[id] = yeni_ikon
+
+    def hedef_sil(self, id):
+        """Belirtilen ID'li hedefi minimap'ten siler."""
+        from ursina import destroy
+        if hasattr(self, 'hedef_ikonlari') and id in self.hedef_ikonlari:
+            destroy(self.hedef_ikonlari[id])
+            del self.hedef_ikonlari[id]
+
+    def hedefleri_temizle(self):
+        """Tüm kalıcı ve geçici hedefleri minimap'ten temizler."""
+        from ursina import destroy
+        # Kalıcı hedefleri sil
+        if hasattr(self, 'hedef_ikonlari'):
+            for hid in list(self.hedef_ikonlari.keys()):
+                self.hedef_sil(hid)
+        
+        # Geçici hedefi sil
+        if hasattr(self, 'gecici_hedef_ikonu') and self.gecici_hedef_ikonu:
+            destroy(self.gecici_hedef_ikonu)
+            self.gecici_hedef_ikonu = None
+
+>>>>>>> develop
 # ============================================================
 # 3. ORTAM SINIFI (Simülasyon Dünyası)
 # ============================================================

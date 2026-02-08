@@ -9,12 +9,11 @@ import math
 import random
 
 from panda3d.core import loadPrcFileData
-
+from itertools import product
 # Log seviyesini 'fatal' yaparak sadece hayati hataları gösterir, bilgi mesajlarını gizler
 loadPrcFileData('', 'notify-level fatal')
 loadPrcFileData('', 'notify-level-util fatal')
-from ursina import Vec3, time
-
+from ursina import Entity, color , Text, destroy,Vec3,time
 # Alpha Shape ve Shapely için import (kontur hesaplama için)
 try:
     import alphashape
@@ -134,6 +133,7 @@ class FiloHelper:
         self._apf_prev_vektor = {}  # rov_id -> (ux, uz) temporal smoothing için
         # Koordinator'u lazy import için cache (circular import önleme)
         self._koordinator = None
+        self.kalici_hedefler = {}
 
     def get(self, rov_id: int = None, veri_tipi: str = None, taraf: int = None, koordinator=None, sessiz: bool = False):
         """
@@ -1570,74 +1570,113 @@ class FiloHelper:
             import traceback
             traceback.print_exc()
             return None
-
-    def hedef_gorsel_olustur(self, x, y, z):
+    def hedef_gorsel_olustur(self, x, y, z, id=None, debug=True):
         """
-        Hedef pozisyonunu Ursina'da büyük X işareti olarak gösterir.
-        (x, y, z) Ursina koordinatlarıdır (çağıran Koordinator.sim_to_ursina ile geçirir).
+        Hedef pozisyonunu hem 3D dünyada hem de Minimap üzerinde gösterir.
+        x, y, z: Simülasyon koordinatları (Koordinator.sim_to_ursina tarafından çevrilmiş).
+        id: Noktanın kimliği (debug=False ise zorunludur).
+        debug=True: Geçici kırmızı X işareti (Her yeni hedefte eskiyi siler).
+        debug=False: Kalıcı, ID numaralı mavi çember (Ekranda kalır).
         """
+        from ursina import Entity, color, destroy, Text
+        
+        # --- 1. KOORDİNAT HAZIRLIĞI ---
+        # Ursina'da dikey eksen Y'dir. Simülasyondan gelen (x, y, z) -> (x, z, y) dönüşümü:
+        x_urs, y_urs, z_urs = x, z, y
 
-        x,y,z=(x,z,y)
         if not self.filo.ortam_ref:
             return
 
+        # Kalıcı hedefler sözlüğünü kontrol et yoksa oluştur
+        if not hasattr(self.filo, 'kalici_hedefler'):
+            self.filo.kalici_hedefler = {}
+
+        # --- 2. 3D DÜNYA GÖRSELLEŞTİRME ---
+
+        # DURUM A: GEÇİCİ HEDEF (debug=True)
+        if debug:
+            if self.filo.hedef_gorsel:
+                try: destroy(self.filo.hedef_gorsel)
+                except: pass
+
+            self.filo.hedef_gorsel = Entity()
+            self.filo.hedef_gorsel.position = (x_urs, y_urs, z_urs)
+
+            # HareketAyarlari'ndan sabitleri al (Erişilemiyorsa varsayılan değer kullan)
+            x_boyutu = getattr(HareketAyarlari, 'HEDEF_X_BOYUTU', 15)
+            kalinlik = getattr(HareketAyarlari, 'HEDEF_KALINLIK', 0.5)
+
+            # Kırmızı X İşareti
+            Entity(model='cube', rotation=(90, 0, 45), scale=(x_boyutu, kalinlik, kalinlik),
+                   color=color.rgba(255, 0, 0, 0.5), parent=self.filo.hedef_gorsel, unlit=True)
+            Entity(model='cube', rotation=(90, 0, -45), scale=(x_boyutu, kalinlik, kalinlik),
+                   color=color.rgba(255, 0, 0, 0.5), parent=self.filo.hedef_gorsel, unlit=True)
+            Entity(model='sphere', scale=(2, 2, 2), color=color.rgba(255, 0, 0, 0.5), 
+                   parent=self.filo.hedef_gorsel, unlit=True)
+            # Yeşil Çember
+            Entity(model='circle', rotation=(90, 0, 0), scale=(x_boyutu * 1.5, x_boyutu * 1.5, 1),
+                   color=color.rgb(0, 255, 120), parent=self.filo.hedef_gorsel, unlit=True, wireframe=True)
+
+        # DURUM B: KALICI HEDEF (debug=False)
+        else:
+            if id is None:
+                print("⚠️ Hata: debug=False iken bir id belirtmelisiniz!")
+                return
+
+            # Eğer bu ID ile bir hedef zaten varsa önce onu temizle (üst üste binmemesi için)
+            self.hedef_sil(id)
+
+            # Yeni kalıcı hedef objesi
+            yeni_hedef = Entity(position=(x_urs, y_urs, z_urs))
+            
+            # Yer çemberi (Cyan)
+            Entity(model='circle', parent=yeni_hedef, rotation=(90, 0, 0), scale=5,
+                   color=color.cyan, wireframe=True, unlit=True)
+
+            # Billboard ID Yazısı (Kameraya her zaman bakar)
+            Text(text=str(id), parent=yeni_hedef, y=1.5, scale=25, 
+                 color=color.yellow, origin=(0, 0), billboard=True)
+
+            # Listeye kaydet
+            self.kalici_hedefler[id] = yeni_hedef
+
+        # --- 3. MİNİMAP GÜNCELLEMESİ ---
+        # Minimap sınıfına bu noktayı gönderiyoruz.
+        # Not: Minimap dunya_to_harita fonksiyonunda X ve Z kullanır.
+        if hasattr(self.filo.ortam_ref, 'minimap') and self.filo.ortam_ref.minimap:
+            self.filo.ortam_ref.minimap.hedef_isaretle(x_urs, z_urs, id=id, debug=debug)
+
+    def hedef_sil(self, id):
+        """Spesifik bir ID'ye sahip hedefi hem 3D dünyadan hem de Minimap'ten temizler."""
+        
+        # 3D'den sil
+        if hasattr(self, 'kalici_hedefler') and id in self.kalici_hedefler:
+            destroy(self.kalici_hedefler[id])
+            del self.kalici_hedefler[id]
+            
+        # Minimap'ten sil
+        if hasattr(self.filo.ortam_ref, 'minimap') and self.filo.ortam_ref.minimap:
+            self.filo.ortam_ref.minimap.hedef_sil(id)
+
+    def debug_hedefleri_temizle(self):
+        """Ekrandaki tüm kalıcı (ID'li) hedefleri ve geçici hedefleri temizler."""
+        # Sözlükteki tüm kalıcı ID'leri tek tek sil
+        if hasattr(self, 'kalici_hedefler'):
+            ids = list(self.kalici_hedefler.keys())
+            for hid in ids:
+                self.hedef_sil(hid)
+        
+        # Geçici hedefi (X işareti) sil
+        from ursina import destroy
         if self.filo.hedef_gorsel:
-            try:
-                from ursina import destroy
-                destroy(self.filo.hedef_gorsel)
-            except:
-                pass
+            destroy(self.filo.hedef_gorsel)
+            self.filo.hedef_gorsel = None
+            
+        # Minimap'i tamamen süpür
+        if hasattr(self.filo.ortam_ref, 'minimap') and self.filo.ortam_ref.minimap:
+            self.filo.ortam_ref.minimap.hedefleri_temizle()
 
-        from ursina import Entity, color
 
-        self.filo.hedef_gorsel = Entity()
-        self.filo.hedef_gorsel.position = (x, y, z)
-
-        x_boyutu = HareketAyarlari.HEDEF_X_BOYUTU
-        kalinlik = HareketAyarlari.HEDEF_KALINLIK
-
-        Entity(
-            model='cube',
-            position=(0, 0, 0),
-            rotation=(90, 0, 45),
-            scale=(x_boyutu, kalinlik, kalinlik),
-            color=color.rgba(255, 0, 0, 0.5),
-            parent=self.filo.hedef_gorsel,
-            unlit=True,
-            billboard=False
-        )
-
-        Entity(
-            model='cube',
-            position=(0, 0, 0),
-            rotation=(90, 0, -45),
-            scale=(x_boyutu, kalinlik, kalinlik),
-            color=color.rgba(255, 0, 0, 0.5),
-            parent=self.filo.hedef_gorsel,
-            unlit=True,
-            billboard=False
-        )
-
-        Entity(
-            model='sphere',
-            position=(0, 0, 0),
-            scale=(2, 2, 2),
-            color=color.rgba(255, 0, 0, 0.5),
-            parent=self.filo.hedef_gorsel,
-            unlit=True
-        )
-
-        hedef_rengi = color.rgb(0, 255, 120)
-        Entity(
-            model='circle',
-            position=(0, 0, 0),
-            rotation=(90, 0, 0),
-            scale=(x_boyutu * 1.5, x_boyutu * 1.5, 1),
-            color=hedef_rengi,
-            parent=self.filo.hedef_gorsel,
-            unlit=True,
-            wireframe=True
-        )
 
     def hull(self, offset=50.0):
         """
@@ -2113,6 +2152,7 @@ class FiloHelper:
             if not self.filo._is_main_thread():
                 if hasattr(self.filo, '_command_queue'):
                     self.filo._command_queue.put(('formasyon_sec', (margin, is_3d, offset), {'dinamik': dinamik}))
+<<<<<<< HEAD
                 return None
 
             # 3. Ana Hesaplama Fonksiyonunu Çağır
@@ -2199,6 +2239,152 @@ class FiloHelper:
         except Exception as e:
             print(f"❌ [FORMASYON HATASI]: {e}")
             return None
+=======
+                return None
+
+            # 3. Ana Hesaplama Fonksiyonunu Çağır
+            return self._formasyon_sec_impl(margin, is_3d, offset, dinamik=dinamik)
+
+    def _formasyon_sec_impl(self, margin=None, is_3d=False, offset=None, sessiz=True, dinamik=True):
+            initial_margin = margin if margin is not None else HareketAyarlari.FORMASYON_OFFSET
+            min_aralik = HareketAyarlari.FORMASYON_MIN_ARALIK
+            offset = offset if offset is not None else HareketAyarlari.FORMASYON_OFFSET
+            
+            try:
+                self.filo._formasyon_hedefleri.clear()
+                lider_id, lider_gps = self.filo._find_leader_info(sessiz=sessiz)
+                if lider_id is None: return None
+
+                lider_mevcut_hedef = self.filo.hedef(rov_id=lider_id)
+                lider_hareket_halinde = lider_mevcut_hedef is not None
+
+                # 1. Hull ve Arama Hattı Hazırlığı
+                hull_data = self.yeni_hull(yasakli_noktalar=self.filo.ada_cevre(), offset=offset)
+                hull_obj = hull_data.get("hull")
+                hull_merkez = hull_data.get("center")
+                if not hull_obj: return None
+
+                # ==========================================
+                # 🖼️ HARİTA GÖRSELLEŞTİRMEYİ TETİKLE
+                # ==========================================
+                if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'minimap'):
+                    m_ui = self.filo.ortam_ref.minimap
+                    if m_ui:
+                        # Minimap kapalıysa aç ve Cyan alanı çiz
+                        if hasattr(m_ui, 'goster'): m_ui.goster(True)
+                        if hasattr(m_ui, 'update_hull'): m_ui.update_hull(hull_obj)
+                # ==========================================
+
+                # 3D Referans ve Arama Vektörü
+                ref_pos_3d = lider_gps if lider_gps else (hull_merkez[0], hull_merkez[1], 0.0)
+                start_pos_2d, unit_dir_2d, total_dist = self.generate_search_points(ref_pos_3d, hull_merkez)
+
+                # 2. Sabitler
+                denenecek_ids = self.filo._get_formation_ids_to_try()
+                yaw_secenekleri = [0, 90, 180, 270]
+                formasyon_motoru = Formasyon(self.filo)
+                best_overall = None
+                
+                # --- KONUM İÇİN BINARY SEARCH ---
+                low_d, high_d = 0.0, total_dist
+                for _ in range(7): 
+                    mid_d = (low_d + high_d) / 2
+                    curr_2d = start_pos_2d + unit_dir_2d * mid_d
+                    merkez_3d = (float(curr_2d[0]), float(curr_2d[1]), float(ref_pos_3d[2]))
+                    
+                    found_at_this_pos = False
+                    for deneme_yaw in yaw_secenekleri:
+                        for f_id in denenecek_ids:
+                            # --- ARALIK İÇİN BINARY SEARCH ---
+                            low_a, high_a = min_aralik, initial_margin
+                            current_best_a = -1
+                            current_best_p = None
+                            
+                            while low_a <= high_a:
+                                mid_a = (low_a + high_a) / 2
+                                p = formasyon_motoru.pozisyonlar(f_id, mid_a, is_3d, merkez_3d, deneme_yaw)
+                                
+                                if p and self.filo.hull_manager.formasyon_gecerli_mi(p, hull_obj, mid_a):
+                                    current_best_a = mid_a
+                                    current_best_p = p
+                                    low_a = mid_a + 1.0
+                                else:
+                                    high_a = mid_a - 1.0
+                            
+                            if current_best_a != -1:
+                                best_overall = {
+                                    'f_id': f_id, 'aralik': current_best_a, 'yaw': deneme_yaw,
+                                    'merkez': merkez_3d, 'pozisyonlar': current_best_p
+                                }
+                                found_at_this_pos = True
+                                break
+                        if found_at_this_pos: break
+                    
+                    if found_at_this_pos:
+                        high_d = mid_d - 2.0
+                    else:
+                        low_d = mid_d + 2.0
+
+                # 3. Sonuç Uygulama
+                if best_overall:
+                    b = best_overall
+                    self._apply_formation_results(
+                        b['f_id'], b['aralik'], b['yaw'], b['merkez'], 
+                        b['pozisyonlar'], lider_id, is_3d, dinamik, sessiz, lider_hareket_halinde
+                    )
+                    
+                    if not sessiz:
+                        durum = "Dinamik" if dinamik else "Sabit"
+                        print(f"✅ [MİNİMAP] {durum} {b['f_id']} seçildi. Alan Cyan olarak işlendi.")
+
+                    return {
+                        'f_id': int(b['f_id']),
+                        'aralik': round(float(b['aralik']), 1),
+                        'merkez': (round(b['merkez'][0], 2), round(b['merkez'][1], 2)),
+                        'yaw': float(b['yaw'])
+                    }
+
+                return None
+                
+            except Exception as e:
+                print(f"❌ [FORMASYON HATASI]: {e}")
+                return None
+        
+    def _apply_formation_results(self, f_id, aralik, yaw, merkez, pozisyonlar, lider_id, is_3d, dinamik, sessiz, lider_hareket_halinde):
+            """Hesaplaması bitmiş formasyonu uygular. Lider hareket halindeyse ona dokunmaz."""
+            
+            # Formasyon bilgisini kaydet (Dinamik takip için şart)
+            self.filo.aktif_formasyon = {
+                'id': f_id, 
+                'aralik': aralik, 
+                'is_3d': is_3d,
+                'yaw': yaw # Referans yaw
+            } if dinamik else None
+            
+            for i, pos in enumerate(pozisyonlar):
+                if i >= len(self.filo.sistemler) or self.filo.sistemler[i] is None: continue
+                
+                # LİDER KONTROLÜ: Eğer liderin hedefi varsa, ona 'git' komutu gönderme
+                if i == lider_id and lider_hareket_halinde:
+                    if not sessiz: print(f"ℹ️ [FORMASYON] Lider ROV-{i} görevine devam ediyor, takipçiler eklemleniyor.")
+                    continue
+
+                sim_x, sim_y, sim_z = pos
+                final_z = -10.0 if sim_z >= 0 else sim_z
+                
+                # Takipçiler için hedef kaydı
+                if i != lider_id:
+                    self.filo._formasyon_hedefleri[i] = {'pozisyon': (sim_x, sim_y, final_z), 'hedef_yaw': yaw}
+                
+                # Komutu gönder
+                self.filo.git(i, sim_x, sim_y, final_z, ai=True, sessiz=sessiz)
+                
+    def normalize_hull_center(self, hull_merkez) -> tuple:
+        """Hull merkezini Sim formatına dönüştürür (z=0 yapar)."""
+        hull_merkez_liste = list(hull_merkez)
+        hull_merkez_liste[2] = 0
+        return tuple(hull_merkez_liste)
+>>>>>>> develop
     
     def ada_cevre(self, offset: float = 15.0, sessiz: bool = False) -> list:
         """
@@ -2357,64 +2543,50 @@ class FiloHelper:
             traceback.print_exc()
             return []
     
-    def yeni_hull(self, yasakli_noktalar: list, offset: float = 40.0, alpha: float = 2.0,
-                  buffer_radius: float = 20.0, channel_width: float = 15.0) -> dict:
-        """
-        Mevcut hull noktalarını alır, yasaklı bölgeleri kesip çıkarır.
-        
-        Args:
-            yasakli_noktalar: Yasaklı nokta listesi
-            offset: ROV hull genişletme mesafesi
-            alpha: Alpha shape parametresi
-            buffer_radius: Yasaklı bölge yarıçapı
-            channel_width: Kanal genişliği
-        
-        Returns:
-            dict: {'hull': hull_obj, 'points': points_array, 'center': center_tuple}
-        """
-        try:
-            if not SHAPELY_AVAILABLE:
-                return {'hull': None, 'points': None, 'center': None}
+    def yeni_hull(self, yasakli_noktalar=None, offset=50.0, buffer_radius=10.0, **kwargs):
+            """
+            Filoya ait hull oluşturur. 
+            Debug logları eklenmiştir.
+            """
+            import math
+            #print(f"🛠️ [DEBUG] yeni_hull çalıştı. Offset: {offset}")
+
+            # 1️⃣ Base Points (Temel Noktalar) Hazırla
+            base_points = []
             
-            from shapely.geometry import Point, Polygon
-            
-            # Mevcut Hull'ı Al
-            guvenlik_hull_dict = self.filo.hull_manager.hull(offset=offset)
-            hull_noktalari = guvenlik_hull_dict.get("points")
-            eski_hull_merkez = guvenlik_hull_dict.get("center")
-            
-            if hull_noktalari is None:
-                return {'hull': None, 'points': None, 'center': None}
-            
-            # Noktaları Hazırla
-            hull_noktalari_2d = []
-            if isinstance(hull_noktalari, np.ndarray):
-                hull_noktalari_2d = [[float(p[0]), float(p[1])] for p in hull_noktalari]
+            # Lider ROV'u bulmaya çalış
+            lider_bilgisi = self.find_leader_info(sessiz=False) # Hata varsa gör
+            lider_gps = lider_bilgisi[1] if lider_bilgisi else None
+
+            if lider_gps is None:
+                print("⚠️ [UYARI] Lider ROV bulunamadı! Merkez (0,0,0) kabul ediliyor.")
+                lx, ly = 0.0, 0.0 # Fallback: Lider yoksa merkeze çiz
             else:
-                hull_noktalari_2d = [[float(p[0]), float(p[1])] for p in hull_noktalari if len(p) >= 2]
+                lx, ly = lider_gps[0], lider_gps[1]
+                #print(f"✅ [DEBUG] Lider bulundu: ({lx}, {ly})")
+
+            # Daire oluştur (Güvenlik alanı)
+            radius = max(15.0, float(offset))
+            for i in range(16):
+                angle = math.radians(i * 22.5)
+                nx = lx + math.cos(angle) * radius
+                ny = ly + math.sin(angle) * radius
+                base_points.append([nx, ny])
             
-            yasakli_noktalar_2d = []
-            if yasakli_noktalar:
-                for nokta in yasakli_noktalar:
-                    if len(nokta) >= 2:
-                        yasakli_noktalar_2d.append([float(nokta[0]), float(nokta[1])])
-            
-            # Yeniden Çiz
-            if yasakli_noktalar_2d:
-                yeni_kontur_noktalari = self.yeniden_ciz(
-                    noktalar=hull_noktalari_2d,
-                    yasakli_noktalar=yasakli_noktalar_2d,
-                    alpha=alpha,
-                    buffer_radius=buffer_radius,
-                    channel_width=channel_width
-                )
-            else:
-                yeni_kontur_noktalari = hull_noktalari_2d
-            
-            # Sonuçları Paketle
-            if yeni_kontur_noktalari and len(yeni_kontur_noktalari) >= 3:
-                kontur_noktalari_np = np.array(yeni_kontur_noktalari)
+            #print(f"✅ [DEBUG] {len(base_points)} adet temel nokta oluşturuldu.")
+
+            # 2️⃣ HullManager'ı Başlat
+            try:
+                from FiratROVNet.hull import HullManager
+                #print("✅ [DEBUG] HullManager başarıyla yüklendi.")
+            except ImportError:
+                try:
+                    from .hull import HullManager
+                except ImportError:
+                    #print("❌ [KRİTİK] HullManager import edilemedi!")
+                    return {'points': None, 'center': None}
                 
+<<<<<<< HEAD
                 yeni_poly = Polygon(yeni_kontur_noktalari)
                 if not yeni_poly.is_valid:
                     yeni_poly = yeni_poly.buffer(0)
@@ -2494,6 +2666,23 @@ class FiloHelper:
         hull_merkez_liste[2] = 0
         return tuple(hull_merkez_liste)
     
+=======
+            mgr = HullManager()
+
+            # 3️⃣ Hesaplamayı Yap
+            sonuc = mgr.yeni_hull(
+                base_points=base_points,
+                yasakli_noktalar=yasakli_noktalar,
+                offset=0.0, # Daireyi zaten geniş çizdik
+                buffer_radius=buffer_radius
+            )
+
+            if sonuc.get('points') is None:
+                print("❌ [DEBUG] HullManager boş sonuç döndürdü!")
+
+            return sonuc
+
+>>>>>>> develop
     def find_leader_info(self, sessiz: bool = False) -> tuple:
         """Lider ROV ID ve GPS koordinatını bulur."""
         lider_rov_id = None
@@ -2523,34 +2712,20 @@ class FiloHelper:
         # Not: find_leader_info() içindeki print mesajları kaldırıldı (sessiz mod için)
         return lider_rov_id, lider_gps
     
-    def generate_search_points(self, lider_gps: tuple, hull_merkez: tuple) -> list:
-        """Lider GPS'ten hull merkezine kadar ara noktalar oluşturur."""
-        arama_noktalari = [("Lider GPS", lider_gps)]
-        
-        lider_x, lider_y, lider_z = lider_gps
-        hull_x, hull_y, hull_z = hull_merkez
-        
-        dx = hull_x - lider_x
-        dy = hull_y - lider_y
-        mesafe_2d = math.sqrt(dx**2 + dy**2)
-        
-        if mesafe_2d > 10.0 and mesafe_2d > 0.001:
-            yon_x = dx / mesafe_2d
-            yon_y = dy / mesafe_2d
+    def generate_search_points(self, lider_gps: tuple, hull_merkez: tuple):
+            """Arama hattı için vektörel verileri hazırlar."""
+            # Girişleri sayısal garantiye al
+            lider_pos_2d = np.array([float(lider_gps[0]), float(lider_gps[1])])
+            merkez_pos_2d = np.array([float(hull_merkez[0]), float(hull_merkez[1])])
             
-            dilim_boyutu = 10.0
-            mevcut_mesafe = dilim_boyutu
+            vektor = merkez_pos_2d - lider_pos_2d
+            toplam_mesafe = np.linalg.norm(vektor)
             
-            while mevcut_mesafe < mesafe_2d:
-                ara_x = lider_x + (yon_x * mevcut_mesafe)
-                ara_y = lider_y + (yon_y * mevcut_mesafe)
-                ara_z = lider_z
+            if toplam_mesafe < 0.1:
+                return lider_pos_2d, np.array([0.0, 0.0]), 0.0
                 
-                arama_noktalari.append((f"Ara Nokta ({mevcut_mesafe:.1f}m)", (ara_x, ara_y, ara_z)))
-                mevcut_mesafe += dilim_boyutu
-        
-        arama_noktalari.append(("Hull Merkezi", hull_merkez))
-        return arama_noktalari
+            birim_yon = vektor / toplam_mesafe
+            return lider_pos_2d, birim_yon, toplam_mesafe
     
     def get_formation_ids_to_try(self) -> list:
         """Denenecek formasyon ID'lerini pool'dan alır."""
@@ -2567,81 +2742,6 @@ class FiloHelper:
         
         return denenecek_formasyon_idleri
     
-    def try_formation_fit(self, formasyon_id: int, aralik: float, is_3d: bool, 
-                          merkez_koordinat: tuple, deneme_yaw: float, hull, 
-                          lider_rov_id: int, nokta_adi: str, sessiz: bool = False, dinamik: bool = True) -> bool:
-        """Formasyonun geçerli olup olmadığını kontrol eder ve uygular."""
-        formasyon_obj = Formasyon(self.filo)
-        pozisyonlar = formasyon_obj.pozisyonlar(
-            formasyon_id,
-            aralik=aralik,
-            is_3d=is_3d,
-            lider_koordinat=merkez_koordinat,
-            yaw=deneme_yaw
-        )
-        
-        if not pozisyonlar:
-            return False
-        
-        # Pozisyonları Ursina formatına dönüştür
-        ursina_positions = []
-        for pozisyon in pozisyonlar:
-            config_x, config_y, config_z = pozisyon
-            ursina_positions.append((config_x, config_z, config_y))
-        
-        if not self.filo._formasyon_gecerli_mi(ursina_positions, hull, aralik):
-            return False
-        
-        # Başarılı formasyon bulundu! Uygula
-        
-        # Aktif formasyonu kaydet (dinamik takip için)
-        if dinamik:
-            self.filo.aktif_formasyon = {
-                'id': formasyon_id,
-                'aralik': aralik,
-                'is_3d': is_3d
-            }
-        else:
-            self.filo.aktif_formasyon = None
-        
-        self.filo.set(lider_rov_id, 'yaw', float(deneme_yaw))
-        
-        if nokta_adi != "Lider GPS":
-            # Lider ROV kontrolü: Eğer hareket halindeyse (hedefi varsa), ona dokunma
-            mevcut_hedef = self.filo.hedef(rov_id=lider_rov_id)
-            if mevcut_hedef is None:
-                self.filo.git(lider_rov_id, merkez_koordinat[0], merkez_koordinat[1],
-                            merkez_koordinat[2], ai=True, sessiz=sessiz)
-            else:
-                if not sessiz:
-                    print(f"ℹ️ [FORMASYON] Lider ROV-{lider_rov_id} hareket halinde, mevcut hedefine devam ediyor.")
-        
-        # Takipçi ROV'ları formasyon pozisyonlarına gönder
-        for rov_id, pozisyon in enumerate(pozisyonlar):
-            if rov_id >= len(self.filo.sistemler):
-                break
-            
-            # None kontrolü (çıkarılmış ROV'lar için sistem yoksa None olabilir)
-            if rov_id < len(self.filo.sistemler) and self.filo.sistemler[rov_id] is None:
-                continue
-            
-            if rov_id == lider_rov_id:
-                continue
-            
-            sim_x, sim_y, sim_z = pozisyon
-            
-            if sim_z >= 0:
-                sim_z = -10.0
-            
-            self.filo._formasyon_hedefleri[rov_id] = {
-                'pozisyon': (sim_x, sim_y, sim_z),
-                'hedef_yaw': deneme_yaw
-            }
-            
-            self.filo.git(rov_id, sim_x, sim_y, sim_z, ai=True, sessiz=sessiz)
-        
-        return True
-
 
 class TemelGNCHelper:
     """
@@ -2855,7 +2955,11 @@ class TemelGNCHelper:
             if not uygula:
                 #ivme=guc_orani*Vec3(hedef_yon_ursina.x, hedef_yon_ursina.y, hedef_yon_ursina.z)
                 #yeni_hiz = self.rov.velocity + (ivme * dt)
+<<<<<<< HEAD
                 return hedef_yon_ursina*guc_orani*2
+=======
+                return hedef_yon_ursina*guc_orani
+>>>>>>> develop
 
             # --- 1. KUVVET HESAPLAMALARI ---
             # A) Motor İtme (Thrust)
@@ -2894,12 +2998,20 @@ class TemelGNCHelper:
         # X: Sağ, Z: İleri, Y: Derinlik (Kullanıcının tercih ettiği mapping)
         guc_orani = max(0.0, min(1.0, guc_orani))
         dt = time.dt
+<<<<<<< HEAD
+=======
+        vim_dir=v_sim_dir.normalized() if v_sim_dir.length() > 0.001 else Vec3(0,0,0)
+>>>>>>> develop
 
         # 2. Fizik Hesaplamasını Tetikle (Vektörü al)
         hesaplanan_hiz = self.fizik_uygula(v_sim_dir, guc_orani, dt, uygula=False)
 
 
+<<<<<<< HEAD
         self.rov.velocity = self._kalman_vektor_filtrele(v_sim_dir)
+=======
+        self.rov.velocity = self._kalman_vektor_filtrele(hesaplanan_hiz)
+>>>>>>> develop
             
             # Burnunu hareket yönüne çevir (Yaw)
         if guc_orani > 0.01:
@@ -2909,7 +3021,11 @@ class TemelGNCHelper:
         ursina_rov_velocity=Vec3(self.rov.velocity.x, self.rov.velocity.z, self.rov.velocity.y)
 
         
+<<<<<<< HEAD
         GORSEL_HIZ_CARPANI = 20.0
+=======
+        GORSEL_HIZ_CARPANI = 30.0
+>>>>>>> develop
         self.rov.position += ursina_rov_velocity * dt * GORSEL_HIZ_CARPANI
         # Hız Vektörünü Minimap'te Çiz
         if guc_orani > 0.02 and hasattr(self.rov, 'velocity'):
@@ -3084,7 +3200,11 @@ class TemelGNCHelper:
                 # AI (APF) hedefini bir sonraki noktaya güncelle
                 if mevcut_indeks + 1 < len(nokta_listesi):
                     next_wp = nokta_listesi[mevcut_indeks + 1]
+<<<<<<< HEAD
                     self.filo_ref.hedef((next_wp[0], next_wp[1],target_z),rov_id=rov_id)
+=======
+                    self.filo_ref.hedef((next_wp[0], next_wp[1],target_z),rov_id=rov_id,ciz=False)
+>>>>>>> develop
                 
                 return waypoint_hedef, False
 

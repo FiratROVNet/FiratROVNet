@@ -1,6 +1,9 @@
+import builtins
+
 from typing_extensions import Self
 import numpy as np
 from ursina import Vec3, time, distance
+import ursina # base'e ursina.base olarak erişmek için ekleyelim
 from .config import cfg, GATLimitleri, SensorAyarlari, ModemAyarlari, HareketAyarlari, Formasyon
 from .iletisim import AkustikModem
 from .hull import HullManager
@@ -9,6 +12,7 @@ import math
 import random
 import threading
 import queue
+
 
 # Alpha Shape ve Shapely için import (kontur hesaplama için)
 try:
@@ -234,7 +238,7 @@ class Filo:
         self.ortam_ref = None  # Ortam referansı (hedef görselleştirme için)
         self.hedef_gorsel = None  # Hedef görsel Entity (Ursina'da X işareti)
         self.hedef_pozisyon = None  # Mevcut hedef pozisyonu (x, y, z)
-        self.hull_manager = HullManager(self)  # Convex Hull yönetimi
+        self.hull_manager = HullManager()  # Convex Hull yönetimi
         self._command_queue = queue.Queue()  # Thread-safe komut kuyruğu
         self._main_thread_id = threading.get_ident()  # Ana thread ID'si
         # Formasyon ID shuffle mekanizması
@@ -265,6 +269,7 @@ class Filo:
         
         # Helper instance for complex calculations
         self.helper = FiloHelper(self)
+        self.aktif_kameralar = {}
     
     # ============================================================
     # THREAD MANAGEMENT
@@ -621,6 +626,10 @@ class Filo:
         """Tüm GNC sistemlerini günceller ve yaw senkronizasyonu yapar."""
         # Ana thread'de queue'daki komutları işle (thread-safe)
         self._process_command_queue()
+<<<<<<< HEAD
+=======
+        #print(f"🔄 [FİLO] GNC sistemleri güncelleniyor... (tahminler: {tahminler})")
+>>>>>>> develop
         
         # Tüm GNC sistemlerini güncelle (doğrudan helper.guncelle çağrısı)
         for i, gnc in enumerate(self.sistemler):
@@ -636,6 +645,11 @@ class Filo:
                 self.ortam_ref.minimap.gorsel_guncelle()
             except Exception as e:
                 if self.verbose: print(f"⚠️ Minimap güncellenemedi: {e}")
+<<<<<<< HEAD
+=======
+
+        
+>>>>>>> develop
 
     def _find_leader(self) -> tuple:
         """Lider ROV'u bulur ve bilgilerini döndürür."""
@@ -1076,7 +1090,9 @@ class Filo:
             # Çıktı: [(x1, z1, y1), (x2, z2, y2), ...] - Ursina formatında
         """
         return self.helper.formasyon(formasyon_id=formasyon_id, aralik=aralik, is_3d=is_3d, lider_koordinat=lider_koordinat, dinamik=dinamik)
-    def formasyon_sec(self, margin=None, is_3d=False, offset=None, harita=False, yaw_senkronizasyon_mesafesi=5.0, maksimum_yaw_donme_hizi=45.0, dinamik=False):
+    
+
+    def formasyon_sec_yedek(self, margin=None, is_3d=False, offset=None, dinamik=False,tekrar=10):
         """
         Convex hull kullanarak en uygun formasyonu seçer (Thread-safe).
 
@@ -1106,12 +1122,126 @@ class Filo:
                 - yaw (float): Liderin yaw açısı (derece)
                 - koordinat (tuple): Seçilen formasyon koordinatı (x, y, z) - Lider pozisyonu
         """
+<<<<<<< HEAD
         return self.helper.formasyon_sec(
             margin=margin,
             is_3d=is_3d,
             offset=offset,
             dinamik=dinamik
         )
+=======
+
+        baslangic_zamnai = time.time()
+        for i in range(tekrar):
+            degerler = self.helper.formasyon_sec(
+                margin=margin,
+                is_3d=is_3d,
+                offset=offset,
+                dinamik=dinamik
+            )
+
+        bitis_zamani = time.time()
+        gecen_sure = bitis_zamani - baslangic_zamnai
+        print(f"⏱️ formasyon_sec süresi: {gecen_sure:.4f} saniye")
+
+        
+        return degerler
+    
+
+
+    def formasyon_sec(self, margin=None, is_3d=False, offset=None, dinamik=False):
+            """
+            Formasyon seçimini tek bir ayrı thread üzerinde çalıştırır ve sonucu döndürür.
+            """
+            import concurrent.futures
+
+            # Hesaplama parametrelerini hazırla
+            kwargs = {
+                'margin': margin,
+                'is_3d': is_3d,
+                'offset': offset,
+                'dinamik': dinamik
+            }
+
+            degerler = None
+
+            # max_workers=1 ile tek bir thread havuzu oluşturuyoruz
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                # DİKKAT: helper.formasyon_sec yerine doğrudan _formasyon_sec_impl çağırıyoruz
+                # Çünkü ana fonksiyon thread kontrolü yapıp işlemi durdurabilir.
+                future = executor.submit(self.helper._formasyon_sec_impl, **kwargs)
+                
+                try:
+                    # Sonucun tamamlanmasını bekle ve al
+                    degerler = future.result()
+                except Exception as exc:
+                    print(f'❌ Formasyon hesaplama thread hatası: {exc}')
+                    import traceback
+                    traceback.print_exc()
+                    degerler = None
+
+            return degerler
+
+    # Kamera nesnelerini takip etmek için bir sözlük (Dictionary)
+
+
+    def kamera_ayarla(self, rov_id=0, mesafe=(0, -40, 120), aci=(0, 0, 0), fov=75, bölge=(0.02, 0.20, 0.80, 0.98)):
+            """
+            Sol,Sağ,Alt,Üst sırasıyla bölge parametresi (0-1 arası) - örn: (0.02, 0.30, 0.70, 0.98)
+            ROV'a dinamik bir FPV kamera bağlar.
+            """
+            # Simülasyonun çalışıp çalışmadığını kontrol et
+            if not hasattr(builtins, 'base'):
+                print("❌ HATA: Simülasyon henüz başlatılmadığı için kamera oluşturulamaz.")
+                return None
+            
+            b = builtins.base # Panda3D ana nesnesi
+
+            # 1. Eğer bu ROV için zaten bir kamera varsa temizle
+            if hasattr(self, 'aktif_kameralar') and rov_id in self.aktif_kameralar:
+                try:
+                    eski_cam = self.aktif_kameralar[rov_id]
+                    b.win.removeDisplayRegion(eski_cam.node().getDisplayRegion(0))
+                    eski_cam.removeNode()
+                except:
+                    pass
+            
+            if not hasattr(self, 'aktif_kameralar'):
+                self.aktif_kameralar = {}
+
+            # 2. Yeni Kamera Oluştur
+            cam_np = b.makeCamera(b.win)
+            cam_node = cam_np.node()
+            
+            # 3. Kamerayı ROV'a Bağla
+            # (Önemli: ortam_ref ve rovs listesinin dolu olduğundan emin olun)
+            try:
+                target_rov = self.ortam_ref.rovs[rov_id]
+                cam_np.reparentTo(target_rov)
+            except Exception as e:
+                print(f"❌ HATA: ROV-{rov_id} nesnesine ulaşılamadı: {e}")
+                return None
+            
+            # 4. Konum ve Açı (Panda3D: X sağ, Y ileri, Z yukarı)
+            cam_np.setPos(mesafe[0], mesafe[1], mesafe[2])
+            cam_np.setHpr(aci[0], aci[1], aci[2])
+            
+            # 5. Lens ve Ekran Bölgesi
+            cam_node.getLens().setFov(fov)
+            region = cam_node.get_display_region(0)
+            region.set_dimensions(bölge[0], bölge[1], bölge[2], bölge[3])
+            region.set_sort(10) # En üstte çizilmesi için
+            
+            # Minimap ve UI'yı bu kameradan gizle (isteğe bağlı)
+            cam_node.set_camera_mask(1) 
+
+            self.aktif_kameralar[rov_id] = cam_np
+            print(f"🎥 ROV-{rov_id} FPV Kamera Aktif (Bölge: {bölge})")
+            return cam_np
+    
+
+
+>>>>>>> develop
 
     def lidere_don(self, rov_id=None, sessiz=True):
         """
@@ -1259,91 +1389,46 @@ class Filo:
         """Denenecek formasyon ID'lerini pool'dan alır."""
         return self.helper.get_formation_ids_to_try()
     
-    def _try_formation_fit(self, formasyon_id: int, aralik: float, is_3d: bool, 
-                          merkez_koordinat: tuple, deneme_yaw: float, hull, 
-                          lider_rov_id: int, nokta_adi: str, sessiz: bool = False, dinamik: bool = False) -> bool:
-        """Formasyonun geçerli olup olmadığını kontrol eder ve uygular."""
-        return self.helper.try_formation_fit(formasyon_id, aralik, is_3d,
-                                            merkez_koordinat, deneme_yaw, hull,
-                                            lider_rov_id, nokta_adi, sessiz=sessiz, dinamik=dinamik)
 
-    
-
-    def hedef(self, koordinat=None, rov_id=None):
-        """
-        Hedef konumu atar veya okur (Thread-safe). Her ROV için ayrı hedef yönetilir.
-        rov_id parametresi her zaman gereklidir (varsayılan kullanım yoktur).
-        Sim formatı: (x, y, z) — z = derinlik (0 = su üstü, negatif = su altı, örn. -50 = 50 m derinlik).
-        
-        Args:
-            koordinat (tuple | list, optional): Hedef koordinatları (x, y, z). 
-                - Atama modunda: (x, y, z) tuple veya [x, y, z] list (zorunlu).
-                - Okuma modunda: None (hedef okuma modu).
-            rov_id (int, optional): ROV ID. 
-                - Atama modunda: Hedefe gidecek ROV ID (zorunlu).
-                - Okuma modunda: Hedefi okunacak ROV ID (zorunlu).
-                - None ise: Tüm ROV'ların hedeflerini dict olarak döndürür.
-        
-        Returns:
-            tuple | dict | None: 
-                - Atama modunda: (x, y, z) - Atanan hedef koordinatları
-                - Okuma modunda (rov_id verilmişse): (x, y, z) - ROV'un hedefi veya None
-                - Okuma modunda (rov_id=None): {rov_id: (x, y, z), ...} - Tüm ROV'ların hedefleri
-        
-        Örnekler:
-            # Hedef atama
-            filo.hedef((50, 60, 0), rov_id=0)      # ROV-0 (50, 60, 0)'a gider
-            filo.hedef((0, 50, -50), rov_id=1)   # ROV-1 (0, 50, -50)'ye gider
-            filo.hedef([10, 20, -5], rov_id=2)    # ROV-2 (10, 20, -5)'e gider (list de kabul edilir)
+    def hedef(self, koordinat=None, rov_id=None, ciz=True): # ciz parametresi eklendi
+            """
+            Hedef konumu atar veya okur (Thread-safe).
+            ... (mevcut docstring) ...
+            """
+            # Okuma modu: koordinat None ise
+            if koordinat is None:
+                # ... (mevcut okuma mantığı aynen kalıyor) ...
+                if rov_id is not None:
+                    if rov_id < 0 or rov_id >= len(self.sistemler):
+                        return None
+                    return self._rov_hedefleri.get(rov_id)
+                result = {}
+                for i in range(len(self.sistemler)):
+                    result[i] = self._rov_hedefleri.get(i)
+                return result
             
-            # Hedef okuma
-            hedef = filo.hedef(rov_id=0)          # ROV-0'un hedefi: (x, y, z) veya None
-            tum_hedefler = filo.hedef()          # Tüm ROV'ların hedefleri: {0: (x, y, z), 1: None, ...}
-        """
-        # Okuma modu: koordinat None ise
-        if koordinat is None:
-            # rov_id verilmişse: o ROV'un hedefini döndür
-            if rov_id is not None:
-                if rov_id < 0 or rov_id >= len(self.sistemler):
-                    print(f"❌ [HEDEF] Geçersiz ROV ID: {rov_id}. Geçerli aralık: 0-{len(self.sistemler) - 1}")
-                    return None
-                return self._rov_hedefleri.get(rov_id)
-            # rov_id None ise: tüm ROV'ların hedeflerini dict olarak döndür
-            result = {}
-            for i in range(len(self.sistemler)):
-                result[i] = self._rov_hedefleri.get(i)
-            return result
-        
-        # Atama modu: koordinat verilmişse, rov_id zorunlu
-        if rov_id is None:
-            print("❌ [HEDEF] Hedef atama için rov_id parametresi gereklidir!")
-            print("   Örnek: filo.hedef((50, 60, 0), rov_id=0)")
-            return None
-        
-        # Koordinat tuple veya list olmalı
-        if not isinstance(koordinat, (tuple, list)):
-            print(f"❌ [HEDEF] Koordinat tuple veya list olmalıdır! Alınan tip: {type(koordinat)}")
-            print("   Örnek: filo.hedef((50, 60, 0), rov_id=0)")
-            return None
-        
-        # Koordinat uzunluğu kontrolü
-        if len(koordinat) < 2:
-            print(f"❌ [HEDEF] Koordinat en az 2 eleman içermelidir (x, y)! Alınan: {koordinat}")
-            return None
-        
-        # Koordinatları çıkar
-        x = koordinat[0]
-        y = koordinat[1]
-        z = koordinat[2] if len(koordinat) > 2 else 0  # z verilmezse yüzey (0)
-        
-        # Thread-safe çağrı: Ana thread'de değilse queue'ya ekle
-        if not self._is_main_thread():
-            self._command_queue.put(('hedef', (x, y, z), {'rov_id': rov_id}))
-            return (x, y, z)
-        
-        # Ana thread'deyiz, direkt çalıştır
-        return self._hedef_impl(x, y, z, rov_id=rov_id)
+            # Atama modu: koordinat verilmişse, rov_id zorunlu
+            if rov_id is None:
+                print("❌ [HEDEF] Hedef atama için rov_id parametresi gereklidir!")
+                return None
+            
+            # ... (koordinat doğrulama mantığı aynen kalıyor) ...
+            if not isinstance(koordinat, (tuple, list)) or len(koordinat) < 2:
+                return None
+            
+            x = koordinat[0]
+            y = koordinat[1]
+            z = koordinat[2] if len(koordinat) > 2 else 0
+            
+            # Thread-safe çağrı: ciz parametresini kwargs içine ekliyoruz
+            if not self._is_main_thread():
+                self._command_queue.put(('hedef', (x, y, z), {'rov_id': rov_id, 'ciz': ciz}))
+                return (x, y, z)
+            
+            # Ana thread'deyiz, ciz parametresiyle birlikte impl'e gönderiyoruz
+            return self._hedef_impl(x, y, z, rov_id=rov_id, ciz=ciz)
     
+<<<<<<< HEAD
     def _hedef_impl(self, x, y, z, rov_id=None):
         """hedef() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         # rov_id zorunlu (None olamaz, kontrol hedef() içinde yapıldı)
@@ -1384,6 +1469,49 @@ class Filo:
         #print(f"✅ [HEDEF] ROV-{rov_id} hedefi güncellendi: ({x:.2f}, {y:.2f}, {z:.2f}) - {depth_msg}.")
         
         return (x, y, z)
+=======
+    def _hedef_impl(self, x, y, z, rov_id=None, ciz=True): # ciz parametresi eklendi
+            """hedef() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
+            if rov_id is None:
+                return None
+            
+            if rov_id < 0 or rov_id >= len(self.sistemler):
+                return None
+            
+            # Hedefi kaydet ve git komutunu ver
+            self._rov_hedefleri[rov_id] = (x, y, z)
+            self.git(rov_id, x, y, z, ai=True)
+            
+            # Lider tespiti
+            lider_rov_id = None
+            for i, sistem in enumerate(self.sistemler):
+                if hasattr(sistem, 'rov') and sistem.rov.role == 1:
+                    lider_rov_id = i
+                    break
+            
+            # GÖRSELLEŞTİRME KONTROLÜ
+            if lider_rov_id == rov_id:
+                self.hedef_pozisyon = (x, y, z)
+                
+                # Eğer ciz True ise Ursina dünyasında X işaretini oluştur/güncelle
+                if ciz:
+                    self._hedef_gorsel_olustur(x, y, z)
+                else:
+                    # Opsiyonel: Eğer ciz False ise ve ekranda eski bir hedef görseli varsa silebilirsin
+                    if self.hedef_gorsel:
+                        from ursina import destroy
+                        destroy(self.hedef_gorsel)
+                        self.hedef_gorsel = None
+
+                # Ortam referansı güncellemesi (Harita/Minimap verisi için)
+                if self.ortam_ref:
+                    try:
+                        self.ortam_ref.hedef_pozisyon = (x, y)
+                    except Exception:
+                        pass
+            
+            return (x, y, z)
+>>>>>>> develop
 
     def _formasyon_gecerli_mi(self, test_points, hull, formasyon_aralik):
         """Wrapper: HullManager'a yönlendirir (geriye dönük uyumluluk için)."""
@@ -1469,12 +1597,28 @@ class Filo:
         """
         return self.helper.yeniden_ciz(noktalar, yasakli_noktalar, alpha, buffer_radius, channel_width)
     
-    def _hedef_gorsel_olustur(self, x, y, z):
+    def _hedef_gorsel_olustur(self, x, y, z, id=None, debug=True):
         """
         Hedef pozisyonunu Ursina'da büyük X işareti olarak gösterir.
         """
+<<<<<<< HEAD
         return self.helper.hedef_gorsel_olustur(x, y, z)
 
+=======
+        return self.helper.hedef_gorsel_olustur(x, y, z, id=id, debug=debug)
+    
+    def hedef_sil(self, id=None):
+        """
+        Hedef görselini siler.
+        """
+        return self.helper.hedef_sil(id=id)
+    
+    def debug_hedefleri_temizle(self):
+        """
+        Tüm hedef görsellerini temizler (debug amaçlı).
+        """
+        return self.helper.debug_hedefleri_temizle()
+>>>>>>> develop
     def git(self, rov_id: int, x, y: float = None, z: float = None, ai: bool = True, sessiz: bool = True) -> None:
         """
         ROV'a hedef koordinatı atar ve otomatik moda geçirir (Thread-safe).
