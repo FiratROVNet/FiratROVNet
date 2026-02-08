@@ -11,10 +11,6 @@ import os
 # ==========================================
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
-<<<<<<< HEAD
-# rov_model: 'bluerov2' (varsayılan), 'submarine'
-app.sim_olustur(n_rovs=6, n_islands=6, havuz_genisligi=200, rov_model='submarine')
-=======
 # Simülasyonu oluştur: 6 ROV, 6 Ada, 200m havuz yarıçapı
 app.sim_olustur(n_rovs=6, n_islands=6, havuz_genisligi=200, rov_model='submarine')
 
@@ -22,7 +18,6 @@ app.sim_olustur(n_rovs=6, n_islands=6, havuz_genisligi=200, rov_model='submarine
 nav_queue = []          # Hedefleri tutan liste [{'pos': (x,y,z), 'id': 1}, ...]
 current_target_id = None # O anda gidilen hedefin ID'si
 target_counter = 0      # Her tıklamada artan benzersiz ID sayacı
->>>>>>> develop
 
 # GAT Modeli Yükleme
 try: 
@@ -62,24 +57,6 @@ app.konsola_ekle("nav_queue", nav_queue) # Kuyruğu konsoldan izleyebilirsin
 
 print("✅ Sistem aktif. Minimap üzerinden hedef eklemek için sol tıkla.")
 
-<<<<<<< HEAD
-
-# 2. ANA DÖNGÜ
-def merkezi_update():
-    """Ana simülasyon döngüsü - GAT kodlarını hesaplar ve ROV'ları günceller."""
-    try:
-        # Sonar iletişim çizgilerini güncelle
-        app.guncelle_sonar_cizgileri()
-        
-        # Önce kuyruktaki komutları işle (git vb.) — hedef ataması güncellemeden önce yapılsın
-        if hasattr(app, 'filo') and app.filo is not None:
-            try:
-                app.filo.execute_queued_commands()
-            except Exception:
-                pass
-        # Simülasyon verilerini al
-        veri = app.simden_veriye()
-=======
 # ==========================================
 # 2. ANA DÖNGÜ (UPDATE)
 # ==========================================
@@ -91,7 +68,6 @@ def update():
         # --- 1. NAVİGASYON KUYRUĞU VE VARIŞ YÖNETİMİ ---
         # Lider ROV'un (ID: 0) aktif rotasını al
         aktif_rota = filo._git_nokta_listesi.get(0)
->>>>>>> develop
         
         # DURUM A: Hedefe Varıldı mı? (Gidilen bir ID var ama rota bittiyse)
         if current_target_id is not None and not aktif_rota:
@@ -149,19 +125,14 @@ def update():
             # Label (Etiket) ayarları
             app.rovs[i].label.color = app.rovs[i].color
             durum_metni = durum_txts[gat_kodu] if 0 <= gat_kodu < len(durum_txts) else f"GAT:{gat_kodu}"
-<<<<<<< HEAD
-            ai_durum = "" if ai_aktif else "\n[AI OFF]"
-            app.rovs[i].label.text = f"{durum_metni}{i}{ai_durum}"
-=======
             
             kuyruk_bilgi = f"\n[Kuyruk: {len(nav_queue)}]" if i == 0 and len(nav_queue) > 0 else ""
             app.rovs[i].label.text = f"{durum_metni}{i}{kuyruk_bilgi}"
->>>>>>> develop
         
     except Exception as e:
         print(f"❌ [HATA] Update döngüsü: {e}")
 
-app.set_update_function(merkezi_update)
+app.set_update_function(update)
 
 # ==========================================
 # 3. GİRDİ YÖNETİMİ (MOUSE)

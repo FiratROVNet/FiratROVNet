@@ -172,15 +172,10 @@ class Minimap(Entity):
         self._statik_yeniden_ciz()
         self.visible = False
 
-<<<<<<< HEAD
-
-
-=======
         # (Minimap __init__ metodunun en alt kısmına ekle)
         self.hedef_ikonlari = {}       # ID bazlı kalıcı hedefler için sözlük
         self.gecici_hedef_ikonu = None # debug=True iken kullanılan geçici hedef
 
->>>>>>> develop
     # --- KRİTİK GÜNCELLEME: goster metodu ---
     def goster(self, durum=True, convex=False, a_star=False, scale=None, **kwargs):
         """GNC sisteminden gelen convex ve a_star parametrelerini karşılar."""
@@ -335,8 +330,6 @@ class Minimap(Entity):
                     alpha=0.85
                 )
 
-<<<<<<< HEAD
-=======
     def hedef_isaretle(self, x, z, id=None, debug=True):
         """3D ortamda oluşturulan hedefi Minimap üzerinde 2D olarak çizer."""
         from ursina import Entity, destroy, color, Text
@@ -406,7 +399,6 @@ class Minimap(Entity):
             destroy(self.gecici_hedef_ikonu)
             self.gecici_hedef_ikonu = None
 
->>>>>>> develop
 # ============================================================
 # 3. ORTAM SINIFI (Simülasyon Dünyası)
 # ============================================================

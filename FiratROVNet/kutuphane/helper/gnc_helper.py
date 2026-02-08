@@ -2152,94 +2152,6 @@ class FiloHelper:
             if not self.filo._is_main_thread():
                 if hasattr(self.filo, '_command_queue'):
                     self.filo._command_queue.put(('formasyon_sec', (margin, is_3d, offset), {'dinamik': dinamik}))
-<<<<<<< HEAD
-                return None
-
-            # 3. Ana Hesaplama Fonksiyonunu Çağır
-            return self._formasyon_sec_impl(margin, is_3d, offset, dinamik=dinamik)
-
-    def _formasyon_sec_impl(self, margin=None, is_3d=False, offset=None, sessiz=True, dinamik=True):
-        """
-        formasyon_sec() fonksiyonunun gerçek implementasyonu.
-        Hesaplanan Hull verisini doğrudan Minimap (Entity) nesnesine paslar.
-        """
-        if margin is None: margin = HareketAyarlari.FORMASYON_MESAFESI
-        if offset is None: offset = HareketAyarlari.FORMASYON_OFFSET
-        
-        try:
-            self.filo._formasyon_hedefleri.clear()
-
-            # --- 1. GÜVENLİK ALANI (HULL) HESAPLAMA ---
-            yasakli_noktalar = self.filo._prepare_forbidden_points()
-            guvenlik_hull_dict = self.filo.yeni_hull(
-                yasakli_noktalar=yasakli_noktalar,
-                offset=offset,
-                alpha=2.0,
-                buffer_radius=10.0,
-                channel_width=10.0
-            )
-
-            hull_noktalari = guvenlik_hull_dict.get("hull")
-            hull_merkez = guvenlik_hull_dict.get("center")
-
-            if hull_noktalari is None or hull_merkez is None:
-                if not sessiz: print("⚠️ [FORMASYON] Güvenlik alanı (Hull) oluşturulamadı.")
-                return None
-
-            # --- 2. MİNİMAP UI ÜZERİNDE GÖSTERİM ---
-            # Minimap sınıfındaki update_hull metodunu doğrudan tetikliyoruz
-            if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'minimap'):
-                m_ui = self.filo.ortam_ref.minimap
-                if m_ui and hasattr(m_ui, 'update_hull'):
-                    # Bu metod senin sınıfında: Eski hull'u siler, yenisini cyan mesh olarak çizer.
-                    m_ui.update_hull(hull_noktalari)
-            # ---------------------------------------
-
-            # 3. LİDER VE MERKEZ BİLGİLERİ
-            hull_merkez = self.filo._normalize_hull_center(hull_merkez)
-            lider_id, lider_gps = self.filo._find_leader_info(sessiz=sessiz)
-            
-            if lider_id is None:
-                if not sessiz: print("⚠️ [FORMASYON] Aktif bir lider bulunamadı.")
-                return None
-            
-            # Lider konumu yoksa hull merkezini baz al
-            if lider_gps is None: lider_gps = hull_merkez
-
-            # 4. FORMASYON ARAMA VE YERLEŞTİRME
-            # (Yaw senkronizasyon değişkenleri buradan temizlendi)
-            min_aralik = HareketAyarlari.FORMASYON_MIN_ARALIK
-            baslangic_aralik = margin
-            
-            # Farklı yönlerden (0, 90, 180, 270 derece) sığdırma denemeleri
-            arama_noktalari = self.filo._generate_search_points(lider_gps, hull_merkez)
-            
-            for nokta_adi, merkez_koord in arama_noktalari:
-                for deneme_yaw in [0, 90, 180, 270]:
-                    denenecek_ids = self.filo._get_formation_ids_to_try()
-                    
-                    for f_id in denenecek_ids:
-                        aralik = baslangic_aralik
-                        while aralik >= min_aralik:
-                            # _try_formation_fit: Formasyonun hull içine sığıp sığmadığını kontrol eder
-                            if self.filo._try_formation_fit(f_id, aralik, is_3d, merkez_koord,
-                                                            deneme_yaw, hull_noktalari, lider_id, 
-                                                            nokta_adi, sessiz=sessiz, dinamik=dinamik):
-                                
-                                if not sessiz:
-                                    durum = "Dinamik" if dinamik else "Sabit"
-                                    print(f"✅ [MİNİMAP] {durum} {f_id} seçildi. Alan haritaya cyan olarak işlendi.")
-                                
-                                return (f_id, aralik, deneme_yaw, merkez_koord)
-                            aralik -= 1.0 # Aralığı daraltarak tekrar dene
-
-            if not sessiz: print("⚠️ [FORMASYON] Mevcut hull içine sığan formasyon bulunamadı.")
-            return None
-
-        except Exception as e:
-            print(f"❌ [FORMASYON HATASI]: {e}")
-            return None
-=======
                 return None
 
             # 3. Ana Hesaplama Fonksiyonunu Çağır
@@ -2384,7 +2296,6 @@ class FiloHelper:
         hull_merkez_liste = list(hull_merkez)
         hull_merkez_liste[2] = 0
         return tuple(hull_merkez_liste)
->>>>>>> develop
     
     def ada_cevre(self, offset: float = 15.0, sessiz: bool = False) -> list:
         """
@@ -2586,87 +2497,6 @@ class FiloHelper:
                     #print("❌ [KRİTİK] HullManager import edilemedi!")
                     return {'points': None, 'center': None}
                 
-<<<<<<< HEAD
-                yeni_poly = Polygon(yeni_kontur_noktalari)
-                if not yeni_poly.is_valid:
-                    yeni_poly = yeni_poly.buffer(0)
-                
-                # Merkez hesapla
-                eski_merkez_2d = (eski_hull_merkez[0], eski_hull_merkez[1])
-                if yeni_poly.contains(Point(eski_merkez_2d)):
-                    final_merkez_2d = eski_merkez_2d
-                else:
-                    guvenli_nokta = yeni_poly.representative_point()
-                    final_merkez_2d = (guvenli_nokta.x, guvenli_nokta.y)
-                
-                eski_z = eski_hull_merkez[2] if eski_hull_merkez and len(eski_hull_merkez) >= 3 else 0.0
-                yeni_hull_merkez = (float(final_merkez_2d[0]), float(final_merkez_2d[1]), float(eski_z))
-                
-                # SahteHull sınıfı
-                class SahteHull:
-                    def __init__(self, points, polygon_obj):
-                        self.points = points
-                        self.polygon = polygon_obj
-                        self.vertices = np.arange(len(points))
-                        self.simplices = []
-                        for i in range(len(points)):
-                            self.simplices.append([i, (i + 1) % len(points)])
-                        self.simplices = np.array(self.simplices)
-
-                    def __len__(self):
-                        return len(self.points)
-
-                    def __iter__(self):
-                        return iter(self.points)
-
-                    def __getitem__(self, idx):
-                        return self.points[idx]
-
-                custom_hull = SahteHull(kontur_noktalari_np, yeni_poly)
-                
-                # Ortam üzerinde convex_hull_data sakla (minimap/diğer UI bunları kullanabilir)
-                if self.filo.ortam_ref:
-                    hull_data = {
-                        'hull': custom_hull,
-                        'points': kontur_noktalari_np,
-                        'center': yeni_hull_merkez
-                    }
-                    try:
-                        self.filo.ortam_ref.convex_hull_data = hull_data
-                    except Exception:
-                        pass
-                
-                return {
-                    'hull': custom_hull,
-                    'points': kontur_noktalari_np,
-                    'center': yeni_hull_merkez
-                }
-            else:
-                return {'hull': None, 'points': None, 'center': None}
-        
-        except Exception as e:
-            print(f"❌ [HATA] Yeni hull oluşturulurken hata: {e}")
-            import traceback
-            traceback.print_exc()
-            return {'hull': None, 'points': None, 'center': None}
-    
-    def prepare_forbidden_points(self) -> list:
-        """Ada çevre noktalarını yasaklı nokta listesine dönüştürür."""
-        ada_cevre_noktalari = self.ada_cevre()
-        yasakli_noktalar = []
-        if ada_cevre_noktalari:
-            for nokta in ada_cevre_noktalari:
-                if len(nokta) >= 2:
-                    yasakli_noktalar.append([float(nokta[0]), float(nokta[1])])
-        return yasakli_noktalar
-    
-    def normalize_hull_center(self, hull_merkez) -> tuple:
-        """Hull merkezini Sim formatına dönüştürür (z=0 yapar)."""
-        hull_merkez_liste = list(hull_merkez)
-        hull_merkez_liste[2] = 0
-        return tuple(hull_merkez_liste)
-    
-=======
             mgr = HullManager()
 
             # 3️⃣ Hesaplamayı Yap
@@ -2682,7 +2512,6 @@ class FiloHelper:
 
             return sonuc
 
->>>>>>> develop
     def find_leader_info(self, sessiz: bool = False) -> tuple:
         """Lider ROV ID ve GPS koordinatını bulur."""
         lider_rov_id = None
@@ -2955,11 +2784,7 @@ class TemelGNCHelper:
             if not uygula:
                 #ivme=guc_orani*Vec3(hedef_yon_ursina.x, hedef_yon_ursina.y, hedef_yon_ursina.z)
                 #yeni_hiz = self.rov.velocity + (ivme * dt)
-<<<<<<< HEAD
-                return hedef_yon_ursina*guc_orani*2
-=======
                 return hedef_yon_ursina*guc_orani
->>>>>>> develop
 
             # --- 1. KUVVET HESAPLAMALARI ---
             # A) Motor İtme (Thrust)
@@ -2998,20 +2823,13 @@ class TemelGNCHelper:
         # X: Sağ, Z: İleri, Y: Derinlik (Kullanıcının tercih ettiği mapping)
         guc_orani = max(0.0, min(1.0, guc_orani))
         dt = time.dt
-<<<<<<< HEAD
-=======
         vim_dir=v_sim_dir.normalized() if v_sim_dir.length() > 0.001 else Vec3(0,0,0)
->>>>>>> develop
 
         # 2. Fizik Hesaplamasını Tetikle (Vektörü al)
         hesaplanan_hiz = self.fizik_uygula(v_sim_dir, guc_orani, dt, uygula=False)
 
 
-<<<<<<< HEAD
-        self.rov.velocity = self._kalman_vektor_filtrele(v_sim_dir)
-=======
         self.rov.velocity = self._kalman_vektor_filtrele(hesaplanan_hiz)
->>>>>>> develop
             
             # Burnunu hareket yönüne çevir (Yaw)
         if guc_orani > 0.01:
@@ -3021,11 +2839,7 @@ class TemelGNCHelper:
         ursina_rov_velocity=Vec3(self.rov.velocity.x, self.rov.velocity.z, self.rov.velocity.y)
 
         
-<<<<<<< HEAD
-        GORSEL_HIZ_CARPANI = 20.0
-=======
         GORSEL_HIZ_CARPANI = 30.0
->>>>>>> develop
         self.rov.position += ursina_rov_velocity * dt * GORSEL_HIZ_CARPANI
         # Hız Vektörünü Minimap'te Çiz
         if guc_orani > 0.02 and hasattr(self.rov, 'velocity'):
@@ -3200,11 +3014,7 @@ class TemelGNCHelper:
                 # AI (APF) hedefini bir sonraki noktaya güncelle
                 if mevcut_indeks + 1 < len(nokta_listesi):
                     next_wp = nokta_listesi[mevcut_indeks + 1]
-<<<<<<< HEAD
-                    self.filo_ref.hedef((next_wp[0], next_wp[1],target_z),rov_id=rov_id)
-=======
                     self.filo_ref.hedef((next_wp[0], next_wp[1],target_z),rov_id=rov_id,ciz=False)
->>>>>>> develop
                 
                 return waypoint_hedef, False
 

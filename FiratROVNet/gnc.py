@@ -626,10 +626,7 @@ class Filo:
         """Tüm GNC sistemlerini günceller ve yaw senkronizasyonu yapar."""
         # Ana thread'de queue'daki komutları işle (thread-safe)
         self._process_command_queue()
-<<<<<<< HEAD
-=======
         #print(f"🔄 [FİLO] GNC sistemleri güncelleniyor... (tahminler: {tahminler})")
->>>>>>> develop
         
         # Tüm GNC sistemlerini güncelle (doğrudan helper.guncelle çağrısı)
         for i, gnc in enumerate(self.sistemler):
@@ -645,11 +642,8 @@ class Filo:
                 self.ortam_ref.minimap.gorsel_guncelle()
             except Exception as e:
                 if self.verbose: print(f"⚠️ Minimap güncellenemedi: {e}")
-<<<<<<< HEAD
-=======
 
         
->>>>>>> develop
 
     def _find_leader(self) -> tuple:
         """Lider ROV'u bulur ve bilgilerini döndürür."""
@@ -1122,14 +1116,6 @@ class Filo:
                 - yaw (float): Liderin yaw açısı (derece)
                 - koordinat (tuple): Seçilen formasyon koordinatı (x, y, z) - Lider pozisyonu
         """
-<<<<<<< HEAD
-        return self.helper.formasyon_sec(
-            margin=margin,
-            is_3d=is_3d,
-            offset=offset,
-            dinamik=dinamik
-        )
-=======
 
         baslangic_zamnai = time.time()
         for i in range(tekrar):
@@ -1241,7 +1227,6 @@ class Filo:
     
 
 
->>>>>>> develop
 
     def lidere_don(self, rov_id=None, sessiz=True):
         """
@@ -1428,48 +1413,6 @@ class Filo:
             # Ana thread'deyiz, ciz parametresiyle birlikte impl'e gönderiyoruz
             return self._hedef_impl(x, y, z, rov_id=rov_id, ciz=ciz)
     
-<<<<<<< HEAD
-    def _hedef_impl(self, x, y, z, rov_id=None):
-        """hedef() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
-        # rov_id zorunlu (None olamaz, kontrol hedef() içinde yapıldı)
-        if rov_id is None:
-            print("❌ [HEDEF] _hedef_impl: rov_id None olamaz!")
-            return None
-        
-        # ROV ID geçerliliği kontrolü
-        if rov_id < 0 or rov_id >= len(self.sistemler):
-            print(f"❌ [HEDEF] Geçersiz ROV ID: {rov_id}. Geçerli aralık: 0-{len(self.sistemler) - 1}")
-            return None
-        
-        # Hedefi ROV'un hedef listesine kaydet
-        self._rov_hedefleri[rov_id] = (x, y, z)
-        
-        # Hedefi hedefleyen ROV'a git komutu (Sim formatında)
-        self.git(rov_id, x, y, z, ai=True)
-        
-        # Görsel ve harita güncellemesi: lider ROV ise görsel güncelle
-        lider_rov_id = None
-        for i, sistem in enumerate(self.sistemler):
-            if hasattr(sistem, 'rov') and sistem.rov.role == 1:
-                lider_rov_id = i
-                break
-        
-        if lider_rov_id == rov_id:
-            self.hedef_pozisyon = (x, y, z)
-            ursina_pos = (x, y, z)
-            self._hedef_gorsel_olustur(*ursina_pos)
-            # Harita sınıfı kaldırıldı — hedef pozisyonu ortam üzerinde sakla
-            if self.ortam_ref:
-                try:
-                    self.ortam_ref.hedef_pozisyon = (x, y)
-                except Exception:
-                    pass
-        
-        depth_msg = "Su üstünde" if z >= 0 else f"{abs(z):.1f} m derinlik"
-        #print(f"✅ [HEDEF] ROV-{rov_id} hedefi güncellendi: ({x:.2f}, {y:.2f}, {z:.2f}) - {depth_msg}.")
-        
-        return (x, y, z)
-=======
     def _hedef_impl(self, x, y, z, rov_id=None, ciz=True): # ciz parametresi eklendi
             """hedef() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
             if rov_id is None:
@@ -1511,7 +1454,6 @@ class Filo:
                         pass
             
             return (x, y, z)
->>>>>>> develop
 
     def _formasyon_gecerli_mi(self, test_points, hull, formasyon_aralik):
         """Wrapper: HullManager'a yönlendirir (geriye dönük uyumluluk için)."""
@@ -1601,10 +1543,6 @@ class Filo:
         """
         Hedef pozisyonunu Ursina'da büyük X işareti olarak gösterir.
         """
-<<<<<<< HEAD
-        return self.helper.hedef_gorsel_olustur(x, y, z)
-
-=======
         return self.helper.hedef_gorsel_olustur(x, y, z, id=id, debug=debug)
     
     def hedef_sil(self, id=None):
@@ -1618,7 +1556,6 @@ class Filo:
         Tüm hedef görsellerini temizler (debug amaçlı).
         """
         return self.helper.debug_hedefleri_temizle()
->>>>>>> develop
     def git(self, rov_id: int, x, y: float = None, z: float = None, ai: bool = True, sessiz: bool = True) -> None:
         """
         ROV'a hedef koordinatı atar ve otomatik moda geçirir (Thread-safe).
