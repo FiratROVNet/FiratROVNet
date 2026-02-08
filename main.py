@@ -6,11 +6,18 @@ from ursina import *
 import numpy as np
 import os
 
-# 1. KURULUM
+# ==========================================
+# 1. KURULUM VE YAPILANDIRMA
+# ==========================================
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
-# rov_model: 'bluerov2' (varsayılan), 'submarine'
-app.sim_olustur(n_rovs=6, n_engels=15, rov_model='submarine')
+# Simülasyonu oluştur: 6 ROV, 6 Ada, 200m havuz yarıçapı
+app.sim_olustur(n_rovs=6, n_islands=6, havuz_genisligi=200, rov_model='submarine')
+
+# --- Navigasyon ve Kuyruk Değişkenleri ---
+nav_queue = []          # Hedefleri tutan liste [{'pos': (x,y,z), 'id': 1}, ...]
+current_target_id = None # O anda gidilen hedefin ID'si
+target_counter = 0      # Her tıklamada artan benzersiz ID sayacı
 
 # GAT Modeli Yükleme
 try: 
@@ -25,19 +32,17 @@ filo = Filo()
 filo.otomatik_kurulum(
     rovs=app.rovs,
     ortam_ref=app,
-    baslangic_hedefleri={
-        0: (150, 10, 0)  # Lider: (x, y, z)
-    }
+    baslangic_hedefleri={0: (150, 10, 0)} # Lider Başlangıç Hedefi
 )
 app.filo = filo
 
-# Debug sınıfı (APF/GNC fonksiyonları: debug.list(), debug.apf(0), debug.apf() ile kullanım)
+# Debug sınıfı (APF/GNC fonksiyonları)
 debug = Debug(filo)
 
 # Minimap otomatik açık (ölçek 1.0)
 filo.minimap(scale=1.0)
 
-# Konsol fonksiyonları (interaktif Python konsolu için)
+# Konsol fonksiyonları
 app.konsola_ekle("git", lambda rov_id, x, z, y=None, ai=True: filo.git(rov_id, x, z, y, ai))
 app.konsola_ekle("move", lambda rov_id, yon, guc=1.0: filo.move(rov_id, yon, guc))
 app.konsola_ekle("get", lambda rov_id, veri_tipi: filo.get(rov_id, veri_tipi))
@@ -47,31 +52,48 @@ app.konsola_ekle("ROV", lambda rov_id, x=None, y=None, z=None: app.ROV(rov_id, x
 app.konsola_ekle("filo", filo)
 app.konsola_ekle("rovs", app.rovs)
 app.konsola_ekle("cfg", cfg)
-app.konsola_ekle("harita", app.harita)
 app.konsola_ekle("debug", debug)
+app.konsola_ekle("nav_queue", nav_queue) # Kuyruğu konsoldan izleyebilirsin
 
-print("✅ Sistem aktif.")
-print("🗺️  Harita aktif! Kullanım: harita.ekle(x_2d, y_2d)")
-print("🏝️  Ada yönetimi aktif! Kullanım: Ada(0, 50, 60)")
-print("🤖 ROV yönetimi aktif! Kullanım: ROV(0, 10, -5, 20)")
-print("🔧 Debug aktif! Kullanım: debug.list(), debug.apf(0), debug.apf() ile kullanım bilgisi")
+print("✅ Sistem aktif. Minimap üzerinden hedef eklemek için sol tıkla.")
 
-
-# 2. ANA DÖNGÜ
-def merkezi_update():
-    """Ana simülasyon döngüsü - GAT kodlarını hesaplar ve ROV'ları günceller."""
+# ==========================================
+# 2. ANA DÖNGÜ (UPDATE)
+# ==========================================
+def update():
+    """Ana simülasyon döngüsü."""
+    global current_target_id, nav_queue
+    
     try:
-        # Önce kuyruktaki komutları işle (git vb.) — hedef ataması güncellemeden önce yapılsın
-        if hasattr(app, 'filo') and app.filo is not None:
-            try:
-                app.filo.execute_queued_commands()
-            except Exception:
-                pass
-        # Simülasyon verilerini al
-        veri = app.simden_veriye()
+        # --- 1. NAVİGASYON KUYRUĞU VE VARIŞ YÖNETİMİ ---
+        # Lider ROV'un (ID: 0) aktif rotasını al
+        aktif_rota = filo._git_nokta_listesi.get(0)
         
-        # GAT tahminleri hesapla
+        # DURUM A: Hedefe Varıldı mı? (Gidilen bir ID var ama rota bittiyse)
+        if current_target_id is not None and not aktif_rota:
+            print(f"✅ [NAV] Hedef {current_target_id} noktasına varıldı. Görsel siliniyor.")
+            filo.hedef_sil(current_target_id) # 3D ve Minimap görselini temizle
+            current_target_id = None # Takip değişkenini sıfırla
+
+        # DURUM B: Yeni Hedefe Başla mı? (ROV boşta ve kuyrukta bekleyen var mı?)
+        if not aktif_rota and len(nav_queue) > 0:
+            next_data = nav_queue.pop(0) # Kuyruktan ilk hedef paketini al
+            target_pos = next_data['pos']
+            current_target_id = next_data['id']
+            
+            print(f"🚀 [NAV] Sıradaki hedefe geçiliyor: ID {current_target_id} | Konum: {target_pos}")
+            # A* algoritması ile yolu planla ve gitmeye başla
+            filo.git_path(0, target_pos, isaret=True)
+
+        # --- 2. SİSTEM GÜNCELLEMELERİ ---
+        app.guncelle_sonar_cizgileri()
+        if hasattr(app, 'filo') and app.filo is not None:
+            app.filo.execute_queued_commands()
+
+        # --- 3. GAT ANALİZİ ---
+        veri = app.simden_veriye()
         ai_aktif = getattr(cfg, 'ai_aktif', True)
+        
         if ai_aktif and beyin:
             try: 
                 tahminler, _, _ = beyin.analiz_et(veri)
@@ -80,74 +102,80 @@ def merkezi_update():
                 tahminler = np.zeros(len(app.rovs), dtype=int)
         else:
             tahminler = np.zeros(len(app.rovs), dtype=int)
+        #print(tahminler)
+        filo.guncelle_hepsi(tahminler)
 
-        # GAT kodlarına göre görselleştirme
-        # Kod 0: OK (turuncu), Kod 1: ENGEL (kırmızı), Kod 2: CARPISMA (siyah), 
-        # Kod 3: KOPUK (sarı), Kod 4: UZAK (magenta)
+        filo.guncelle_hepsi(tahminler)
+
+        # --- 4. GÖRSELLEŞTİRME (RENKLER VE ETİKETLER) ---
         kod_renkleri = {
-            0: color.orange,   # OK
-            1: color.red,      # ENGEL
-            2: color.black,    # CARPISMA
-            3: color.yellow,   # KOPUK
-            4: color.magenta   # UZAK
+            0: color.orange, 1: color.red, 2: color.black, 3: color.yellow, 4: color.magenta
         }
         durum_txts = ["OK", "ENGEL", "CARPISMA", "KOPUK", "UZAK"]
         
-        # Her ROV için GAT kodunu uygula
         for i, gat_kodu in enumerate(tahminler):
-            # GAT kodunu ROV'a kaydet
             app.rovs[i].gat_kodu = gat_kodu
             
-            # Lider her zaman kırmızı, diğerleri GAT koduna göre renklenir
+            # Renk ayarı (Lider sabit kırmızı, diğerleri GAT'a göre)
             if app.rovs[i].role == 1: 
                 app.rovs[i].color = color.red
             else: 
                 app.rovs[i].color = kod_renkleri.get(gat_kodu, color.white)
             
-            # Label güncelle
-            app.rovs[i].label.scale = 6000
-            app.rovs[i].label.y = 300
+            # Label (Etiket) ayarları
             app.rovs[i].label.color = app.rovs[i].color
-            app.rovs[i].label.background = False
-            
-            # GAT durumunu göster
             durum_metni = durum_txts[gat_kodu] if 0 <= gat_kodu < len(durum_txts) else f"GAT:{gat_kodu}"
-            ai_durum = "" if ai_aktif else "\n[AI OFF]"
-            app.rovs[i].label.text = f"{durum_metni}{i}{ai_durum}"
-        
-        # GNC sistemlerini güncelle (GAT kodları ile)
-        filo.guncelle_hepsi(tahminler)
-        
-        # ROV Fizik Güncellemesi (Manuel Çağrı)
-        if hasattr(app, 'rovs'):
-            # print(f"[DEBUG] ROV Sayısı: {len(app.rovs)}") # Geçici debug
-            for rov in app.rovs:
-                if rov and hasattr(rov, 'fizik_guncelle'):
-                    rov.fizik_guncelle()
-        
-        # Harita güncelle
-        if hasattr(app, 'harita') and app.harita is not None:
-            try:
-                app.harita.update()
-            except Exception:
-                pass
-        
-        # Minimap güncelle (vektör okları, engel_bulutu dahil)
-        if hasattr(app, 'minimap') and app.minimap is not None and getattr(app.minimap, 'visible', False):
-            try:
-                app.minimap.gorsel_guncelle()
-            except Exception:
-                pass
+            
+            kuyruk_bilgi = f"\n[Kuyruk: {len(nav_queue)}]" if i == 0 and len(nav_queue) > 0 else ""
+            app.rovs[i].label.text = f"{durum_metni}{i}{kuyruk_bilgi}"
         
     except Exception as e:
         print(f"❌ [HATA] Update döngüsü: {e}")
-        import traceback
-        traceback.print_exc()
 
-app.set_update_function(merkezi_update)
+app.set_update_function(update)
 
-# 3. ÇALIŞTIRMA
+# ==========================================
+# 3. GİRDİ YÖNETİMİ (MOUSE)
+# ==========================================
+def input(key):
+    global target_counter, nav_queue
+    
+    if key == 'left mouse down':
+        # Eğer tıklanan nesne minimap ise
+        if hasattr(app, 'minimap') and mouse.hovered_entity == app.minimap:
+            # 1. Tıklanan yerin yerel koordinatını al (-0.5 ile 0.5 arası)
+            local_pos = mouse.point 
+            
+            # 2. Havuz boyutuna göre (200m yarıçap -> 400m tam çap) koordinata çevir
+            havuz_tam_cap = 400 
+            sim_x = local_pos.x * havuz_tam_cap
+            sim_y = local_pos.y * havuz_tam_cap
+            
+            # 3. Mevcut derinliği liderden (ID: 0) al
+            lider_gps = filo.get(0, "gps")
+            mevcut_z = lider_gps[2] if lider_gps else -10
+            
+            # 4. Benzersiz ID oluştur ve hedefi kaydet
+            target_counter += 1
+            new_id = target_counter
+            new_target_pos = (sim_x, sim_y, mevcut_z)
+
+            # Kuyruğa paket olarak ekle
+            nav_queue.append({'pos': new_target_pos, 'id': new_id})
+            
+            # Görseli hem 3D dünyada hem minimap'te oluştur
+            filo._hedef_gorsel_olustur(sim_x, sim_y, mevcut_z, id=new_id, debug=False)
+            
+            print(f"📥 [KUYRUK] Hedef {new_id} eklendi: ({sim_x:.1f}, {sim_y:.1f}) | Bekleyen: {len(nav_queue)}")
+
+# ==========================================
+# 4. ÇALIŞTIRMA
+# ==========================================
 if __name__ == "__main__":
+    # Minimap'e tıklanabilmesi için collider ekle (Box collider)
+    if hasattr(app, 'minimap') and app.minimap:
+        app.minimap.collider = 'box' 
+        
     try: 
         app.run(interaktif=True)
     except KeyboardInterrupt: 

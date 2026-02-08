@@ -1,10 +1,5 @@
-import sys
-import os
 import pytest
 import numpy as np
-
-# Ensure the project root is on sys.path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from FiratROVNet.kutuphane.helper import gnc_helper
 
