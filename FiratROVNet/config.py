@@ -26,6 +26,7 @@ class GATLimitleri:
     ENGEL = 20.0      # Kod 1: Engel yakınlığı mesafesi
     KOPMA = 40.0      # Kod 3: Bağlantı kopması mesafesi
     UZAK = 60.0       # Kod 5: Liderden uzaklık mesafesi
+    ILETISIM_MENZILI = 150.0  # Sonar iletişim maksimum menzili (metre)
     
     @classmethod
     def dict(cls):
@@ -34,7 +35,8 @@ class GATLimitleri:
             'CARPISMA': cls.CARPISMA,
             'ENGEL': cls.ENGEL,
             'KOPMA': cls.KOPMA,
-            'UZAK': cls.UZAK
+            'UZAK': cls.UZAK,
+            'ILETISIM_MENZILI': cls.ILETISIM_MENZILI
         }
 
 
