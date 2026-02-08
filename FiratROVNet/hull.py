@@ -439,9 +439,6 @@ class HullManager:
                 'center': (center_2d[0], center_2d[1], z_avg)
             }
 
-            if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'harita'):
-                self.filo.ortam_ref.harita.convex_hull_data = hull_data
-
             return hull_data
         except Exception as e:
             print(f"❌ [HATA] Pro-Hull oluşturulamadı: {e}")

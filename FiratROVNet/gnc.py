@@ -630,8 +630,12 @@ class Filo:
                 gnc.helper.guncelle(gat_kodu=gat_kodu)
         
 
-
-        self.ortam_ref.minimap.gorsel_guncelle()
+        # guncelle_hepsi metodunun içindeki o satırı şununla değiştir:
+        if self.ortam_ref and hasattr(self.ortam_ref, 'minimap') and self.ortam_ref.minimap:
+            try:
+                self.ortam_ref.minimap.gorsel_guncelle()
+            except Exception as e:
+                if self.verbose: print(f"⚠️ Minimap güncellenemedi: {e}")
 
     def _find_leader(self) -> tuple:
         """Lider ROV'u bulur ve bilgilerini döndürür."""
@@ -1369,8 +1373,12 @@ class Filo:
             self.hedef_pozisyon = (x, y, z)
             ursina_pos = (x, y, z)
             self._hedef_gorsel_olustur(*ursina_pos)
-            if self.ortam_ref and hasattr(self.ortam_ref, 'harita'):
-                self.ortam_ref.harita.hedef_pozisyon = (x, y)
+            # Harita sınıfı kaldırıldı — hedef pozisyonu ortam üzerinde sakla
+            if self.ortam_ref:
+                try:
+                    self.ortam_ref.hedef_pozisyon = (x, y)
+                except Exception:
+                    pass
         
         depth_msg = "Su üstünde" if z >= 0 else f"{abs(z):.1f} m derinlik"
         #print(f"✅ [HEDEF] ROV-{rov_id} hedefi güncellendi: ({x:.2f}, {y:.2f}, {z:.2f}) - {depth_msg}.")
@@ -1420,7 +1428,7 @@ class Filo:
         """guvenlik_hull_olustur() fonksiyonunun gerçek implementasyonu (ana thread'de çalışır)."""
         return self.hull_manager.hull(offset=offset)
     
-    def ada_cevre(self, offset=15.0, sessiz: bool = False):
+    def ada_cevre(self, offset=0.0, sessiz: bool = False):
         """
         Simülasyondaki adaları tespit edip her ada için eşit çevrede 12 nokta döndürür.
         

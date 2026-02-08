@@ -10,7 +10,7 @@ import os
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
 # rov_model: 'bluerov2' (varsayılan), 'submarine'
-app.sim_olustur(n_rovs=6, n_engels=15, rov_model='submarine')
+app.sim_olustur(n_rovs=6, n_islands=6, havuz_genisligi=200, rov_model='submarine')
 
 # GAT Modeli Yükleme
 try: 
@@ -47,7 +47,6 @@ app.konsola_ekle("ROV", lambda rov_id, x=None, y=None, z=None: app.ROV(rov_id, x
 app.konsola_ekle("filo", filo)
 app.konsola_ekle("rovs", app.rovs)
 app.konsola_ekle("cfg", cfg)
-app.konsola_ekle("harita", app.harita)
 app.konsola_ekle("debug", debug)
 
 print("✅ Sistem aktif.")
@@ -61,6 +60,9 @@ print("🔧 Debug aktif! Kullanım: debug.list(), debug.apf(0), debug.apf() ile 
 def merkezi_update():
     """Ana simülasyon döngüsü - GAT kodlarını hesaplar ve ROV'ları günceller."""
     try:
+        # Sonar iletişim çizgilerini güncelle
+        app.guncelle_sonar_cizgileri()
+        
         # Önce kuyruktaki komutları işle (git vb.) — hedef ataması güncellemeden önce yapılsın
         if hasattr(app, 'filo') and app.filo is not None:
             try:
