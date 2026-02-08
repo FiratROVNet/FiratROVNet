@@ -1,0 +1,11 @@
+Model Information:
+* title:	Floating Island With Roots And Rocks
+* source:	https://sketchfab.com/3d-models/floating-island-with-roots-and-rocks-4c05ffef4d1c45ab847ac565b8184a5b
+* author:	Dennis (https://sketchfab.com/dennis.hafemann)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Floating Island With Roots And Rocks" (https://sketchfab.com/3d-models/floating-island-with-roots-and-rocks-4c05ffef4d1c45ab847ac565b8184a5b) by Dennis (https://sketchfab.com/dennis.hafemann) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
