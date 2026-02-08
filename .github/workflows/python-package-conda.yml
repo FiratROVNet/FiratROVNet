@@ -1,0 +1,39 @@
+name: Python Package using Conda
+
+on: [push]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0} # Conda komutlarının çalışması için kritik ayar
+
+    steps:
+      # 1. Kodları İndir (Bu olmazsa environment.yml dosyasını göremez)
+      - uses: actions/checkout@v4
+
+      # 2. Conda Ortamını Kur (Otomatik Dosya Bulma Modu)
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: GNN  # environment.yml içindeki 'name: GNN' ile aynı olmalı
+          environment-file: environment.yml # Dosya kök dizinde olduğu için direkt adını yazıyoruz
+          auto-activate-base: false
+          auto-update-conda: true
+
+      # 3. Hata Denetimi (Lint)
+      - name: Lint with flake8
+        run: |
+          conda install flake8
+          # Python sözdizimi hataları
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          # Uyarılar
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      # 4. Testleri Çalıştır
+      - name: Run Tests
+        run: |
+          export DISPLAY=:0
+          export LIBGL_ALWAYS_SOFTWARE=1
+          python run_tests.py
