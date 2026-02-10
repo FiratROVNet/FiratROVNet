@@ -28,7 +28,7 @@ class HullManager:
             self,
             base_points: list,
             yasakli_noktalar: list | None = None,
-            offset: float = 0.0,
+            offset: float = 60.0,
             buffer_radius: float = 10.0,
             **kwargs
         ) -> dict:
