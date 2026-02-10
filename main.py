@@ -1,5 +1,5 @@
 from FiratROVNet.simulasyon import Ortam
-from FiratROVNet.gnc import Filo, Debug
+from FiratROVNet.gnc import Filo
 from GAT.gat_test import FiratAnalizci
 from FiratROVNet.config import cfg
 from ursina import *
@@ -36,8 +36,7 @@ filo.otomatik_kurulum(
 )
 app.filo = filo
 
-# Debug sınıfı (APF/GNC fonksiyonları)
-debug = Debug(filo)
+
 
 # Minimap otomatik açık (ölçek 1.0)
 filo.minimap(scale=1.0)
@@ -52,7 +51,6 @@ app.konsola_ekle("ROV", lambda rov_id, x=None, y=None, z=None: app.ROV(rov_id, x
 app.konsola_ekle("filo", filo)
 app.konsola_ekle("rovs", app.rovs)
 app.konsola_ekle("cfg", cfg)
-app.konsola_ekle("debug", debug)
 app.konsola_ekle("nav_queue", nav_queue) # Kuyruğu konsoldan izleyebilirsin
 
 print("✅ Sistem aktif. Minimap üzerinden hedef eklemek için sol tıkla.")
@@ -134,11 +132,18 @@ def update():
 
 app.set_update_function(update)
 
+
+
+
 # ==========================================
 # 3. GİRDİ YÖNETİMİ (MOUSE)
 # ==========================================
 def input(key):
     global target_counter, nav_queue
+
+    if key == 'p':
+        lider_rov = app.rovs[0]
+        filo.entity_patlat(lider_rov)
     
     if key == 'left mouse down':
         # Eğer tıklanan nesne minimap ise
