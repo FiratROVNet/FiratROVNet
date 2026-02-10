@@ -54,10 +54,65 @@ class ROV(Entity):
         if not ortam_ref: return False
         self.environment_ref = ortam_ref
         if not hasattr(ortam_ref, 'rovs'): ortam_ref.rovs = []
-        while len(ortam_ref.rovs) <= self.id: ortam_ref.rovs.append(None)
-        if ortam_ref.rovs[self.id] is not None: return False
-        ortam_ref.rovs[self.id] = self
+        
+        # ID'yi her zaman listenin sonundaki sayı olarak ata
+        self.id = len(ortam_ref.rovs)
+        ortam_ref.rovs.append(self)
+        
+        self._etiket_guncelle()
         return True
+
+    def cikar(self):
+            """ROV'u güvenli şekilde siler ve listeyi kaydırır."""
+            if not self.environment_ref: return
+            
+            ortam = self.environment_ref
+            silinen_id = self.id
+
+            # 1. Önce referansları 'None' yaparak diğer döngülerin erişimini kes
+            # Bu, 'AssertionError'u engelleyen en önemli adımdır.
+            ortam.rovs[silinen_id] = None 
+
+            # 2. Görsel bileşenleri derhal temizle
+            if hasattr(self, 'label') and self.label: destroy(self.label)
+            if hasattr(self, 'engel_cizgi') and self.engel_cizgi: destroy(self.engel_cizgi)
+
+            # 3. Listeden tamamen çıkar ve kaydır
+            # None olan elemanı temizle
+            ortam.rovs = [r for r in ortam.rovs if r is not None]
+            
+            # 4. ZİNCİRLEME GÜNCELLEME
+            for i, kalan_rov in enumerate(ortam.rovs):
+                kalan_rov.id = i
+                kalan_rov._etiket_guncelle()
+                
+            print(f"✅ ROV-{silinen_id} temizlendi. Yeni sıra oluşturuldu.")
+            
+            # 5. En son kendini yok et
+            destroy(self)
+
+    def _etiket_guncelle(self):
+        """ID değiştiğinde üzerindeki yazıyı günceller."""
+        metin = f"{'LIDER' if self.role == 1 else 'ROV'}-{self.id}"
+        if self.label:
+            self.label.text = metin
+        else:
+            self.label = Text(text=metin, parent=self, y=1.5, scale=15, origin=(0,0), color=color.white)
+
+    # --- get metodunu bu 'Güvenli' haliyle DEĞİŞTİR ---
+    def get(self, veri):
+        # Obje silinmişse Panda3D koordinat hatası (AssertionError) vermemesi için kontrol
+        if not self or (hasattr(self, 'is_destroyed') and self.is_destroyed):
+            return None
+        try:
+            d = {"gps": [self.x, self.y, self.z], 
+                 "hiz": [self.velocity.x, self.velocity.y, self.velocity.z],
+                 "batarya": self.battery, "yaw": self.rotation_y, 
+                 "rol": self.role, "sonar": self.son_sonar_mesafesi}
+            return np.array(d[veri]) if veri in d else None
+        except:
+            return None
+
 
     def update(self):
         """Ursina Ana Döngüsü: Hareket, Sürtünme ve Sensörler."""
@@ -122,11 +177,6 @@ class ROV(Entity):
         elif komut == "cik":   self.velocity.y += t
         elif komut == "bat":   self.velocity.y -= t if self.role != 1 else 0
         elif komut == "dur":   self.velocity = Vec3(0,0,0)
-
-    def get(self, veri):
-        d = {"gps": [self.x, self.y, self.z], "hiz": [self.velocity.x, self.velocity.y, self.velocity.z],
-             "batarya": self.battery, "yaw": self.rotation_y, "rol": self.role, "sonar": self.son_sonar_mesafesi}
-        return np.array(d[veri]) if veri in d else None
 
     def _kesikli_cizgi_ciz(self, hedef, mesafe):
         if self.engel_cizgi: destroy(self.engel_cizgi)
@@ -253,26 +303,44 @@ class Minimap(Entity):
                 self.statik_nesneler.append(self.loader.draw_static_circle(self, pos[0], pos[1], pos[2], self.havuz_genisligi))
 
     def gorsel_guncelle(self):
-        if not self.visible or not self.ortam_ref: return
-        
-        # ROV İkonları
-        if hasattr(self.ortam_ref, 'rovs'):
-            active_ids = {r.id for r in self.ortam_ref.rovs if r}
-            for rov in [r for r in self.ortam_ref.rovs if r]:
-                target = self.dunya_to_harita(rov.x, rov.z)
-                if rov.id not in self.rov_ikonlari:
-                    self.rov_ikonlari[rov.id] = self.loader.create_rov_icon(self, rov.id, rov.color)
-                icon = self.rov_ikonlari[rov.id]
-                icon.color = rov.color
-                if (target - icon.position).length_squared() > 0.04: icon.position = target
-                else: icon.position = lerp(icon.position, target, min(1.0, time.dt * 18))
-                icon.rotation_z = -rov.rotation_y
+            """Minimap üzerindeki ROV ikonlarını ve verileri güvenli şekilde günceller."""
+            if not self.visible or not self.ortam_ref: return
             
-            for rid in list(self.rov_ikonlari.keys()):
-                if rid not in active_ids: destroy(self.rov_ikonlari[rid]); del self.rov_ikonlari[rid]
+            if hasattr(self.ortam_ref, 'rovs'):
+                # 1. GÜVENLİK: Listenin kopyasını al ve sadece hayatta olan ROV'ları filtrele
+                # Bu işlem, döngü sırasında bir ROV silinirse 'AssertionError' almanı engeller.
+                mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
+                active_ids = {r.id for r in mevcut_rovlar}
+                
+                for rov in mevcut_rovlar:
+                    # Koordinat dönüşümü (Dünya -> Harita)
+                    target = self.dunya_to_harita(rov.x, rov.z)
+                    
+                    # Eğer bu ID için bir ikon yoksa (yeni eklendiyse veya ID kaydıysa) oluştur
+                    if rov.id not in self.rov_ikonlari:
+                        self.rov_ikonlari[rov.id] = self.loader.create_rov_icon(self, rov.id, rov.color)
+                    
+                    icon = self.rov_ikonlari[rov.id]
+                    icon.color = rov.color
+                    
+                    # İkon hareketini yumuşat (Lerp)
+                    if (target - icon.position).length_squared() > 0.04:
+                        icon.position = target
+                    else:
+                        icon.position = lerp(icon.position, target, min(1.0, time.dt * 18))
+                    
+                    # İkonun dönüş açısını ROV ile eşitle
+                    icon.rotation_z = -rov.rotation_y
+                
+                # 2. TEMİZLİK: Artık sistemde olmayan (silinen) ID'lerin ikonlarını haritadan kaldır
+                for rid in list(self.rov_ikonlari.keys()):
+                    if rid not in active_ids:
+                        destroy(self.rov_ikonlari[rid])
+                        del self.rov_ikonlari[rid]
 
-        self._vektor_ve_hedef_guncelle()
-        self._engel_bulutu_guncelle()
+            # Diğer minimap katmanlarını güncelle
+            self._vektor_ve_hedef_guncelle()
+            self._engel_bulutu_guncelle()
 
     def _vektor_ve_hedef_guncelle(self):
         filo = getattr(self.ortam_ref, 'filo', None)
@@ -528,45 +596,44 @@ class Ortam:
             while len(self.island_entities) <= ada_id: self.island_entities.append(None)
             ent, radius = self.loader.create_island(y[0], y[1])
             self.island_entities[ada_id], self.island_positions[ada_id] = ent, (y[0], y[1], radius)
-
     def guncelle_sonar_cizgileri(self):
             """ROV'lar arası sonar iletişimini dinamik kesikli çizgilerle gösterir."""
-            active_rovs = [r for r in self.rovs if r]
+            # 1. GÜVENLİK: Sadece geçerli ve hayatta olan ROV'ları al
+            active_rovs = [r for r in self.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
             
-            # Kesikli çizgi ayarları
-            segment_boyu = 1.5  # Her bir çizgi parçasının uzunluğu (metre)
-            bosluk_boyu = 1.0   # Çizgiler arasındaki boşluk
+            # Kesikli çizgi görsel ayarları
+            segment_boyu = 1.5  # Çizgi parçası uzunluğu
+            bosluk_boyu = 1.0   # Boşluk uzunluğu
             adim = segment_boyu + bosluk_boyu
 
             for i, r1 in enumerate(active_rovs):
                 for r2 in active_rovs[i+1:]:
+                    # İkili Güvenlik Kontrolü
+                    if not r1 or not r2 or (hasattr(r1, 'is_destroyed') and r1.is_destroyed) or (hasattr(r2, 'is_destroyed') and r2.is_destroyed):
+                        continue
+
                     p1, p2 = r1.position, r2.position
                     fark = p2 - p1
                     dist = fark.length()
-                    pair = tuple(sorted((r1.id, r2.id)))
+                    pair = tuple(sorted((r1.id, r2.id))) # ID'lere göre benzersiz çift anahtarı
                     
-                    # İletişim şartları: Menzil içi ve kopuk değilse
+                    # İletişim şartları: Menzil içi ve GAT kodu kopuk (3) değilse
                     if dist < self.SONAR_MENZILI and r1.gat_kodu != 3 and r2.gat_kodu != 3:
-                        # Renk belirleme (Mesafe bazlı)
+                        # Mesafe bazlı renk (Yakın: Kırmızı, Orta: Turuncu, Uzak: Cyan)
                         c = color.red if dist < 10 else (color.orange if dist < 60 else color.cyan)
                         
                         # --- KESİKLİ ÇİZGİ VERTEX HESAPLAMA ---
                         verts = []
                         yon = fark.normalized()
                         curr = 0
-                        
                         while curr < dist:
-                            # Çizgi parçasının başı
                             v_start = p1 + yon * curr
-                            # Çizgi parçasının sonu (mesafeyi aşmamalı)
                             v_end = p1 + yon * min(curr + segment_boyu, dist)
-                            
                             verts.append(v_start)
                             verts.append(v_end)
-                            
                             curr += adim
                         
-                        # Entity yönetimi
+                        # Entity yönetimi (Yeni oluştur veya mevcut mesh'i güncelle)
                         if pair not in self.sonar_cizgiler:
                             self.sonar_cizgiler[pair] = Entity(
                                 model=Mesh(vertices=verts, mode='line', static=False),
@@ -574,13 +641,12 @@ class Ortam:
                                 alpha=0.4
                             )
                         else:
-                            # Mevcut çizgiyi güncelle (Hızlı mesh güncelleme)
                             line_ent = self.sonar_cizgiler[pair]
                             line_ent.model.vertices = verts
-                            line_ent.model.generate() # Mesh'i yeniden oluştur
+                            line_ent.model.generate() # Mesh'i Panda3D'de yeniden oluştur
                             line_ent.color = c
                     
-                    # Menzil dışına çıktıysa veya koptuysa çizgiyi sil
+                    # Menzil dışına çıktıysa, biri silindiyse veya iletişim koptuysa çizgiyi yok et
                     elif pair in self.sonar_cizgiler:
                         destroy(self.sonar_cizgiler[pair])
                         del self.sonar_cizgiler[pair]
