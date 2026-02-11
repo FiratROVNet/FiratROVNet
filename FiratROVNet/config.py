@@ -22,11 +22,11 @@ class GATLimitleri:
     Bu limitler gnc.py ve simulasyon.py (kullanım) tarafından kullanılır.
     """
     # GAT Kod Limitleri (metre cinsinden)
-    CARPISMA = 20    # Kod 2: Çarpışma riski mesafesi
+    CARPISMA = 15    # Kod 2: Çarpışma riski mesafesi
     ENGEL = 30.0      # Kod 1: Engel yakınlığı mesafesi
     KOPMA = 70.0      # Kod 3: Bağlantı kopması mesafesi
     UZAK = 100.0       # Kod 5: Liderden uzaklık mesafesi
-    ILETISIM_MENZILI = 150.0  # Sonar iletişim maksimum menzili (metre)
+    ILETISIM_MENZILI = 110.0  # Sonar iletişim maksimum menzili (metre)
     
     @classmethod
     def dict(cls):
@@ -178,7 +178,7 @@ class ROVModelleri:
         },
         'submarine': {
             'path': 'Models-3D/water/my_models/submarine/submarine1.fbx',
-            'scale': (0.013, 0.013, 0.013),  # FBX 1000x küçültme + %25 büyütme
+            'scale': (0.009, 0.009, 0.009),  # FBX 1000x küçültme + %25 büyütme bir rovun boyutu artık 1000*0.009=9 mtre boyunda
         },
     }
 
