@@ -176,16 +176,6 @@ class ROV(Entity):
 
     def move(self, komut, guc=1.0):
         if self.battery <= 0: return
-        t = guc * FizikSabitleri.HIZLANMA_CARPANI * time.dt
-        rad = math.radians(self.rotation_y)
-        
-        if komut == "ileri":   self.velocity += Vec3(math.sin(rad)*t, 0, math.cos(rad)*t)
-        elif komut == "geri":  self.velocity -= Vec3(math.sin(rad)*t, 0, math.cos(rad)*t)
-        elif komut == "sag":   self.velocity += Vec3(math.cos(rad)*t, 0, -math.sin(rad)*t)
-        elif komut == "sol":   self.velocity -= Vec3(math.cos(rad)*t, 0, -math.sin(rad)*t)
-        elif komut == "cik":   self.velocity.y += t
-        elif komut == "bat":   self.velocity.y -= t if self.role != 1 else 0
-        elif komut == "dur":   self.velocity = Vec3(0,0,0)
 
     def _kesikli_cizgi_ciz(self, hedef, mesafe):
         if self.engel_cizgi: destroy(self.engel_cizgi)
