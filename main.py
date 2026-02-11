@@ -1,5 +1,5 @@
 from FiratROVNet.simulasyon import Ortam
-from FiratROVNet.gnc import Filo
+from FiratROVNet.gnc import Filo,TemelGNC
 from GAT.gat_test import FiratAnalizci
 from FiratROVNet.config import cfg
 from ursina import *
@@ -12,7 +12,7 @@ import os
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
 # Simülasyonu oluştur: 6 ROV, 6 Ada, 200m havuz yarıçapı
-app.sim_olustur(n_rovs=6, n_islands=6, havuz_genisligi=200, rov_model='submarine')
+app.sim_olustur(n_rovs=(4,3,), n_islands=6, havuz_genisligi=200, rov_model='submarine')
 
 # --- Navigasyon ve Kuyruk Değişkenleri ---
 nav_queue = []          # Hedefleri tutan liste [{'pos': (x,y,z), 'id': 1}, ...]
@@ -29,14 +29,11 @@ except Exception as e:
 
 # Filo sistemini otomatik kurulum ile oluştur
 filo = Filo()
-filo.otomatik_kurulum(
-    rovs=app.rovs,
-    ortam_ref=app,
-    baslangic_hedefleri={0: (150, 10, 0)} # Lider Başlangıç Hedefi
-)
 app.filo = filo
+filo.ortam_ref=app
 
-
+for rov in app.rovs:
+    rov.gnc=TemelGNC(rov,filo)
 
 # Minimap otomatik açık (ölçek 1.0)
 filo.minimap(scale=1.0)
@@ -52,6 +49,7 @@ app.konsola_ekle("filo", filo)
 app.konsola_ekle("rovs", app.rovs)
 app.konsola_ekle("cfg", cfg)
 app.konsola_ekle("nav_queue", nav_queue) # Kuyruğu konsoldan izleyebilirsin
+#app.konsola_ekle("temel_gnc",temel_gnc)
 
 print("✅ Sistem aktif. Minimap üzerinden hedef eklemek için sol tıkla.")
 
@@ -60,7 +58,7 @@ print("✅ Sistem aktif. Minimap üzerinden hedef eklemek için sol tıkla.")
 # ==========================================
 def update():
     """Ana simülasyon döngüsü."""
-    global current_target_id, nav_queue
+    global current_target_id
     
     try:
         # --- 1. NAVİGASYON KUYRUĞU VE VARIŞ YÖNETİMİ ---
@@ -101,8 +99,6 @@ def update():
         else:
             tahminler = np.zeros(len(app.rovs), dtype=int)
         #print(tahminler)
-        filo.guncelle_hepsi(tahminler)
-
         filo.guncelle_hepsi(tahminler)
 
         # --- 4. GÖRSELLEŞTİRME (RENKLER VE ETİKETLER) ---

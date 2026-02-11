@@ -136,7 +136,7 @@ class FiloHelper:
         # Koordinator'u lazy import için cache (circular import önleme)
         self._koordinator = None
         self.kalici_hedefler = {}
-        self.formasyon_sec_sayac=0
+        self.formasyon_sec_tekrar=0
 
     def get(self, rov_id: int = None, veri_tipi: str = None, taraf: int = None, koordinator=None, sessiz: bool = False):
             """
@@ -667,344 +667,7 @@ class FiloHelper:
             ]
         return [(p1.x, p1.y, z_line), (p1.x, p1.y, z_line)]
 
-    def _vektor_poz_al(self, arg, ortam):
-        """Tek vektör argümanını (ROV id veya (x,z) veya (x,y,z) nokta) dünya koordinatına çevirir. Bulunamazsa None.
-        - Eğer arg tuple/list ise: 3 elemanlıyse (x,y,z) döner, 2 elemanlıysa (x,z) döner.
-        - Eğer arg ROV id ise, geriye uyumluluk için (x,z) döner (y mevcutsa kullanılmaz).
-        """
-        if arg is None:
-            return None
-        try:
-            if isinstance(arg, (tuple, list)) and len(arg) >= 3:
-                return (float(arg[0]), float(arg[1]), float(arg[2]))
-            if isinstance(arg, (tuple, list)) and len(arg) >= 2:
-                return (float(arg[0]), float(arg[1]))
-        except (TypeError, ValueError, IndexError):
-            pass
-        rid = int(arg)
-        if ortam is None or not hasattr(ortam, 'rovs') or not ortam.rovs:
-            return None
-        for rov in ortam.rovs:
-            if rov is None:
-                continue
-            if getattr(rov, 'id', None) == rid:
-                return (rov.x, rov.z)
-        return None
 
-    def get_vektor_verts(self, minimap):
-        """
-        Minimap için vektör çizgi köşe listesini hesaplar (birim vektör, sabit uzunluk).
-        Başlangıç/bitiş hibrit: ROV ID ise o ROV konumu, nokta ise verilen (x,z) kullanılır.
-
-        Returns:
-            list | None: [(x1,y1,z), (x2,y2,z)] veya None.
-        """
-        baslangic = getattr(self, '_vektor_baslangic', None)
-        bitis = getattr(self, '_vektor_bitis', None)
-        if baslangic is None or bitis is None:
-            return None
-        ortam = getattr(self.filo, 'ortam_ref', None)
-        pos1 = self._vektor_poz_al(baslangic, ortam)
-        pos2 = self._vektor_poz_al(bitis, ortam)
-        if pos1 is None or pos2 is None:
-            return None
-        z_line = -0.37
-        havuz_genisligi = getattr(minimap, 'havuz_genisligi', 200.0)
-        uzunluk_metre = getattr(self, '_vektor_uzunluk_metre', 10.0)
-        reverse = getattr(self, '_vektor_reverse', False)
-        p1 = minimap.dunya_to_harita(pos1[0], pos1[1])
-        p2 = minimap.dunya_to_harita(pos2[0], pos2[1])
-        return self._vektor_verts_birim(p1, p2, z_line, havuz_genisligi, uzunluk_metre=uzunluk_metre, reverse=reverse)
-
-    def _yatay_mesafe(self, p1, p2):
-        """İki nokta (x, z) arasındaki yatay mesafeyi metre cinsinden döner."""
-        return math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
-
-    def _mesafe(self, p1, p2, is_3d: bool = False):
-        """
-        İki nokta arasındaki mesafeyi hesaplar. is_3d True ise 3B, değilse 2B (x,z) kullanır.
-        p1/p2: (x,z) veya (x,y,z) tuple olabilir.
-        """
-        try:
-            if is_3d:
-                x1, y1, z1 = float(p1[0]), float(p1[1]), float(p1[2])
-                x2, y2, z2 = float(p2[0]), float(p2[1]), float(p2[2])
-                return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2 + (z2 - z1) ** 2)
-            else:
-                return math.sqrt((float(p2[0]) - float(p1[0])) ** 2 + (float(p2[1]) - float(p1[1])) ** 2)
-        except Exception:
-            return float('inf')
-
-    def _apf_rep_factor_hesapla(self, mesafe: float, r_etki: float, d_min: float = 0.5):
-        """
-        APF için repulsive factor hesaplar (mesafe ile ters orantılı).
-        
-        Args:
-            mesafe: ROV ile obje arasındaki mesafe (metre)
-            r_etki: Etki menzili (metre)
-            d_min: Minimum güvenli mesafe (metre, varsayılan 0.5)
-        
-        Returns:
-            float: Repulsive factor (mesafe azaldıkça artar)
-        """
-        d_safe = max(mesafe, d_min)
-        return (1.0 / d_safe - 1.0 / r_etki)
-
-    def _apf_kuvvet_hesapla(self, mesafe: float, birim_vektor: tuple, r_etki: float, 
-                           k_itme: float, k_teget: float, r_yakin_artis: float, 
-                           yakin_carpan: float, teget_carpan: float = 1.0):
-        """
-        APF için itme ve teğet kuvvetlerini hesaplar.
-        Engel vektörü karesel olarak artar (mesafe azaldıkça).
-        
-        Args:
-            mesafe: ROV ile obje arasındaki mesafe (metre)
-            birim_vektor: (ux, uz) birim vektör (ROV'dan objeye doğru)
-            r_etki: Etki menzili (metre)
-            k_itme: İtme katsayısı
-            k_teget: Teğet kuvvet katsayısı
-            r_yakin_artis: Yakın artış mesafesi (metre)
-            yakin_carpan: Yakın mesafede kuvvet çarpanı
-            teget_carpan: Teğet kuvvet çarpanı (varsayılan 1.0, ROV için 1.5)
-        
-        Returns:
-            tuple: (f_rep_ux, f_rep_uz, f_tan_ux, f_tan_uz) kuvvet bileşenleri
-        """
-        # Menzil dışındaki objeler sıfır kuvvet uygular
-        if mesafe >= r_etki:
-            return (0.0, 0.0, 0.0, 0.0)
-        
-        ux, uz = birim_vektor[:2]
-        rep_factor = self._apf_rep_factor_hesapla(mesafe, r_etki)
-        
-        # İtme kuvveti (karesel - mesafe azaldıkça karesel artar)
-        # birim_vektor ROV->Obstacle yönünde; itme kuvveti obje→ROV yönünde olmalı (repulsive)
-        f_rep = k_itme * rep_factor * rep_factor
-        if mesafe < r_yakin_artis:
-            # Yakın mesafede ekstra karesel artış
-            f_rep *= yakin_carpan * (r_yakin_artis / max(mesafe, 0.1)) ** 2
-        
-        # İtme vektörü: objeden uzağa (-ux, -uz) = itici yön
-        f_rep_ux = -ux * f_rep
-        f_rep_uz = -uz * f_rep
-        
-        # Teğet kuvveti (vortex): itici yön (-ux, -uz) ile 90° dik
-        # Perpendicular: (-uz, ux) veya (uz, -ux) — engel etrafında dolaşmak için
-        f_tan_ux, f_tan_uz = 0.0, 0.0
-        if mesafe < (r_etki / 2.0):
-            f_tan = (k_teget * teget_carpan) * (rep_factor * rep_factor)
-            if mesafe < r_yakin_artis:
-                # Yakın mesafede ekstra karesel artış
-                f_tan *= yakin_carpan * (r_yakin_artis / max(mesafe, 0.1)) ** 2
-            # Teğet: (-uz, ux) — itici yön (-ux,-uz)'ye dik
-            f_tan_ux = -uz * f_tan
-            f_tan_uz = ux * f_tan
-        
-        return (f_rep_ux, f_rep_uz, f_tan_ux, f_tan_uz)
-
-    def vektor_normalize(self, ux=None, uz=None, uy=None, max_mag: float = 1.0, vektor=None):
-        """
-        Vektörü normalize eder ve maksimum büyüklüğe sınırlar. Hem 2D hem 3D vektörleri destekler.
-        
-        Args:
-            ux: X bileşeni (2D veya 3D modu için)
-            uz: Z bileşeni (2D modu için) veya Y bileşeni (3D modu için)
-            uy: Y bileşeni (3D modu için, opsiyonel). None ise 2D modu kullanılır.
-            max_mag: Maksimum büyüklük (varsayılan 1.0)
-            vektor: Alternatif kullanım - vektör tuple/list olarak verilebilir.
-                - 2D: (ux, uz) veya [ux, uz]
-                - 3D: (ux, uy, uz) veya [ux, uy, uz]
-                vektor verilirse ux, uz, uy parametreleri göz ardı edilir.
-        
-        Returns:
-            tuple: 
-                - 2D modu: (ux_norm, uz_norm, mag) normalize edilmiş vektör ve büyüklüğü
-                - 3D modu: (ux_norm, uy_norm, uz_norm, mag) normalize edilmiş vektör ve büyüklüğü
-        
-        Örnekler:
-            # 2D vektör
-            ux, uz, mag = self.vektor_normalize(3.0, 4.0)  # (0.6, 0.8, 1.0)
-            ux, uz, mag = self.vektor_normalize(vektor=(3.0, 4.0))  # Tuple ile
-            
-            # 3D vektör
-            ux, uy, uz, mag = self.vektor_normalize(2.0, 3.0, 4.0)  # 3D
-            ux, uy, uz, mag = self.vektor_normalize(vektor=(2.0, 3.0, 4.0))  # Tuple ile
-        """
-        # Vektör tuple/list olarak verilmişse kullan
-        if vektor is not None:
-            try:
-                if isinstance(vektor, (tuple, list)):
-                    if len(vektor) >= 3:
-                        # 3D vektör
-                        ux, uy, uz = float(vektor[0]), float(vektor[1]), float(vektor[2])
-                    elif len(vektor) >= 2:
-                        # 2D vektör
-                        ux, uz = float(vektor[0]), float(vektor[1])
-                        uy = None
-                    else:
-                        return None
-            except (TypeError, ValueError, IndexError):
-                return None
-        
-        # Parametre kontrolü
-        if ux is None or uz is None:
-            return None
-        
-        # 3D modu: uy verilmişse
-        if uy is not None:
-            mag = math.sqrt(ux * ux + uy * uy + uz * uz)
-            if mag < 1e-9:
-                return (0.0, 0.0, 0.0, 0.0)
-            if mag > max_mag:
-                scale = max_mag / mag
-                ux_norm = ux * scale
-                uy_norm = uy * scale
-                uz_norm = uz * scale
-                mag = max_mag
-            else:
-                ux_norm = ux
-                uy_norm = uy
-                uz_norm = uz
-            return (ux_norm, uy_norm, uz_norm, mag)
-        
-        # 2D modu: uy verilmemişse
-        mag = math.sqrt(ux * ux + uz * uz)
-        if mag < 1e-9:
-            return (0.0, 0.0, 0.0)
-        if mag > max_mag:
-            scale = max_mag / mag
-            ux_norm = ux * scale
-            uz_norm = uz * scale
-            mag = max_mag
-        else:
-            ux_norm = ux
-            uz_norm = uz
-        return (ux_norm, uz_norm, mag)
-
-    def _apf_motor_guc_hesapla(self, min_dist_to_obj: float, r_guvenlik: float, 
-                               base_speed: float = 0.15, total_mag: float = 1.0):
-        """
-        APF için dinamik motor gücü hesaplar (mesafeye göre).
-        
-        Args:
-            min_dist_to_obj: En yakın objeye mesafe (metre)
-            r_guvenlik: Güvenlik mesafesi (metre)
-            base_speed: Temel hız (varsayılan 0.15)
-            total_mag: Toplam vektör büyüklüğü (varsayılan 1.0)
-        
-        Returns:
-            float: Motor gücü [0.0, 1.0] aralığında
-        """
-        current_power = base_speed
-        if min_dist_to_obj < r_guvenlik:
-            current_power = 0.35
-        elif min_dist_to_obj < (r_guvenlik * 2):
-            current_power = 0.25
-        
-        final_power = current_power * total_mag
-        return max(0.0, min(final_power, 1.0))
-
-    def _apf_hedef_gain_hesapla(self, min_dist_to_obj: float, r_yakin_hedef: float = 10.0, 
-                                r_etki: float = 20.0, k_hedef: float = 1.0):
-        """
-        APF için hedef kazancını hesaplar (engel yaklaştıkça azalır).
-        10 metreden yakın olduğunda neredeyse 0 olur.
-        
-        Args:
-            min_dist_to_obj: En yakın objeye mesafe (metre)
-            r_yakin_hedef: Yakın hedef mesafesi (metre, varsayılan 10.0) - bu mesafeden yakın olduğunda hedef neredeyse 0
-            r_etki: Etki menzili (metre, varsayılan 10.0)
-            k_hedef: Hedef katsayısı (varsayılan 1.0)
-        
-        Returns:
-            float: Hedef kazancı (0.0 - k_hedef aralığında)
-        """
-        # 10 metreden yakın olduğunda neredeyse 0
-        if min_dist_to_obj < r_yakin_hedef:
-            # Karesel azalma: (mesafe / r_yakin_hedef)^2 ile çarp
-            ratio = min_dist_to_obj / r_yakin_hedef
-            return k_hedef * (ratio ** 2) * 0.01  # Neredeyse 0 (maksimum %1)
-        
-        # 10 metreden uzakta normal karesel azalma
-        ratio_sq = (min_dist_to_obj / r_etki) ** 2
-        return min(k_hedef, k_hedef * ratio_sq)
-
-    def _koordinat_cikar(self, obj, x_attr='x', y_attr='y', z_attr='z'):
-        """
-        Bir objeden koordinatları çıkarır (getattr ile). 
-        Obje Vec3, tuple, list veya attribute'lara sahip bir obje olabilir.
-        
-        Args:
-            obj: Koordinat içeren obje (Vec3, tuple, list veya attribute'lara sahip obje)
-            x_attr: X koordinatı için attribute adı (varsayılan 'x')
-            y_attr: Y koordinatı için attribute adı (varsayılan 'y')
-            z_attr: Z koordinatı için attribute adı (varsayılan 'z')
-        
-        Returns:
-            tuple: (x, y, z) veya (x, z) eğer y bulunamazsa. Bulunamazsa (None, None, None).
-        """
-        if obj is None:
-            return (None, None, None)
-        
-        # Tuple veya list ise
-        if isinstance(obj, (tuple, list)):
-            if len(obj) >= 3:
-                return (float(obj[0]), float(obj[1]), float(obj[2]))
-            elif len(obj) >= 2:
-                return (float(obj[0]), None, float(obj[1]))
-            return (None, None, None)
-        
-        # Vec3 veya attribute'lara sahip obje ise
-        try:
-            x = getattr(obj, x_attr, None)
-            y = getattr(obj, y_attr, None)
-            z = getattr(obj, z_attr, None)
-            
-            # Eğer x veya z None ise, tuple/list olarak dene
-            if x is None or z is None:
-                if isinstance(obj, (tuple, list)) and len(obj) >= 2:
-                    x = obj[0] if x is None else x
-                    z = obj[1] if z is None else z
-            
-            if x is not None and z is not None:
-                return (float(x), float(y) if y is not None else None, float(z))
-        except (TypeError, ValueError, AttributeError):
-            pass
-        
-        return (None, None, None)
-
-    def _rov_pozisyon_ursina(self, rov_id=None, rov_entity=None, ortam=None):
-        """
-        ROV pozisyonunu Ursina koordinatlarında (x, z) döner.
-        Mevcut _vektor_poz_al() fonksiyonunu kullanır veya rov_entity'den direkt alır.
-        
-        Args:
-            rov_id: ROV ID (int) - ortam'dan ROV'u bulmak için
-            rov_entity: ROV entity objesi - direkt pozisyon almak için
-            ortam: Ortam referansı - ROV'u bulmak için
-        
-        Returns:
-            tuple: (x, z) Ursina koordinatları veya None
-        """
-        # Eğer rov_entity verilmişse direkt kullan
-        if rov_entity is not None:
-            x = getattr(rov_entity, 'x', None)
-            z = getattr(rov_entity, 'z', None)
-            if x is not None and z is not None:
-                return (float(x), float(z))
-        
-        # Eğer rov_id verilmişse _vektor_poz_al() kullan
-        if rov_id is not None and ortam is not None:
-            return self._vektor_poz_al(rov_id, ortam)
-        
-        return None
-
-    def _koordinator_al(self):
-        """Koordinator'u lazy import ile alır (circular import önleme)."""
-        if self._koordinator is None:
-            from FiratROVNet.gnc import Koordinator
-            self._koordinator = Koordinator
-        return self._koordinator
 
     def apf(self, rov_id: int, hedef: bool = True, engel: bool = True, rov: bool = True):
                 """
@@ -2156,28 +1819,40 @@ class FiloHelper:
         return None
 
 
-    def formasyon_sec(self, margin=None, is_3d=False, offset=None, minimap=True, dinamik=True):
+    def formasyon_sec(self, margin=None, is_3d=False, offset=None, minimap=True, dinamik=True,tekrar=100):
             """
             Convex hull kullanarak en uygun formasyonu seçer.
             Yaw senkronizasyon mantığı tamamen kaldırılmıştır (Fizik motoruna devredildi).
             minimap=True ise hesaplanan alan Ursina UI Minimap üzerinde gösterilir.
             """
-            # 1. Minimap Kontrolü ve Açılması
-            if minimap and self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'minimap'):
-                m_ui = self.filo.ortam_ref.minimap
-                if m_ui:
-                    m_ui.goster(True) # Minimap'i görünür yap
+            self.formasyon_sec_tekrar += 1
 
-            # 2. Thread Güvenliği (Ursina/Panda3D senkronizasyonu)
-            if not self.filo._is_main_thread():
-                if hasattr(self.filo, '_command_queue'):
-                    self.filo._command_queue.put(('formasyon_sec', (margin, is_3d, offset), {'dinamik': dinamik}))
+            if self.formasyon_sec_tekrar>tekrar:
+                self.formasyon_sec_tekrar=0
+                print(f"🔄 [FORMASYON_SEC] Formasyon seçimi tetiklendi (tekrar={self.formasyon_sec_tekrar})")
+            # 1. Minimap Kontrolü ve Açılması
+                if minimap and self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'minimap'):
+                    m_ui = self.filo.ortam_ref.minimap
+                    if m_ui:
+                        m_ui.goster(True) # Minimap'i görünür yap
+
+                # 2. Thread Güvenliği (Ursina/Panda3D senkronizasyonu)
+                if not self.filo._is_main_thread():
+                    if hasattr(self.filo, '_command_queue'):
+                        self.filo._command_queue.put(('formasyon_sec', (margin, is_3d, offset), {'dinamik': dinamik}))
+                    return None
+
+                # 3. Ana Hesaplama Fonksiyonunu Çağır
+                return self._formasyon_sec_impl(margin, is_3d, offset, dinamik=dinamik)
+            else:
                 return None
 
-            # 3. Ana Hesaplama Fonksiyonunu Çağır
-            return self._formasyon_sec_impl(margin, is_3d, offset, dinamik=dinamik)
-
-    def _formasyon_sec_impl(self, margin=None, is_3d=False, offset=None, sessiz=True, dinamik=True):
+    def _formasyon_sec_impl(self, margin=None, is_3d=False, offset=None, sessiz=True, dinamik=True,tekrar=1):
+            self.formasyon_sec_tekrar += 1
+            if self.formasyon_sec_tekrar<tekrar:
+                return None
+            
+            self.formasyon_sec_tekrar=0
             initial_margin = margin if margin is not None else HareketAyarlari.FORMASYON_OFFSET
             min_aralik = HareketAyarlari.FORMASYON_MIN_ARALIK
             offset = offset if offset is not None else HareketAyarlari.FORMASYON_OFFSET
@@ -2752,44 +2427,49 @@ class TemelGNCHelper:
         return max(0.0, min(1.0, oran)) # Güvenlik için 0-1 arasına sıkıştır
 
     def fizik_uygula(self, hedef_yon_ursina: Vec3, guc_orani: float, dt: float, uygula: bool = True):
-            """
-            SAF FİZİK MOTORU: 
-            uygula=True ise: Newton fiziğini hesaplar ve yeni HIZ (velocity) vektörünü döndürür.
-            uygula=False ise: Gelen hedef vektörünü olduğu gibi döndürür.
-            """
-            # Eğer fizik uygulanmayacaksa gelen vektörü direkt geri gönder
-            if not uygula:
-                #ivme=guc_orani*Vec3(hedef_yon_ursina.x, hedef_yon_ursina.y, hedef_yon_ursina.z)
-                #yeni_hiz = self.rov.velocity + (ivme * dt)
-                return hedef_yon_ursina*guc_orani
+        if not uygula:
+            return hedef_yon_ursina * guc_orani
 
-            # --- 1. KUVVET HESAPLAMALARI ---
-            # A) Motor İtme (Thrust)
-            f_thrust = hedef_yon_ursina * guc_orani * Hidrodinamik.MAX_ITME_KUVVETI
+        # --- 1. KUVVET HESAPLAMALARI ---
+        # A) Motor İtme
+        f_thrust = hedef_yon_ursina * guc_orani * Hidrodinamik.MAX_ITME_KUVVETI
 
-            # B) Hidrodinamik Direnç (Drag)
-            mevcut_hiz = self.rov.velocity
-            hiz_buyuklugu = mevcut_hiz.length()
-            f_drag = Vec3(0, 0, 0)
-            if hiz_buyuklugu > 0.001:
-                drag_magnitude = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * \
-                                Hidrodinamik.ON_YUZEY_ALANI * (hiz_buyuklugu ** 2)
-                f_drag = -mevcut_hiz.normalized() * drag_magnitude
-
-            # C) Statik Kuvvetler (Yerçekimi ve Kaldırma)
-            batma = self.batma_orani_hesapla()
-            su_icindeki_hacim = Hidrodinamik.HACIM * batma
-            f_yercekimi = Vec3(0, -Hidrodinamik.KUTLE * Hidrodinamik.YER_CEKIMI, 0)
-            f_kaldirma  = Vec3(0, su_icindeki_hacim * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.YER_CEKIMI, 0)
-
-            # --- 2. ENTEGRASYON ---
-            f_net = f_thrust + f_drag + f_yercekimi + f_kaldirma
-            ivme = f_net / Hidrodinamik.KUTLE
-
-            # Yeni hızı hesapla (v = v0 + a*dt)
-            yeni_hiz = self.rov.velocity + (ivme * dt)
+        # B) Gelişmiş Direnç (Drag)
+        mevcut_hiz = self.rov.velocity
+        hiz_buyuklugu = mevcut_hiz.length()
+        
+        f_drag = Vec3(0, 0, 0)
+        if hiz_buyuklugu > 0.001:
+            # Standart Kare Direnç (Yüksek hızlar için)
+            drag_quadratic = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * \
+                            Hidrodinamik.ON_YUZEY_ALANI * (hiz_buyuklugu ** 2)
             
-            return yeni_hiz
+            # Lineer Direnç (Düşük hızlarda tam durabilmek için - ÇOK ÖNEMLİ)
+            drag_linear = hiz_buyuklugu * 50.0 # Sabit bir sönümleme katsayısı
+            
+            f_drag = -mevcut_hiz.normalized() * (drag_quadratic + drag_linear)
+
+        # C) Statik Kuvvetler
+        batma = self.batma_orani_hesapla()
+        su_icindeki_hacim = Hidrodinamik.HACIM * batma
+        f_yercekimi = Vec3(0, 0, -Hidrodinamik.KUTLE * Hidrodinamik.YER_CEKIMI)
+        f_kaldirma  = Vec3(0, 0, su_icindeki_hacim * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.YER_CEKIMI)
+
+        # --- 2. ENTEGRASYON ---
+        f_net = f_thrust + f_drag + f_yercekimi + f_kaldirma
+        ivme = f_net / Hidrodinamik.KUTLE
+
+        # HATA DÜZELTME: Normalizasyonu kaldırdık! 
+        # Sadece hızın aşırı patlamasını engellemek için bir limit koyabiliriz.
+        
+        # Yeni hızı hesapla
+        yeni_hiz = self.rov.velocity + (ivme * dt)
+
+        # Düşük Hız Kesici (ROV'un sonsuza kadar titremesini engeller)
+        if guc_orani < 0.01 and yeni_hiz.length() < 0.1:
+            yeni_hiz = Vec3(0,0,0)
+
+        return yeni_hiz
 
     def vektor_to_motor_sim(self, v_sim_dir: Vec3, guc_orani: float):
         """
@@ -2810,16 +2490,17 @@ class TemelGNCHelper:
             
             # Burnunu hareket yönüne çevir (Yaw)
         if guc_orani > 0.01:
+        
             self.yaw_ayarla(self.rov.velocity, ani=False)
 
         # Pozisyonu Güncelle (Fiziksel yer değiştirme)
         ursina_rov_velocity=Vec3(self.rov.velocity.x, self.rov.velocity.z, self.rov.velocity.y)
 
         
-        GORSEL_HIZ_CARPANI = 25.0
+        GORSEL_HIZ_CARPANI = 50.0
         self.rov.position += ursina_rov_velocity * dt * GORSEL_HIZ_CARPANI
         # Hız Vektörünü Minimap'te Çiz
-        if guc_orani > 0.02 and hasattr(self.rov, 'velocity'):
+        if guc_orani > 0.01 and hasattr(self.rov, 'velocity'):
             #print(guc_orani,self.rov.velocity)
             #v_sim_dir=self._kalman_vektor_filtrele(v_sim_dir)
             if hasattr(self, 'filo_ref') and self.filo_ref.helper:
@@ -2891,14 +2572,15 @@ class TemelGNCHelper:
         if n < 1e-9:
             return None
         return (toplam_x / n, toplam_y / n)
-    def _guc_orani_hesapla(self, mesafe: float):
+    def _guc_orani_hesapla(self, mesafe: float,limit=(np.sqrt(3)*400)):
         # HEDEFE VARDI MI? (Ölü Bölge Kontrolü)
         
 
 
-        if mesafe < 5: # 50 cm tolerans
-            guc=mesafe/(np.sqrt(3)*400)
+        if mesafe < GATLimitleri.CARPISMA: # 50 cm tolerans
+            guc=mesafe/limit
             guc=np.log(guc*10+1)/np.log(11) # Logaritmik azalma
+            #print(guc)
             
             
         # YANAŞMA MODU (3 metre kala yavaşla)
@@ -2984,7 +2666,7 @@ class TemelGNCHelper:
             mesafe_yatay = math.sqrt(dist_x**2 + dist_y**2)
 
             # 5. Waypoint'e ulaşıldı mı?
-            if mesafe_yatay < 3.5: # 3.5 metre tolerans
+            if mesafe_yatay < GATLimitleri.CARPISMA: # 
                 #print(f"✅ ROV-{rov_id} waypoint {mevcut_indeks} noktasına ulaştı: ({target_x:.1f}, {target_y:.1f})")
                 self.filo_ref._git_mevcut_nokta_indeksi[rov_id] = mevcut_indeks + 1
                 
@@ -3029,7 +2711,9 @@ class TemelGNCHelper:
             h_info = sonuc.get('hedef') or {}
             h_mesafe = float(h_info.get('mesafe', 0.0))
             h_birim = Vec3(*h_info.get('birim_vektor', [0, 0, 0]))
-            guc = self._guc_orani_hesapla(h_mesafe)
+            guc0 = self._guc_orani_hesapla(h_mesafe)
+            guc1 = 0
+            guc2 = 0
 
             # 3. ENGEL KAÇINMA KUVVETİ (Repulsive Force - Obstacles)
             for e_info in sonuc.get('engeller', []):
@@ -3038,31 +2722,37 @@ class TemelGNCHelper:
                 
                 etki = 1.0 - (mesafe / GATLimitleri.ENGEL)
                 max_engel_etkisi = max(max_engel_etkisi, etki)
+                guc1=max(1-self._guc_orani_hesapla(mesafe,GATLimitleri.ENGEL),guc0)
+
                 
-                if etki > 0.2 and self.filo_ref.get(rov_id, 'rol') == 1:
-                    self.filo_ref.formasyon_sec(dinamik=True)
+                if etki > 0.02 and self.filo_ref.get(rov_id, 'rol') == 1:
+                    self.filo_ref.formasyon_sec(dinamik=True,tekrar=60)
 
                 # --- DÜZELTME: Sadece Yatay Kaçınma ---
                 # Engelden kaçarken batmaması için kaçınma vektörünün Y (düşey) etkisini sıfırlıyoruz.
                 bv_yatay = Vec3(bv.x, bv.y, bv.z) 
-                bileske_vektor += bv_yatay * etki * 0.37 # Kaçınma ağırlığı biraz artırıldı
+                bileske_vektor += bv_yatay * etki * 0.4# Kaçınma ağırlığı biraz artırıldı
 
             # 4. ROV KAÇINMA KUVVETİ (Repulsive Force - Swarm)
             for r_info in sonuc.get('rovs', []):
                 bv = Vec3(*r_info.get('birim_vektor', [0, 0, 0]))
                 mesafe = float(r_info.get('mesafe', 0.0))
                 
-                etki = 1.0 - (mesafe / GATLimitleri.CARPISMA)
+                etki = 1 - (mesafe / (GATLimitleri.CARPISMA))
                 max_rov_etkisi = max(max_rov_etkisi, etki)
                 
                 # --- DÜZELTME: Diğer ROV'lardan yatayda kaçın ---
                 bv_yatay = Vec3(bv.x, bv.y,bv.z)
-                bileske_vektor += bv_yatay * etki * 0.25
+                bileske_vektor += bv_yatay * etki * 0.2 
+                guc2=max(1-self._guc_orani_hesapla(mesafe,GATLimitleri.CARPISMA),guc0)
+
+
 
             # 5. HEDEF VE KAÇINMA DENGESİ (Blending)
             # Kaçınma sırasında hedef çekimi azaltılır ama Y (derinlik) bileşeni 
             # sadece hedefe odaklı kalır.
-            hedef_agirligi = (1.0 - max_engel_etkisi) * 0.24 + (1.0 - max_rov_etkisi) * 0.24
+            guc=max(guc0,guc1,guc2)
+            hedef_agirligi = (1.0 - max_engel_etkisi) * 0.15 + (1.0 - max_rov_etkisi) * 0.15
             bileske_vektor += h_birim * hedef_agirligi
 
             # 6. MOTOR KOMUTU GÖNDER
@@ -3078,6 +2768,7 @@ class TemelGNCHelper:
         hedef yoksa sönümler.
         """
         # Temel kontroller
+        #print(self.rov.id)
         if not self._guncelle_kontroller():
             return
 

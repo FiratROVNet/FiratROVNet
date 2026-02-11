@@ -20,7 +20,7 @@ from .kutuphane.helper.simulasyon_helper import OrtamHelper
 # 1. ROV SINIFI (Mantık ve Fizik)
 # ============================================================
 class ROV(Entity):
-    def __init__(self, rov_id, loader_ref=None, model_key='submarine', **kwargs):
+    def __init__(self, rov_id,group_id, loader_ref=None, model_key='submarine', **kwargs):
         super().__init__()
         self.id = rov_id
         self.environment_ref = None
@@ -50,6 +50,8 @@ class ROV(Entity):
         if loader_ref:
             loader_ref.setup_rov(self, model_key)
 
+        self.group_id = group_id # Grup ID bilgisi
+
     def ekle(self, ortam_ref):
         if not ortam_ref: return False
         self.environment_ref = ortam_ref
@@ -63,33 +65,40 @@ class ROV(Entity):
         return True
 
     def cikar(self):
-            """ROV'u güvenli şekilde siler ve listeyi kaydırır."""
+            """ROV'u siler ve tüm sistemlerden izlerini temizler."""
             if not self.environment_ref: return
             
             ortam = self.environment_ref
             silinen_id = self.id
 
-            # 1. Önce referansları 'None' yaparak diğer döngülerin erişimini kes
-            # Bu, 'AssertionError'u engelleyen en önemli adımdır.
+            # --- YENİ: Filo verilerini temizle ---
+            if hasattr(ortam, 'filo') and ortam.filo:
+                ortam.filo.rov_verilerini_temizle(silinen_id)
+
+            # --- YENİ: Sonar çizgilerini (İletişim okları) temizle ---
+            if hasattr(ortam, 'sonar_cizgiler'):
+                for pair in list(ortam.sonar_cizgiler.keys()):
+                    if silinen_id in pair:
+                        destroy(ortam.sonar_cizgiler[pair])
+                        del ortam.sonar_cizgiler[pair]
+
+            # 1. Referansı None yap
             ortam.rovs[silinen_id] = None 
 
-            # 2. Görsel bileşenleri derhal temizle
+            # 2. Görselleri temizle
             if hasattr(self, 'label') and self.label: destroy(self.label)
             if hasattr(self, 'engel_cizgi') and self.engel_cizgi: destroy(self.engel_cizgi)
 
-            # 3. Listeden tamamen çıkar ve kaydır
-            # None olan elemanı temizle
+            # 3. Listeyi temizle ve ID'leri güncelle
             ortam.rovs = [r for r in ortam.rovs if r is not None]
             
-            # 4. ZİNCİRLEME GÜNCELLEME
             for i, kalan_rov in enumerate(ortam.rovs):
                 kalan_rov.id = i
                 kalan_rov._etiket_guncelle()
                 
-            print(f"✅ ROV-{silinen_id} temizlendi. Yeni sıra oluşturuldu.")
-            
-            # 5. En son kendini yok et
+            print(f"✅ ROV-{silinen_id} ve tüm görsel izleri temizlendi.")
             destroy(self)
+            
 
     def _etiket_guncelle(self):
         """ID değiştiğinde üzerindeki yazıyı günceller."""
@@ -167,16 +176,6 @@ class ROV(Entity):
 
     def move(self, komut, guc=1.0):
         if self.battery <= 0: return
-        t = guc * FizikSabitleri.HIZLANMA_CARPANI * time.dt
-        rad = math.radians(self.rotation_y)
-        
-        if komut == "ileri":   self.velocity += Vec3(math.sin(rad)*t, 0, math.cos(rad)*t)
-        elif komut == "geri":  self.velocity -= Vec3(math.sin(rad)*t, 0, math.cos(rad)*t)
-        elif komut == "sag":   self.velocity += Vec3(math.cos(rad)*t, 0, -math.sin(rad)*t)
-        elif komut == "sol":   self.velocity -= Vec3(math.cos(rad)*t, 0, -math.sin(rad)*t)
-        elif komut == "cik":   self.velocity.y += t
-        elif komut == "bat":   self.velocity.y -= t if self.role != 1 else 0
-        elif komut == "dur":   self.velocity = Vec3(0,0,0)
 
     def _kesikli_cizgi_ciz(self, hedef, mesafe):
         if self.engel_cizgi: destroy(self.engel_cizgi)
@@ -303,44 +302,32 @@ class Minimap(Entity):
                 self.statik_nesneler.append(self.loader.draw_static_circle(self, pos[0], pos[1], pos[2], self.havuz_genisligi))
 
     def gorsel_guncelle(self):
-            """Minimap üzerindeki ROV ikonlarını ve verileri güvenli şekilde günceller."""
             if not self.visible or not self.ortam_ref: return
             
             if hasattr(self.ortam_ref, 'rovs'):
-                # 1. GÜVENLİK: Listenin kopyasını al ve sadece hayatta olan ROV'ları filtrele
-                # Bu işlem, döngü sırasında bir ROV silinirse 'AssertionError' almanı engeller.
                 mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
                 active_ids = {r.id for r in mevcut_rovlar}
                 
-                for rov in mevcut_rovlar:
-                    # Koordinat dönüşümü (Dünya -> Harita)
-                    target = self.dunya_to_harita(rov.x, rov.z)
-                    
-                    # Eğer bu ID için bir ikon yoksa (yeni eklendiyse veya ID kaydıysa) oluştur
-                    if rov.id not in self.rov_ikonlari:
-                        self.rov_ikonlari[rov.id] = self.loader.create_rov_icon(self, rov.id, rov.color)
-                    
-                    icon = self.rov_ikonlari[rov.id]
-                    icon.color = rov.color
-                    
-                    # İkon hareketini yumuşat (Lerp)
-                    if (target - icon.position).length_squared() > 0.04:
-                        icon.position = target
-                    else:
-                        icon.position = lerp(icon.position, target, min(1.0, time.dt * 18))
-                    
-                    # İkonun dönüş açısını ROV ile eşitle
-                    icon.rotation_z = -rov.rotation_y
-                
-                # 2. TEMİZLİK: Artık sistemde olmayan (silinen) ID'lerin ikonlarını haritadan kaldır
+                # --- ÖNCE SİLİNENLERİ KALDIR ---
                 for rid in list(self.rov_ikonlari.keys()):
                     if rid not in active_ids:
                         destroy(self.rov_ikonlari[rid])
                         del self.rov_ikonlari[rid]
 
-            # Diğer minimap katmanlarını güncelle
+                # --- SONRA MEVCUTLARI GÜNCELLE ---
+                for rov in mevcut_rovlar:
+                    target = self.dunya_to_harita(rov.x, rov.z)
+                    
+                    # Eğer ikon yoksa oluştur (ID kayması durumunda yeni ID'ye ikon atanır)
+                    if rov.id not in self.rov_ikonlari:
+                        self.rov_ikonlari[rov.id] = self.loader.create_rov_icon(self, rov.id, rov.color)
+                    
+                    icon = self.rov_ikonlari[rov.id]
+                    icon.position = target
+                    icon.rotation_z = -rov.rotation_y
+                    icon.color = rov.color
+
             self._vektor_ve_hedef_guncelle()
-            self._engel_bulutu_guncelle()
 
     def _vektor_ve_hedef_guncelle(self):
         filo = getattr(self.ortam_ref, 'filo', None)
@@ -543,7 +530,7 @@ class Ortam:
     def set_update_function(self, func): self.app.update = func
     def simden_veriye(self): return self.helper.simden_veriye() if self.helper else []
 
-    def _find_safe_rov_spawn_pos(self):
+    def _find_safe_rov_spawn_pos_yedek(self):
         """ESKİ AYARLAR: Adalardan uzak, güvenli spawn noktası bulur."""
         for _ in range(100):
             sx = random.uniform(-160, 160)
@@ -557,8 +544,82 @@ class Ortam:
                     break
             if is_safe: return (sx, sy, -sz_depth)
         return (0, 0, -15) # Fallback
+    
 
-    def sim_olustur(self, n_rovs=6, n_islands=5, havuz_genisligi=200, rov_model='submarine'):
+    def _find_safe_rov_spawn_pos(self, group_config: tuple, alan_genisligi=120, bosluk=20):
+        """
+        group_config: (3, 4, 1) gibi bir tuple alır.
+        - 3 grup oluşturur.
+        - Grup 0: 3 ROV, Grup 1: 4 ROV, Grup 2: 1 ROV yerleştirir.
+        """
+        import math, random
+        
+        all_groups_rovs = [] 
+        
+        # Tarama sınırları ve adım boyutu
+        baslangic_x, baslangic_y = -180, -180
+        bitis_x, bitis_y = 180, 180
+        adim = alan_genisligi + bosluk
+
+        mevcut_x = baslangic_x
+        mevcut_y = baslangic_y
+
+        # Tuple içindeki her bir grup tanımı için dön
+        for g_id, num_rovs in enumerate(group_config):
+            bulundu = False
+            
+            # Uygun hücre bulana kadar taramaya devam et
+            while mevcut_y <= bitis_y - alan_genisligi:
+                while mevcut_x <= bitis_x - alan_genisligi:
+                    
+                    # Hücrenin merkezi
+                    merkez_x = mevcut_x + (alan_genisligi / 2)
+                    merkez_y = mevcut_y + (alan_genisligi / 2)
+                    
+                    # 1. ADA KONTROLÜ
+                    hucre_kirli = False
+                    for island in [p for p in self.island_positions if p]:
+                        dist = math.sqrt((merkez_x - island[0])**2 + (merkez_y - island[1])**2)
+                        if dist < (island[2] + 15): # Ada yarıçapı + 15m emniyet
+                            hucre_kirli = True
+                            break
+                    
+                    if not hucre_kirli:
+                        # 2. TEMİZ ALAN BULUNDU: Bu grubun ROV'larını yerleştir
+                        bu_grubun_rovlari = []
+                        
+                        # Eğer grupta tek ROV varsa merkeze koy, çoksa çember yap
+                        if num_rovs == 1:
+                            rz = -random.uniform(10, 20)
+                            bu_grubun_rovlari.append((merkez_x, merkez_y, rz))
+                        else:
+                            yaricap = 15.0 # ROV'lar arası yayılma mesafesi
+                            for r_id in range(num_rovs):
+                                angle = math.radians(r_id * (360 / num_rovs))
+                                rx = merkez_x + math.cos(angle) * yaricap
+                                ry = merkez_y + math.sin(angle) * yaricap
+                                rz = -random.uniform(5, 10)
+                                bu_grubun_rovlari.append((rx, ry, rz))
+                        
+                        all_groups_rovs.append(bu_grubun_rovlari)
+                        
+                        # Sonraki grup için imleci bir adım kaydır
+                        mevcut_x += adim
+                        bulundu = True
+                        break # İçteki X döngüsünden çık
+                    
+                    # Hücre kirliyse sağa kay
+                    mevcut_x += adim
+                
+                if bulundu: break # Y döngüsünden çık, sonraki gruba geç
+                
+                # Satır sonuna gelindiyse başa dön ve yukarı çık
+                mevcut_x = baslangic_x
+                mevcut_y += adim
+
+        return all_groups_rovs
+
+    def sim_olustur(self, n_rovs=(6), n_islands=5, havuz_genisligi=200, rov_model='submarine'):
         self.havuz_genisligi = havuz_genisligi
         
         # Temizlik
@@ -580,15 +641,20 @@ class Ortam:
 
         # 2. ROV'ları Güvenli Noktalara Yerleştir
         print(f"🌊 Simülasyon Başlatılıyor: {n_rovs} ROV, {count} Ada")
-        for i in range(n_rovs):
-            sim_pos = self._find_safe_rov_spawn_pos()
-            # sim_pos: (x, z_depth, y_coordinate) -> ursina: (x, y, z)
-            u_pos = Vec3(sim_pos[0], sim_pos[2], sim_pos[1])
-            
-            new_rov = ROV(rov_id=i, position=u_pos, loader_ref=self.loader, model_key=rov_model)
-            new_rov.ekle(self)
 
-        self.minimap._statik_yeniden_ciz()
+        all_group = self._find_safe_rov_spawn_pos(n_rovs)
+
+        for group_id,rovlar in enumerate(all_group):
+            for rov_id,rov_koordinat in enumerate(rovlar):
+
+
+                # sim_pos: (x, z_depth, y_coordinate) -> ursina: (x, y, z)
+                u_pos = Vec3(rov_koordinat[0], rov_koordinat[2], rov_koordinat[1])
+                    
+                new_rov = ROV(rov_id=i,group_id=group_id, position=u_pos, loader_ref=self.loader, model_key=rov_model)
+                new_rov.ekle(self)
+
+                self.minimap._statik_yeniden_ciz()
 
     def Ada(self, ada_id, x=None, y=None):
         if x == "ekle":
@@ -596,60 +662,84 @@ class Ortam:
             while len(self.island_entities) <= ada_id: self.island_entities.append(None)
             ent, radius = self.loader.create_island(y[0], y[1])
             self.island_entities[ada_id], self.island_positions[ada_id] = ent, (y[0], y[1], radius)
-    def guncelle_sonar_cizgileri(self):
-            """ROV'lar arası sonar iletişimini dinamik kesikli çizgilerle gösterir."""
-            # 1. GÜVENLİK: Sadece geçerli ve hayatta olan ROV'ları al
-            active_rovs = [r for r in self.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
             
-            # Kesikli çizgi görsel ayarları
-            segment_boyu = 1.5  # Çizgi parçası uzunluğu
-            bosluk_boyu = 1.0   # Boşluk uzunluğu
-            adim = segment_boyu + bosluk_boyu
+    def guncelle_sonar_cizgileri(self):
+            """
+            ROV'lar arası sonar iletişimini HACİMLİ KESİKLİ çizgilerle gösterir.
+            Dinamik Kalınlık: Yakınken kalın (1.25x), uzakken ince (0.75x).
+            """
+            active_rovs = [r for r in self.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
+            bu_frame_aktif_olanlar = set()
+            
+            # --- AYARLAR ---
+            BASE_KALINLIK = 0.12 # Mevcut temel kalınlığın
+            segment_boyu = 1.2
+            bosluk_boyu = 1.8
+            adim_toplam = segment_boyu + bosluk_boyu
 
             for i, r1 in enumerate(active_rovs):
                 for r2 in active_rovs[i+1:]:
-                    # İkili Güvenlik Kontrolü
-                    if not r1 or not r2 or (hasattr(r1, 'is_destroyed') and r1.is_destroyed) or (hasattr(r2, 'is_destroyed') and r2.is_destroyed):
+                    if r1.gat_kodu == 3 or r2.gat_kodu == 3:
                         continue
 
                     p1, p2 = r1.position, r2.position
-                    fark = p2 - p1
-                    dist = fark.length()
-                    pair = tuple(sorted((r1.id, r2.id))) # ID'lere göre benzersiz çift anahtarı
+                    dist = (p2 - p1).length()
                     
-                    # İletişim şartları: Menzil içi ve GAT kodu kopuk (3) değilse
-                    if dist < self.SONAR_MENZILI and r1.gat_kodu != 3 and r2.gat_kodu != 3:
-                        # Mesafe bazlı renk (Yakın: Kırmızı, Orta: Turuncu, Uzak: Cyan)
-                        c = color.red if dist < 10 else (color.orange if dist < 60 else color.cyan)
+                    if dist < self.SONAR_MENZILI:
+                        pair = tuple(sorted((r1.id, r2.id)))
+                        bu_frame_aktif_olanlar.add(pair)
                         
-                        # --- KESİKLİ ÇİZGİ VERTEX HESAPLAMA ---
-                        verts = []
-                        yon = fark.normalized()
+                        # --- DİNAMİK KALINLIK HESABI ---
+                        # lerp(başlangıç, bitiş, oran) 
+                        # Mesafe 0 iken -> 1.25 | Mesafe MAX iken -> 0.75
+                        oran = dist / self.SONAR_MENZILI
+                        carpan = lerp(1.25, 0.75, oran)
+                        guncel_kalinlik = BASE_KALINLIK * carpan
+                        
+                        # --- RENK MANTIĞI ---
+                        if dist < 25:
+                            c = color.red
+                        elif dist < 80:
+                            c = color.orange
+                        else:
+                            c = color.white
+                        
+                        # Önceki Entity'yi temizle
+                        if pair in self.sonar_cizgiler:
+                            destroy(self.sonar_cizgiler[pair])
+                        
+                        cizgi_konteyner = Entity(add_to_scene_entities=True)
+                        self.sonar_cizgiler[pair] = cizgi_konteyner
+                        
+                        yon_vec = (p2 - p1).normalized()
                         curr = 0
                         while curr < dist:
-                            v_start = p1 + yon * curr
-                            v_end = p1 + yon * min(curr + segment_boyu, dist)
-                            verts.append(v_start)
-                            verts.append(v_end)
-                            curr += adim
-                        
-                        # Entity yönetimi (Yeni oluştur veya mevcut mesh'i güncelle)
-                        if pair not in self.sonar_cizgiler:
-                            self.sonar_cizgiler[pair] = Entity(
-                                model=Mesh(vertices=verts, mode='line', static=False),
+                            kalin_uzunluk = min(segment_boyu, dist - curr)
+                            if kalin_uzunluk <= 0.1: break
+                            
+                            parca_baslangic = p1 + yon_vec * curr
+                            parca_bitis = parca_baslangic + yon_vec * kalin_uzunluk
+                            orta_nokta = (parca_baslangic + parca_bitis) / 2
+                            
+                            parca = Entity(
+                                parent=cizgi_konteyner,
+                                model='cube',
+                                position=orta_nokta,
+                                # Dinamik kalınlık burada uygulanıyor:
+                                scale=(guncel_kalinlik, guncel_kalinlik, kalin_uzunluk),
                                 color=c,
-                                alpha=0.4
+                                unlit=True
                             )
-                        else:
-                            line_ent = self.sonar_cizgiler[pair]
-                            line_ent.model.vertices = verts
-                            line_ent.model.generate() # Mesh'i Panda3D'de yeniden oluştur
-                            line_ent.color = c
-                    
-                    # Menzil dışına çıktıysa, biri silindiyse veya iletişim koptuysa çizgiyi yok et
-                    elif pair in self.sonar_cizgiler:
+                            parca.look_at(parca_bitis)
+                            curr += adim_toplam
+
+            # Temizlik döngüsü
+            tum_cizilmis_ciftler = list(self.sonar_cizgiler.keys())
+            for pair in tum_cizilmis_ciftler:
+                if pair not in bu_frame_aktif_olanlar:
+                    if self.sonar_cizgiler[pair]:
                         destroy(self.sonar_cizgiler[pair])
-                        del self.sonar_cizgiler[pair]
+                    del self.sonar_cizgiler[pair]
 
     def run(self, interaktif=False):
         if interaktif: threading.Thread(target=self._start_shell, daemon=True).start()
