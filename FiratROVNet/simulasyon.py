@@ -672,60 +672,84 @@ class Ortam:
             while len(self.island_entities) <= ada_id: self.island_entities.append(None)
             ent, radius = self.loader.create_island(y[0], y[1])
             self.island_entities[ada_id], self.island_positions[ada_id] = ent, (y[0], y[1], radius)
-    def guncelle_sonar_cizgileri(self):
-            """ROV'lar arası sonar iletişimini dinamik kesikli çizgilerle gösterir."""
-            # 1. GÜVENLİK: Sadece geçerli ve hayatta olan ROV'ları al
-            active_rovs = [r for r in self.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
             
-            # Kesikli çizgi görsel ayarları
-            segment_boyu = 1.5  # Çizgi parçası uzunluğu
-            bosluk_boyu = 1.0   # Boşluk uzunluğu
-            adim = segment_boyu + bosluk_boyu
+    def guncelle_sonar_cizgileri(self):
+            """
+            ROV'lar arası sonar iletişimini HACİMLİ KESİKLİ çizgilerle gösterir.
+            Dinamik Kalınlık: Yakınken kalın (1.25x), uzakken ince (0.75x).
+            """
+            active_rovs = [r for r in self.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
+            bu_frame_aktif_olanlar = set()
+            
+            # --- AYARLAR ---
+            BASE_KALINLIK = 0.12 # Mevcut temel kalınlığın
+            segment_boyu = 1.2
+            bosluk_boyu = 1.8
+            adim_toplam = segment_boyu + bosluk_boyu
 
             for i, r1 in enumerate(active_rovs):
                 for r2 in active_rovs[i+1:]:
-                    # İkili Güvenlik Kontrolü
-                    if not r1 or not r2 or (hasattr(r1, 'is_destroyed') and r1.is_destroyed) or (hasattr(r2, 'is_destroyed') and r2.is_destroyed):
+                    if r1.gat_kodu == 3 or r2.gat_kodu == 3:
                         continue
 
                     p1, p2 = r1.position, r2.position
-                    fark = p2 - p1
-                    dist = fark.length()
-                    pair = tuple(sorted((r1.id, r2.id))) # ID'lere göre benzersiz çift anahtarı
+                    dist = (p2 - p1).length()
                     
-                    # İletişim şartları: Menzil içi ve GAT kodu kopuk (3) değilse
-                    if dist < self.SONAR_MENZILI and r1.gat_kodu != 3 and r2.gat_kodu != 3:
-                        # Mesafe bazlı renk (Yakın: Kırmızı, Orta: Turuncu, Uzak: Cyan)
-                        c = color.red if dist < 10 else (color.orange if dist < 60 else color.cyan)
+                    if dist < self.SONAR_MENZILI:
+                        pair = tuple(sorted((r1.id, r2.id)))
+                        bu_frame_aktif_olanlar.add(pair)
                         
-                        # --- KESİKLİ ÇİZGİ VERTEX HESAPLAMA ---
-                        verts = []
-                        yon = fark.normalized()
+                        # --- DİNAMİK KALINLIK HESABI ---
+                        # lerp(başlangıç, bitiş, oran) 
+                        # Mesafe 0 iken -> 1.25 | Mesafe MAX iken -> 0.75
+                        oran = dist / self.SONAR_MENZILI
+                        carpan = lerp(1.25, 0.75, oran)
+                        guncel_kalinlik = BASE_KALINLIK * carpan
+                        
+                        # --- RENK MANTIĞI ---
+                        if dist < 25:
+                            c = color.red
+                        elif dist < 80:
+                            c = color.orange
+                        else:
+                            c = color.white
+                        
+                        # Önceki Entity'yi temizle
+                        if pair in self.sonar_cizgiler:
+                            destroy(self.sonar_cizgiler[pair])
+                        
+                        cizgi_konteyner = Entity(add_to_scene_entities=True)
+                        self.sonar_cizgiler[pair] = cizgi_konteyner
+                        
+                        yon_vec = (p2 - p1).normalized()
                         curr = 0
                         while curr < dist:
-                            v_start = p1 + yon * curr
-                            v_end = p1 + yon * min(curr + segment_boyu, dist)
-                            verts.append(v_start)
-                            verts.append(v_end)
-                            curr += adim
-                        
-                        # Entity yönetimi (Yeni oluştur veya mevcut mesh'i güncelle)
-                        if pair not in self.sonar_cizgiler:
-                            self.sonar_cizgiler[pair] = Entity(
-                                model=Mesh(vertices=verts, mode='line', static=False),
+                            kalin_uzunluk = min(segment_boyu, dist - curr)
+                            if kalin_uzunluk <= 0.1: break
+                            
+                            parca_baslangic = p1 + yon_vec * curr
+                            parca_bitis = parca_baslangic + yon_vec * kalin_uzunluk
+                            orta_nokta = (parca_baslangic + parca_bitis) / 2
+                            
+                            parca = Entity(
+                                parent=cizgi_konteyner,
+                                model='cube',
+                                position=orta_nokta,
+                                # Dinamik kalınlık burada uygulanıyor:
+                                scale=(guncel_kalinlik, guncel_kalinlik, kalin_uzunluk),
                                 color=c,
-                                alpha=0.4
+                                unlit=True
                             )
-                        else:
-                            line_ent = self.sonar_cizgiler[pair]
-                            line_ent.model.vertices = verts
-                            line_ent.model.generate() # Mesh'i Panda3D'de yeniden oluştur
-                            line_ent.color = c
-                    
-                    # Menzil dışına çıktıysa, biri silindiyse veya iletişim koptuysa çizgiyi yok et
-                    elif pair in self.sonar_cizgiler:
+                            parca.look_at(parca_bitis)
+                            curr += adim_toplam
+
+            # Temizlik döngüsü
+            tum_cizilmis_ciftler = list(self.sonar_cizgiler.keys())
+            for pair in tum_cizilmis_ciftler:
+                if pair not in bu_frame_aktif_olanlar:
+                    if self.sonar_cizgiler[pair]:
                         destroy(self.sonar_cizgiler[pair])
-                        del self.sonar_cizgiler[pair]
+                    del self.sonar_cizgiler[pair]
 
     def run(self, interaktif=False):
         if interaktif: threading.Thread(target=self._start_shell, daemon=True).start()

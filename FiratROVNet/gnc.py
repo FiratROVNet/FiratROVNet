@@ -331,6 +331,61 @@ class Filo:
                                 print(f"🔔 Hafif Temas: ROV-{rov.id} | Enerji: {hesaplanan_joule}J (Eşik altı)")
             
             return False
+    
+    def kamera_ayarla(self, rov_id=0, mesafe=(0, -40, 120), aci=(0, 0, 0), fov=75, bölge=(0.02, 0.20, 0.80, 0.98)):
+            """
+            Sol,Sağ,Alt,Üst sırasıyla bölge parametresi (0-1 arası) - örn: (0.02, 0.30, 0.70, 0.98)
+            ROV'a dinamik bir FPV kamera bağlar.
+            """
+            import builtins
+            # Simülasyonun çalışıp çalışmadığını kontrol et
+            if not hasattr(builtins, 'base'):
+                print("❌ HATA: Simülasyon henüz başlatılmadığı için kamera oluşturulamaz.")
+                return None
+            
+            b = builtins.base # Panda3D ana nesnesi
+
+            # 1. Eğer bu ROV için zaten bir kamera varsa temizle
+            if hasattr(self, 'aktif_kameralar') and rov_id in self.aktif_kameralar:
+                try:
+                    eski_cam = self.aktif_kameralar[rov_id]
+                    b.win.removeDisplayRegion(eski_cam.node().getDisplayRegion(0))
+                    eski_cam.removeNode()
+                except:
+                    pass
+            
+            if not hasattr(self, 'aktif_kameralar'):
+                self.aktif_kameralar = {}
+
+            # 2. Yeni Kamera Oluştur
+            cam_np = b.makeCamera(b.win)
+            cam_node = cam_np.node()
+            
+            # 3. Kamerayı ROV'a Bağla
+            try:
+                # ortam_ref üzerinden ROV nesnesini al
+                target_rov = self.ortam_ref.rovs[rov_id]
+                cam_np.reparentTo(target_rov)
+            except Exception as e:
+                print(f"❌ HATA: ROV-{rov_id} nesnesine ulaşılamadı: {e}")
+                return None
+            
+            # 4. Konum ve Açı (Panda3D: X sağ, Y ileri, Z yukarı)
+            cam_np.setPos(mesafe[0], mesafe[1], mesafe[2])
+            cam_np.setHpr(aci[0], aci[1], aci[2])
+            
+            # 5. Lens ve Ekran Bölgesi
+            cam_node.getLens().setFov(fov)
+            region = cam_node.get_display_region(0)
+            region.set_dimensions(bölge[0], bölge[1], bölge[2], bölge[3])
+            region.set_sort(10) # En üstte çizilmesi için
+            
+            # Minimap ve UI'yı bu kameradan gizle (isteğe bağlı)
+            cam_node.set_camera_mask(1) 
+
+            self.aktif_kameralar[rov_id] = cam_np
+            print(f"🎥 ROV-{rov_id} FPV Kamera Aktif (Bölge: {bölge})")
+            return cam_np
             
     def guncelle_hepsi(self, tahminler):
         """
@@ -413,14 +468,10 @@ class Filo:
 
     def rov_verilerini_temizle(self, rov_id):
             """Silinen ROV'un tüm izlerini GNC hafızasından siler."""
-            # Rota ve Waypoint temizliği
-            if rov_id in self._git_nokta_listesi: del self._git_nokta_listesi[rov_id]
-            if rov_id in self._git_mevcut_nokta_indeksi: del self._git_mevcut_nokta_indeksi[rov_id]
-            if rov_id in self._rov_hedefleri: del self._rov_hedefleri[rov_id]
             
             # Vektör (Ok) temizliği
             if hasattr(self.helper, 'apf_temizle'):
-                self.helper.apf_temizle(rov_id=rov_id)
+                self.helper.apf_temizle()
             
             # Kamera temizliği
             if rov_id in self.aktif_kameralar: del self.aktif_kameralar[rov_id]
