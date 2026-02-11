@@ -58,7 +58,7 @@ print("✅ Sistem aktif. Minimap üzerinden hedef eklemek için sol tıkla.")
 # ==========================================
 def update():
     """Ana simülasyon döngüsü."""
-    global current_target_id, nav_queue
+    global current_target_id
     
     try:
         # --- 1. NAVİGASYON KUYRUĞU VE VARIŞ YÖNETİMİ ---
