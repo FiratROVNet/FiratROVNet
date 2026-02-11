@@ -12,6 +12,7 @@ from .iletisim import AkustikModem
 from .hull import HullManager
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper
 import concurrent.futures
+from FiratROVNet.lider_sec import liderlik_secimini_baslat #yeni_lider_id, skor = liderlik_secimini_baslat(filo, filo.asil_hedef)
 # ==========================================
 # 0. YARDIMCI SINIFLAR
 # ==========================================
@@ -164,6 +165,7 @@ class Koordinator:
         from FiratROVNet.kutuphane.helper.simulasyon_helper import ursina_to_sim as _utot
         return _utot(u_x, u_y, u_z)
 
+
 # ==========================================
 # 1. FİLO (ROV FİLO YÖNETİCİSİ)
 # ==========================================
@@ -204,6 +206,9 @@ class Filo:
         self._maksimum_yaw_donme_hizi = 30.0
         self._git_maksimum_yaw_donme_hizi = 45.0
         self._formasyon_yaw_senkronizasyon_mesafesi = 5.0
+        self.mevcut_lider_id = None
+
+
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
     # ============================================================
@@ -219,58 +224,6 @@ class Filo:
             return []
         return [r for r in self.ortam_ref.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
 
-    def otomatik_kurulum(self, rovs, lider_id=0, ortam_ref=None, baslangic_hedefleri=None, modem_ayarlari=None, sensor_ayarlari=None):
-        """
-        ROV'lara GNC sistemini entegre eder. self.sistemler listesi kullanılmaz.
-        GNC nesnesi doğrudan rov.gnc içine gömülür.
-        """
-        if ortam_ref: self.ortam_ref = ortam_ref
-        elif rovs: self.ortam_ref = rovs[0].environment_ref
-
-        self.orijinal_lider_id = lider_id
-        tum_modemler = {}
-        
-        # Varsayılan ayarları yükle
-        modem_cfg_lider = modem_ayarlari.get('lider', ModemAyarlari.LIDER) if modem_ayarlari else ModemAyarlari.LIDER
-        modem_cfg_takipci = modem_ayarlari.get('takipci', ModemAyarlari.TAKIPCI) if modem_ayarlari else ModemAyarlari.TAKIPCI
-
-        for i, rov in enumerate(rovs):
-            if not rov: continue
-            
-            # 1. Rol ve Ayarlar
-            is_leader = (i == lider_id)
-            rov.set("rol", 1 if is_leader else 0)
-            
-            # Sensör ayarlarını uygula (Varsa)
-            if sensor_ayarlari:
-                target_cfg = sensor_ayarlari.get('lider' if is_leader else 'takipci', {})
-                for k, v in target_cfg.items(): rov.set(k, v)
-
-            # 2. Modem Kurulumu
-            cfg_to_use = modem_cfg_lider if is_leader else modem_cfg_takipci
-            rov.modem = AkustikModem(rov_id=i, **cfg_to_use)
-            tum_modemler[i] = rov.modem
-            
-            # 3. GNC Sistemini ROV'a Bağla
-            rov.gnc = TemelGNC(rov, rov.modem, filo_ref=self)
-            
-            # 4. Başlangıç Hedefi
-            if baslangic_hedefleri and i in baslangic_hedefleri:
-                h = baslangic_hedefleri[i]
-                x, y, z = h[0], h[1], h[2] if len(h) > 2 else 0
-                rov.gnc.hedef_atama(x, y, z)
-                if is_leader: self.asil_hedef = Vec3(x, y, z)
-            elif is_leader and not baslangic_hedefleri:
-                # Lider için varsayılan hedef
-                rov.gnc.hedef_atama(40, 0, 60)
-                self.asil_hedef = Vec3(40, 0, 60)
-
-        # Rehber dağıtımı
-        for rov in rovs:
-            if hasattr(rov, 'gnc'):
-                rov.gnc.rehber_guncelle(tum_modemler)
-        
-        return tum_modemler
     
     def _get_all_rovs_positions(self):
         """Tüm ROV'ların güncel konumlarını döner. {rov_id: (x, y, z)} formatında."""
@@ -279,12 +232,113 @@ class Filo:
         positions = {}
         for rov in self.ortam_ref.rovs:
             positions.append(self.filo.get(rov.id, 'gps'))
+    def lideri_guncelle(self, yeni_lider_id):
+            """
+            Eğer gelen lider ID mevcut liderden farklıysa, liderliği değiştirir
+            ve o grubun diğer üyelerini takipçi (0) yapar.
+            """
+            # 1. Lider değişmiş mi kontrol et
+            if self.mevcut_lider_id == yeni_lider_id:
+                if self.get(yeni_lider_id,"rol")!=1:
+                    self.set(yeni_lider_id,"rol",1)
+                return  # Değişiklik yoksa işlem yapma
+
+            print(f"👑 Lider Değişimi Algılandı: Eski={self.mevcut_lider_id} -> Yeni={yeni_lider_id}")
+
+            # 2. Yeni lideri kaydet
+            self.mevcut_lider_id = yeni_lider_id
+
+            # 3. Yeni liderin grubunu bul
+            hedef_grup_id = None
+            
+            # 'self.rovs' listesine erişim (Sınıf yapına göre 'self.ortam_ref.rovs' da olabilir)
+            # Güvenlik için listedeki ROV'u bulup grup id'sini alıyoruz
+            for rov in self.rovs:
+                if rov and rov.id == yeni_lider_id:
+                    hedef_grup_id = getattr(rov, 'group_id', None)
+                    break
+            
+            if hedef_grup_id is None:
+                print(f"⚠️ Hata: ROV-{yeni_lider_id} için grup bilgisi bulunamadı!")
+                return
+
+            # 4. Sadece o gruptaki ROV'ların rollerini güncelle
+            for rov in self.rovs:
+                if not rov: continue
+                
+                # Sadece yeni liderin grubundaki elemanlara bak
+                if getattr(rov, 'group_id', None) == hedef_grup_id:
+                    
+                    if rov.id == yeni_lider_id:
+                        # Yeni lideri LİDER (1) yap
+                        self.set(rov.id, "rol", 1)
+                        # Görsel güncelleme (Opsiyonel)
+                        rov.color = color.red 
+                        print(f" -> ROV-{rov.id} artık LİDER.")
+                    else:
+                        # Gruptaki diğerlerini TAKİPÇİ (0) yap
+                        self.set(rov.id, "rol", 0)
+                        # Görsel güncelleme (Opsiyonel)
+                        rov.color = color.white
+                        # Takipçileri lidere göre yeniden konumlandırmak istersen buraya ekle:
+                        # self.git(rov.id, x, y, z)
+
+
+    def rov_hasar_kontrol(self, rov, joule_esigi=15.0):
+            """
+            ROV'un çarpışmalarını kontrol eder. 
+            Enerji 'joule_esigi' değerinin üzerindeyse True döner (Patlama tetiklenir).
+            """
+            if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                return False
+
+            # Çevredeki potansiyel engeller (Adalar ve Diğer ROV'lar)
+            islands_and_rovs = self.ortam_ref.island_entities + self.ortam_ref.rovs
+            
+            for entity in islands_and_rovs:
+                # Kendisiyle çarpışma kontrolü yapma ve ölü nesneleri atla
+                if entity and entity != rov and not (hasattr(entity, 'is_destroyed') and entity.is_destroyed):
+                    
+                    # Ursina çarpışma testi
+                    hit_info = rov.intersects(entity)
+                    
+                    if hit_info.hit:
+                        # 1. FİZİKSEL VERİLER
+                        m1 = getattr(rov, 'mass', 12.0)
+                        v1 = getattr(rov, 'velocity', Vec3(0,0,0))
+                        
+                        # Çarpılan nesne bir ROV mu yoksa sabit engel mi?
+                        is_rov = hasattr(entity, 'gnc')
+                        m2 = getattr(entity, 'mass', 12.0) if is_rov else None
+                        v2 = getattr(entity, 'velocity', Vec3(0,0,0))
+                        
+                        # 2. ENERJİ HESABI
+                        # Kaya/Ada için esneklik (e) 0.1, ROV için 0.4 (biraz daha esnek)
+                        esneklik = 0.4 if is_rov else 0.1
+                        hesaplanan_joule = self.carpisma_enerjisi_hesapla(m1, v1, m2, v2, e=esneklik)
+                        
+                        # 3. EŞİK KONTROLÜ
+                        if hesaplanan_joule >= joule_esigi:
+                            print(f"💥 KRİTİK HASAR! ROV-{rov.id} | Enerji: {hesaplanan_joule}J | Eşik: {joule_esigi}J")
+                            return True
+                        else:
+                            # Hafif çarpışma: Hasar yok ama fiziksel tepki (hız kesme)
+                            # Enerji eşiğe ne kadar yakınsa o kadar çok hız kaybeder
+                            yavaslatma_orani = max(0.1, 1.0 - (hesaplanan_joule / joule_esigi))
+                            rov.velocity *= yavaslatma_orani
+                            
+                            if hesaplanan_joule > (joule_esigi/2): # Çok küçük sürtünmeleri yazdırma
+                                print(f"🔔 Hafif Temas: ROV-{rov.id} | Enerji: {hesaplanan_joule}J (Eşik altı)")
+            
+            return False
+            
     def guncelle_hepsi(self, tahminler):
         """
         Tüm GNC sistemlerini günceller. 
         self.sistemler yerine doğrudan ortam.rovs üzerinden çalışır.
         """
         self._process_command_queue()
+        #print(self)
         
         if not self.ortam_ref: return
 
@@ -297,6 +351,21 @@ class Filo:
 
             # GAT Tahmini (Liste sınır kontrolü ile)
             gat_kodu = tahminler[i] if tahminler is not None and i < len(tahminler) else None
+
+            yeni_lider_id=0
+
+            if self.asil_hedef is not None:
+                yeni_lider_id, skor = liderlik_secimini_baslat(self, self.asil_hedef)
+
+            
+            self.lideri_guncelle(yeni_lider_id)
+
+            # Örnek: Normalde 15 Joule, ama istersen 25 yapıp daha dayanıklı yapabilirsin
+            if self.rov_hasar_kontrol(rov, joule_esigi=10.0):
+                self.entity_patlat(rov, parca_sayisi=80)
+                continue #patlayan rovar için güncelleme yapma
+
+            
             
             try:
                 # GNC güncelle
@@ -312,6 +381,49 @@ class Filo:
                 self.ortam_ref.minimap.gorsel_guncelle()
             except: pass
 
+
+
+
+    def carpisma_enerjisi_hesapla(self, m1, v1_vec, m2=None, v2_vec=None, e=0.3):
+            """
+            Çarpışma anında açığa çıkan hasar enerjisini (Joule) hesaplar.
+            """
+            # 1. Su Altı Efektif Kütlesi (Added Mass %50)
+            m1_eff = m1 * 1.5
+            
+            # 2. Bağıl Hız Büyüklüğünü Hesapla
+            if v2_vec is None:
+                v2_vec = Vec3(0,0,0)
+                
+            # İki hız vektörü arasındaki farkın uzunluğu (m/s)
+            # Not: Ursina Vec3 kullanıldığı varsayılmıştır
+            v_bagil_mag = (v1_vec - v2_vec).length()
+            
+            # 3. Enerji Hesabı
+            if m2 is None:
+                # Sabit Engel (Ada, Duvar)
+                hasar_enerjisi = 0.5 * m1_eff * (v_bagil_mag**2) * (1 - e**2)
+            else:
+                # Hareketli Nesne (ROV - ROV)
+                m2_eff = m2 * 1.5
+                indirgenmis_m = (m1_eff * m2_eff) / (m1_eff + m2_eff)
+                hasar_enerjisi = 0.5 * indirgenmis_m * (v_bagil_mag**2) * (1 - e**2)
+            
+            return round(hasar_enerjisi, 2)
+
+    def rov_verilerini_temizle(self, rov_id):
+            """Silinen ROV'un tüm izlerini GNC hafızasından siler."""
+            # Rota ve Waypoint temizliği
+            if rov_id in self._git_nokta_listesi: del self._git_nokta_listesi[rov_id]
+            if rov_id in self._git_mevcut_nokta_indeksi: del self._git_mevcut_nokta_indeksi[rov_id]
+            if rov_id in self._rov_hedefleri: del self._rov_hedefleri[rov_id]
+            
+            # Vektör (Ok) temizliği
+            if hasattr(self.helper, 'apf_temizle'):
+                self.helper.apf_temizle(rov_id=rov_id)
+            
+            # Kamera temizliği
+            if rov_id in self.aktif_kameralar: del self.aktif_kameralar[rov_id]
     # ============================================================
     # PATLAMA VE SİLME YÖNETİMİ
     # ============================================================
@@ -320,6 +432,12 @@ class Filo:
             Daha büyük, daha vahşi ve moloz dolu patlama.
             """
             if not hedef_entity or not hasattr(hedef_entity, 'world_position'): return
+
+            # --- YENİ EKLEME: Verileri anında temizle ---
+            rov_id = getattr(hedef_entity, 'id', None)
+            if rov_id is not None:
+                self.rov_verilerini_temizle(rov_id)
+            # -----------------------------------------
 
             pos = hedef_entity.world_position
             renk = getattr(hedef_entity, 'color', color.orange)
@@ -359,8 +477,33 @@ class Filo:
             if hasattr(hedef_entity, 'cikar'):
                 print(f"🔥 ROV-{getattr(hedef_entity, 'id', '?')} havaya uçtu!")
                 hedef_entity.cikar()
+                
             else:
                 destroy(hedef_entity)
+
+
+    def rov_is_hit(self, rov_id: int):
+        """
+        ROV'un ada içinde olup olmadığını dinamik radius ile kontrol eder.
+        
+        Args:
+            rov_id: ROV ID'si
+            base_radius: Su yüzeyindeki base radius (metre)
+            min_radius_factor: Maksimum derinlikte radius'un base_radius'a oranı (0.0-1.0)
+            max_depth: Maksimum derinlik (metre)
+            
+        Returns:
+            bool: ROV ada içinde ise True
+        """
+
+        islands_and_rovs=self.ortam_ref.island_entities + self.ortam_ref.rovs
+        for entity in islands_and_rovs:
+            if entity and not (hasattr(entity, 'is_destroyed') and entity.is_destroyed):
+                is_hit=self.ortam_ref.rovs[rov_id].intersects(entity).hit
+                if is_hit:                
+                    return True
+        return False        
+
     # ============================================================
     # HEDEF VE HAREKET YÖNETİMİ
     # ============================================================
@@ -484,28 +627,37 @@ class Filo:
 # ==========================================
 # 2. TEMEL GNC SINIFI
 # ==========================================
+# ... (Önceki importlar ve sınıflar aynı kalıyor: GelismisParcacik, Koordinator, Filo) ...
+
+# ==========================================
+# 2. TEMEL GNC SINIFI (SADELEŞTİRİLMİŞ)
+# ==========================================
 class TemelGNC:
-    """Doğrudan ROV'a bağlı çalışan GNC birimi."""
-    def __init__(self, rov_entity, modem, filo_ref=None):
+    """Doğrudan ROV'a bağlı çalışan GNC birimi. Modem ve Rehber kaldırıldı."""
+    
+    # 1. DEĞİŞİKLİK: __init__ metodundan modem argümanı silindi
+    def __init__(self, rov_entity, filo_ref=None):
         self.rov = rov_entity
-        self.modem = modem
+        # self.modem = modem  <-- BU SATIR SİLİNDİ
         self.filo_ref = filo_ref
+        
         self.hedef = None 
         self.hiz_limiti = 100.0 
         self.manuel_kontrol = False
         self.ai_aktif = True 
         
-        self.helper = TemelGNCHelper(rov_entity, filo_ref, self)
+        # Helper'a da artık modem gitmiyor (Helper içinde modem kullanımı varsa orayı da temizlemen gerekebilir)
+        self.temel_gnc_helper = TemelGNCHelper(rov_entity, filo_ref, self)
 
     def hedef_atama(self, x, y, z):
         self.hedef = Vec3(x, y, z)
 
-    def rehber_guncelle(self, rehber):
-        if self.modem: self.modem.rehber_guncelle(rehber)
+    # 2. DEĞİŞİKLİK: rehber_guncelle metodu tamamen SİLİNDİ.
+    # def rehber_guncelle(self, rehber): ... (YOK)
     
     def guncelle(self, gat_kodu=None):
-        if self.helper:
-            return self.helper.guncelle(gat_kodu=gat_kodu)
+        if self.temel_gnc_helper:
+            return self.temel_gnc_helper.guncelle(gat_kodu=gat_kodu)
     
     # Yardımcı metodlar
     def _hedefe_varis_islemleri(self, fark):

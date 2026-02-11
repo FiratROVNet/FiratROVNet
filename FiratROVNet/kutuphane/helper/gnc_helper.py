@@ -136,7 +136,7 @@ class FiloHelper:
         # Koordinator'u lazy import için cache (circular import önleme)
         self._koordinator = None
         self.kalici_hedefler = {}
-        self.formasyon_sec_sayac=0
+        self.formasyon_sec_tekrar=0
 
     def get(self, rov_id: int = None, veri_tipi: str = None, taraf: int = None, koordinator=None, sessiz: bool = False):
             """
@@ -2156,28 +2156,40 @@ class FiloHelper:
         return None
 
 
-    def formasyon_sec(self, margin=None, is_3d=False, offset=None, minimap=True, dinamik=True):
+    def formasyon_sec(self, margin=None, is_3d=False, offset=None, minimap=True, dinamik=True,tekrar=100):
             """
             Convex hull kullanarak en uygun formasyonu seçer.
             Yaw senkronizasyon mantığı tamamen kaldırılmıştır (Fizik motoruna devredildi).
             minimap=True ise hesaplanan alan Ursina UI Minimap üzerinde gösterilir.
             """
-            # 1. Minimap Kontrolü ve Açılması
-            if minimap and self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'minimap'):
-                m_ui = self.filo.ortam_ref.minimap
-                if m_ui:
-                    m_ui.goster(True) # Minimap'i görünür yap
+            self.formasyon_sec_tekrar += 1
 
-            # 2. Thread Güvenliği (Ursina/Panda3D senkronizasyonu)
-            if not self.filo._is_main_thread():
-                if hasattr(self.filo, '_command_queue'):
-                    self.filo._command_queue.put(('formasyon_sec', (margin, is_3d, offset), {'dinamik': dinamik}))
+            if self.formasyon_sec_tekrar>tekrar:
+                self.formasyon_sec_tekrar=0
+                print(f"🔄 [FORMASYON_SEC] Formasyon seçimi tetiklendi (tekrar={self.formasyon_sec_tekrar})")
+            # 1. Minimap Kontrolü ve Açılması
+                if minimap and self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'minimap'):
+                    m_ui = self.filo.ortam_ref.minimap
+                    if m_ui:
+                        m_ui.goster(True) # Minimap'i görünür yap
+
+                # 2. Thread Güvenliği (Ursina/Panda3D senkronizasyonu)
+                if not self.filo._is_main_thread():
+                    if hasattr(self.filo, '_command_queue'):
+                        self.filo._command_queue.put(('formasyon_sec', (margin, is_3d, offset), {'dinamik': dinamik}))
+                    return None
+
+                # 3. Ana Hesaplama Fonksiyonunu Çağır
+                return self._formasyon_sec_impl(margin, is_3d, offset, dinamik=dinamik)
+            else:
                 return None
 
-            # 3. Ana Hesaplama Fonksiyonunu Çağır
-            return self._formasyon_sec_impl(margin, is_3d, offset, dinamik=dinamik)
-
-    def _formasyon_sec_impl(self, margin=None, is_3d=False, offset=None, sessiz=True, dinamik=True):
+    def _formasyon_sec_impl(self, margin=None, is_3d=False, offset=None, sessiz=True, dinamik=True,tekrar=1):
+            self.formasyon_sec_tekrar += 1
+            if self.formasyon_sec_tekrar<tekrar:
+                return None
+            
+            self.formasyon_sec_tekrar=0
             initial_margin = margin if margin is not None else HareketAyarlari.FORMASYON_OFFSET
             min_aralik = HareketAyarlari.FORMASYON_MIN_ARALIK
             offset = offset if offset is not None else HareketAyarlari.FORMASYON_OFFSET
@@ -2752,44 +2764,49 @@ class TemelGNCHelper:
         return max(0.0, min(1.0, oran)) # Güvenlik için 0-1 arasına sıkıştır
 
     def fizik_uygula(self, hedef_yon_ursina: Vec3, guc_orani: float, dt: float, uygula: bool = True):
-            """
-            SAF FİZİK MOTORU: 
-            uygula=True ise: Newton fiziğini hesaplar ve yeni HIZ (velocity) vektörünü döndürür.
-            uygula=False ise: Gelen hedef vektörünü olduğu gibi döndürür.
-            """
-            # Eğer fizik uygulanmayacaksa gelen vektörü direkt geri gönder
-            if not uygula:
-                #ivme=guc_orani*Vec3(hedef_yon_ursina.x, hedef_yon_ursina.y, hedef_yon_ursina.z)
-                #yeni_hiz = self.rov.velocity + (ivme * dt)
-                return hedef_yon_ursina*guc_orani
+        if not uygula:
+            return hedef_yon_ursina * guc_orani
 
-            # --- 1. KUVVET HESAPLAMALARI ---
-            # A) Motor İtme (Thrust)
-            f_thrust = hedef_yon_ursina * guc_orani * Hidrodinamik.MAX_ITME_KUVVETI
+        # --- 1. KUVVET HESAPLAMALARI ---
+        # A) Motor İtme
+        f_thrust = hedef_yon_ursina * guc_orani * Hidrodinamik.MAX_ITME_KUVVETI
 
-            # B) Hidrodinamik Direnç (Drag)
-            mevcut_hiz = self.rov.velocity
-            hiz_buyuklugu = mevcut_hiz.length()
-            f_drag = Vec3(0, 0, 0)
-            if hiz_buyuklugu > 0.001:
-                drag_magnitude = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * \
-                                Hidrodinamik.ON_YUZEY_ALANI * (hiz_buyuklugu ** 2)
-                f_drag = -mevcut_hiz.normalized() * drag_magnitude
-
-            # C) Statik Kuvvetler (Yerçekimi ve Kaldırma)
-            batma = self.batma_orani_hesapla()
-            su_icindeki_hacim = Hidrodinamik.HACIM * batma
-            f_yercekimi = Vec3(0, -Hidrodinamik.KUTLE * Hidrodinamik.YER_CEKIMI, 0)
-            f_kaldirma  = Vec3(0, su_icindeki_hacim * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.YER_CEKIMI, 0)
-
-            # --- 2. ENTEGRASYON ---
-            f_net = f_thrust + f_drag + f_yercekimi + f_kaldirma
-            ivme = f_net / Hidrodinamik.KUTLE
-
-            # Yeni hızı hesapla (v = v0 + a*dt)
-            yeni_hiz = self.rov.velocity + (ivme * dt)
+        # B) Gelişmiş Direnç (Drag)
+        mevcut_hiz = self.rov.velocity
+        hiz_buyuklugu = mevcut_hiz.length()
+        
+        f_drag = Vec3(0, 0, 0)
+        if hiz_buyuklugu > 0.001:
+            # Standart Kare Direnç (Yüksek hızlar için)
+            drag_quadratic = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * \
+                            Hidrodinamik.ON_YUZEY_ALANI * (hiz_buyuklugu ** 2)
             
-            return yeni_hiz
+            # Lineer Direnç (Düşük hızlarda tam durabilmek için - ÇOK ÖNEMLİ)
+            drag_linear = hiz_buyuklugu * 50.0 # Sabit bir sönümleme katsayısı
+            
+            f_drag = -mevcut_hiz.normalized() * (drag_quadratic + drag_linear)
+
+        # C) Statik Kuvvetler
+        batma = self.batma_orani_hesapla()
+        su_icindeki_hacim = Hidrodinamik.HACIM * batma
+        f_yercekimi = Vec3(0, 0, -Hidrodinamik.KUTLE * Hidrodinamik.YER_CEKIMI)
+        f_kaldirma  = Vec3(0, 0, su_icindeki_hacim * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.YER_CEKIMI)
+
+        # --- 2. ENTEGRASYON ---
+        f_net = f_thrust + f_drag + f_yercekimi + f_kaldirma
+        ivme = f_net / Hidrodinamik.KUTLE
+
+        # HATA DÜZELTME: Normalizasyonu kaldırdık! 
+        # Sadece hızın aşırı patlamasını engellemek için bir limit koyabiliriz.
+        
+        # Yeni hızı hesapla
+        yeni_hiz = self.rov.velocity + (ivme * dt)
+
+        # Düşük Hız Kesici (ROV'un sonsuza kadar titremesini engeller)
+        if guc_orani < 0.01 and yeni_hiz.length() < 0.1:
+            yeni_hiz = Vec3(0,0,0)
+
+        return yeni_hiz
 
     def vektor_to_motor_sim(self, v_sim_dir: Vec3, guc_orani: float):
         """
@@ -2810,16 +2827,17 @@ class TemelGNCHelper:
             
             # Burnunu hareket yönüne çevir (Yaw)
         if guc_orani > 0.01:
+        
             self.yaw_ayarla(self.rov.velocity, ani=False)
 
         # Pozisyonu Güncelle (Fiziksel yer değiştirme)
         ursina_rov_velocity=Vec3(self.rov.velocity.x, self.rov.velocity.z, self.rov.velocity.y)
 
         
-        GORSEL_HIZ_CARPANI = 25.0
+        GORSEL_HIZ_CARPANI = 40.0
         self.rov.position += ursina_rov_velocity * dt * GORSEL_HIZ_CARPANI
         # Hız Vektörünü Minimap'te Çiz
-        if guc_orani > 0.02 and hasattr(self.rov, 'velocity'):
+        if guc_orani > 0.01 and hasattr(self.rov, 'velocity'):
             #print(guc_orani,self.rov.velocity)
             #v_sim_dir=self._kalman_vektor_filtrele(v_sim_dir)
             if hasattr(self, 'filo_ref') and self.filo_ref.helper:
@@ -3038,31 +3056,33 @@ class TemelGNCHelper:
                 
                 etki = 1.0 - (mesafe / GATLimitleri.ENGEL)
                 max_engel_etkisi = max(max_engel_etkisi, etki)
+                guc=1.0
                 
-                if etki > 0.2 and self.filo_ref.get(rov_id, 'rol') == 1:
-                    self.filo_ref.formasyon_sec(dinamik=True)
+                if etki > 0.02 and self.filo_ref.get(rov_id, 'rol') == 1:
+                    self.filo_ref.formasyon_sec(dinamik=True,tekrar=60)
 
                 # --- DÜZELTME: Sadece Yatay Kaçınma ---
                 # Engelden kaçarken batmaması için kaçınma vektörünün Y (düşey) etkisini sıfırlıyoruz.
                 bv_yatay = Vec3(bv.x, bv.y, bv.z) 
-                bileske_vektor += bv_yatay * etki * 0.37 # Kaçınma ağırlığı biraz artırıldı
+                bileske_vektor += bv_yatay * etki * 0.3 # Kaçınma ağırlığı biraz artırıldı
 
             # 4. ROV KAÇINMA KUVVETİ (Repulsive Force - Swarm)
             for r_info in sonuc.get('rovs', []):
                 bv = Vec3(*r_info.get('birim_vektor', [0, 0, 0]))
                 mesafe = float(r_info.get('mesafe', 0.0))
                 
-                etki = 1.0 - (mesafe / GATLimitleri.CARPISMA)
+                etki = 1 - (mesafe / (GATLimitleri.CARPISMA))
                 max_rov_etkisi = max(max_rov_etkisi, etki)
                 
                 # --- DÜZELTME: Diğer ROV'lardan yatayda kaçın ---
                 bv_yatay = Vec3(bv.x, bv.y,bv.z)
-                bileske_vektor += bv_yatay * etki * 0.25
+                bileske_vektor += bv_yatay * etki * 0.3 
+                guc=1.0
 
             # 5. HEDEF VE KAÇINMA DENGESİ (Blending)
             # Kaçınma sırasında hedef çekimi azaltılır ama Y (derinlik) bileşeni 
             # sadece hedefe odaklı kalır.
-            hedef_agirligi = (1.0 - max_engel_etkisi) * 0.24 + (1.0 - max_rov_etkisi) * 0.24
+            hedef_agirligi = (1.0 - max_engel_etkisi) * 0.2 + (1.0 - max_rov_etkisi) * 0.2
             bileske_vektor += h_birim * hedef_agirligi
 
             # 6. MOTOR KOMUTU GÖNDER
@@ -3078,6 +3098,7 @@ class TemelGNCHelper:
         hedef yoksa sönümler.
         """
         # Temel kontroller
+        #print(self.rov.id)
         if not self._guncelle_kontroller():
             return
 
