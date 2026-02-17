@@ -12,7 +12,7 @@ import os
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
 # Simülasyonu oluştur: 6 ROV, 6 Ada, 200m havuz yarıçapı
-app.sim_olustur(n_rovs=(4,3,), n_islands=6, havuz_genisligi=200, rov_model='submarine')
+app.sim_olustur(n_rovs=(4,3,), n_islands=5, havuz_genisligi=200, rov_model='submarine')
 
 # --- Navigasyon ve Kuyruk Değişkenleri ---
 nav_queue = []          # Hedefleri tutan liste [{'pos': (x,y,z), 'id': 1}, ...]

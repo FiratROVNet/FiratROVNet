@@ -31,7 +31,7 @@ class AStarPlanner:
                 # Engel içinde mi? (%20 güvenlik marjı + 5m sabit pay)
                 is_safe = True
                 for ox, oz, orad in obstacles:
-                    if math.hypot(wx - ox, wz - oz) < (orad * 1.2 + 5.0):
+                    if math.hypot(wx - ox, wz - oz) < (orad * 1.1):
                         is_safe = False
                         break
                 

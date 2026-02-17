@@ -224,6 +224,28 @@ class Minimap(Entity):
         # (Minimap __init__ metodunun en alt kısmına ekle)
         self.hedef_ikonlari = {}       # ID bazlı kalıcı hedefler için sözlük
         self.gecici_hedef_ikonu = None # debug=True iken kullanılan geçici hedef
+        # Minimap __init__ içinde:
+
+        self.obstacle_cloud_entity = None # Tek bir entity kullanacağız
+
+        # 1. Engel noktalarının koordinatlarını tutacak liste
+        self.engel_vertex_listesi = [] 
+
+        # 2. Tek bir Mesh oluşturuyoruz (mode='point' önemli)
+        # thickness=2 yaparak o 'kırmızı blok' sorununu baştan çözüyoruz.
+        self.engel_mesh = Mesh(vertices=[], mode='point', thickness=0.016, static=False)
+
+        # 3. Bu Mesh'i ekranda gösterecek TEK Entity
+        self.engel_gorseli = Entity(
+            parent=self, # Veya self.minimap_panel, nereye koyuyorsan
+            model=self.engel_mesh,
+            color=color.brown, # Engeller kırmızı olsun
+            z=-0.01 # Haritanın hafif önünde
+        )
+        
+        self._engel_bulutu_cizilen_len = 0
+        self.kayitli_noktalar = set() 
+
 
     # --- KRİTİK GÜNCELLEME: goster metodu ---
     def goster(self, durum=True, convex=False, a_star=False, scale=None, **kwargs):
@@ -342,7 +364,7 @@ class Minimap(Entity):
                 try: self.vektor_cizgi_entities.append(self.loader.create_vector_mesh(self, v, c))
                 except: pass
 
-    def _engel_bulutu_guncelle(self):
+    def _engel_bulutu_guncelle_yedek(self):
         bulut = getattr(self.ortam_ref, 'engel_bulutu', [])
         if len(bulut) < self._engel_bulutu_cizilen_len:
             for e in self.engel_noktalari: destroy(e)
@@ -352,6 +374,52 @@ class Minimap(Entity):
             if abs(pos.x) < 0.5 and abs(pos.y) < 0.5:
                 self.engel_noktalari.append(self.loader.create_obstacle_dot(self, pos))
                 if len(self.engel_noktalari) > 150: destroy(self.engel_noktalari.pop(0))
+        self._engel_bulutu_cizilen_len = len(bulut)
+
+
+    def _engel_bulutu_guncelle(self):
+        bulut = getattr(self.ortam_ref, 'engel_bulutu', [])
+        
+        # Reset durumunda hafızayı da temizle
+        if len(bulut) < self._engel_bulutu_cizilen_len:
+            self.engel_vertex_listesi.clear()
+            self.kayitli_noktalar.clear() # Hafızayı sil
+            self.engel_mesh.vertices = []
+            self.engel_mesh.generate()
+            self._engel_bulutu_cizilen_len = 0
+
+        yeni_veri_var = False
+        
+        # Sadece yeni gelen verilere bakıyoruz
+        for i in range(self._engel_bulutu_cizilen_len, len(bulut)):
+            # 1. Koordinatı harita düzlemine çevir
+            pos = self.dunya_to_harita(bulut[i][0], bulut[i][1])
+            
+            # 2. Koordinatları YUVARLA (Çok Önemli!)
+            # Virgülden sonra 3 hane hassasiyet yeterlidir. 
+            # (Örn: 0.12345 ile 0.12346 aynı nokta sayılsın istiyoruz)
+            x_key = round(pos.x, 3)
+            y_key = round(pos.y, 3)
+            point_key = (x_key, y_key)
+            
+            # 3. KONTROL: Bu noktayı daha önce çizdik mi?
+            if point_key not in self.kayitli_noktalar:
+                
+                # Sınır kontrolü
+                if abs(pos.x) < 0.8 and abs(pos.y) < 0.8:
+                    # Listeye ekle
+                    self.engel_vertex_listesi.append(Vec3(pos.x, pos.y, 0))
+                    
+                    # Hafızaya kaydet (Set'e ekle)
+                    self.kayitli_noktalar.add(point_key)
+                    
+                    yeni_veri_var = True
+
+        # Mesh'i sadece yeni nokta eklendiyse güncelle
+        if yeni_veri_var:
+            self.engel_mesh.vertices = self.engel_vertex_listesi
+            self.engel_mesh.generate()
+
         self._engel_bulutu_cizilen_len = len(bulut)
 
     def update_ada_cevre(self, points):
@@ -493,6 +561,7 @@ class Ortam:
         self.helper = OrtamHelper(self)
         
         self.rovs, self.island_positions, self.island_entities = [], [], []
+        self._g_rovs={}
         self.islands=self.island_entities
         self.engel_bulutu, self.konsol_verileri = [], {}
         self.sonar_cizgiler, self.filo = {}, None
@@ -507,6 +576,8 @@ class Ortam:
             zoom_speed=1, position=(0, 20, -50), rotation=(20, 0, 0)
         )
         mouse.visible, mouse.locked = True, False
+
+
 
     def _setup_window(self):
         """ESKİ AYARLAR: Pencere konfigürasyonu."""
@@ -580,7 +651,7 @@ class Ortam:
                     hucre_kirli = False
                     for island in [p for p in self.island_positions if p]:
                         dist = math.sqrt((merkez_x - island[0])**2 + (merkez_y - island[1])**2)
-                        if dist < (island[2] + 15): # Ada yarıçapı + 15m emniyet
+                        if dist < (island[2] + 10): # Ada yarıçapı + 15m emniyet
                             hucre_kirli = True
                             break
                     
@@ -590,7 +661,7 @@ class Ortam:
                         
                         # Eğer grupta tek ROV varsa merkeze koy, çoksa çember yap
                         if num_rovs == 1:
-                            rz = -random.uniform(10, 20)
+                            rz = -random.uniform(0, 10)
                             bu_grubun_rovlari.append((merkez_x, merkez_y, rz))
                         else:
                             yaricap = 15.0 # ROV'lar arası yayılma mesafesi
@@ -633,9 +704,13 @@ class Ortam:
         self.loader.build_seabed(size=size)
         self.loader.build_boundaries(havuz_genisligi)
         
+        
         # 1. Adaları Sabit Noktalardan Yerleştir
         count = min(n_islands, len(self.FIXED_ISLAND_POSITIONS))
         chosen_islands = random.sample(self.FIXED_ISLAND_POSITIONS, count)
+        chosen_islands.insert(0,(0,0))
+
+     
         for i, pos in enumerate(chosen_islands):
             self.Ada(i, x="ekle", y=pos)
 

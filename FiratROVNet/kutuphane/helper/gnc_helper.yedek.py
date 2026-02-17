@@ -68,7 +68,7 @@ class Hidrodinamik:
     YER_CEKIMI = 9.81      # m/s^2
 
     # --- ROV Fiziksel Özellikleri ---
-    KUTLE = 10.0           # kg (ROV'un ağırlığı)
+    KUTLE = 12.0           # kg (ROV'un ağırlığı)
     HACIM = 0.0122         # m^3 (Batması/Çıkması için: Hacim * Su Yoğunluğu > Kütle ise yüzer)
                            # Örn: 0.0122 * 1000 = 12.2 kg kaldırma kuvveti (Nötr'e yakın ama hafif pozitif)
     
@@ -1855,9 +1855,9 @@ class FiloHelper:
                 return None
             
             self.formasyon_sec_tekrar=0
-            initial_margin = margin if margin is not None else HareketAyarlari.FORMASYON_OFFSET-10
+            initial_margin = margin if margin is not None else HareketAyarlari.FORMASYON_OFFSET
             min_aralik = HareketAyarlari.FORMASYON_MIN_ARALIK
-            offset = offset if offset is not None else HareketAyarlari.FORMASYON_OFFSET-10
+            offset = offset if offset is not None else HareketAyarlari.FORMASYON_OFFSET
             
             try:
                 self.filo._formasyon_hedefleri.clear()
@@ -2485,10 +2485,9 @@ class TemelGNCHelper:
         # Yeni hızı hesapla
         yeni_hiz =(ivme * dt)
 
-        total=f_kaldirma[2] + f_yercekimi[2]
-
-        if self.rov.id==1 and False:
-            print(yeni_hiz[2],su_icindeki_hacim,f_kaldirma[2],f_yercekimi[2],"fark :",total,"ivme :",total/Hidrodinamik.KUTLE)
+        # Düşük Hız Kesici (ROV'un sonsuza kadar titremesini engeller)
+        if guc_orani < 0.01 and yeni_hiz.length() < 0.1:
+            yeni_hiz = Vec3(0,0,0)
 
         return yeni_hiz
 
@@ -2501,8 +2500,8 @@ class TemelGNCHelper:
         # X: Sağ, Z: İleri, Y: Derinlik (Kullanıcının tercih ettiği mapping)
         guc_orani = max(0.0, min(1.0, guc_orani))
         dt = time.dt
-        if dt>0.08:
-            dt=0.08
+        if dt>0.1:
+            dt=0.1
         vim_dir2=v_sim_dir.normalized() if v_sim_dir.length() > 0.001 else Vec3(0,0,0)
 
         # 2. Fizik Hesaplamasını Tetikle (Vektörü al)
@@ -2511,9 +2510,7 @@ class TemelGNCHelper:
 
 
         self.rov.velocity = self._kalman_vektor_filtrele(hesaplanan_hiz)
-
-        if self.rov.get("rol")==1 and False:
-            print(self.rov.velocity)
+        #print(self.rov.velocity)
             
             # Burnunu hareket yönüne çevir (Yaw)
         if guc_orani > 0.01:
@@ -2774,8 +2771,8 @@ class TemelGNCHelper:
                 guc1=max(1-self._guc_orani_hesapla(mesafe,GATLimitleri.ENGEL),guc0)
 
                 
-                if etki > 0.001 and self.filo_ref.get(rov_id, 'rol') == 1:
-                    self.filo_ref.formasyon_sec(dinamik=True,tekrar=30)
+                if etki > 0.02 and self.filo_ref.get(rov_id, 'rol') == 1:
+                    self.filo_ref.formasyon_sec(dinamik=True,tekrar=60)
 
                 # --- DÜZELTME: Sadece Yatay Kaçınma ---
                 # Engelden kaçarken batmaması için kaçınma vektörünün Y (düşey) etkisini sıfırlıyoruz.

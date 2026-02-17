@@ -23,10 +23,10 @@ class GATLimitleri:
     """
     # GAT Kod Limitleri (metre cinsinden)
     CARPISMA = 15    # Kod 2: Çarpışma riski mesafesi
-    ENGEL = 30.0      # Kod 1: Engel yakınlığı mesafesi
-    KOPMA = 70.0      # Kod 3: Bağlantı kopması mesafesi
-    UZAK = 100.0       # Kod 5: Liderden uzaklık mesafesi
-    ILETISIM_MENZILI = 110.0  # Sonar iletişim maksimum menzili (metre)
+    ENGEL = 25.0      # Kod 1: Engel yakınlığı mesafesi
+    KOPMA = 50.0      # Kod 3: Bağlantı kopması mesafesi
+    UZAK = 80.0       # Kod 5: Liderden uzaklık mesafesi
+    ILETISIM_MENZILI = 100.0  # Sonar iletişim maksimum menzili (metre)
     
     @classmethod
     def dict(cls):

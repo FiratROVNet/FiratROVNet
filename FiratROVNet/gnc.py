@@ -1,3 +1,8 @@
+"""
+GNC Module
+The main file for Mathematical calculations, geometric operations, and complex logic for Filo and TemelGNC classes.
+"""
+
 import builtins
 import queue
 import threading
@@ -210,6 +215,8 @@ class Filo:
 
 
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.yeni_pozisyonlar=None
+    
 
     # ============================================================
     # KURULUM VE SİSTEM YÖNETİMİ (SADELEŞTİRİLMİŞ)
@@ -414,6 +421,7 @@ class Filo:
 
             
             self.lideri_guncelle(yeni_lider_id)
+            self.ortam_ref.minimap._engel_bulutu_guncelle()
 
             # Örnek: Normalde 15 Joule, ama istersen 25 yapıp daha dayanıklı yapabilirsin
             if self.rov_hasar_kontrol(rov, joule_esigi=10.0):
