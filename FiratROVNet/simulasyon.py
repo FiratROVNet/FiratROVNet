@@ -581,6 +581,7 @@ class Ortam:
 
     @property
     def g_rovs(self):
+        self._g_rovs={}
         for rov in self.rovs:
             __group_id=rov.group_id
             if not self._g_rovs.get(__group_id,False):
@@ -626,7 +627,7 @@ class Ortam:
         return (0, 0, -15) # Fallback
     
 
-    def _find_safe_rov_spawn_pos(self, group_config: tuple, alan_genisligi=120, bosluk=20):
+    def _find_safe_rov_spawn_pos(self, group_config: tuple, alan_genisligi=100, bosluk=10):
         """
         group_config: (3, 4, 1) gibi bir tuple alır.
         - 3 grup oluşturur.
@@ -713,23 +714,17 @@ class Ortam:
         self.loader.build_seabed(size=size)
         self.loader.build_boundaries(havuz_genisligi)
         
-        
         # 1. Adaları Sabit Noktalardan Yerleştir
         count = min(n_islands, len(self.FIXED_ISLAND_POSITIONS))
         chosen_islands = random.sample(self.FIXED_ISLAND_POSITIONS, count)
         chosen_islands.insert(0,(0,0))
-
-     
         for i, pos in enumerate(chosen_islands):
             self.Ada(i, x="ekle", y=pos)
 
         # 2. ROV'ları Güvenli Noktalara Yerleştir
         print(f"🌊 Simülasyon Başlatılıyor: {n_rovs} ROV, {count} Ada")
 
-
         all_group = self._find_safe_rov_spawn_pos(n_rovs)
-
-
 
         for group_id,rovlar in enumerate(all_group):
             for rov_id,rov_koordinat in enumerate(rovlar):
@@ -742,6 +737,7 @@ class Ortam:
                 new_rov.ekle(self)
 
                 self.minimap._statik_yeniden_ciz()
+
 
     def Ada(self, ada_id, x=None, y=None):
         if x == "ekle":
