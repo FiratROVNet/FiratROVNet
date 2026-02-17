@@ -579,6 +579,15 @@ class Ortam:
 
 
 
+    @property
+    def g_rovs(self):
+        for rov in self.rovs:
+            __group_id=rov.group_id
+            if not self._g_rovs.get(__group_id,False):
+                self._g_rovs[__group_id]=[]
+            self._g_rovs[__group_id].append(rov)
+        return self._g_rovs
+
     def _setup_window(self):
         """ESKİ AYARLAR: Pencere konfigürasyonu."""
         window.fullscreen = False
@@ -690,7 +699,7 @@ class Ortam:
 
         return all_groups_rovs
 
-    def sim_olustur(self, n_rovs=(6), n_islands=5, havuz_genisligi=200, rov_model='submarine'):
+    def sim_olustur(self, n_rovs=(6,), n_islands=5, havuz_genisligi=200, rov_model='submarine'):
         self.havuz_genisligi = havuz_genisligi
         
         # Temizlik
@@ -717,7 +726,10 @@ class Ortam:
         # 2. ROV'ları Güvenli Noktalara Yerleştir
         print(f"🌊 Simülasyon Başlatılıyor: {n_rovs} ROV, {count} Ada")
 
+
         all_group = self._find_safe_rov_spawn_pos(n_rovs)
+
+
 
         for group_id,rovlar in enumerate(all_group):
             for rov_id,rov_koordinat in enumerate(rovlar):
