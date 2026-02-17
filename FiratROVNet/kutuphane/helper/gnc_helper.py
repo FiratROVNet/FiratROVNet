@@ -1821,7 +1821,7 @@ class FiloHelper:
         return None
 
 
-    def formasyon_sec(self, margin=None, is_3d=False, offset=None, minimap=True, dinamik=True,tekrar=100):
+    def formasyon_sec(self, margin=None, is_3d=False, offset=None, minimap=True, dinamik=True,tekrar=100,g_id=0):
             """
             Convex hull kullanarak en uygun formasyonu seçer.
             Yaw senkronizasyon mantığı tamamen kaldırılmıştır (Fizik motoruna devredildi).
@@ -1841,15 +1841,15 @@ class FiloHelper:
                 # 2. Thread Güvenliği (Ursina/Panda3D senkronizasyonu)
                 if not self.filo._is_main_thread():
                     if hasattr(self.filo, '_command_queue'):
-                        self.filo._command_queue.put(('formasyon_sec', (margin, is_3d, offset), {'dinamik': dinamik}))
+                        self.filo._command_queue.put(('formasyon_sec', (margin, is_3d, offset), {'dinamik': dinamik,'g_id':g_id}))
                     return None
 
                 # 3. Ana Hesaplama Fonksiyonunu Çağır
-                return self._formasyon_sec_impl(margin, is_3d, offset, dinamik=dinamik)
+                return self._formasyon_sec_impl(margin, is_3d, offset, dinamik=dinamik,g_id=g_id)
             else:
                 return None
 
-    def _formasyon_sec_impl(self, margin=None, is_3d=False, offset=None, sessiz=True, dinamik=True,tekrar=1):
+    def _formasyon_sec_impl(self, margin=None, is_3d=False, offset=None, sessiz=True, dinamik=True,tekrar=1,g_id=0):
             self.formasyon_sec_tekrar += 1
             if self.formasyon_sec_tekrar<tekrar:
                 return None
@@ -1861,7 +1861,7 @@ class FiloHelper:
             
             try:
                 self.filo._formasyon_hedefleri.clear()
-                lider_id, lider_gps = self.find_leader_info(sessiz=sessiz)
+                lider_id, lider_gps = self.find_leader_info(sessiz=sessiz,g_id=g_id)
                 if lider_id is None: return None
 
                 lider_mevcut_hedef = self.filo.hedef(rov_id=lider_id)
@@ -1883,7 +1883,7 @@ class FiloHelper:
                 #     anlik = self.engel_bul(r_id, menzil=15)
                 #     yasakli_noktalar.extend([[e['koordinat'][0], e['koordinat'][1]] for e in anlik])
                 # 1. Hull ve Arama Hattı Hazırlığı
-                hull_data = self.yeni_hull(yasakli_noktalar=yasakli_noktalar, offset=offset)
+                hull_data = self.yeni_hull(yasakli_noktalar=yasakli_noktalar, offset=offset,g_id=g_id)
                 hull_obj = hull_data.get("hull")
                 hull_merkez = hull_data.get("center")
                 if not hull_obj: return None
@@ -1971,7 +1971,7 @@ class FiloHelper:
                 return None
                 
             except Exception as e:
-                print(f"❌ [FORMASYON HATASI]: {e}")
+                self.filo.ds=e
                 return None
 
 
@@ -2112,7 +2112,7 @@ class FiloHelper:
     
         
 
-    def yeni_hull(self, yasakli_noktalar=None, offset=50.0, buffer_radius=10.0, **kwargs):
+    def yeni_hull(self, yasakli_noktalar=None, offset=50.0, buffer_radius=10.0,g_id=0, **kwargs):
             """
             Filoya ait hull oluşturur. 
             Debug logları eklenmiştir.
@@ -2124,12 +2124,13 @@ class FiloHelper:
             base_points = []
             
             # Lider ROV'u bulmaya çalış
-            lider_bilgisi = self.find_leader_info(sessiz=False) # Hata varsa gör
+            lider_bilgisi = self.find_leader_info(sessiz=False,g_id=g_id) # Hata varsa gör
             lider_gps = lider_bilgisi[1] if lider_bilgisi else None
 
             if lider_gps is None:
                 print("⚠️ [UYARI] Lider ROV bulunamadı! Merkez (0,0,0) kabul ediliyor.")
                 lx, ly = 0.0, 0.0 # Fallback: Lider yoksa merkeze çiz
+                print(self.filo.cagri_loglari(True))
             else:
                 lx, ly = lider_gps[0], lider_gps[1]
                 #print(f"✅ [DEBUG] Lider bulundu: ({lx}, {ly})")
@@ -2170,13 +2171,13 @@ class FiloHelper:
 
             return sonuc
 
-    def find_leader_info(self, sessiz: bool = False) -> tuple:
+    def find_leader_info(self, sessiz: bool = False,g_id:int=0) -> tuple:
             """Lider ROV ID ve GPS koordinatını bulur. (Attribute fallback eklendi)"""
             lider_rov_id = None
             lider_gps = None
             
-            rov_listesi = self.filo.ortam_ref.rovs
-            if not rov_listesi:
+            rov_listesi = self.filo.g_rovs[g_id]
+            if not rov_listesi or rov_listesi is None:
                 if not sessiz: print("⚠️ [FORMASYON] ROV listesi boş!")
                 return None, None
             
@@ -2206,7 +2207,9 @@ class FiloHelper:
                     break
             
             if lider_gps is None and not sessiz:
-                print("⚠️ [UYARI] Lider ROV bulunamadı! Hull (0,0) merkezli çizilecek.")
+                print(self.filo.ds)
+                print("lider rov bulunamadı")
+                
                 
             return lider_rov_id, lider_gps
         
@@ -2775,7 +2778,7 @@ class TemelGNCHelper:
 
                 
                 if etki > 0.001 and self.filo_ref.get(rov_id, 'rol') == 1:
-                    self.filo_ref.formasyon_sec(dinamik=True,tekrar=30)
+                    self.filo_ref.formasyon_sec(dinamik=True,tekrar=30,g_id=self.rov.group_id)
 
                 # --- DÜZELTME: Sadece Yatay Kaçınma ---
                 # Engelden kaçarken batmaması için kaçınma vektörünün Y (düşey) etkisini sıfırlıyoruz.

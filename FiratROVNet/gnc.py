@@ -22,6 +22,10 @@ from FiratROVNet.lider_sec import liderlik_secimini_baslat #yeni_lider_id, skor 
 # 0. YARDIMCI SINIFLAR
 # ==========================================
 
+import inspect
+import os
+import logging
+
 class GelismisParcacik(Entity):
     def __init__(self, pos, tur="kivilcim", renk=color.orange):
         super().__init__(
@@ -171,6 +175,10 @@ class Koordinator:
         return _utot(u_x, u_y, u_z)
 
 
+class SafeDict(dict):
+    def __missing__(self, key):
+        return None
+
 # ==========================================
 # 1. FİLO (ROV FİLO YÖNETİCİSİ)
 # ==========================================
@@ -231,6 +239,107 @@ class Filo:
             return []
         return [r for r in self.ortam_ref.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
 
+    @property
+    def g_rovs(self):
+        return SafeDict(self.ortam_ref.g_rovs)
+
+
+    def find_rov_by_id(self, rov_id):
+        """ID'si verilen ROV'u tüm gruplar içerisinde arayıp bulur."""
+        for g_id, grup in self.g_rovs.items():
+            for rov in grup:
+                if rov and rov.id == rov_id:
+                    if not (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                        return rov
+        return None
+    
+    @property
+    def ds(self):
+        """Dosya ve satır bilgisini döndürür - çağrıldığı yer"""
+        import inspect
+        import os
+
+        frame = inspect.currentframe().f_back
+        dosya = os.path.basename(frame.f_code.co_filename)
+        satir = frame.f_lineno
+        return f"{dosya}:{satir}"
+
+    @ds.setter
+    def ds(self, e):
+        import traceback
+        
+        # 1. Hata İzleme (Exception Traceback)
+        tb_list = traceback.extract_tb(e.__traceback__)
+        hata_frame = tb_list[-1] # Hatayı veren yer
+        
+        print(f"\n--- HATA DETAYLARI ---")
+        print(f"Hata Mesajı: {e}")
+        print(f"Hata Veren Fonksiyon: {hata_frame.name} (Satır: {hata_frame.lineno})")
+        print(f"Hata Kodu: {hata_frame.line}")
+
+        # 2. Hatayı Veren Fonksiyonu Çağıran (Hata Zinciri içindeki bir üst)
+        if len(tb_list) > 1:
+            zincir_cagiran = tb_list[-2]
+            print(f"Hata Zincirindeki Çağırıcı: {zincir_cagiran.name} (Dosya: {zincir_cagiran.filename})")
+
+        # 3. Setter'ı Gerçekten Çağıran (Kodu o an tetikleyen dış fonksiyon)
+        # extract_stack() fonksiyonun o anki çalışma yığınını verir.
+        # [-1] bu satır, [-2] setter'ın kendisi, [-3] setter'ı çağıran yerdir.
+        stack = traceback.extract_stack()
+        if len(stack) >= 3:
+            gercek_cagiran = stack[-3]
+            print(f"Setter'ı Tetikleyen Yer: {gercek_cagiran.name} (Dosya: {gercek_cagiran.filename}, Satır: {gercek_cagiran.lineno})")
+        
+        return -1, 0
+
+
+
+
+    def cagri_loglari(self, dosya_bilgisi_ver=True):
+        """
+        Çağrı zincirini (Call Stack) çıkarır.
+        Format: fonk1(dosya:satir) --> fonk2(dosya:satir) --> ...
+        """
+        
+        try:
+            zincir = []
+            # cagri_loglari'ni çağıran ilk fonksiyondan başlıyoruz
+            cerceve = inspect.currentframe().f_back 
+            
+            while cerceve:
+                fonk_adi = cerceve.f_code.co_name
+                
+                # Dosya yolunu sadece isim olarak al (Örn: /home/user/main.py -> main.py)
+                tam_yol = cerceve.f_code.co_filename
+                dosya_adi = os.path.basename(tam_yol)
+                satir = cerceve.f_lineno
+
+                if fonk_adi == '<module>':
+                    fonk_adi = "ANA_DIZIN"
+
+                # Kullanıcı dosya bilgisini istiyorsa formatla
+                if dosya_bilgisi_ver:
+                    bilgi = f"{fonk_adi}({dosya_adi}:{satir})"
+                else:
+                    bilgi = fonk_adi
+                
+                zincir.append(bilgi)
+                cerceve = cerceve.f_back # Bir üst basamağa çık
+
+            # Listeyi başa doğru (akış sırasına göre) çeviriyoruz
+            zincir.reverse()
+            
+            oklu_yol = " --> ".join(zincir)
+            
+            # Hem loga hem konsola basalım
+            logging.debug(f"İZLEME: {oklu_yol}")
+            print(f"\n[İZLEME]: {oklu_yol}\n")
+            
+            return oklu_yol
+            
+        except Exception as e:
+            self.ds=e
+            return str(e)
     
     def _get_all_rovs_positions(self):
         """Tüm ROV'ların güncel konumlarını döner. {rov_id: (x, y, z)} formatında."""
@@ -682,6 +791,8 @@ class Filo:
     def manuel_kontrol_all(self, aktif=True):
         for rov in self.rovs:
             if hasattr(rov, 'gnc'): rov.gnc.manuel_kontrol = aktif
+
+    def find_leader_info(self,*args,**kwargs): return self.helper.find_leader_info(*args,**kwargs)
 
 # ==========================================
 # 2. TEMEL GNC SINIFI
