@@ -673,7 +673,7 @@ class Ortam:
                             rz = -random.uniform(0, 10)
                             bu_grubun_rovlari.append((merkez_x, merkez_y, rz))
                         else:
-                            yaricap = 15.0 # ROV'lar arası yayılma mesafesi
+                            yaricap = 10.0 # ROV'lar arası yayılma mesafesi
                             for r_id in range(num_rovs):
                                 angle = math.radians(r_id * (360 / num_rovs))
                                 rx = merkez_x + math.cos(angle) * yaricap
