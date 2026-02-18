@@ -291,6 +291,11 @@ try:
     
     # Filo testi
     filo = Filo()
+    
+    # Mock ortam initialize et (None ise fallback kullanır)
+    if not hasattr(filo, 'gnc_sistemleri'):
+        filo.gnc_sistemleri = {}
+    
     record_test_pass("Filo Oluşturma")
     
     # Mock ROV oluştur
@@ -300,6 +305,11 @@ try:
     # Lider ve Takipçi GNC oluştur
     lider_gnc = TemelGNC(rov0, filo)
     takipci_gnc = TemelGNC(rov1, filo)
+    
+    # GNC'leri Filo'ya kaydet (fallback lookup için)
+    filo.gnc_sistemleri[0] = lider_gnc
+    filo.gnc_sistemleri[1] = takipci_gnc
+    
     record_test_pass("GNC Oluşturma")
     
     # Hedef atama testi
