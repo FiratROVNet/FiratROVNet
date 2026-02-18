@@ -256,39 +256,53 @@ class Filo:
             
     def guncelle_hepsi(self, tahminler):
         """
-        Tüm GNC sistemlerini günceller. 
-        self.sistemler yerine doğrudan ortam.rovs üzerinden çalışır.
-        """
-        self._process_command_queue()
-        #print(self)
+        Tüm GNC sistemlerini koordineli şekilde günceller.
         
-        if not self.ortam_ref: return
+        Operasyon Sırası (Önem Sırasına Göre):
+        1. Sistem Hazırlığı    → Command queue işle
+        2. Lider Yönetimi      → Yeni lider seç & değişim yap
+        3. ROV Başına İşlemler → Hasar, GNC, Motor komutları
+        4. Sistem Güncellemeleri → Minimap, engel bulut
+        """
+        
+        # ============================================================
+        # 1. SİSTEM HAZIRLIGI
+        # ============================================================
+        self._process_command_queue()
+        
+        if not self.ortam_ref:
+            return
 
+        # ============================================================
+        # 2. LİDER YÖNETİMİ (Grup bazlı lider seçim ve role transfer)
+        # ============================================================
+        yeni_lider_id, skor = liderlik_secimini_baslat(self, self.asil_hedef)
+        self.leader_manager.guncelle_liderler(yeni_lider_id)
+
+        # ============================================================
+        # 3. ROV BAŞINA İŞLEMLER
+        # ============================================================
         # Canlı ROV'ların kopyasını al (Döngü sırasında silinirse çökmemesi için)
-        mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
+        mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) 
+                        if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
         
         for i, rov in enumerate(mevcut_rovlar):
+            # ROV'un GNC sistemi kontrolü
             if not hasattr(rov, 'gnc') or rov.gnc is None:
                 continue
 
-            # GAT Tahmini (Liste sınır kontrolü ile)
+            # --- 3A. GAT Tahmini Ata ---
             gat_kodu = tahminler[i] if tahminler is not None and i < len(tahminler) else None
 
-
-            yeni_lider_id, skor = liderlik_secimini_baslat(self, self.asil_hedef)
-            #print(yeni_lider_id)
-            self.leader_manager.guncelle_liderler(yeni_lider_id)
-            self.ortam_ref.minimap._engel_bulutu_guncelle()
-
-            # Örnek: Normalde 15 Joule, ama istersen 25 yapıp daha dayanıklı yapabilirsin
-            if self.damage_system.rov_hasar_kontrol_direct(rov, joule_esigi=10.0):
+            # --- 3B. Hasar Kontrol (Öncelikli - Patlama Check) ---
+            joule_esigi = 10.0  # Joule cinsinden hasar eşiği
+            if self.damage_system.rov_hasar_kontrol_direct(rov, joule_esigi=joule_esigi):
+                # ROV patladı - Patlama efekti ve limbo
                 self.entity_patlat(rov, parca_sayisi=80)
-                continue #patlayan rovar için güncelleme yapma
+                continue  # Bu ROV için güncelleme yapma
 
-            
-            
+            # --- 3C. GNC Sistem Güncelleme ---
             try:
-                # GNC güncelle
                 rov.gnc.guncelle(gat_kodu=gat_kodu)
             except Exception as e:
                 # Patlama anındaki hataları sessizce geç
@@ -296,15 +310,181 @@ class Filo:
                     print(f"⚠️ [FİLO] ROV-{rov.id} GNC Hatası: {e}")
                 LogSystem.log_exception(e)
 
-        # Minimap Güncellemesi
+        # ============================================================
+        # 4. SİSTEM GÜNCELLEMELERİ
+        # ============================================================
+        # --- 4A. Engel Bulut Güncelleme ---
+        if self.ortam_ref.minimap:
+            try:
+                self.ortam_ref.minimap._engel_bulutu_guncelle()
+            except Exception as e:
+                LogSystem.log_exception(e)
+
+        # --- 4B. Minimap Görsel Güncelleme ---
         if self.ortam_ref.minimap:
             try:
                 self.ortam_ref.minimap.gorsel_guncelle()
             except Exception as e:
                 LogSystem.log_exception(e)
 
+    # ============================================================
+    # YOL BULMA İŞLEMLERİ
+    # ============================================================
 
+    def bul_guvenli_yol(self, baslangic, hedef, yasak_bolge_radius=15.0):
+        """
+        Başlangıç ve hedef arasında engelleri aşan güvenli yol bulur.
+        
+        Args:
+            baslangic (tuple): (x, y, z) başlangıç konumu
+            hedef (tuple): (x, y, z) hedef konumu
+            yasak_bolge_radius (float): Engelden uzak kalınacak mesafe (meter)
+        
+        Returns:
+            list: Waypoint'ler [(x1,y1), (x2,y2), ..., (xf,yf)] veya None
+        """
+        try:
+            if not baslangic or not hedef:
+                return None
+            
+            # Direkt yol kontrolü - engel var mı?
+            if self._direkt_yol_gecerli_mi(baslangic, hedef, yasak_bolge_radius):
+                # Direkt gidiş aman
+                return [(baslangic[0], baslangic[1]), (hedef[0], hedef[1])]
+            
+            # Engel varsa A* pathfinding kullan
+            yol = self._a_star_pathfinding(baslangic, hedef, yasak_bolge_radius)
+            return yol
+            
+        except Exception as e:
+            print(f"⚠️ Yol bulma hatası: {e}")
+            LogSystem.log_exception(e)
+            return None
 
+    def _direkt_yol_gecerli_mi(self, baslangic, hedef, min_mesafe=15.0):
+        """
+        Başlangıçtan hedefe direkt gidişin engel ile çarpışıp çarpışmadığını kontrol et.
+        
+        Args:
+            baslangic (tuple): (x, y, z) başlangıç
+            hedef (tuple): (x, y, z) hedef
+            min_mesafe (float): Engelden minimum uzak kalma mesafesi
+        
+        Returns:
+            bool: True = güvenli direkt yol, False = engel var
+        """
+        try:
+            # Helper sistemini kullan
+            engeller = self.helper.engel_bul(baslangic, hedef)
+            
+            for engel_pos in engeller:
+                # Engel ile baslangic-hedef hattı arasındaki mesafe
+                dist = self._nokta_hat_mesafesi(engel_pos, baslangic, hedef)
+                if dist < min_mesafe:
+                    return False  # Engel çok yakın, direkt yol uygun değil
+            
+            return True  # Engel yok, direkt gitmek aman
+            
+        except Exception as e:
+            print(f"⚠️ Direkt yol kontrolü hatası: {e}")
+            return False
+
+    def _a_star_pathfinding(self, baslangic, hedef, yasak_bolge_radius=15.0):
+        """
+        A* algoritması kullanarak engelleri aşan optimal yol bulur.
+        
+        Args:
+            baslangic (tuple): (x, y, z) başlangıç
+            hedef (tuple): (x, y, z) hedef
+            yasak_bolge_radius (float): Engel civarındaki yasak bölge yarıçapı
+        
+        Returns:
+            list: Waypoint'ler listesi [(x1,y1), (x2,y2), ..., (xf,yf)]
+        """
+        try:
+            # Burada A* implementasyonu yapılacak
+            # Şimdilik placeholder: 2-3 waypoint ile basit obstrüksyon kaçış
+            
+            if not self.ortam_ref:
+                return None
+            
+            # Engel konumlarını al
+            engeller = []
+            if hasattr(self.ortam_ref, 'island_entities'):
+                for ada in self.ortam_ref.island_entities:
+                    if ada and hasattr(ada, 'position'):
+                        engeller.append((ada.position.x, ada.position.z))  # (X, Z) 2D
+            
+            # Basit sidestepping: Engelin kenarından dolaş
+            waypoints = self._engel_kenarindan_dolas(baslangic, hedef, engeller, yasak_bolge_radius)
+            return waypoints
+            
+        except Exception as e:
+            print(f"⚠️ A* pathfinding hatası: {e}")
+            return None
+
+    def _engel_kenarindan_dolas(self, baslangic, hedef, engeller, min_dist=15.0):
+        """
+        Engellerin kenarından dolaşarak waypoint'ler oluştur.
+        
+        Returns:
+            list: Waypoint'ler [(x1,y1), (x2,y2), ..., (xf,yf)]
+        """
+        try:
+            if not engeller:
+                # Engel yoksa direkt git
+                return [(baslangic[0], baslangic[1]), (hedef[0], hedef[1])]
+            
+            # Engel ile başlangıç/hedef arasındaki mesafeyi kontrol et
+            waypoints = [(baslangic[0], baslangic[1])]
+            
+            # Her engel için bypass waypoint oluştur
+            for engel_x, engel_z in engeller:
+                hat_sonunda_mi = \
+                    abs(engel_x - hedef[0]) < min_dist * 2 or \
+                    abs(engel_z - hedef[1]) < min_dist * 2
+                
+                if hat_sonunda_mi:
+                    # Engelin kenarına bypass waypoint ekle
+                    offset = min_dist * 1.5
+                    bypass_x = engel_x + offset
+                    bypass_z = engel_z + offset
+                    waypoints.append((bypass_x, bypass_z))
+            
+            # Hedef ekle
+            waypoints.append((hedef[0], hedef[1]))
+            
+            return waypoints
+            
+        except Exception as e:
+            print(f"⚠️ Engel dolaş hatası: {e}")
+            return [(baslangic[0], baslangic[1]), (hedef[0], hedef[1])]
+
+    def _nokta_hat_mesafesi(self, nokta, hat_baslangic, hat_sonu):
+        """
+        Bir nokta ile bir hat arasındaki minimum mesafeyi hesapla (2D).
+        
+        Returns:
+            float: Mesafe (meter)
+        """
+        try:
+            # Hat parametresi: 2D projeksiyon
+            x0, y0 = nokta[0], nokta[1]
+            x1, y1 = hat_baslangic[0], hat_baslangic[1]
+            x2, y2 = hat_sonu[0], hat_sonu[1]
+            
+            # Nokta-hat mesafesi formülü
+            dist_numerator = abs((y2 - y1) * x0 - (x2 - x1) * y0 + x2 * y1 - y2 * x1)
+            dist_denominator = math.sqrt((y2 - y1)**2 + (x2 - x1)**2)
+            
+            if dist_denominator == 0:
+                return math.inf
+            
+            return dist_numerator / dist_denominator
+            
+        except Exception as e:
+            print(f"⚠️ Mesafe hesaplama hatası: {e}")
+            return math.inf
 
     def carpisma_enerjisi_hesapla(self, *args, **kwargs):
         """Hasar hesaplamalarını damage_system'a yönlendir."""
