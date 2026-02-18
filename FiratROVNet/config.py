@@ -8,7 +8,7 @@ import math
 class Hidrodinamik:
     SU_YOGUNLUGU = 1000.0
     YER_CEKIMI = 9.81
-    KUTLE = 10.0
+    KUTLE = 8.0
     HACIM = 0.0122
     MAX_ITME_KUVVETI = 240.0
     DRAG_KATSAYISI_CD = 0.85

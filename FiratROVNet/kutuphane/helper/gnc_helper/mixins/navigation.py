@@ -4,6 +4,7 @@ class NavigationMixin:
     def _git_impl(self, rov_id: int, x: float, y: float, z: float = None, ai: bool = True, sessiz: bool = True) -> None:
         """
         git() fonksiyonunun yeni mimariye (rov.gnc) uyarlanmis implementasyonu.
+        ROV objesinden rov.id ile ID tutarliligi saglanir.
         """
         # 1. Ortam ve liste kontrolleri
         if not self.filo.ortam_ref or not hasattr(self.filo.ortam_ref, 'rovs'):
@@ -11,7 +12,7 @@ class NavigationMixin:
                 print("❌ [FILO] Ortam referansi bulunamadi.")
             return
 
-        # 2. ID ve canlilik kontrolu
+        # 2. ROV objesini bul (find_rov_by_id ile)
         rov = self.filo.find_rov_by_id(rov_id) if hasattr(self.filo, 'find_rov_by_id') else None
         if rov is None:
             if not sessiz:
@@ -19,13 +20,13 @@ class NavigationMixin:
             return
 
         # ROV yoksa veya patlamissa islem yapma
-        if rov is None or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+        if hasattr(rov, 'is_destroyed') and rov.is_destroyed:
             return
 
         # ROV'un GNC sistemi var mi?
         if not hasattr(rov, 'gnc') or rov.gnc is None:
             if not sessiz:
-                print(f"❌ [FILO] ROV-{rov_id} icin GNC sistemi bulunamadi.")
+                print(f"❌ [FILO] ROV-{rov.id} icin GNC sistemi bulunamadi.")
             return
 
         # 3. Manuel derinlik hesapla (Z verilmemisse)
@@ -40,13 +41,13 @@ class NavigationMixin:
             rov.gnc.ai_aktif = ai
             rov.gnc.hedef_atama(x, y, z)
 
-            # Filo hafizasina kaydet
+            # Filo hafizasina kaydet (ROV objesi ile bagli)
             if not hasattr(self.filo, '_rov_hedefleri'):
                 self.filo._rov_hedefleri = {}
-            self.filo._rov_hedefleri[rov_id] = (x, y, z)
+            self.filo._rov_hedefleri[rov.id] = (x, y, z)  # rov.id kullan
 
             if not sessiz:
-                print(f"✅ [FILO] ROV-{rov_id} -> Hedef: ({x:.1f}, {y:.1f}, {z:.1f}) | AI: {'ACIK' if ai else 'KAPALI'}")
+                print(f"✅ [FILO] ROV-{rov.id} -> Hedef: ({x:.1f}, {y:.1f}, {z:.1f}) | AI: {'ACIK' if ai else 'KAPALI'}")
 
         except Exception as e:
             if not sessiz:
@@ -56,7 +57,15 @@ class NavigationMixin:
         """
         ROV'a hedef koordinati atayan genel fonksiyon.
         Koordinat Formati: (X: Sag-Sol, Y: Ileri-Geri, Z: Derinlik)
+        rov_id ile bulunan ROV objesindeki rov.id kullanilir.
         """
+        # ROV'u bul (rov.id ile tutarliligi sagla)
+        rov = self.filo.find_rov_by_id(rov_id) if hasattr(self.filo, 'find_rov_by_id') else None
+        if rov is None:
+            if not sessiz:
+                print(f"❌ [FILO] ROV bulunamadi: {rov_id}")
+            return
+        
         target_x, target_y, target_z = 0.0, 0.0, z
 
         # 1. Girdi ayrisma (nokta listesi, liste veya float)
@@ -66,11 +75,11 @@ class NavigationMixin:
 
             # Durum A: Coklu nokta listesi (rota) -> [[x1,y1], [x2,y2], ...]
             if isinstance(x[0], (list, tuple)):
-                self.filo._git_nokta_listesi[rov_id] = [[float(n[0]), float(n[1])] for n in x if len(n) >= 2]
-                self.filo._git_mevcut_nokta_indeksi[rov_id] = 0
+                self.filo._git_nokta_listesi[rov.id] = [[float(n[0]), float(n[1])] for n in x if len(n) >= 2]
+                self.filo._git_mevcut_nokta_indeksi[rov.id] = 0
 
                 # Ilk noktayi hedef olarak al
-                ilk_nokta = self.filo._git_nokta_listesi[rov_id][0]
+                ilk_nokta = self.filo._git_nokta_listesi[rov.id][0]
                 target_x, target_y = ilk_nokta[0], ilk_nokta[1]
 
             # Durum B: Tekil koordinat listesi -> [x, y] veya [x, y, z]
@@ -88,38 +97,47 @@ class NavigationMixin:
             target_x, target_y = float(x), float(y)
 
         # 2. Uygulama (implementasyona yonlendir)
-        self._git_impl(rov_id, target_x, target_y, target_z, ai, sessiz)
+        self._git_impl(rov.id, target_x, target_y, target_z, ai, sessiz)
 
     def git_path(self, rov_id, hedef, ai=True, isaret=True):
         """
         ROV'a bir yol atar ve otomatik moda gecirir (thread-safe).
         ROV'un mevcut derinligini korur.
         isaret=True ise bir sonraki waypoint minimapte gosterilir.
+        rov_id ile bulunan ROV objesindeki rov.id kullanilir.
         """
+        # ROV'u bul - tutarliligi sagla
+        rov = self.filo.find_rov_by_id(rov_id) if hasattr(self.filo, 'find_rov_by_id') else None
+        if rov is None:
+            return
+        
         # Thread-safe: Ana thread degilse queue'ya ekle
         if not self.filo._is_main_thread():
-            self.filo._command_queue.put(('git_path', (rov_id, hedef, ai), {'isaret': isaret}))
+            self.filo._command_queue.put(('git_path', (rov.id, hedef, ai), {'isaret': isaret}))
             return
 
-        self._git_path_impl(rov_id, hedef, ai, isaret)
+        self._git_path_impl(rov.id, hedef, ai, isaret)
 
     def _git_path_impl(self, rov_id, hedef, ai=True, isaret=False):
         """
         A* ile yol planlar ve ROV'u mevcut derinligini koruyarak o yola sokar.
+        rov_id ile bulunan ROV objesindeki rov.id kullanilir.
         """
-        if not hasattr(self.filo, '_git_isaret'):
-            self.filo._git_isaret = {}
-        self.filo._git_isaret[rov_id] = bool(isaret)
-
-        if self.filo.find_rov_by_id(rov_id) is None:
+        # ROV'u bul
+        rov = self.filo.find_rov_by_id(rov_id) if hasattr(self.filo, 'find_rov_by_id') else None
+        if rov is None:
             print(f"❌ [FILO] Gecersiz ROV ID: {rov_id}")
             return
+        
+        if not hasattr(self.filo, '_git_isaret'):
+            self.filo._git_isaret = {}
+        self.filo._git_isaret[rov.id] = bool(isaret)  # rov.id kullan
 
         # 1. Mevcut pozisyonu al
-        pos = self.filo.get(rov_id, "gps")
+        pos = self.filo.get(rov.id, "gps")  # rov.id kullan
         current_x, current_y, current_z = pos[0], pos[1], pos[2]
 
-        # 2. A* icin 2D baslangic ve hedef (x, z)
+        # 2. A* icin 2D baslangic ve hedef (x, y)
         start_2d = (current_x, current_y)
 
         if isinstance(hedef, (tuple, list)) and len(hedef) >= 2:
@@ -133,7 +151,7 @@ class NavigationMixin:
 
         if not yol_noktalari:
             print("⚠️ [FILO] Yol bulunamadi, dogrudan gidiliyor.")
-            self.filo.git(rov_id, goal_2d[0], goal_2d[1], current_z, ai=ai)
+            self.filo.git(rov.id, goal_2d[0], goal_2d[1], current_z, ai=ai)  # rov.id kullan
             return
 
         # 4. Minimap guncelleme
@@ -141,8 +159,8 @@ class NavigationMixin:
         if ortam and ortam.minimap:
             ortam.minimap.update_path(yol_noktalari)
 
-        # 5. Yolu atama ve baslatma
-        self.filo.git(rov_id, yol_noktalari, z=current_z, ai=ai)
+        # 5. Yolu atama ve baslatma (rov.id kullan)
+        self.filo.git(rov.id, yol_noktalari, z=current_z, ai=ai)  # rov.id kullan
 
     def _a_star_path_planla(self, start_2d: tuple, goal_2d: tuple) -> list:
         """
