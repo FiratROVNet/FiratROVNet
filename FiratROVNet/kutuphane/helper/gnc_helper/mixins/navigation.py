@@ -78,9 +78,15 @@ class NavigationMixin:
                 self.filo._git_nokta_listesi[rov.id] = [[float(n[0]), float(n[1])] for n in x if len(n) >= 2]
                 self.filo._git_mevcut_nokta_indeksi[rov.id] = 0
 
+                # Hedef derinligi tum rota icin sakla
+                if not hasattr(self.filo, '_git_hedef_derinligi'):
+                    self.filo._git_hedef_derinligi = {}
+                self.filo._git_hedef_derinligi[rov.id] = z if z is not None else None
+
                 # Ilk noktayi hedef olarak al
                 ilk_nokta = self.filo._git_nokta_listesi[rov.id][0]
-                target_x, target_y = ilk_nokta[0], ilk_nokta[1]
+                target_x, target_y= ilk_nokta[0], ilk_nokta[1]
+                # target_z zaten z olarak ayarli (satir 68)
 
             # Durum B: Tekil koordinat listesi -> [x, y] veya [x, y, z]
             else:
@@ -137,7 +143,13 @@ class NavigationMixin:
         pos = self.filo.get(rov.id, "gps")  # rov.id kullan
         current_x, current_y, current_z = pos[0], pos[1], pos[2]
 
-        # 2. A* icin 2D baslangic ve hedef (x, y)
+        # 2. Hedef derinligi belirle (hedefte belirtilmisse onu kullan)
+        if isinstance(hedef, (tuple, list)) and len(hedef) >= 3:
+            target_z = float(hedef[2])  # Kullanici derinlik belirtmis
+        else:
+            target_z = current_z  # Mevcut derinligi koru
+
+        # 3. A* icin 2D baslangic ve hedef (x, y)
         start_2d = (current_x, current_y)
 
         if isinstance(hedef, (tuple, list)) and len(hedef) >= 2:
@@ -146,27 +158,28 @@ class NavigationMixin:
             print(f"❌ [FILO] Hedef formati hatali: {hedef}")
             return
 
-        # 3. A* yol planlama
+        # 4. A* yol planlama
         yol_noktalari = self._a_star_path_planla(start_2d, goal_2d)
 
         if not yol_noktalari:
             print("⚠️ [FILO] Yol bulunamadi, dogrudan gidiliyor.")
-            self.filo.git(rov.id, goal_2d[0], goal_2d[1], current_z, ai=ai)  # rov.id kullan
+            self.filo.git(rov.id, goal_2d[0], goal_2d[1], target_z, ai=ai)
             return
 
-        # 4. Minimap guncelleme
+        # 5. Minimap guncelleme
         ortam = self.filo.ortam_ref
         if ortam and ortam.minimap:
             ortam.minimap.update_path(yol_noktalari)
 
-        # 5. Yolu atama ve baslatma (rov.id kullan)
-        self.filo.git(rov.id, yol_noktalari, z=current_z, ai=ai)  # rov.id kullan
+        # 6. Yolu atama ve baslatma (target_z kullan)
+        self.filo.git(rov.id, yol_noktalari, z=target_z, ai=ai)
 
     def _a_star_path_planla(self, start_2d: tuple, goal_2d: tuple) -> list:
         """
         A* yol planlamasi yapan ortak helper metodu.
         FiratROVNet/a_star.py'deki AStarPlanner sinifini kullanir.
-        Ortamdaki engelleri (adalari) otomatik olarak alir.
+        Ortamdaki engelleri (adalari) ve dinamik engelleri (Lidar bulutunu) 
+        otomatik olarak alir.
         """
         try:
             from FiratROVNet.a_star import AStarPlanner
@@ -183,12 +196,51 @@ class NavigationMixin:
 
         # Ortamdaki adalari engel olarak al (X, Z, R)
         adalar = [(p[0], p[1], p[2]) for p in ortam.island_positions if p]
+        
+        # Dinamik engelleri (Lidar bulutunu) basitlestir
+        dinamik_engeller_polygon = []
+        try:
+            from FiratROVNet.hull import HullManager
+            hull_manager = HullManager(filo_ref=self.filo)
+            engel_bulutu = getattr(ortam, 'engel_bulutu', [])
+            
+            if engel_bulutu and len(engel_bulutu) > 0:
+                # Lidar bulutunu basitlestir
+                poligonlar = hull_manager.dinamik_engelleri_basitlestir(
+                    engel_bulutu=engel_bulutu,
+                    kume_mesafesi=25.0,
+                    buffer_radius=5.0,
+                    min_kume_boyutu=3
+                )
+                
+                # Polygon'ları (x, y, radius) formatına dönüştür
+                for poly in poligonlar:
+                    try:
+                        centroid = poly.centroid
+                        bounds = poly.bounds  # (minx, miny, maxx, maxy)
+                        
+                        if bounds:
+                            radius = max(
+                                bounds[2] - centroid.x,
+                                bounds[3] - centroid.y
+                            )
+                            dinamik_engeller_polygon.append((centroid.x, centroid.y, radius))
+                    except Exception:
+                        pass
+        except ImportError:
+            pass
+        except Exception as e:
+            # Dinamik engel işleme başarısız olsa bile, statik adalarla devam et
+            pass
+        
+        # Tum engelleri birlestir (statik + dinamik)
+        tumEngeller = adalar + dinamik_engeller_polygon
 
         planner = AStarPlanner()
         yol_noktalari = planner.find_path(
             start=start_2d,
             goal=goal_2d,
-            obstacles=adalar,
+            obstacles=tumEngeller,
             havuz_genisligi=ortam.havuz_genisligi,
         )
 

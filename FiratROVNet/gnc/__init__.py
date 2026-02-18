@@ -139,6 +139,7 @@ class Filo:
                 self.current_target_id[g_id] = next_data['id']
 
                 print(f"🚀 [NAV] Grup-{g_id} siradaki hedefe geciliyor: {self.current_target_id[g_id]}")
+                print(target_pos)
                 self.git_path(lider_id, target_pos, isaret=True)
 
     def guncelle_gat_analizi(self, tahminler):
@@ -573,18 +574,30 @@ class TemelGNC:
                 nxt = nokta_listesi[yeni_indeks]
                 self.filo_ref._git_mevcut_nokta_indeksi[my_id] = yeni_indeks
                 
-                # Z koordinatını koru veya tamamla
-                curr_z = self.hedef.z if self.hedef else Koordinator.ursina_to_sim(self.rov.x, self.rov.y, self.rov.z)[2]
+                # Hedef derinliği kullan (varsa), yoksa mevcut derinliği koru
+                target_depth = None
+                if hasattr(self.filo_ref, '_git_hedef_derinligi'):
+                    target_depth = self.filo_ref._git_hedef_derinligi.get(my_id)
+                
+                if target_depth is not None:
+                    curr_z = target_depth
+                else:
+                    curr_z = self.hedef.z if self.hedef else Koordinator.ursina_to_sim(self.rov.x, self.rov.y, self.rov.z)[2]
+                
                 self.hedef = Vec3(nxt[0], nxt[1], curr_z)
                 return True
             elif nokta_listesi:
                 # Rota tamamlandı, listeyi temizle
                 self.filo_ref._git_nokta_listesi.pop(my_id, None)
+                if hasattr(self.filo_ref, '_git_hedef_derinligi'):
+                    self.filo_ref._git_hedef_derinligi.pop(my_id, None)
         except Exception as e:
             if self.filo_ref:
                 self.filo_ref.ds = e
             pass
         return False
+    
+
 
 
 # Export sınıfları

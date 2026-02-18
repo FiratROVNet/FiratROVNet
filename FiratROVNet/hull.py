@@ -5,11 +5,12 @@ from shapely.prepared import prep
 from scipy.spatial.distance import pdist  # Hızlı mesafe kontrolü için
 
 try:
-    from scipy.spatial import ConvexHull
+    from scipy.spatial import ConvexHull, cKDTree
     SCIPY_AVAILABLE = True
 except ImportError:
     print("❌ [HULL-INIT] Scipy kütüphanesi eksik!")
     SCIPY_AVAILABLE = False
+    cKDTree = None
 
 class SahteHull:
     """
@@ -242,4 +243,149 @@ class HullManager:
             print(f"⚠️ [HULL] Vektörel kontrol hatası: {e}")
             import traceback
             traceback.print_exc()
+            return False
+
+    def dinamik_engelleri_basitlestir(
+            self,
+            engel_bulutu: list,
+            kume_mesafesi: float = 25.0,
+            buffer_radius: float = 5.0,
+            min_kume_boyutu: int = 3
+        ) -> list:
+        """
+        Lidar/Sonar'dan gelen binlerce engel noktasını (engel_bulutu) 
+        basitleştirir ve geometrik engellere dönüştürür.
+        
+        Args:
+            engel_bulutu: [(x, y), ...] formatında engel noktaları listesi
+            kume_mesafesi: Kümeleme için maksimum intra-cluster mesafe (default 25m)
+            buffer_radius: Tek/çift nokta için daire yarıçapı (default 5m)
+            min_kume_boyutu: Geçerli küme için minimum nokta sayısı (default 3)
+        
+        Returns:
+            Polygon listesi veya boş liste
+            Liste elemanları: Shapely Polygon nesneleri
+                - Çıkış her poligonun merkezi (centroid) ve kapsayan radius bilgisi depolanır:
+                  polygon.centroid -> Point(x, y)
+                  polygon.bounds -> (minx, miny, maxx, maxy)
+        
+        Örnek Kullanım:
+        ```python
+        engel_bulutu = [(x1, y1), (x2, y2), ...]
+        dinamik_engeller = manager.dinamik_engelleri_basitlestir(engel_bulutu)
+        
+        # A* için hazırlama (radius bilgisi ile)
+        obstacles_for_astar = []
+        for poly in dinamik_engeller:
+            centroid = poly.centroid
+            bounds = poly.bounds  # (minx, miny, maxx, maxy)
+            radius = max(bounds[2] - centroid.x, bounds[3] - centroid.y)
+            obstacles_for_astar.append((centroid.x, centroid.y, radius))
+        ```
+        """
+        
+        if not engel_bulutu or len(engel_bulutu) == 0:
+            return []
+        
+        if not SCIPY_AVAILABLE or cKDTree is None:
+            print("❌ [DINAMIK-ENGEL] Scipy.spatial.cKDTree mevcut değil!")
+            return []
+        
+        try:
+            # 1. Veriyi NumPy array'e çevir ve temizle
+            points_array = np.array(engel_bulutu, dtype=np.float32)
+            
+            if len(points_array) == 0 or len(points_array.shape) != 2 or points_array.shape[1] < 2:
+                return []
+            
+            # 2. cKDTree ile hızlı kümeleme (Density-based clustering simulasyonu)
+            # Tüm nokta çiftlerini query ederiz ve gruplayız
+            points_2d = points_array[:, :2]
+            tree = cKDTree(points_2d)
+            
+            # Ziyaret edilmemiş noktaları takip et
+            visited = np.zeros(len(points_2d), dtype=bool)
+            kumeler = []
+            
+            for i in range(len(points_2d)):
+                if visited[i]:
+                    continue
+                
+                # Mevcut noktanın kume_mesafesi içindeki komşularını bul
+                indices = tree.query_ball_point(points_2d[i], kume_mesafesi)
+                
+                kume = points_2d[indices]
+                visited[indices] = True
+                
+                # Kümeyi sakla
+                kumeler.append(kume)
+            
+            # 3. Her küme için geometri oluştur
+            poligonlar = []
+            
+            for kume in kumeler:
+                if len(kume) == 0:
+                    continue
+                
+                # Küme boyutuna göre işle
+                if len(kume) == 1:
+                    # Tek nokta -> Daire (buffer)
+                    pt = Point(kume[0, 0], kume[0, 1])
+                    poly = pt.buffer(buffer_radius)
+                    poligonlar.append(poly)
+                
+                elif len(kume) == 2:
+                    # İki nokta -> Kapsül şekli (buffer ile)
+                    pt1 = Point(kume[0, 0], kume[0, 1])
+                    pt2 = Point(kume[1, 0], kume[1, 1])
+                    line = pt1.buffer(buffer_radius).union(pt2.buffer(buffer_radius))
+                    poligonlar.append(line)
+                
+                else:
+                    # 3+ nokta -> Convex Hull
+                    try:
+                        if len(kume) >= 3:
+                            hull = ConvexHull(kume, qhull_options='QJ')
+                            hull_points = kume[hull.vertices]
+                            poly = Polygon(hull_points)
+                            
+                            if not poly.is_valid:
+                                poly = poly.buffer(0)
+                            
+                            # Hull'u hafif Bufferleme (Kütüphane kenarı düzeltme)
+                            poly = poly.buffer(buffer_radius)
+                            poligonlar.append(poly)
+                    except Exception as e:
+                        # Hull hesaplanamadıysa buffer kullan
+                        centroid = np.mean(kume, axis=0)
+                        pt = Point(centroid[0], centroid[1])
+                        poly = pt.buffer(buffer_radius)
+                        poligonlar.append(poly)
+            
+            # 4. Poligonları birleştir (Unary Union)
+            if len(poligonlar) == 0:
+                return []
+            
+            elif len(poligonlar) == 1:
+                gecerli_poligonlar = [poligonlar[0]]
+            
+            else:
+                birlestirilmis = unary_union(poligonlar)
+                
+                # MultiPolygon ise ayrıştır
+                if isinstance(birlestirilmis, MultiPolygon):
+                    gecerli_poligonlar = [geom for geom in birlestirilmis.geoms if not geom.is_empty]
+                elif isinstance(birlestirilmis, Polygon) and not birlestirilmis.is_empty:
+                    gecerli_poligonlar = [birlestirilmis]
+                else:
+                    gecerli_poligonlar = []
+            
+            # 5. Sonuç döndür
+            return gecerli_poligonlar
+        
+        except Exception as e:
+            print(f"❌ [DINAMIK-ENGEL KRİTİK HATA] {e}")
+            import traceback
+            traceback.print_exc()
+            return []
             return False
