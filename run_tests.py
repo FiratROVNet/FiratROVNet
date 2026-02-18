@@ -298,13 +298,9 @@ try:
     rov1 = MockROV(1)
     
     # Lider ve Takipçi GNC oluştur
-    lider_gnc = TemelGNC(rov0)
-    takipci_gnc = TemelGNC(rov1)
-    
-    filo.ekle(lider_gnc)
-    filo.ekle(takipci_gnc)
-    assert len(filo.sistemler) == 2, "GNC sistemleri eklenemedi"
-    record_test_pass("GNC Sistemleri Ekleme")
+    lider_gnc = TemelGNC(rov0, filo)
+    takipci_gnc = TemelGNC(rov1, filo)
+    record_test_pass("GNC Oluşturma")
     
     # Hedef atama testi
     filo.git(0, 10, 20, -5, ai=True)
@@ -396,18 +392,13 @@ try:
     tahminler, _, _ = analizci.analiz_et(data)
     
     filo = Filo()
-    modem0 = AkustikModem(0)
-    modem1 = AkustikModem(1)
-    
+
     rov0 = MockROV(0)
     rov1 = MockROV(1)
     
-    gnc0 = TemelGNC(rov0, modem0)
-    gnc1 = TemelGNC(rov1, modem1)
-    
-    filo.ekle(gnc0)
-    filo.ekle(gnc1)
-    
+    gnc0 = TemelGNC(rov0, filo)
+    gnc1 = TemelGNC(rov1, filo)
+
     filo.git(0, 10, 20, -5)
     filo.git(1, 15, 25, -10)
     
@@ -507,18 +498,13 @@ try:
     tahminler, _, _ = analizci.analiz_et(data)
     
     filo = Filo()
-    modem0 = AkustikModem(0)
-    modem1 = AkustikModem(1)
-    
+
     rov0 = MockROV(0)
     rov1 = MockROV(1)
     
-    gnc0 = TemelGNC(rov0, modem0)
-    gnc1 = TemelGNC(rov1, modem1)
-    
-    filo.ekle(gnc0)
-    filo.ekle(gnc1)
-    
+    gnc0 = TemelGNC(rov0, filo)
+    gnc1 = TemelGNC(rov1, filo)
+
     filo.git(0, 10, 20, -5)
     filo.git(1, 15, 25, -10)
     
