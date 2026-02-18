@@ -224,11 +224,18 @@ class Filo:
 
     @property
     def g_rovs(self):
+        """Tüm ROV gruplarını döner. ortam_ref None ise boş SafeDict döner."""
+        if not self.ortam_ref or not hasattr(self.ortam_ref, 'g_rovs'):
+            return SafeDict({})
         return SafeDict(self.ortam_ref.g_rovs)
-
 
     def find_rov_by_id(self, rov_id):
         """ID'si verilen ROV'u tüm gruplar içerisinde arayıp bulur."""
+        # Önce ortam_ref kontrolü
+        if not self.ortam_ref:
+            return None
+        
+        # g_rovs'dan arama yap
         for g_id, grup in self.g_rovs.items():
             for rov in grup:
                 if rov and rov.id == rov_id:

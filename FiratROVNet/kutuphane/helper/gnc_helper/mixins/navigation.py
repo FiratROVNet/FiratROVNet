@@ -8,12 +8,28 @@ class NavigationMixin:
         """
         # 1. Ortam ve liste kontrolleri
         if not self.filo.ortam_ref or not hasattr(self.filo.ortam_ref, 'rovs'):
-            if not sessiz:
-                print("❌ [FILO] Ortam referansi bulunamadi.")
-            return
+            # Mock ortam durumunda, gnc_sistemleri'nden ara
+            if not (hasattr(self.filo, 'ortam_ref') and self.filo.ortam_ref is None and 
+                    hasattr(self.filo, 'gnc_sistemleri')):
+                if not sessiz:
+                    print("❌ [FILO] Ortam referansi bulunamadi.")
+                return
 
         # 2. ROV objesini bul (find_rov_by_id ile)
-        rov = self.filo.find_rov_by_id(rov_id) if hasattr(self.filo, 'find_rov_by_id') else None
+        rov = None
+        if hasattr(self.filo, 'find_rov_by_id'):
+            try:
+                rov = self.filo.find_rov_by_id(rov_id)
+            except Exception:
+                rov = None
+        
+        # Fallback: Mock ortam durumunda
+        if rov is None and hasattr(self.filo, 'ortam_ref') and self.filo.ortam_ref is None:
+            if hasattr(self.filo, 'gnc_sistemleri') and isinstance(self.filo.gnc_sistemleri, dict):
+                gnc_obj = self.filo.gnc_sistemleri.get(rov_id)
+                if gnc_obj and hasattr(gnc_obj, 'rov'):
+                    rov = gnc_obj.rov
+        
         if rov is None:
             if not sessiz:
                 print(f"❌ [FILO] Gecersiz ROV ID: {rov_id}")
@@ -60,7 +76,23 @@ class NavigationMixin:
         rov_id ile bulunan ROV objesindeki rov.id kullanilir.
         """
         # ROV'u bul (rov.id ile tutarliligi sagla)
-        rov = self.filo.find_rov_by_id(rov_id) if hasattr(self.filo, 'find_rov_by_id') else None
+        rov = None
+        if hasattr(self.filo, 'find_rov_by_id'):
+            try:
+                rov = self.filo.find_rov_by_id(rov_id)
+            except Exception:
+                rov = None
+        
+        # Fallback: Doğru rov ortam_ref olmadan g_rovs'dan ara
+        if rov is None and hasattr(self.filo, 'ortam_ref') and self.filo.ortam_ref is None:
+            # Mock ortam durumunda, doğrudan gnc_sistemleri kontrol et
+            if hasattr(self.filo, 'gnc_sistemleri') and isinstance(self.filo.gnc_sistemleri, dict):
+                rov = self.filo.gnc_sistemleri.get(rov_id)
+                if rov:
+                    # gnc sistemi bulundu, örneğin TemelGNC ise rov_entity'ye eriş
+                    if hasattr(rov, 'rov'):
+                        rov = rov.rov
+        
         if rov is None:
             if not sessiz:
                 print(f"❌ [FILO] ROV bulunamadi: {rov_id}")
@@ -113,7 +145,20 @@ class NavigationMixin:
         rov_id ile bulunan ROV objesindeki rov.id kullanilir.
         """
         # ROV'u bul - tutarliligi sagla
-        rov = self.filo.find_rov_by_id(rov_id) if hasattr(self.filo, 'find_rov_by_id') else None
+        rov = None
+        if hasattr(self.filo, 'find_rov_by_id'):
+            try:
+                rov = self.filo.find_rov_by_id(rov_id)
+            except Exception:
+                rov = None
+        
+        # Fallback: Mock ortam durumunda
+        if rov is None and hasattr(self.filo, 'ortam_ref') and self.filo.ortam_ref is None:
+            if hasattr(self.filo, 'gnc_sistemleri') and isinstance(self.filo.gnc_sistemleri, dict):
+                gnc_obj = self.filo.gnc_sistemleri.get(rov_id)
+                if gnc_obj and hasattr(gnc_obj, 'rov'):
+                    rov = gnc_obj.rov
+        
         if rov is None:
             return
         
@@ -130,7 +175,20 @@ class NavigationMixin:
         rov_id ile bulunan ROV objesindeki rov.id kullanilir.
         """
         # ROV'u bul
-        rov = self.filo.find_rov_by_id(rov_id) if hasattr(self.filo, 'find_rov_by_id') else None
+        rov = None
+        if hasattr(self.filo, 'find_rov_by_id'):
+            try:
+                rov = self.filo.find_rov_by_id(rov_id)
+            except Exception:
+                rov = None
+        
+        # Fallback: Mock ortam durumunda
+        if rov is None and hasattr(self.filo, 'ortam_ref') and self.filo.ortam_ref is None:
+            if hasattr(self.filo, 'gnc_sistemleri') and isinstance(self.filo.gnc_sistemleri, dict):
+                gnc_obj = self.filo.gnc_sistemleri.get(rov_id)
+                if gnc_obj and hasattr(gnc_obj, 'rov'):
+                    rov = gnc_obj.rov
+        
         if rov is None:
             print(f"❌ [FILO] Gecersiz ROV ID: {rov_id}")
             return
