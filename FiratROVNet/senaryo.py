@@ -4,6 +4,12 @@ Senaryo Üretim Modülü - Yapay Zeka Eğitimi İçin Veri Üretimi
 Bu modül, GUI olmadan (headless) simülasyon ortamları oluşturur ve
 yapay zeka algoritmalarını eğitmek için veri üretir.
 
+Yeni Özellikler (v1.8+):
+- Dinamik engel basitleştirme (engel_bulutu → basitleştirilmiş polygonlar)
+- Derinlik koruma çok-waypoint navigasyonda
+- HullManager entegrasyonu
+- Graceful fallback mekanizması
+
 Kullanım:
     from FiratROVNet import senaryo
     
@@ -14,6 +20,9 @@ Kullanım:
     batarya = senaryo.get(0, "batarya")
     gps = senaryo.get(0, "gps")
     sonar = senaryo.get(0, "sonar")
+    
+    # Dinamik rota planlama (Lidar verileri otomatik entegre)
+    senaryo.git(0, 100, 50, -30, ai=True)
     
     # veya Filo üzerinden
     batarya = senaryo.filo.get(0, "batarya")
@@ -33,6 +42,7 @@ os.environ['URSINA_HEADLESS'] = '1'
 from ursina import *
 from FiratROVNet.simulasyon import Ortam, ROV
 from FiratROVNet.gnc import Filo
+from FiratROVNet.hull import HullManager
 import numpy as np
 import random
 import networkx as nx
@@ -44,6 +54,13 @@ _senaryo_instance = None
 class Senaryo:
     """
     Senaryo üretim sınıfı - Headless simülasyon ortamı oluşturur.
+    
+    Özellinkleri:
+    - Pozisyon bulma ve dağıtma (adalar, ROV'lar)
+    - Dinamik engel basitleştirme (Lidar → geometri)
+    - A* pathfinding with dynamic obstacles
+    - Derinlik koruma multi-waypoint navigasyonda
+    - Filo yönetimi ve GAT entegrasyonu
     
     Güvenli pozisyon bulma fonksiyonları:
     - _guvenli_ada_pozisyonu_bul: Adalar için güvenli pozisyon bulur
@@ -59,6 +76,9 @@ class Senaryo:
         self.ortam = None
         self.aktif = False
         self.verbose = verbose  # Log mesajlarını kontrol eder
+        
+        # Hull Manager (dinamik engeller için)
+        self.hull_manager = None
         
         # Önbellek mekanizması (hızlı senaryo üretimi için)
         self._cache_n_rovs = None
@@ -320,6 +340,15 @@ class Senaryo:
              modem_ayarlari=None, sensor_ayarlari=None, verbose=None):
         """
         Senaryo ortamı oluşturur veya mevcut nesneleri yeniden dağıtır (optimize edilmiş).
+        
+        Dinamik Engel Desteği:
+        - engel_bulutu otomatik olarak A* pathfinding'e entegre edilir
+        - Lidar/Sonar verilerinden geometrik engeller oluşturulur
+        - HullManager via dinamik_engelleri_basitlestir() kullanılır
+        
+        Derinlik Koruma:
+        - _git_hedef_derinligi dictionary'si multi-waypoint rotalarında derinliği korur
+        - git_path() calls preserve target depth across waypoints
         
         Args:
             n_rovs (int): ROV sayısı (varsayılan: 3, None ise mevcut sayı korunur)
@@ -645,6 +674,10 @@ class Senaryo:
             )
             self.ortam.filo = self.filo
             self.filo.ortam_ref = self.ortam  # Filo'ya ortam referansını ekle
+            
+            # HullManager initialize et (dinamik engeller için)
+            if self.hull_manager is None:
+                self.hull_manager = HullManager(filo_ref=self.filo)
         
         # 6. Aktif durumu
         self.aktif = True
@@ -815,6 +848,13 @@ class Senaryo:
         """
         Senaryo ortamını bir adım günceller (simülasyon adımı).
         
+        Yapılan İşlemler:
+        - Su yüzeyi animasyonu
+        - ROV fizik güncellemesi
+        - Filo sistemi güncellemesi (GAT kodları)
+        - engel_bulutu otomatik güncellenir (Lidar/Sonar)
+        - Dinamik engeller A* pathfinding'e otomatik entegre
+        
         Args:
             delta_time (float): Geçen süre (saniye, varsayılan: 0.016 = ~60 FPS)
         
@@ -881,11 +921,15 @@ class Senaryo:
         """
         ROV sensör verilerine erişim (Filo üzerinden).
         
+        Dinamik Engel Verileri:
+        - engel_bulutu: Lidar/Sonar tarafından tespit edilen engel noktaları
+        - Otomatik basitleştirme: HullManager.dinamik_engelleri_basitlestir()
+        
         Args:
             rov_id (int): ROV ID'si
             veri_tipi (str): Veri tipi
                 - "batarya": Batarya seviyesi (0-1)
-                - "gps": GPS koordinatları [x, y, z]
+                - "gps": GPS koordinatları [x, y, z] (Derinlik korunur)
                 - "hiz": Hız vektörü [vx, vy, vz]
                 - "sonar": Sonar mesafesi
                 - "rol": ROV rolü (0=takipçi, 1=lider)
@@ -897,7 +941,7 @@ class Senaryo:
         
         Örnek:
             batarya = senaryo.get(0, "batarya")
-            gps = senaryo.get(0, "gps")
+            gps = senaryo.get(0, "gps")  # [x, y, z] mevcut z korunmuş
             sonar = senaryo.get(0, "sonar")
         """
         if not self.aktif:
@@ -945,17 +989,23 @@ class Senaryo:
     
     def git(self, rov_id, x, z, y=None, ai=True):
         """
-        ROV'a hedef atar.
+        ROV'a hedef atar (A* pathfinding + dinamik engel desteği).
+        
+        Özellikler:
+        - Multi-waypoint rotalar derinlik korumasıyla desteklenir
+        - Dinamik engeller (Lidar) otomatik rota planlamaya dahil
+        - AI aktif ise GAT kodları hesaplanır
         
         Args:
             rov_id (int): ROV ID'si
             x (float): X koordinatı
-            z (float): Z koordinatı
-            y (float, optional): Y koordinatı (derinlik)
-            ai (bool): AI aktif mi?
+            z (float): Z koordinatı (Hedef pozisyonu)
+            y (float, optional): Y koordinatı (derinlik). None ise mevcut derinlik korunur
+            ai (bool): AI aktif mi? (varsayılan: True)
         
         Örnek:
-            senaryo.git(0, 50, 60, -10)  # ROV-0'a hedef atar
+            senaryo.git(0, 50, 60, -10)  # ROV-0'a hedef atar, derinlik -10m
+            senaryo.git(1, 100, 100)      # ROV-1'e hedef atar, mevcut derinliği koru
         """
         if not self.aktif:
             print("⚠️ Senaryo aktif değil.")
@@ -967,6 +1017,13 @@ class Senaryo:
     def temizle(self):
         """
         Senaryo ortamını temizler ve kaynakları serbest bırakır.
+        
+        Temizlenen Kaynaklar:
+        - Tüm ROV entity'leri
+        - Engel entity'leri
+        - Filo sistemi ve GNC controllers
+        - HullManager ve dinamik engel cache'i
+        - engel_bulutu verisi
         """
         if self.ortam:
             # ROV'ları temizle
@@ -980,6 +1037,9 @@ class Senaryo:
                 if hasattr(engel, 'destroy'):
                     engel.destroy()
             self.ortam.engeller = []
+        
+        # HullManager ve cache temizle
+        self.hull_manager = None
         
         self.filo = None
         self.ortam = None
