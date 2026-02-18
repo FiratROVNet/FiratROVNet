@@ -908,16 +908,17 @@ class Senaryo:
             print("⚠️ Filo sistemi kurulmamış.")
             return None
         
-        # ROV ID kontrolü (sessiz mod - hata mesajı yok)
-        if rov_id >= len(self.ortam.rovs) or (self.ortam.rovs[rov_id] is None):
+        # ROV ID kontrolu (sessiz mod - hata mesaji yok)
+        rov_ref = self.filo.find_rov_by_id(rov_id) if self.filo and hasattr(self.filo, 'find_rov_by_id') else None
+        if rov_ref is None:
             return None
         
         # Filo üzerinden veri al (sessiz mod - RL eğitimi için)
         veri = self.filo.get(rov_id, veri_tipi, sessiz=True)
         
         # Eğer filo None döndürdüyse, direkt ROV'tan al (fallback)
-        if veri is None and rov_id < len(self.ortam.rovs):
-            rov = self.ortam.rovs[rov_id]
+        if veri is None:
+            rov = rov_ref
             if rov is not None and hasattr(rov, 'get'):
                 veri = rov.get(veri_tipi)
         

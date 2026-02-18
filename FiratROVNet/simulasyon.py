@@ -10,7 +10,7 @@ from ursina import *
 # Yerel modül importları
 from .config import (
     SensorAyarlari, GATLimitleri, HareketAyarlari, 
-    FizikSabitleri, SimulasyonSabitleri, ROVModelleri
+    FizikSabitleri, ROVModelleri
 )
 from .utils import sim_to_ursina, ursina_to_sim
 from .kutuphane.helper.EntityLoader import EntityLoader
@@ -57,8 +57,9 @@ class ROV(Entity):
         self.environment_ref = ortam_ref
         if not hasattr(ortam_ref, 'rovs'): ortam_ref.rovs = []
         
-        # ID'yi her zaman listenin sonundaki sayı olarak ata
-        self.id = len(ortam_ref.rovs)
+        # ID'yi mevcut maksimumdan bir ileri ata (yeniden numaralandirma yok)
+        mevcut_ids = [r.id for r in ortam_ref.rovs if r is not None and hasattr(r, 'id')]
+        self.id = (max(mevcut_ids) + 1) if mevcut_ids else 0
         ortam_ref.rovs.append(self)
         
         self._etiket_guncelle()
@@ -82,21 +83,24 @@ class ROV(Entity):
                         destroy(ortam.sonar_cizgiler[pair])
                         del ortam.sonar_cizgiler[pair]
 
-            # 1. Referansı None yap
-            ortam.rovs[silinen_id] = None 
+            # --- YENI: Grup listesinden temizle ---
+            if hasattr(ortam, 'g_rovs') and isinstance(ortam.g_rovs, dict):
+                grup = ortam.g_rovs.get(self.group_id)
+                if grup:
+                    ortam.g_rovs[self.group_id] = [r for r in grup if r and r.id != silinen_id]
+
+            # 1. Referansi None yap (id korunur)
+            for idx, r in enumerate(ortam.rovs):
+                if r and getattr(r, 'id', None) == silinen_id:
+                    ortam.rovs[idx] = None
+                    break
 
             # 2. Görselleri temizle
             if hasattr(self, 'label') and self.label: destroy(self.label)
             if hasattr(self, 'engel_cizgi') and self.engel_cizgi: destroy(self.engel_cizgi)
 
-            # 3. Listeyi temizle ve ID'leri güncelle
-            ortam.rovs = [r for r in ortam.rovs if r is not None]
-            
-            for i, kalan_rov in enumerate(ortam.rovs):
-                kalan_rov.id = i
-                kalan_rov._etiket_guncelle()
-                
-            print(f"✅ ROV-{silinen_id} ve tüm görsel izleri temizlendi.")
+            # 3. Listeyi yeniden numaralandirma yok
+            print(f"✅ ROV-{silinen_id} ve tum gorsel izleri temizlendi.")
             destroy(self)
             
 
@@ -224,6 +228,28 @@ class Minimap(Entity):
         # (Minimap __init__ metodunun en alt kısmına ekle)
         self.hedef_ikonlari = {}       # ID bazlı kalıcı hedefler için sözlük
         self.gecici_hedef_ikonu = None # debug=True iken kullanılan geçici hedef
+        # Minimap __init__ içinde:
+
+        self.obstacle_cloud_entity = None # Tek bir entity kullanacağız
+
+        # 1. Engel noktalarının koordinatlarını tutacak liste
+        self.engel_vertex_listesi = [] 
+
+        # 2. Tek bir Mesh oluşturuyoruz (mode='point' önemli)
+        # thickness=2 yaparak o 'kırmızı blok' sorununu baştan çözüyoruz.
+        self.engel_mesh = Mesh(vertices=[], mode='point', thickness=0.016, static=False)
+
+        # 3. Bu Mesh'i ekranda gösterecek TEK Entity
+        self.engel_gorseli = Entity(
+            parent=self, # Veya self.minimap_panel, nereye koyuyorsan
+            model=self.engel_mesh,
+            color=color.brown, # Engeller kırmızı olsun
+            z=-0.01 # Haritanın hafif önünde
+        )
+        
+        self._engel_bulutu_cizilen_len = 0
+        self.kayitli_noktalar = set() 
+
 
     # --- KRİTİK GÜNCELLEME: goster metodu ---
     def goster(self, durum=True, convex=False, a_star=False, scale=None, **kwargs):
@@ -333,7 +359,17 @@ class Minimap(Entity):
         filo = getattr(self.ortam_ref, 'filo', None)
         helper = getattr(filo, 'helper', None) if filo else None
         apf_list = helper.get_apf_vektor_verts_list(self) if helper else []
-        sig = len(apf_list) + (apf_list[0][0][0][0] if apf_list else 0)
+        if apf_list:
+            sig_sum = 0.0
+            for verts, _ in apf_list:
+                if not verts:
+                    continue
+                x0, y0 = verts[0][0], verts[0][1]
+                x1, y1 = verts[1][0], verts[1][1]
+                sig_sum += round(x0, 4) + round(y0, 4) + round(x1, 4) + round(y1, 4)
+            sig = (len(apf_list), round(sig_sum, 4))
+        else:
+            sig = (0, 0.0)
         if self._apf_cache_sig != sig:
             self._apf_cache_sig = sig
             for e in self.vektor_cizgi_entities: destroy(e)
@@ -342,7 +378,7 @@ class Minimap(Entity):
                 try: self.vektor_cizgi_entities.append(self.loader.create_vector_mesh(self, v, c))
                 except: pass
 
-    def _engel_bulutu_guncelle(self):
+    def _engel_bulutu_guncelle_yedek(self):
         bulut = getattr(self.ortam_ref, 'engel_bulutu', [])
         if len(bulut) < self._engel_bulutu_cizilen_len:
             for e in self.engel_noktalari: destroy(e)
@@ -352,6 +388,52 @@ class Minimap(Entity):
             if abs(pos.x) < 0.5 and abs(pos.y) < 0.5:
                 self.engel_noktalari.append(self.loader.create_obstacle_dot(self, pos))
                 if len(self.engel_noktalari) > 150: destroy(self.engel_noktalari.pop(0))
+        self._engel_bulutu_cizilen_len = len(bulut)
+
+
+    def _engel_bulutu_guncelle(self):
+        bulut = getattr(self.ortam_ref, 'engel_bulutu', [])
+        
+        # Reset durumunda hafızayı da temizle
+        if len(bulut) < self._engel_bulutu_cizilen_len:
+            self.engel_vertex_listesi.clear()
+            self.kayitli_noktalar.clear() # Hafızayı sil
+            self.engel_mesh.vertices = []
+            self.engel_mesh.generate()
+            self._engel_bulutu_cizilen_len = 0
+
+        yeni_veri_var = False
+        
+        # Sadece yeni gelen verilere bakıyoruz
+        for i in range(self._engel_bulutu_cizilen_len, len(bulut)):
+            # 1. Koordinatı harita düzlemine çevir
+            pos = self.dunya_to_harita(bulut[i][0], bulut[i][1])
+            
+            # 2. Koordinatları YUVARLA (Çok Önemli!)
+            # Virgülden sonra 3 hane hassasiyet yeterlidir. 
+            # (Örn: 0.12345 ile 0.12346 aynı nokta sayılsın istiyoruz)
+            x_key = round(pos.x, 3)
+            y_key = round(pos.y, 3)
+            point_key = (x_key, y_key)
+            
+            # 3. KONTROL: Bu noktayı daha önce çizdik mi?
+            if point_key not in self.kayitli_noktalar:
+                
+                # Sınır kontrolü
+                if abs(pos.x) < 0.8 and abs(pos.y) < 0.8:
+                    # Listeye ekle
+                    self.engel_vertex_listesi.append(Vec3(pos.x, pos.y, 0))
+                    
+                    # Hafızaya kaydet (Set'e ekle)
+                    self.kayitli_noktalar.add(point_key)
+                    
+                    yeni_veri_var = True
+
+        # Mesh'i sadece yeni nokta eklendiyse güncelle
+        if yeni_veri_var:
+            self.engel_mesh.vertices = self.engel_vertex_listesi
+            self.engel_mesh.generate()
+
         self._engel_bulutu_cizilen_len = len(bulut)
 
     def update_ada_cevre(self, points):
@@ -493,6 +575,7 @@ class Ortam:
         self.helper = OrtamHelper(self)
         
         self.rovs, self.island_positions, self.island_entities = [], [], []
+        self._g_rovs={}
         self.islands=self.island_entities
         self.engel_bulutu, self.konsol_verileri = [], {}
         self.sonar_cizgiler, self.filo = {}, None
@@ -507,6 +590,20 @@ class Ortam:
             zoom_speed=1, position=(0, 20, -50), rotation=(20, 0, 0)
         )
         mouse.visible, mouse.locked = True, False
+
+
+
+    @property
+    def g_rovs(self):
+        self._g_rovs={}
+        for rov in self.rovs:
+            if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                continue
+            __group_id=rov.group_id
+            if not self._g_rovs.get(__group_id,False):
+                self._g_rovs[__group_id]=[]
+            self._g_rovs[__group_id].append(rov)
+        return self._g_rovs
 
     def _setup_window(self):
         """ESKİ AYARLAR: Pencere konfigürasyonu."""
@@ -546,7 +643,7 @@ class Ortam:
         return (0, 0, -15) # Fallback
     
 
-    def _find_safe_rov_spawn_pos(self, group_config: tuple, alan_genisligi=120, bosluk=20):
+    def _find_safe_rov_spawn_pos(self, group_config: tuple, alan_genisligi=100, bosluk=10):
         """
         group_config: (3, 4, 1) gibi bir tuple alır.
         - 3 grup oluşturur.
@@ -580,7 +677,7 @@ class Ortam:
                     hucre_kirli = False
                     for island in [p for p in self.island_positions if p]:
                         dist = math.sqrt((merkez_x - island[0])**2 + (merkez_y - island[1])**2)
-                        if dist < (island[2] + 15): # Ada yarıçapı + 15m emniyet
+                        if dist < (island[2] + 10): # Ada yarıçapı + 15m emniyet
                             hucre_kirli = True
                             break
                     
@@ -590,10 +687,10 @@ class Ortam:
                         
                         # Eğer grupta tek ROV varsa merkeze koy, çoksa çember yap
                         if num_rovs == 1:
-                            rz = -random.uniform(10, 20)
+                            rz = -random.uniform(0, 10)
                             bu_grubun_rovlari.append((merkez_x, merkez_y, rz))
                         else:
-                            yaricap = 15.0 # ROV'lar arası yayılma mesafesi
+                            yaricap = 10.0 # ROV'lar arası yayılma mesafesi
                             for r_id in range(num_rovs):
                                 angle = math.radians(r_id * (360 / num_rovs))
                                 rx = merkez_x + math.cos(angle) * yaricap
@@ -619,7 +716,7 @@ class Ortam:
 
         return all_groups_rovs
 
-    def sim_olustur(self, n_rovs=(6), n_islands=5, havuz_genisligi=200, rov_model='submarine'):
+    def sim_olustur(self, n_rovs=(6,), n_islands=5, havuz_genisligi=200, rov_model='submarine'):
         self.havuz_genisligi = havuz_genisligi
         
         # Temizlik
@@ -633,9 +730,13 @@ class Ortam:
         self.loader.build_seabed(size=size)
         self.loader.build_boundaries(havuz_genisligi)
         
+        # Kayaları ekle
+        self.loader.spawn_rocks(count=20, havuz_genisligi=havuz_genisligi)
+        
         # 1. Adaları Sabit Noktalardan Yerleştir
         count = min(n_islands, len(self.FIXED_ISLAND_POSITIONS))
         chosen_islands = random.sample(self.FIXED_ISLAND_POSITIONS, count)
+        chosen_islands.insert(0,(0,0))
         for i, pos in enumerate(chosen_islands):
             self.Ada(i, x="ekle", y=pos)
 
@@ -655,6 +756,7 @@ class Ortam:
                 new_rov.ekle(self)
 
                 self.minimap._statik_yeniden_ciz()
+
 
     def Ada(self, ada_id, x=None, y=None):
         if x == "ekle":

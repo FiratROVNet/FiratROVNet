@@ -274,9 +274,9 @@ class EntityLoader:
         
         self.ortam.ocean_taban = Entity(
             model=fbx_mod, scale=(scalex, scaley, scalez), 
-            position=(0, self.ortam.SEA_FLOOR_Y - 6, 16), 
+            position=(0, self.ortam.SEA_FLOOR_Y - 4, 16), 
             texture=fbx_tex if os.path.exists(fbx_tex) else None,
-            double_sided=True,collider='mesh'
+            double_sided=True,collider='mesh', unlit=True
         )
         
         sk = self.ortam.su_hacmi_yuksekligi * 0.25
@@ -289,7 +289,7 @@ class EntityLoader:
         self.ortam.cimen_katmani = Entity(
             model='cube', scale=(size, ck, size), 
             y=(self.ortam.SEA_FLOOR_Y - sk) - (ck/2), color=color.rgb(34, 139, 34), 
-            texture='grass', unlit=True
+            texture='grass', unlit=True,collider="box"
         )
 
         # --- 3. ADALAR ---
@@ -301,8 +301,8 @@ class EntityLoader:
             # 1. Modeli doğrudan ana Entity'ye yükle
             island = Entity(
                 model=model_path,
-                position=(ux, 6.0, uz),
-                scale=(0.23, 0.5, 0.25),
+                position=(ux+4, 6.0, uz+6),
+                scale=(0.23, 0.5, 0.24),
                 double_sided=True
             )
 
@@ -321,7 +321,7 @@ class EntityLoader:
                 # Eğer bulunamazsa, tüm adayı collider yap (Güvenlik önlemi)
                 island.collider = 'mesh'
 
-            return island, 36
+            return island, 38
 
     # --- 4. MERKEZİ KAYALIK ---
     def load_rocky_reef(self, show_on_minimap=True):
@@ -401,7 +401,74 @@ class EntityLoader:
         # Güvenlik Alanı (Safety Zone)
         radius = rov_entity.sensor_config.get("engel_mesafesi", GATLimitleri.ENGEL) / 2.0
         rov_entity.safety_zone = Entity(
-            parent=rov_entity, model='sphere', scale=radius * 2,
+            parent=rov_entity, model='cube', scale=radius * 2,
             collider=None, color=color.rgba(255, 0, 0, 50),
             visible=True, unlit=True
         )
+
+
+# --- 4. MERKEZİ KAYALIK (GÜNCELLENDİ) ---
+    def load_rocky_reef(self, show_on_minimap=True):
+        """
+        secene4.glb dosyasını yükler. 
+        Bu dosya içinde hem görsel hem de collider mesh varsa otomatik algılar.
+        """
+        # Dosya yolu (Senin verdiğin konuma göre)
+        # Not: Ursina 'Models-3D' klasörünü otomatik tanıyabilir ama tam yol garantidir.
+        model_path = "Models-3D/floating_island_with_roots_and_rocks/scene2.glb"
+        
+        # İşletim sistemine göre yol düzeltmesi (\ veya /)
+        if os.name == 'nt': 
+            model_path = model_path.replace('/', '\\')
+        
+        # Dosya var mı kontrolü
+        if not os.path.exists(model_path):
+            print(f"⚠️ [UYARI] Merkez kayalık dosyası bulunamadı: {model_path}")
+            return
+
+    
+        # 1. Modeli Yükle
+        self.ortam.central_reef = Entity(
+                model=model_path,
+                scale=(2, 3, 2), # Boyutunu isteğine göre ayarla
+                position=(0, 5, 0),    # Havuzun tam ortasında, biraz yukarıda
+                double_sided=True,     # İçini de gör
+                collider="cube"
+            )
+
+
+    def rock(self, scale, position):
+        model_path = "Models-3D/rock/stone.glb"
+
+        if os.path.exists(model_path):
+            Entity(model=model_path, scale=scale, position=position, collider='mesh', unlit=True)
+        else:
+            print(f"⚠️ Kaya modeli bulunamadı: {model_path}")
+
+    def spawn_rocks(self, count=20, havuz_genisligi=200):
+        """
+        Havuz içinde rastgele konumlarda kayalar oluşturur.
+        
+        Args:
+            count: Oluşturulacak kaya sayısı
+            havuz_genisligi: Havuz yarıçapı (default: 200m)
+        """
+        import random
+        
+        # Havuz sınırları: ±havuz_genisligi (x ve z için)
+        min_coord = -(havuz_genisligi - 20)
+        max_coord = (havuz_genisligi - 20)
+        
+        for _ in range(count):
+            # Scale: 10-30 arası rastgele
+            scale = random.uniform(20, 50)
+            
+            # Position: x ve z havuz içinde, y=-30 sabit (derinlik)
+            x = random.uniform(min_coord, max_coord)
+            z = random.uniform(min_coord, max_coord)
+            y = -40-4*(40/scale)  # Sabit derinlik
+            
+            position = Vec3(x, y, z)
+            self.rock(scale=scale, position=position)
+        
+        print(f"✅ {count} adet kaya oluşturuldu (derinlik: -30m)")
