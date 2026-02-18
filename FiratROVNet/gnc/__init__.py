@@ -14,7 +14,6 @@ from ursina import *
 # Yerel modül importları
 from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, FizikSabitleri, Hidrodinamik, BasitKalmanFiltresi
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon
-from ..iletisim import AkustikModem
 from ..hull import HullManager
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper
 import concurrent.futures
@@ -140,6 +139,7 @@ class Filo:
                 self.current_target_id[g_id] = next_data['id']
 
                 print(f"🚀 [NAV] Grup-{g_id} siradaki hedefe geciliyor: {self.current_target_id[g_id]}")
+                print(target_pos)
                 self.git_path(lider_id, target_pos, isaret=True)
 
     def guncelle_gat_analizi(self, tahminler):
@@ -256,55 +256,91 @@ class Filo:
             
     def guncelle_hepsi(self, tahminler):
         """
-        Tüm GNC sistemlerini günceller. 
-        self.sistemler yerine doğrudan ortam.rovs üzerinden çalışır.
+        Tüm GNC sistemlerini koordineli şekilde günceller.
+        
+        Operasyon Sırası (Önem Sırasına Göre):
+        1. Sistem Hazırlığı      → Command queue işle
+        2. Navigasyon Kuyruğu    → Hedef yönetimi
+        3. Lider Yönetimi        → Yeni lider seç & değişim yap
+        4. ROV Başına İşlemler   → Hasar, GNC, Motor komutları
+        5. Sistem Güncellemeleri → Sonar, Minimap, engel bulut
         """
+        
+        # ============================================================
+        # 1. SİSTEM HAZIRLIGI
+        # ============================================================
         self._process_command_queue()
-        #print(self)
         
-        if not self.ortam_ref: return
+        if not self.ortam_ref:
+            return
 
-        # Canlı ROV'ların kopyasını al (Döngü sırasında silinirse çökmemesi için)
-        mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
-        
-        for i, rov in enumerate(mevcut_rovlar):
-            if not hasattr(rov, 'gnc') or rov.gnc is None:
-                continue
+        # ============================================================
+        # 2. NAVİGASYON KUYRUGU (Grup bazlı hedef yönetimi)
+        # ============================================================
+        self.guncelle_navigasyon_kuyrugu()
+        self.guncelle_gorseller_ve_renkler(tahminler)
 
-            # GAT Tahmini (Liste sınır kontrolü ile)
-            gat_kodu = tahminler[i] if tahminler is not None and i < len(tahminler) else None
+        # ============================================================
+        # 3. LİDER YÖNETİMİ (Grup bazlı lider seçim ve role transfer)
+        # ============================================================
+        yeni_lider_id, skor = liderlik_secimini_baslat(self, self.asil_hedef)
+        self.leader_manager.guncelle_liderler(yeni_lider_id)
 
-
-            yeni_lider_id, skor = liderlik_secimini_baslat(self, self.asil_hedef)
-            #print(yeni_lider_id)
-            self.leader_manager.guncelle_liderler(yeni_lider_id)
-            self.ortam_ref.minimap._engel_bulutu_guncelle()
-
-            # Örnek: Normalde 15 Joule, ama istersen 25 yapıp daha dayanıklı yapabilirsin
-            if self.damage_system.rov_hasar_kontrol_direct(rov, joule_esigi=10.0):
-                self.entity_patlat(rov, parca_sayisi=80)
-                continue #patlayan rovar için güncelleme yapma
-
-            
-            
+        # ============================================================
+        # 4. ROV BAŞINA İŞLEMLER
+        # ============================================================
+        # Canlı ROV'ları doğrudan işle (destroyed'lar otomatik filtrelendi)
+        for rov in self.rovs:
+            # --- 4A. GAT Tahmini ve İndeks Bulma ---
             try:
-                # GNC güncelle
-                rov.gnc.guncelle(gat_kodu=gat_kodu)
+                rov_idx = self.ortam_ref.rovs.index(rov)
+                gat_kodu = tahminler[rov_idx] if rov_idx < len(tahminler) else 0
+            except (ValueError, IndexError):
+                gat_kodu = 0
+
+            # --- 4B. Hasar Kontrol (Öncelikli - Patlama Check) ---
+            joule_esigi = 10.0  # Joule cinsinden hasar eşiği
+            if self.damage_system.rov_hasar_kontrol_direct(rov, joule_esigi=joule_esigi):
+                # ROV patladı - Patlama efekti ve limbo
+                self.entity_patlat(rov, parca_sayisi=80)
+                continue  # Bu ROV için işlem yapma
+
+            # --- 4C. GNC Sistem Güncelleme ---
+            try:
+                if hasattr(rov, 'gnc') and rov.gnc:
+                    rov.gnc.guncelle(gat_kodu=gat_kodu)
             except Exception as e:
-                # Patlama anındaki hataları sessizce geç
+                # Detaylı hata loglama
                 if "!is_empty()" not in str(e):
                     print(f"⚠️ [FİLO] ROV-{rov.id} GNC Hatası: {e}")
                 LogSystem.log_exception(e)
 
-        # Minimap Güncellemesi
+        # ============================================================
+        # 5. SİSTEM GÜNCELLEMELERİ
+        # ============================================================
+        # --- 5A. Sonar Çizgileri Güncelleme ---
+        if self.ortam_ref:
+            try:
+                self.ortam_ref.guncelle_sonar_cizgileri()
+            except Exception as e:
+                LogSystem.log_exception(e)
+
+        # --- 5B. Kuyruk Komutları Tamamlanması ---
+        self.execute_queued_commands()
+
+        # --- 5C. Engel Bulut Güncelleme ---
+        if self.ortam_ref.minimap:
+            try:
+                self.ortam_ref.minimap._engel_bulutu_guncelle()
+            except Exception as e:
+                LogSystem.log_exception(e)
+
+        # --- 5D. Minimap Görsel Güncelleme ---
         if self.ortam_ref.minimap:
             try:
                 self.ortam_ref.minimap.gorsel_guncelle()
             except Exception as e:
                 LogSystem.log_exception(e)
-
-
-
 
     def carpisma_enerjisi_hesapla(self, *args, **kwargs):
         """Hasar hesaplamalarını damage_system'a yönlendir."""
@@ -509,9 +545,7 @@ class TemelGNC:
     def guncelle(self, gat_kodu=None):
         # GPS sinyal kontrolu: ROV'un en ust noktasi su yuzeyinden 5m+ asagidaysa sinyal=0
         if self.rov:
-            
-            derinlik = self.filo_ref.get(self.rov.id, 'gps')[2]  # Z koordinatı derinlik olarak varsayılmıştır
-            if derinlik < -5.0:
+            if self.filo_ref.get(self.rov.id, 'gps')[2] < -5.0:
                 self.gps_sinyal = 0
             else:
                 self.gps_sinyal = 1
@@ -540,18 +574,30 @@ class TemelGNC:
                 nxt = nokta_listesi[yeni_indeks]
                 self.filo_ref._git_mevcut_nokta_indeksi[my_id] = yeni_indeks
                 
-                # Z koordinatını koru veya tamamla
-                curr_z = self.hedef.z if self.hedef else Koordinator.ursina_to_sim(self.rov.x, self.rov.y, self.rov.z)[2]
+                # Hedef derinliği kullan (varsa), yoksa mevcut derinliği koru
+                target_depth = None
+                if hasattr(self.filo_ref, '_git_hedef_derinligi'):
+                    target_depth = self.filo_ref._git_hedef_derinligi.get(my_id)
+                
+                if target_depth is not None:
+                    curr_z = target_depth
+                else:
+                    curr_z = self.hedef.z if self.hedef else Koordinator.ursina_to_sim(self.rov.x, self.rov.y, self.rov.z)[2]
+                
                 self.hedef = Vec3(nxt[0], nxt[1], curr_z)
                 return True
             elif nokta_listesi:
                 # Rota tamamlandı, listeyi temizle
                 self.filo_ref._git_nokta_listesi.pop(my_id, None)
+                if hasattr(self.filo_ref, '_git_hedef_derinligi'):
+                    self.filo_ref._git_hedef_derinligi.pop(my_id, None)
         except Exception as e:
             if self.filo_ref:
                 self.filo_ref.ds = e
             pass
         return False
+    
+
 
 
 # Export sınıfları

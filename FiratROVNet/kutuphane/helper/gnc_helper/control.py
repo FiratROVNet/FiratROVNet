@@ -344,6 +344,8 @@ class TemelGNCHelper:
         if mevcut_indeks >= len(nokta_listesi):
             self.filo_ref._git_nokta_listesi.pop(rov_id, None)
             self.filo_ref._git_mevcut_nokta_indeksi.pop(rov_id, None)
+            if hasattr(self.filo_ref, '_git_hedef_derinligi'):
+                self.filo_ref._git_hedef_derinligi.pop(rov_id, None)
             return None, True
 
         # Mevcut waypoint
@@ -352,7 +354,16 @@ class TemelGNCHelper:
 
         target_x = float(wp[0])
         target_y = float(wp[1])
-        target_z = current_gps[2]
+        
+        # Hedef derinliği kullan (varsa), yoksa mevcut derinliği koru
+        target_depth = None
+        if hasattr(self.filo_ref, '_git_hedef_derinligi'):
+            target_depth = self.filo_ref._git_hedef_derinligi.get(rov_id)
+        
+        if target_depth is not None:
+            target_z = target_depth
+        else:
+            target_z = current_gps[2]
 
         waypoint_hedef = Vec3(target_x, target_y, target_z)
 
