@@ -67,11 +67,10 @@ print("TEST 1: Modül İmportları")
 print("="*60)
 
 try:
-    from FiratROVNet import gnc, iletisim, config
+    from FiratROVNet import gnc, config
     from GAT.gat_train import GAT_Modeli, train as Train
     from GAT.gat_test import FiratAnalizci
     from FiratROVNet.gnc import Filo, TemelGNC
-    from FiratROVNet.iletisim import AkustikModem
     from FiratROVNet.config import cfg
     # Mock distance fonksiyonunu gnc modülüne ekle (test için)
     import FiratROVNet.gnc as gnc_module
@@ -173,48 +172,10 @@ except Exception as e:
     record_test_fail("FiratAnalizci", e)
 
 # ==========================================
-# TEST 5: İletişim Sistemi (AkustikModem)
+# TEST 5: GNC Sistemi
 # ==========================================
 print("\n" + "="*60)
-print("TEST 5: İletişim Sistemi")
-print("="*60)
-
-try:
-    # Modem oluşturma
-    modem1 = AkustikModem(rov_id=0, gurultu_orani=0.05, kayip_orani=0.1)
-    modem2 = AkustikModem(rov_id=1, gurultu_orani=0.1, kayip_orani=0.15)
-    record_test_pass("AkustikModem Oluşturma")
-    
-    # Rehber güncelleme
-    rehber = {0: modem1, 1: modem2}
-    modem1.rehber_guncelle(rehber)
-    modem2.rehber_guncelle(rehber)
-    assert len(modem1.rehber) == 2, "Rehber güncelleme başarısız"
-    record_test_pass("Rehber Güncelleme")
-    
-    # Paket gönderme
-    import time
-    time.sleep(0.1)  # Gecikme için bekle
-    success = modem1.gonder(modem2, [10.0, 20.0, 30.0], "TEST")
-    record_test_pass("Paket Gönderme")
-    
-    # Paket dinleme
-    time.sleep(0.6)  # Gecikme süresini bekle
-    paketler = modem2.dinle()
-    if paketler:
-        assert len(paketler) > 0, "Paket alınamadı"
-        record_test_pass("Paket Dinleme")
-    else:
-        record_test_skip("Paket Dinleme", "Paket kaybı simülasyonu nedeniyle paket alınamadı (normal)")
-    
-except Exception as e:
-    record_test_fail("İletişim Sistemi", e)
-
-# ==========================================
-# TEST 6: GNC Sistemi
-# ==========================================
-print("\n" + "="*60)
-print("TEST 6: GNC Sistemi")
+print("TEST 5: GNC Sistemi")
 print("="*60)
 
 try:
@@ -332,15 +293,13 @@ try:
     filo = Filo()
     record_test_pass("Filo Oluşturma")
     
-    # Mock ROV ve modem oluştur
+    # Mock ROV oluştur
     rov0 = MockROV(0)
     rov1 = MockROV(1)
-    modem0 = AkustikModem(0)
-    modem1 = AkustikModem(1)
     
     # Lider ve Takipçi GNC oluştur
-    lider_gnc = TemelGNC(rov0, modem0)
-    takipci_gnc = TemelGNC(rov1, modem1)
+    lider_gnc = TemelGNC(rov0)
+    takipci_gnc = TemelGNC(rov1)
     
     filo.ekle(lider_gnc)
     filo.ekle(takipci_gnc)

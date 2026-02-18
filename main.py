@@ -52,7 +52,7 @@ def update():
         filo.guncelle_hepsi(tahminler)
         
         # Görselleştirme
-        filo.guncelle_gorseller_ve_renkler(tahminler)
+        
         
     except Exception as e:
         print(f"❌ [HATA] Update döngüsü: {e}")

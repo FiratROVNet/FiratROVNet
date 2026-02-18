@@ -14,7 +14,6 @@ from ursina import *
 # Yerel modül importları
 from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, FizikSabitleri, Hidrodinamik, BasitKalmanFiltresi
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon
-from ..iletisim import AkustikModem
 from ..hull import HullManager
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper
 import concurrent.futures
@@ -278,6 +277,7 @@ class Filo:
         # 2. NAVİGASYON KUYRUGU (Grup bazlı hedef yönetimi)
         # ============================================================
         self.guncelle_navigasyon_kuyrugu()
+        self.guncelle_gorseller_ve_renkler(tahminler)
 
         # ============================================================
         # 3. LİDER YÖNETİMİ (Grup bazlı lider seçim ve role transfer)
@@ -544,9 +544,7 @@ class TemelGNC:
     def guncelle(self, gat_kodu=None):
         # GPS sinyal kontrolu: ROV'un en ust noktasi su yuzeyinden 5m+ asagidaysa sinyal=0
         if self.rov:
-            
-            derinlik = self.filo_ref.get(self.rov.id, 'gps')[2]  # Z koordinatı derinlik olarak varsayılmıştır
-            if derinlik < -5.0:
+            if self.filo_ref.get(self.rov.id, 'gps')[2] < -5.0:
                 self.gps_sinyal = 0
             else:
                 self.gps_sinyal = 1
