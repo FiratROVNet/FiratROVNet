@@ -269,14 +269,14 @@ class EntityLoader:
         fbx_tex = "Models-3D/water/my_models/ocean_taban/sand_envi_034-0.jpg"
 
         scalex = 1.8 * (self.ortam.havuz_genisligi / 200)
-        scaley = 0.5 * (self.ortam.havuz_genisligi / 200)
+        scaley = 0.6 * (self.ortam.havuz_genisligi / 200)
         scalez = 1.55 * (self.ortam.havuz_genisligi / 200)
         
         self.ortam.ocean_taban = Entity(
             model=fbx_mod, scale=(scalex, scaley, scalez), 
-            position=(0, self.ortam.SEA_FLOOR_Y - 6, 16), 
+            position=(0, self.ortam.SEA_FLOOR_Y - 4, 16), 
             texture=fbx_tex if os.path.exists(fbx_tex) else None,
-            double_sided=True,collider='box'
+            double_sided=True,collider='mesh', unlit=True
         )
         
         sk = self.ortam.su_hacmi_yuksekligi * 0.25
@@ -435,3 +435,40 @@ class EntityLoader:
                 double_sided=True,     # İçini de gör
                 collider="cube"
             )
+
+
+    def rock(self, scale, position):
+        model_path = "Models-3D/rock/stone.glb"
+
+        if os.path.exists(model_path):
+            Entity(model=model_path, scale=scale, position=position, collider='mesh', unlit=True)
+        else:
+            print(f"⚠️ Kaya modeli bulunamadı: {model_path}")
+
+    def spawn_rocks(self, count=20, havuz_genisligi=200):
+        """
+        Havuz içinde rastgele konumlarda kayalar oluşturur.
+        
+        Args:
+            count: Oluşturulacak kaya sayısı
+            havuz_genisligi: Havuz yarıçapı (default: 200m)
+        """
+        import random
+        
+        # Havuz sınırları: ±havuz_genisligi (x ve z için)
+        min_coord = -(havuz_genisligi - 20)
+        max_coord = (havuz_genisligi - 20)
+        
+        for _ in range(count):
+            # Scale: 10-30 arası rastgele
+            scale = random.uniform(20, 50)
+            
+            # Position: x ve z havuz içinde, y=-30 sabit (derinlik)
+            x = random.uniform(min_coord, max_coord)
+            z = random.uniform(min_coord, max_coord)
+            y = -40-4*(40/scale)  # Sabit derinlik
+            
+            position = Vec3(x, y, z)
+            self.rock(scale=scale, position=position)
+        
+        print(f"✅ {count} adet kaya oluşturuldu (derinlik: -30m)")

@@ -125,4 +125,110 @@ def liderlik_secimini_baslat(filo_nesnesi, hedef_konum):
     return modul.lideri_belirle(rovlar_data_sozlugu, hedef_konum)
 
 
+# ==========================================
+# LEADER MANAGER MODULE
+# ==========================================
+class LeaderManager:
+    """
+    ROV swarm lider yönetim sistemi.
+    """
+    
+    def __init__(self, filo_ref):
+        """
+        Args:
+            filo_ref: Filo referansı
+        """
+        self.filo_ref = filo_ref
+        self.mevcut_lider_id = {}
+    
+    def guncelle_liderler(self, yeni_lider_ids):
+        """
+        Lider bilgisini günceller ve rol atamalarını yapar.
+        
+        Args:
+            yeni_lider_ids: {g_id: lider_id} veya {g_id: [lider_id, skor]} formatında olmalı.
+        """
+        if yeni_lider_ids is None:
+            return
+
+        # g_rovs bir sözlük: {g_id: [rov1, rov2, ...]}
+        for g_id, rov_listesi in self.filo_ref.g_rovs.items():
+            try:
+                # 1. VERİ KONTROLÜ (Sözlük uyumlu)
+                if isinstance(yeni_lider_ids, dict):
+                    if g_id not in yeni_lider_ids:
+                        continue
+                    raw_val = yeni_lider_ids[g_id]
+                else:
+                    raw_val = yeni_lider_ids
+
+                # Değer liste/tuple ise ilk elemanı (id) al
+                if isinstance(raw_val, (list, tuple, np.ndarray)):
+                    yeni_lider_id = raw_val[0]
+                else:
+                    yeni_lider_id = raw_val
+
+                if not isinstance(yeni_lider_id, int) or yeni_lider_id < 0:
+                    continue
+
+                # 2. MEVCUT DURUM KONTROLÜ
+                if g_id not in self.mevcut_lider_id:
+                    self.mevcut_lider_id[g_id] = -1
+
+                onceki_lider_id = self.mevcut_lider_id[g_id]
+                if onceki_lider_id == yeni_lider_id:
+                    if self.filo_ref.get(yeni_lider_id, "rol") != 1:
+                        self.filo_ref.set(yeni_lider_id, "rol", 1)
+                    continue
+
+                print(f"👑 Lider Değişimi | Grup: {g_id} | Yeni Lider: ROV-{yeni_lider_id}")
+
+                # 3. ROLLERİ GÜNCELLE
+                self.mevcut_lider_id[g_id] = yeni_lider_id
+
+                for rov in rov_listesi:
+                    if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                        continue
+                    
+                    if rov.id == yeni_lider_id:
+                        self.filo_ref.set(rov.id, "rol", 1)
+                        from ursina import color
+                        rov.color = color.red
+                    else:
+                        self.filo_ref.set(rov.id, "rol", 0)
+
+                # 4. Patlayan onceki liderin hedefini devret
+                if onceki_lider_id not in (None, -1) and onceki_lider_id != yeni_lider_id:
+                    eski_lider = self.filo_ref.find_rov_by_id(onceki_lider_id)
+                    eski_lider_yok = (eski_lider is None) or (hasattr(eski_lider, 'is_destroyed') and eski_lider.is_destroyed)
+                    
+                    if eski_lider_yok:
+                        # Eski liderin hedefini yeni lidere aktar
+                        eski_hedef = self.filo_ref._rov_hedefleri.get(onceki_lider_id)
+                        if eski_hedef is not None:
+                            self.filo_ref._rov_hedefleri[yeni_lider_id] = eski_hedef
+                            self.filo_ref.git(yeni_lider_id, eski_hedef[0], eski_hedef[1], eski_hedef[2], ai=True, sessiz=True)
+                            self.filo_ref._rov_hedefleri.pop(onceki_lider_id, None)
+
+                        # Eski liderin rotasını yeni lidere aktar
+                        eski_rota = self.filo_ref._git_nokta_listesi.get(onceki_lider_id)
+                        if eski_rota:
+                            eski_indeks = self.filo_ref._git_mevcut_nokta_indeksi.get(onceki_lider_id, 0)
+                            self.filo_ref._git_nokta_listesi[yeni_lider_id] = [list(p) for p in eski_rota]
+                            self.filo_ref._git_mevcut_nokta_indeksi[yeni_lider_id] = int(eski_indeks)
+                            
+                            # Mevcut indexteki waypoint'i hedef yap
+                            if 0 <= eski_indeks < len(eski_rota):
+                                wp = eski_rota[eski_indeks]
+                                hedef_z = eski_hedef[2] if eski_hedef is not None else None
+                                self.filo_ref.git(yeni_lider_id, float(wp[0]), float(wp[1]), hedef_z, ai=True, sessiz=True)
+                            
+                            self.filo_ref._git_nokta_listesi.pop(onceki_lider_id, None)
+                            self.filo_ref._git_mevcut_nokta_indeksi.pop(onceki_lider_id, None)
+
+            except Exception as e:
+                from .gnc.logs import LogSystem
+                LogSystem.log_exception(e)
+
+
 

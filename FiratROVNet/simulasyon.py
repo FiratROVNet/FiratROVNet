@@ -10,7 +10,7 @@ from ursina import *
 # Yerel modül importları
 from .config import (
     SensorAyarlari, GATLimitleri, HareketAyarlari, 
-    FizikSabitleri, SimulasyonSabitleri, ROVModelleri
+    FizikSabitleri, ROVModelleri
 )
 from .utils import sim_to_ursina, ursina_to_sim
 from .kutuphane.helper.EntityLoader import EntityLoader
@@ -57,8 +57,9 @@ class ROV(Entity):
         self.environment_ref = ortam_ref
         if not hasattr(ortam_ref, 'rovs'): ortam_ref.rovs = []
         
-        # ID'yi her zaman listenin sonundaki sayı olarak ata
-        self.id = len(ortam_ref.rovs)
+        # ID'yi mevcut maksimumdan bir ileri ata (yeniden numaralandirma yok)
+        mevcut_ids = [r.id for r in ortam_ref.rovs if r is not None and hasattr(r, 'id')]
+        self.id = (max(mevcut_ids) + 1) if mevcut_ids else 0
         ortam_ref.rovs.append(self)
         
         self._etiket_guncelle()
@@ -82,21 +83,24 @@ class ROV(Entity):
                         destroy(ortam.sonar_cizgiler[pair])
                         del ortam.sonar_cizgiler[pair]
 
-            # 1. Referansı None yap
-            ortam.rovs[silinen_id] = None 
+            # --- YENI: Grup listesinden temizle ---
+            if hasattr(ortam, 'g_rovs') and isinstance(ortam.g_rovs, dict):
+                grup = ortam.g_rovs.get(self.group_id)
+                if grup:
+                    ortam.g_rovs[self.group_id] = [r for r in grup if r and r.id != silinen_id]
+
+            # 1. Referansi None yap (id korunur)
+            for idx, r in enumerate(ortam.rovs):
+                if r and getattr(r, 'id', None) == silinen_id:
+                    ortam.rovs[idx] = None
+                    break
 
             # 2. Görselleri temizle
             if hasattr(self, 'label') and self.label: destroy(self.label)
             if hasattr(self, 'engel_cizgi') and self.engel_cizgi: destroy(self.engel_cizgi)
 
-            # 3. Listeyi temizle ve ID'leri güncelle
-            ortam.rovs = [r for r in ortam.rovs if r is not None]
-            
-            for i, kalan_rov in enumerate(ortam.rovs):
-                kalan_rov.id = i
-                kalan_rov._etiket_guncelle()
-                
-            print(f"✅ ROV-{silinen_id} ve tüm görsel izleri temizlendi.")
+            # 3. Listeyi yeniden numaralandirma yok
+            print(f"✅ ROV-{silinen_id} ve tum gorsel izleri temizlendi.")
             destroy(self)
             
 
@@ -355,7 +359,17 @@ class Minimap(Entity):
         filo = getattr(self.ortam_ref, 'filo', None)
         helper = getattr(filo, 'helper', None) if filo else None
         apf_list = helper.get_apf_vektor_verts_list(self) if helper else []
-        sig = len(apf_list) + (apf_list[0][0][0][0] if apf_list else 0)
+        if apf_list:
+            sig_sum = 0.0
+            for verts, _ in apf_list:
+                if not verts:
+                    continue
+                x0, y0 = verts[0][0], verts[0][1]
+                x1, y1 = verts[1][0], verts[1][1]
+                sig_sum += round(x0, 4) + round(y0, 4) + round(x1, 4) + round(y1, 4)
+            sig = (len(apf_list), round(sig_sum, 4))
+        else:
+            sig = (0, 0.0)
         if self._apf_cache_sig != sig:
             self._apf_cache_sig = sig
             for e in self.vektor_cizgi_entities: destroy(e)
@@ -583,6 +597,8 @@ class Ortam:
     def g_rovs(self):
         self._g_rovs={}
         for rov in self.rovs:
+            if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                continue
             __group_id=rov.group_id
             if not self._g_rovs.get(__group_id,False):
                 self._g_rovs[__group_id]=[]
@@ -713,6 +729,9 @@ class Ortam:
         self.loader.build_ocean(size=size)
         self.loader.build_seabed(size=size)
         self.loader.build_boundaries(havuz_genisligi)
+        
+        # Kayaları ekle
+        self.loader.spawn_rocks(count=20, havuz_genisligi=havuz_genisligi)
         
         # 1. Adaları Sabit Noktalardan Yerleştir
         count = min(n_islands, len(self.FIXED_ISLAND_POSITIONS))
