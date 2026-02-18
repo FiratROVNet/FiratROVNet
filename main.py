@@ -79,7 +79,7 @@ def update():
             
             print(f"🚀 [NAV] Sıradaki hedefe geçiliyor: ID {current_target_id} | Konum: {target_pos}")
             # A* algoritması ile yolu planla ve gitmeye başla
-            filo.git_path(0, target_pos, isaret=True)
+            filo.git_path(lider_id, target_pos, isaret=True)
 
         # --- 2. SİSTEM GÜNCELLEMELERİ ---
         app.guncelle_sonar_cizgileri()
@@ -134,8 +134,11 @@ app.set_update_function(update)
 # ==========================================
 # 3. GİRDİ YÖNETİMİ (MOUSE)
 # ==========================================
+
+grup_id=0
+lider_id=0
 def input(key):
-    global target_counter, nav_queue
+    global target_counter, nav_queue,grup_id,lider_id
 
     if key == 'p':
         lider_rov = app.rovs[0]
@@ -153,7 +156,7 @@ def input(key):
             sim_y = local_pos.y * havuz_tam_cap
             
             # 3. Mevcut derinliği liderden (ID: 0) al
-            lider_gps = filo.get(0, "gps")
+            lider_id,lider_gps = filo.find_leader_info(g_id=grup_id)
             mevcut_z = lider_gps[2] if lider_gps else -10
             
             # 4. Benzersiz ID oluştur ve hedefi kaydet
@@ -168,6 +171,10 @@ def input(key):
             filo._hedef_gorsel_olustur(sim_x, sim_y, mevcut_z, id=new_id, debug=False)
             
             print(f"📥 [KUYRUK] Hedef {new_id} eklendi: ({sim_x:.1f}, {sim_y:.1f}) | Bekleyen: {len(nav_queue)}")
+
+    if key=='g':
+        grup_id+=1
+        grup_id%=len(filo.g_rovs)
 
 # ==========================================
 # 4. ÇALIŞTIRMA

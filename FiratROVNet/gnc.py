@@ -198,7 +198,7 @@ class Filo:
         self.hedef_pozisyon = None
         
         # Formasyon Yönetimi
-        self.aktif_formasyon = None
+        self.aktif_formasyon = {}
         self._formasyon_id_pool = list(range(len(Formasyon.TIPLER)))
         random.shuffle(self._formasyon_id_pool)
         self._formasyon_hedefleri = {}
@@ -219,7 +219,7 @@ class Filo:
         self._maksimum_yaw_donme_hizi = 30.0
         self._git_maksimum_yaw_donme_hizi = 45.0
         self._formasyon_yaw_senkronizasyon_mesafesi = 5.0
-        self.mevcut_lider_id = None
+        self.mevcut_lider_id = {}
 
 
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -348,57 +348,64 @@ class Filo:
         positions = {}
         for rov in self.ortam_ref.rovs:
             positions.append(self.filo.get(rov.id, 'gps'))
-    def lideri_guncelle(self, yeni_lider_id):
+    def lideri_guncelle(self, yeni_lider_ids):
             """
-            Eğer gelen lider ID mevcut liderden farklıysa, liderliği değiştirir
-            ve o grubun diğer üyelerini takipçi (0) yapar.
+            Sözlük yapısına uygun lider güncelleme fonksiyonu.
+            yeni_lider_ids: {g_id: lider_id} veya {g_id: [lider_id, skor]} formatında olmalı.
             """
-            # 1. Lider değişmiş mi kontrol et
-            if self.mevcut_lider_id == yeni_lider_id:
-                if self.get(yeni_lider_id,"rol")!=1:
-                    self.set(yeni_lider_id,"rol",1)
-                return  # Değişiklik yoksa işlem yapma
-
-            print(f"👑 Lider Değişimi Algılandı: Eski={self.mevcut_lider_id} -> Yeni={yeni_lider_id}")
-
-            # 2. Yeni lideri kaydet
-            self.mevcut_lider_id = yeni_lider_id
-
-            # 3. Yeni liderin grubunu bul
-            hedef_grup_id = None
-            
-            # 'self.rovs' listesine erişim (Sınıf yapına göre 'self.ortam_ref.rovs' da olabilir)
-            # Güvenlik için listedeki ROV'u bulup grup id'sini alıyoruz
-            for rov in self.rovs:
-                if rov and rov.id == yeni_lider_id:
-                    hedef_grup_id = getattr(rov, 'group_id', None)
-                    break
-            
-            if hedef_grup_id is None:
-                print(f"⚠️ Hata: ROV-{yeni_lider_id} için grup bilgisi bulunamadı!")
+            if yeni_lider_ids is None:
                 return
 
-            # 4. Sadece o gruptaki ROV'ların rollerini güncelle
-            for rov in self.rovs:
-                if not rov: continue
-                
-                # Sadece yeni liderin grubundaki elemanlara bak
-                if getattr(rov, 'group_id', None) == hedef_grup_id:
-                    
-                    if rov.id == yeni_lider_id:
-                        # Yeni lideri LİDER (1) yap
-                        self.set(rov.id, "rol", 1)
-                        # Görsel güncelleme (Opsiyonel)
-                        rov.color = color.red 
-                        print(f" -> ROV-{rov.id} artık LİDER.")
+            # g_rovs bir sözlük: {g_id: [rov1, rov2, ...]}
+            # range() yerine doğrudan sözlükteki grupları dönüyoruz
+            for g_id, rov_listesi in self.g_rovs.items():
+                try:
+                    # 1. VERİ KONTROLÜ (Sözlük uyumlu)
+                    # yeni_lider_ids bir sözlükse içinde g_id var mı bak
+                    if isinstance(yeni_lider_ids, dict):
+                        if g_id not in yeni_lider_ids:
+                            continue
+                        raw_val = yeni_lider_ids[g_id]
                     else:
-                        # Gruptaki diğerlerini TAKİPÇİ (0) yap
-                        self.set(rov.id, "rol", 0)
-                        # Görsel güncelleme (Opsiyonel)
-                        rov.color = color.white
-                        # Takipçileri lidere göre yeniden konumlandırmak istersen buraya ekle:
-                        # self.git(rov.id, x, y, z)
+                        # Eğer yeni_lider_ids sözlük değil de tek bir int ise (Hatanın sebebi bu olabilir)
+                        # Sadece o g_id ile eşleşiyorsa işlem yap
+                        raw_val = yeni_lider_ids
 
+                    # Değer liste/tuple ise ilk elemanı (id) al
+                    if isinstance(raw_val, (list, tuple, np.ndarray)):
+                        yeni_lider_id = raw_val[0]
+                    else:
+                        yeni_lider_id = raw_val
+
+                    if not isinstance(yeni_lider_id, int) or yeni_lider_id < 0:
+                        continue
+
+                    # 2. MEVCUT DURUM KONTROLÜ
+                    if g_id not in self.mevcut_lider_id:
+                        self.mevcut_lider_id[g_id] = -1
+
+                    if self.mevcut_lider_id[g_id] == yeni_lider_id:
+                        if self.get(yeni_lider_id, "rol") != 1:
+                            self.set(yeni_lider_id, "rol", 1)
+                        continue
+
+                    print(f"👑 Lider Değişimi | Grup: {g_id} | Yeni Lider: ROV-{yeni_lider_id}")
+
+                    # 3. ROLLERİ GÜNCELLE
+                    self.mevcut_lider_id[g_id] = yeni_lider_id
+
+                    for rov in rov_listesi:
+                        if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                            continue
+                        
+                        if rov.id == yeni_lider_id:
+                            self.set(rov.id, "rol", 1)
+                            rov.color = color.red
+                        else:
+                            self.set(rov.id, "rol", 0)
+
+                except Exception as e:
+                    self.ds = e
 
     def rov_hasar_kontrol(self, rov, joule_esigi=15.0):
             """
@@ -523,12 +530,9 @@ class Filo:
             # GAT Tahmini (Liste sınır kontrolü ile)
             gat_kodu = tahminler[i] if tahminler is not None and i < len(tahminler) else None
 
-            yeni_lider_id=0
 
-            if self.asil_hedef is not None:
-                yeni_lider_id, skor = liderlik_secimini_baslat(self, self.asil_hedef)
-
-            
+            yeni_lider_id, skor = liderlik_secimini_baslat(self, self.asil_hedef)
+            #print(yeni_lider_id)
             self.lideri_guncelle(yeni_lider_id)
             self.ortam_ref.minimap._engel_bulutu_guncelle()
 
@@ -818,6 +822,8 @@ class TemelGNC:
         
         # Helper'a da artık modem gitmiyor (Helper içinde modem kullanımı varsa orayı da temizlemen gerekebilir)
         self.temel_gnc_helper = TemelGNCHelper(rov_entity, filo_ref, self)
+
+        self.mod = 1
 
     def hedef_atama(self, x, y, z):
         self.hedef = Vec3(x, y, z)

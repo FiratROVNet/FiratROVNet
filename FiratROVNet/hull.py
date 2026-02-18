@@ -2,7 +2,7 @@ import numpy as np
 from shapely.geometry import Point, Polygon, MultiPolygon, MultiPoint
 from shapely.ops import unary_union
 from shapely.prepared import prep
-from scipy.spatial.distance import pdist # Hızlı mesafe kontrolü için
+from scipy.spatial.distance import pdist  # Hızlı mesafe kontrolü için
 
 try:
     from scipy.spatial import ConvexHull
@@ -12,6 +12,9 @@ except ImportError:
     SCIPY_AVAILABLE = False
 
 class SahteHull:
+    """
+    Shapely Polygon nesnesini ve köşe noktalarını bir arada tutan yardımcı sınıf.
+    """
     def __init__(self, points, polygon_obj):
         self.points = points
         self.polygon = polygon_obj
@@ -24,47 +27,90 @@ class HullManager:
     def __init__(self, filo_ref=None):
         self.filo = filo_ref
 
+    def _noktalari_ayikla(self, veri, g_id=0):
+        """
+        Gelen veriyi (Liste veya Sözlük) analiz eder ve saf koordinat listesine (NumPy) çevirir.
+        
+        Args:
+            veri: Liste [(x,y,z)...] veya Sözlük {id: (x,y,z)...}
+            g_id: Grup ID (Varsayılan 0). İleride filtreleme gerekirse kullanılır.
+        
+        Returns:
+            np.ndarray: (N, 2) boyutunda sadece X ve Y koordinatlarını içeren dizi.
+        """
+        nokta_listesi = []
+
+        # 1. Durum: Sözlük (Dictionary) gelirse {id: (x,y,z)}
+        if isinstance(veri, dict):
+            # FormasyonYoneticisi'nden gelen veri zaten filtrelenmiş olduğu için
+            # doğrudan values() alıyoruz.
+            nokta_listesi = list(veri.values())
+            
+        # 2. Durum: Liste (List) veya Tuple gelirse [(x,y,z), ...]
+        elif isinstance(veri, (list, tuple, np.ndarray)):
+            nokta_listesi = veri
+            
+        # Veri temizleme ve formatlama
+        valid_points = []
+        if nokta_listesi is not None:
+            for p in nokta_listesi:
+                # None kontrolü ve uzunluk kontrolü (en az x,y olmalı)
+                if p is not None and len(p) >= 2:
+                    try:
+                        valid_points.append([float(p[0]), float(p[1])])
+                    except (ValueError, TypeError):
+                        continue
+                        
+        return np.array(valid_points)
+
     def yeni_hull(
             self,
-            base_points: list,
+            base_points,
             yasakli_noktalar: list | None = None,
             offset: float = 60.0,
             buffer_radius: float = 10.0,
+            g_id: int = 0,
             **kwargs
         ) -> dict:
+            """
+            Verilen noktalardan güvenli bir Convex Hull (Dış Kabuk) oluşturur.
+            base_points: Liste veya Sözlük olabilir.
+            """
             
-            #print(f"🔍 [HULL] Hesaplama başladı. Base Points: {len(base_points) if base_points else 0}, Offset: {offset}")
             BOS = {'points': None, 'center': None, 'hull': None}
 
-            # 1. Kontrol
-            if not base_points or len(base_points) < 3:
-                print("❌ [HULL] Yetersiz başlangıç noktası.")
+            # 1. Veriyi Hazırla (Sözlük/Liste Ayrımı ve NumPy dönüşümü)
+            pts_array = self._noktalari_ayikla(base_points, g_id=g_id)
+
+            # Yetersiz nokta kontrolü
+            if len(pts_array) < 3:
+                # print("⚠️ [HULL] Yetersiz başlangıç noktası (En az 3 nokta gerekli).")
                 return BOS
 
-            # 2. Hull Oluştur
-            hull_points = self._convex_hull(base_points)
+            # 2. Hull Oluştur (Scipy ConvexHull)
+            hull_points = self._convex_hull(pts_array)
             if hull_points is None:
-                print("❌ [HULL] ConvexHull oluşturulamadı (Scipy hatası veya geometri hatası).")
+                print("❌ [HULL] ConvexHull oluşturulamadı.")
                 return BOS
 
             try:
                 # 3. Polygon Oluştur
                 poly = Polygon(hull_points)
                 if not poly.is_valid:
-                    print("⚠️ [HULL] Polygon geçersiz, buffer(0) ile düzeltiliyor...")
-                    poly = poly.buffer(0)
+                    poly = poly.buffer(0) # Kendini kesen geometrileri düzelt
 
-                # Offset Uygula
+                # Offset Uygula (Alan Genişletme)
                 if offset != 0.0:
                     poly = poly.buffer(offset)
 
                 # 4. Yasaklı Bölgeleri Çıkar
                 if yasakli_noktalar:
-                    #print(f"🛡️ [HULL] {len(yasakli_noktalar)} adet yasaklı nokta/engel işleniyor...")
                     yasakli_bufferlar = []
-                    for p in yasakli_noktalar:
-                        if len(p) >= 2:
-                            yasakli_bufferlar.append(Point(float(p[0]), float(p[1])).buffer(buffer_radius))
+                    # Yasaklı noktaları da normalize et
+                    yasakli_arr = self._noktalari_ayikla(yasakli_noktalar, g_id=0)
+                    
+                    for p in yasakli_arr:
+                        yasakli_bufferlar.append(Point(p[0], p[1]).buffer(buffer_radius))
                     
                     if yasakli_bufferlar:
                         engeller = unary_union(yasakli_bufferlar)
@@ -72,32 +118,27 @@ class HullManager:
 
                 # 5. Geometri Kontrolü
                 if poly.is_empty:
-                    print("❌ [HULL] Sonuç alanı boş (Engeller tüm alanı kaplamış olabilir).")
+                    print("❌ [HULL] Sonuç alanı boş (Engeller tüm alanı kaplamış).")
                     return BOS
 
-                # MultiPolygon Kontrolü (Alan parçalandıysa en büyüğünü al)
+                # MultiPolygon Kontrolü (Alan bölündüyse en büyüğünü seç)
                 if isinstance(poly, MultiPolygon):
-                    # print("⚠️ [HULL] Alan parçalandı (MultiPolygon), en büyük parça seçiliyor.")
-                    if not poly.geoms:
-                        return BOS
+                    if not poly.geoms: return BOS
                     poly = max(poly.geoms, key=lambda a: a.area)
 
                 if not hasattr(poly, "exterior"):
-                    print(f"❌ [HULL] Polygon yapısı bozuk. Tip: {type(poly)}")
                     return BOS
 
                 # 6. Sonuçları Paketle
                 # coords[:-1] -> Kapanış noktasını tekrar etmemek için
-                new_points = np.array(poly.exterior.coords) 
+                new_points = np.array(poly.exterior.coords)
                 
-                # Merkez
+                # Merkez Noktası (Görselleştirme için)
                 rp = poly.representative_point()
                 center = (float(rp.x), float(rp.y), 0.0)
 
-                # Wrapper Sınıfı Kullan
+                # Wrapper Sınıfı
                 custom_hull = SahteHull(new_points, poly)
-
-                #print(f"✅ [HULL] Başarılı! {len(new_points)} nokta üretildi.")
                 
                 return {
                     'points': new_points,
@@ -107,79 +148,98 @@ class HullManager:
 
             except Exception as e:
                 print(f"❌ [HULL KRİTİK HATA] İşlem sırasında istisna oluştu: {e}")
-                import traceback
-                traceback.print_exc()
                 return BOS
 
-    def _convex_hull(self, points: list):
-        if not SCIPY_AVAILABLE:
+    def _convex_hull(self, points_array):
+        """Scipy kullanarak noktaların dış kabuğunu hesaplar."""
+        if not SCIPY_AVAILABLE or len(points_array) < 3:
             return None
         try:
-            # Veri temizleme
-            pts_clean = []
-            for p in points:
-                if isinstance(p, (list, tuple, np.ndarray)) and len(p) >= 2:
-                    pts_clean.append([float(p[0]), float(p[1])])
-            
-            pts = np.array(pts_clean)
-            if len(pts) < 3:
-                return None
-                
-            hull = ConvexHull(pts, qhull_options='QJ')
-            return pts[hull.vertices]
+            # points_array zaten _noktalari_ayikla ile np.array yapıldı
+            hull = ConvexHull(points_array, qhull_options='QJ') # QJ: Joggled input (Hata toleransı için)
+            return points_array[hull.vertices]
         except Exception as e:
             print(f"❌ [HULL] _convex_hull hatası: {e}")
             return None
 
     def is_point_inside_hull(self, point, hull):
         """
-        Noktanın hull içinde olup olmadığını döngüsüz (vektörel) kontrol eder.
+        Tek bir noktanın hull içinde olup olmadığını kontrol eder.
+        point: (x, y) veya (x, y, z) tuple/list
         """
         if hull is None: return False
-        p_arr = np.array(point[:2])
-
-        # 1. Shapely (SahteHull) Kontrolü
-        if hasattr(hull, 'polygon') and hull.polygon is not None:
-            return hull.polygon.contains(Point(p_arr))
-
-        # 2. Scipy ConvexHull Kontrolü (Matris Çarpımı ile O(1) hızında)
-        if hasattr(hull, 'equations'):
-            # Ax + By + C <= 0 denklemini tüm kenarlar için tek seferde çözer
-            return np.all(hull.equations[:, :-1] @ p_arr + hull.equations[:, -1] <= 1e-6)
         
-        return False
+        try:
+            # Noktayı hazırla
+            if hasattr(point, '__len__') and len(point) >= 2:
+                p_arr = Point(float(point[0]), float(point[1]))
+            else:
+                return False
 
-    def formasyon_gecerli_mi(self, test_points, hull, formasyon_aralik):
+            # Shapely (SahteHull) Kontrolü
+            if hasattr(hull, 'polygon') and hull.polygon is not None:
+                return hull.polygon.contains(p_arr)
+            
+            return False
+        except Exception:
+            return False
+
+    def formasyon_gecerli_mi(self, test_points, hull, formasyon_aralik, g_id=0):
         """
-        Tüm formasyonun geçerliliğini SIFIR DÖNGÜ (O(N) ve O(N^2) vektörel) ile kontrol eder.
+        Formasyon noktalarının Hull sınırları içinde olup olmadığını ve
+        birbirlerine çok yakın olup olmadıklarını kontrol eder.
+        
+        Args:
+            test_points: Liste veya Sözlük {id: (x,y,z)}
+            hull: SahteHull objesi
+            formasyon_aralik: Minimum mesafe
+            g_id: Grup ID (Varsayılan 0)
         """
-        if hull is None or not test_points: return False
+        # Veri yoksa veya Hull yoksa geçersiz
+        if hull is None or not test_points: 
+            return False
 
         try:
-            # Test noktalarını hızlıca NumPy array'e çevir (X ve Y)
-            pts = np.array(test_points)[:, :2]
+            # 1. Veriyi Temizle ve NumPy Array'e Çevir
+            # Dictionary gelirse values() alınır, List gelirse olduğu gibi alınır.
+            pts = self._noktalari_ayikla(test_points, g_id=g_id)
+            
+            if len(pts) == 0:
+                return False
 
-            # 1. Hull İçinde mi? (Prepared Geometry ve MultiPoint ile ultra hızlı)
+            # 2. Hull İçinde Kalma Kontrolü (Shapely - Prepared Geometry)
             if hasattr(hull, 'polygon'):
-                # 'prep' poligonu sorgular için optimize eder (STRtree benzeri yapı)
+                # 'prep' poligonu sorgular için optimize eder (STRtree mantığı)
                 prepared_poly = prep(hull.polygon)
-                if not prepared_poly.contains(MultiPoint(pts)):
+                
+                # Tüm noktaları MultiPoint objesine çevirip tek seferde soruyoruz
+                mp = MultiPoint(pts)
+                
+                if not prepared_poly.contains(mp):
+                    # Detaylı hata ayıklama istenirse burası açılabilir
+                    # print("⚠️ [HULL] Bazı noktalar güvenli alanın dışında!")
                     return False
-            elif hasattr(hull, 'equations'):
-                # Scipy Hull için matrisel kontrol: (Kenar Sayısı x Nokta Sayısı)
-                res = hull.equations[:, :-1] @ pts.T + hull.equations[:, -1][:, np.newaxis]
-                if not np.all(res <= 1e-6):
-                    return False
+            else:
+                return False
 
-            # 2. ROV'lar Arası Mesafe Kontrolü (pdist ile O(N^2) ama C seviyesinde hızlı)
+            # 3. ROV'lar Arası Mesafe Kontrolü (pdist - O(N^2) ama C ile optimize)
+            # Eğer sadece 1 ROV varsa mesafe kontrolüne gerek yok
             if len(pts) > 1:
-                # Tüm noktaların birbirine olan mesafesini tek seferde hesaplar
+                # pdist: Noktalar arası ikili mesafeleri hesaplar
                 mesafeler = pdist(pts)
-                if np.any(mesafeler < formasyon_aralik):
+                
+                # Herhangi bir mesafe, belirlenen aralıktan (toleranslı) küçükse çarpışma riski var
+                # Tolerans: Formasyon aralığının %30'undan daha yakınlarsa hata ver
+                min_mesafe_limiti = formasyon_aralik * 0.3
+                
+                if np.any(mesafeler < min_mesafe_limiti):
+                    # print("⚠️ [HULL] ROV'lar birbirine çok yakın (Çarpışma riski)!")
                     return False
             
             return True
 
         except Exception as e:
             print(f"⚠️ [HULL] Vektörel kontrol hatası: {e}")
+            import traceback
+            traceback.print_exc()
             return False
