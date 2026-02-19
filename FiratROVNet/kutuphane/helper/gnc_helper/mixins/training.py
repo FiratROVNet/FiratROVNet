@@ -1,4 +1,5 @@
 import numpy as np
+import time
 from FiratROVNet.config import HareketAyarlari
 
 
@@ -9,6 +10,8 @@ class TrainingMixin:
         """
         yeni_hull cikisindaki noktalari alir ve cevre uzunlugu uzerinden
         sabit sayida (sample_count) ornek nokta dondurur.
+        
+        🔹 Cache'e kaydedilen sonuçlar (numpy array değil, JSON-safe)
         """
         if hull_output is None:
             hull_output = self.filo.yeni_hull(self.filo.ada_cevre())
@@ -16,6 +19,7 @@ class TrainingMixin:
         points = hull_output.get('points')
         if points is None or len(points) < 2:
             print("⚠️ [SAMPLED] Ornekleme icin yetersiz nokta!")
+            self.cache_hull_samples(None, sample_count)
             return None
 
         if not np.allclose(points[0], points[-1]):
@@ -27,13 +31,47 @@ class TrainingMixin:
         total_perimeter = cumulative_dist[-1]
 
         if total_perimeter == 0:
-            return np.tile(points[0], (sample_count, 1))
-
-        target_dists = np.linspace(0, total_perimeter, sample_count, endpoint=False)
-        new_x = np.interp(target_dists, cumulative_dist, points[:, 0])
-        new_y = np.interp(target_dists, cumulative_dist, points[:, 1])
-        sampled_points = np.column_stack((new_x, new_y))
+            sampled_points = np.tile(points[0], (sample_count, 1))
+        else:
+            target_dists = np.linspace(0, total_perimeter, sample_count, endpoint=False)
+            new_x = np.interp(target_dists, cumulative_dist, points[:, 0])
+            new_y = np.interp(target_dists, cumulative_dist, points[:, 1])
+            sampled_points = np.column_stack((new_x, new_y))
+        
+        # 🔹 CACHE'E KAYDET
+        self.cache_hull_samples(sampled_points, sample_count, hull_output)
+        
         return sampled_points
+    
+    def cache_hull_samples(self, samples, sample_count, hull_output=None):
+        """
+        🔹 Hull 100 samples sonuçlarını cache'e kaydet (JSON-safe format)
+        
+        Args:
+            samples: NumPy array veya None
+            sample_count: Örnek sayısı
+            hull_output: Hull meta verisi (alan, nokta sayısı, vs)
+        """
+        if samples is not None and isinstance(samples, np.ndarray):
+            # NumPy array'i JSON-safe list'e dönüştür
+            samples_list = samples.tolist()
+            info = {
+                'point_count': len(samples_list),
+                'is_valid': True,
+            }
+            if hull_output:
+                info['hull_area'] = float(hull_output.get('area', 0))
+                info['hull_points'] = int(hull_output.get('points_count', 0))
+            
+            self.last_hull_samples = samples_list
+            self.last_hull_samples_info = info
+            # Sessiz mod - print kaldırıldı
+        else:
+            self.last_hull_samples = None
+            self.last_hull_samples_info = {'point_count': 0, 'is_valid': False}
+            # Sessiz mod - print kaldırıldı
+        
+        self.hull_samples_timestamp = time.time()
 
     def uret_rl_egitim_verisi(self):
         """

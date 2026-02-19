@@ -27,3 +27,13 @@ class FiloHelper(DataMixin, GeometryMixin, FormationMixin, NavigationMixin, Visu
         self._koordinator = None
         self.kalici_hedefler = {}
         self.formasyon_sec_tekrar = 0
+        
+        # Async/Worker results cache sistemi
+        self.last_formasyon_result = None          # Son formasyon_sec sonucu
+        self.formasyon_result_timestamp = None     # Sonuçun zamanı
+        self.formasyon_future = None               # Active Future object (worker tracking)
+        
+        # Hull 100 samples cache sistemi
+        self.last_hull_samples = None              # Son get_100_samples sonucu (numpy array)
+        self.last_hull_samples_info = None         # Meta info (nokta sayısı, alan, vs)
+        self.hull_samples_timestamp = None         # Sonucun zamanı

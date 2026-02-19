@@ -405,10 +405,15 @@ class TemelGNCHelper:
             mesafe = float(e_info.get('mesafe', 0.0))
 
             etki = 1.0 - (mesafe / GATLimitleri.ENGEL)
+            #print(f"ROV-{self.rov.id}: Mesafe = {mesafe}, Etki = {etki}")
+
             max_engel_etkisi = max(max_engel_etkisi, etki)
             guc1 = max(1 - self._guc_orani_hesapla(mesafe, GATLimitleri.ENGEL), guc0)
 
-            if etki > 0.001 and self.filo_ref.get(rov_id, 'rol') == 1:
+            
+
+            if etki > 0.2 and self.filo_ref.get(self.rov.id, 'rol') == 1:
+                print(self.rov.id,etki,max_engel_etkisi)
                 self.filo_ref.formasyon_sec(dinamik=True, tekrar=30, g_id=self.rov.group_id)
 
             bv_yatay = Vec3(bv.x, bv.y, bv.z)

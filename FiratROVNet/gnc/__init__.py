@@ -24,6 +24,7 @@ from FiratROVNet.lider_sec import liderlik_secimini_baslat
 from .koordinator import Koordinator, SafeDict
 from .damage_system import DamageSystem
 from .logs import LogSystem
+from .hull_information import HullInformationManager
 from ..animations import GelismisParcacik, entity_patlat
 from ..camera_manager import CameraManager
 from ..lider_sec import LeaderManager
@@ -49,6 +50,7 @@ class Filo:
         self.camera_manager = CameraManager(filo_ref=self)
         self.leader_manager = LeaderManager(filo_ref=self)
         self.log_system = LogSystem()
+        self.hull_info_manager = HullInformationManager(filo_ref=self)
         
         # Hedef ve Formasyon Durumu
         self.asil_hedef = None
@@ -312,7 +314,16 @@ class Filo:
                 self.entity_patlat(rov, parca_sayisi=80)
                 continue  # Bu ROV için işlem yapma
 
-            # --- 4C. GNC Sistem Güncelleme ---
+            # --- 4C. Sensör Güncelleme (GNC öncesi - sensor verisini güncelle) ---
+            try:
+                if hasattr(rov, '_guncelle_sensorler'):
+                    rov._guncelle_sensorler()
+            except Exception as e:
+                # Ursina objesi yoksa sessizce geç
+                if "!is_empty()" not in str(e):
+                    print(f"⚠️ [FİLO] ROV-{rov.id} Sensör Hatası: {e}")
+
+            # --- 4D. GNC Sistem Güncelleme ---
             try:
                 if hasattr(rov, 'gnc') and rov.gnc:
                     rov.gnc.guncelle(gat_kodu=gat_kodu)
@@ -493,13 +504,81 @@ class Filo:
 
     def hull(self, offset=40.0): return self.helper.hull(offset=offset)
     def ada_cevre(self, offset=0.0, sessiz=False): return self.helper.ada_cevre(offset=offset, sessiz=sessiz)
+    
+    def get_engel_ve_ada(self, sessiz=True):
+        """
+        🔹 Engel bulutunu (engel_bulutu) + Ada cevrelerini birleştir
+        
+        Engel noktalarını dinamik_engelleri_basitlestir() ile Polygon'lara dönüştür,
+        ada cevresi ile birleştirip tek liste olarak döndür.
+        
+        Returns:
+            List: Birleştirilmiş engel (centroid noktaları) ve ada cevre noktaları
+            
+        Kullanım:
+            tum_engeller = filo.get_engel_ve_ada()
+            # A* algoritmasına geç:
+            path = a_star_algorithm(baslangic, hedef, tum_engeller)
+        """
+        try:
+            all_obstacles = []
+            engel_count = 0
+            ada_count = 0
+            
+            # 1️⃣ Mevcut ada cevrelerini al
+            ada_list = self.ada_cevre(sessiz=True)
+            if ada_list:
+                all_obstacles.extend(ada_list)
+                ada_count = len(ada_list)
+            
+            # 2️⃣ Engel bulutunu al ve dinamik_engelleri_basitlestir ile cluster oluştur
+            if self.ortam_ref and hasattr(self.ortam_ref, 'engel_bulutu'):
+                engel_points = self.ortam_ref.engel_bulutu
+                
+                if engel_points and len(engel_points) > 0:
+                    # Dinamik engelleri basitleştir (Polygon listesi döndür)
+                    simplified_obstacles = self.hull_manager.dinamik_engelleri_basitlestir(
+                        engel_points,
+                        kume_mesafesi=25.0,
+                        buffer_radius=5.0,
+                        min_kume_boyutu=3
+                    )
+                    
+                    # Polygon'lardan merkez noktaları ve sınırları çıkar
+                    if simplified_obstacles:
+                        for poly in simplified_obstacles:
+                            if hasattr(poly, 'centroid'):
+                                # Centroid (merkez) noktası
+                                centroid = poly.centroid
+                                all_obstacles.append([float(centroid.x), float(centroid.y)])
+                                engel_count += 1
+                            
+                            if hasattr(poly, 'exterior'):
+                                # Polygon kenarlarındaki noktaları da ekle (precision için)
+                                for coord in poly.exterior.coords:
+                                    all_obstacles.append([float(coord[0]), float(coord[1])])
+                                    engel_count += 1
+            
+            if not sessiz and all_obstacles:
+                print(f"✅ Birleştirilmiş engeller: {len(all_obstacles)} nokta "
+                      f"(Ada: {ada_count}, Dinamik Engel: {engel_count})")
+            
+            return all_obstacles if all_obstacles else None
+            
+        except Exception as e:
+            if not sessiz:
+                print(f"❌ get_engel_ve_ada hatası: {e}")
+            return None
+    
     def apf(self, rov_id): return self.helper.apf(rov_id)
     def apf_guncelle_tum(self): return self.helper.apf_guncelle_tum()
     def apf_temizle(self, rov_id=None): return self.helper.apf_temizle(rov_id)
     def formasyon(self, *args, **kwargs): return self.helper.formasyon(*args, **kwargs)
     def formasyon_sec(self, *args, **kwargs): 
-        
-        return self._executor.submit(self.helper._formasyon_sec_impl, *args, **kwargs)
+        # 🔹 ASYNC WRAPPER: Future'ı track etmek için, sonuç cache'e yazılacak
+        future = self._executor.submit(self.helper._formasyon_sec_impl, *args, **kwargs)
+        self.helper.formasyon_future = future  # Future tracking
+        return future
     
 
     def _hedef_gorsel_olustur(self, x, y, z, id=None, debug=True): return self.helper.hedef_gorsel_olustur(x, y, z, id=id, debug=debug)
@@ -517,6 +596,84 @@ class Filo:
             if hasattr(rov, 'gnc'): rov.gnc.manuel_kontrol = aktif
 
     def find_leader_info(self,*args,**kwargs): return self.helper.find_leader_info(*args,**kwargs)
+    
+    # ============================================================
+    # 🔹 HULL CONSOLE WRAPPERS (2 Main Functions)
+    # ============================================================
+    
+    def get_hull_100_samples(self, hull_output=None, sample_count=100):
+        """
+        🎯 KONSOL FONKSİYONU: Hull'dan 100 örnek al (direkt + cache)
+        
+        Kullanım (önerilen):
+            samples = filo.get_hull_100_samples()  # Hesapla + cache + döndür
+            print(len(samples))  # 100
+        
+        Args:
+            hull_output: Özel hull dict (None ise otomatik calc)
+            sample_count: Örnek sayısı (default 100)
+        
+        Returns:
+            [[x1,y1], [x2,y2], ...] (100 nokta) veya None
+        """
+        result = self.hull_info_manager.get_hull_100_samples(hull_output, sample_count)
+        if result is not None:
+            return result
+        else:
+            return None
+
+    def get_hull_information(self, sample_count=50, g_id=0, kayit=False, sessiz=True, offset_threshold=20.0):
+        """
+        🎯 KONSOL FONKSİYONU: Kapsamlı hull + formasyon + grup bilgisi
+        
+        Kullanım (önerilen):
+            info = filo.get_hull_information()                # Default 50 samples
+            info = filo.get_hull_information(sample_count=100) # 100 samples
+            info = filo.get_hull_information(kayit=True)      # Sonucu JSON'a kaydet (append mode)
+        
+        Çıktı:
+            {
+                'hull_center': [x, y],
+                'hull_samples': [[x1,y1], [x2,y2], ...],          # 50 nokta
+                'formasyon_id': 'LINE',
+                'formasyon_aralik': 15.2,
+                'lider_rov_id': 0,
+                'lider_yaw': 90.0,
+                'grup_id': 0,
+                'grup_bilgisi': {
+                    'rov_sayisi': 6,
+                    'rov_idleri': [0, 1, 2, 3, 4, 5],
+                    'rovlar': [
+                        {'rov_id': 0, 'pozisyon': {...}, 'batarya': 0.98, 'gnc_mode': 1, ...},
+                        ...
+                    ]
+                }
+            }
+        
+        Args:
+            sample_count: Hull üzerine kaç örnek nokta yerleştirilecek (default 50)
+            g_id: Grup ID (default 0)
+            kayit: True ise sonucu JSON dosyasına kaydet (append mode - dosya varsa altına ekle) (default False)
+        
+        Returns:
+            Dict: Tüm bilgileri içeren JSON-serializable sonuç veya None
+        """
+        result = self.hull_info_manager.get_hull_information(sample_count=sample_count, g_id=g_id, sessiz=sessiz, offset_threshold=offset_threshold)
+        if result:
+            
+            # 🔹 Eğer kayit=True ise, sonucu JSON dosyasına kaydet (append mode)
+            if kayit:
+                success = self.hull_info_manager.save_hull_information('hull_information.json', result, sessiz=sessiz)
+                if not success:
+                    print("⚠️ Hull information kaydedilemedi")
+            
+            return result
+        else:
+            if not sessiz:
+                print("⚠️ get_hull_information: result None")
+            return None
+    
+
 
 # ==========================================
 # 2. TEMEL GNC SINIFI (SADELEŞTİRİLMİŞ)

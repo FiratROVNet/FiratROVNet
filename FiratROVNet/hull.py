@@ -257,7 +257,7 @@ class HullManager:
         basitleştirir ve geometrik engellere dönüştürür.
         
         Args:
-            engel_bulutu: [(x, y), ...] formatında engel noktaları listesi
+            engel_bulutu: [(x, y), ...] veya [(x, y, z), ...] formatında engel noktaları listesi
             kume_mesafesi: Kümeleme için maksimum intra-cluster mesafe (default 25m)
             buffer_radius: Tek/çift nokta için daire yarıçapı (default 5m)
             min_kume_boyutu: Geçerli küme için minimum nokta sayısı (default 3)
@@ -271,7 +271,7 @@ class HullManager:
         
         Örnek Kullanım:
         ```python
-        engel_bulutu = [(x1, y1), (x2, y2), ...]
+        engel_bulutu = [(x1, y1), (x2, y2), ...]  # 2D
         dinamik_engeller = manager.dinamik_engelleri_basitlestir(engel_bulutu)
         
         # A* için hazırlama (radius bilgisi ile)
@@ -292,8 +292,13 @@ class HullManager:
             return []
         
         try:
-            # 1. Veriyi NumPy array'e çevir ve temizle
-            points_array = np.array(engel_bulutu, dtype=np.float32)
+            # 1. Veriyi 2D'ye normalize et ve NumPy array'e çevir
+            points_2d_list = [
+                (float(p[0]), float(p[1]))
+                for p in engel_bulutu
+                if p is not None and len(p) >= 2
+            ]
+            points_array = np.array(points_2d_list, dtype=np.float32)
             
             if len(points_array) == 0 or len(points_array.shape) != 2 or points_array.shape[1] < 2:
                 return []
@@ -388,4 +393,3 @@ class HullManager:
             import traceback
             traceback.print_exc()
             return []
-            return False

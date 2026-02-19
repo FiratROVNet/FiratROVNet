@@ -91,7 +91,7 @@ def input(key):
             
             # Mevcut derinliği grubun liderinden al
             lider_id, lider_gps = filo.find_leader_info(g_id=grup_id)
-            mevcut_z = -30 #lider_gps[2] if lider_gps else -10
+            mevcut_z = -20 #lider_gps[2] if lider_gps else -10
             
             # Benzersiz ID oluştur ve hedefi kaydet
             filo.target_counter += 1

@@ -129,7 +129,8 @@ class FizikSabitleri:
     """
     Fizik simülasyonu için sabitler - Sadece kullanılan değerler.
     """
-    BATARYA_SOMURME_KATSAYISI = 0.001    # Batarya sömürme katsayısı (maksimum güçte ~66 saniye dayanır)
+    BATARYA_SOMURME_KATSAYISI = 0.001    # Batarya sömürme katsayısı (sabit azalma)
+    BATARYA_HIZ_KATSAYISI = 0.0005       # Hıza göre batarya azalma katsayısı (hız*katsayı*dt)
 
 
 class ROVModelleri:
