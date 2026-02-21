@@ -394,6 +394,7 @@ class GeometryMixin:
                             'birim_vektor': res.get('birim_vektor_3d', (0, 0, 0)),
                             'mesafe': sensor_mesafesi,
                             'radius': e.get('radius', 0.0),
+                            'yon': e.get('yon'),
                         })
 
         # 3. Diger ROV'lardan kacinma

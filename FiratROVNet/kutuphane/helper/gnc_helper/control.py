@@ -412,7 +412,7 @@ class TemelGNCHelper:
 
             
 
-            if etki > 0.2 and self.filo_ref.get(self.rov.id, 'rol') == 1:
+            if etki > 0.2 and self.filo_ref.get(self.rov.id, 'rol') == 1 and e_info.get('yon') != 'asagi_lidar':
                 print(self.rov.id,etki,max_engel_etkisi)
                 self.filo_ref.formasyon_sec(dinamik=True, tekrar=30, g_id=self.rov.group_id)
 
