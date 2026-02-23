@@ -1,8 +1,10 @@
 # Windows için özel gereksinimler
 # PyTorch ve torch-geometric CPU-only kurulumu
 #pip uninstall torch torch-geometric
+
 pip install torch==2.0.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
 pip install torch-geometric
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # --- 3D Simülasyon ve Oyun Motoru ---
 ursina==7.0.0
