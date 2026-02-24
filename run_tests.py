@@ -257,6 +257,7 @@ try:
                 return self.x * other.x + self.y * other.y + self.z * other.z
             return 0.0
     
+
     class MockROV:
         def __init__(self, rov_id):
             self.id = rov_id
@@ -278,6 +279,7 @@ try:
             self.filo_ref = None
             self.battery = 100.0
             self.batarya_bitti = False
+            self.gnc = None  # TemelGNC atanacak
         
         def move(self, komut, guc=1.0):
             pass  # Mock
@@ -288,6 +290,18 @@ try:
                 self.role = value
             elif key in self.sensor_config:
                 self.sensor_config[key] = value
+
+    class TemelGNC:
+        def __init__(self, rov, filo):
+            self.rov = rov
+            self.filo = filo
+            self.hedef = None
+            self.manuel_kontrol = False
+            self.ai_aktif = False
+            rov.gnc = self  # MockROV.gnc referansı
+
+        def hedef_atama(self, x, y, z):
+            self.hedef = (x, y, z)
     
     # Filo testi
     filo = Filo()
