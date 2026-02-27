@@ -13,6 +13,8 @@ from ursina import *
 
 # Yerel modül importları
 from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, FizikSabitleri, Hidrodinamik, BasitKalmanFiltresi
+# Motor sınıfı importu
+from .motor import Motor
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon
 from ..hull import HullManager
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper
@@ -38,12 +40,15 @@ import logging
 # ==========================================
 class Filo:
     def __init__(self, ortam_ref=None):
+        # Motorlar listesi (her filo için erişilebilir)
+        self.motorlar = []  # Ör: self.motorlar.append(Motor(...))
         # Temel Referanslar
         self.ortam_ref = ortam_ref
         self.hull_manager = HullManager(self)
         self._command_queue = queue.Queue()
         self._main_thread_id = threading.get_ident()
         self.helper = FiloHelper(self)
+        self.Motor=Motor
         
         # Sorumlu Sistemler (ModülerYapı)
         self.damage_system = DamageSystem(filo_ref=self)
@@ -84,27 +89,53 @@ class Filo:
         self.current_target_id = {}       # {g_id: id}
         self.target_counter = 0           # Her tıklamada artan benzersiz ID sayacı
         
-        # Ortam referansını ayarla ve başlat
+
+        # 1. FİZİK DÜNYASI OLUŞTURULDU
+        self.world = BulletWorld()
+        #self.world.setGravity(Vec3(0, -9.81, 0)) # Su altı için -2.0 gibi düşük de yapılabilir
+        
         if self.ortam_ref:
             self.ortam_ref.filo = self
             self._baslatma_tamamla()
-    
+
+    def _baslatma_tamamla(self):
+            """ROV'lar için fiziksel gövdeleri ve motorları kurar."""
+            from panda3d.bullet import BulletRigidBodyNode, BulletBoxShape
+            from panda3d.core import Vec3
+
+            for rov in self.ortam_ref.rovs:
+                rov.gnc = TemelGNC(rov, self)
+                
+                # A. Fiziksel Düğüm (RigidBody) Oluşturma
+                node = BulletRigidBodyNode(f"ROV_{rov.id}")
+                node.setMass(8.0) # 15 kg
+                
+                # STABİLİZASYON (Fırıldak gibi dönmeyi engeller)
+                node.setLinearDamping(0.6) 
+                node.setAngularDamping(0.9) 
+                
+                # Çarpışma Şekli (ROV boyutlarına göre)
+                shape = BulletBoxShape(Vec3(0.5, 0.4, 0.7)) 
+                node.addShape(shape)
+                
+                # Panda3D'ye ekle
+                rov_np = render.attachNewNode(node)
+                rov_np.setPos(rov.position) # Ursina pozisyonundan başlat
+                self.world.attachRigidBody(node)
+                #node.setGravity(Vec3(0, 0, 0)) # Bu ROV için yerçekimini sıfırla
+                
+                # B. Referansları Kaydet
+                rov.physics_node = node
+                rov.physics_np = rov_np
+
+
+
+            self.minimap(scale=1.0)
 
     # ============================================================
     # KURULUM VE SİSTEM YÖNETİMİ (SADELEŞTİRİLMİŞ)
     # ============================================================
-    
-    def _baslatma_tamamla(self):
-        """Filo ve ortam ilk kurulumunu tamamla."""
-        if not self.ortam_ref:
-            return
-        
-        # ROV'lara GNC örnekleri ekle
-        for rov in self.ortam_ref.rovs:
-            rov.gnc = TemelGNC(rov, self)
-        
-        # Minimap başlat
-        self.minimap(scale=1.0)
+
 
     def _basla_gat_modeli(self):
         """GAT modelini yükle ve başlat. Başarısız olursa disable et."""
@@ -266,96 +297,91 @@ class Filo:
     def guncelle_hepsi(self, tahminler):
         """
         Tüm GNC sistemlerini koordineli şekilde günceller.
-        
-        Operasyon Sırası (Önem Sırasına Göre):
-        1. Sistem Hazırlığı      → Command queue işle
-        2. Navigasyon Kuyruğu    → Hedef yönetimi
-        3. Lider Yönetimi        → Yeni lider seç & değişim yap
-        4. ROV Başına İşlemler   → Hasar, GNC, Motor komutları
-        5. Sistem Güncellemeleri → Sonar, Minimap, engel bulut
         """
-        
-        # ============================================================
-        # 1. SİSTEM HAZIRLIGI
-        # ============================================================
         self._process_command_queue()
-        
+
+        # 1. FİZİK ADIMINI AT (En Önemli Satır)
+        dt = time.dt
+        self.world.doPhysics(dt)
+
         if not self.ortam_ref:
             return
 
-        # ============================================================
-        # 2. NAVİGASYON KUYRUGU (Grup bazlı hedef yönetimi)
-        # ============================================================
         self.guncelle_navigasyon_kuyrugu()
         self.guncelle_gorseller_ve_renkler(tahminler)
 
-        # ============================================================
-        # 3. LİDER YÖNETİMİ (Grup bazlı lider seçim ve role transfer)
-        # ============================================================
         yeni_lider_id, skor = liderlik_secimini_baslat(self, self.asil_hedef)
         self.leader_manager.guncelle_liderler(yeni_lider_id)
 
-        # ============================================================
         # 4. ROV BAŞINA İŞLEMLER
-        # ============================================================
-        # Canlı ROV'ları doğrudan işle (destroyed'lar otomatik filtrelendi)
         for rov in self.rovs:
-            # --- 4A. GAT Tahmini ve İndeks Bulma ---
+            
+            # ==========================================
+            # EKSİK OLAN KISIM: FİZİK -> GÖRSEL EŞLEŞTİRME
+            # ==========================================
+            if hasattr(rov, 'physics_np'):
+                rov.position = rov.physics_np.getPos()
+                rov.quaternion = rov.physics_np.getQuat()
+
+            # --- GAT Tahmini ve İndeks Bulma ---
             try:
                 rov_idx = self.ortam_ref.rovs.index(rov)
                 gat_kodu = tahminler[rov_idx] if rov_idx < len(tahminler) else 0
             except (ValueError, IndexError):
                 gat_kodu = 0
 
-            # --- 4B. Hasar Kontrol (Öncelikli - Patlama Check) ---
-            joule_esigi = 10.0  # Joule cinsinden hasar eşiği
+            # --- Hasar Kontrol ---
+            joule_esigi = 10.0
             if self.damage_system.rov_hasar_kontrol_direct(rov, joule_esigi=joule_esigi):
-                # ROV patladı - Patlama efekti ve limbo
                 self.entity_patlat(rov, parca_sayisi=80)
-                continue  # Bu ROV için işlem yapma
+                continue
 
-            # --- 4C. Sensör Güncelleme (GNC öncesi - sensor verisini güncelle) ---
+            # --- Sensör Güncelleme ---
             try:
                 if hasattr(rov, '_guncelle_sensorler'):
                     rov._guncelle_sensorler()
             except Exception as e:
-                # Ursina objesi yoksa sessizce geç
                 if "!is_empty()" not in str(e):
                     print(f"⚠️ [FİLO] ROV-{rov.id} Sensör Hatası: {e}")
 
-            # --- 4D. GNC Sistem Güncelleme ---
+            # --- GNC Sistem Güncelleme ---
             try:
                 if hasattr(rov, 'gnc') and rov.gnc:
                     rov.gnc.guncelle(gat_kodu=gat_kodu)
             except Exception as e:
-                # Detaylı hata loglama
                 if "!is_empty()" not in str(e):
-                    print(f"⚠️ [FİLO] ROV-{rov.id} GNC Hatası: {e}")
+                    print(f"⚠️[FİLO] ROV-{rov.id} GNC Hatası: {e}")
                 LogSystem.log_exception(e)
 
-        # ============================================================
+            # ==========================================
+            # MOTOR HAREKET KONTROLÜ (Düzeltildi)
+            # ==========================================
+            if held_keys['w']:
+                rov.m_sol.calistir(1.0)
+                rov.m_sag.calistir(1.0)
+            
+            if held_keys['a']:
+                # Sola dönmek için sağ motor ileri, sol motor geri
+                rov.m_sag.calistir(1.0)
+                rov.m_sol.calistir(-1.0)
+                
+            if held_keys['d']:
+                # Sağa dönmek için sol motor ileri, sağ motor geri
+                rov.m_sol.calistir(1.0)
+                rov.m_sag.calistir(-1.0)
+
         # 5. SİSTEM GÜNCELLEMELERİ
-        # ============================================================
-        # --- 5A. Sonar Çizgileri Güncelleme ---
         if self.ortam_ref:
             try:
                 self.ortam_ref.guncelle_sonar_cizgileri()
             except Exception as e:
                 LogSystem.log_exception(e)
 
-        # --- 5B. Kuyruk Komutları Tamamlanması ---
         self.execute_queued_commands()
 
-        # --- 5C. Engel Bulut Güncelleme ---
         if self.ortam_ref.minimap:
             try:
                 self.ortam_ref.minimap._engel_bulutu_guncelle()
-            except Exception as e:
-                LogSystem.log_exception(e)
-
-        # --- 5D. Minimap Görsel Güncelleme ---
-        if self.ortam_ref.minimap:
-            try:
                 self.ortam_ref.minimap.gorsel_guncelle()
             except Exception as e:
                 LogSystem.log_exception(e)
@@ -765,4 +791,4 @@ class TemelGNC:
 
 
 # Export sınıfları
-__all__ = ['Filo', 'TemelGNC', 'Koordinator', 'SafeDict', 'DamageSystem']
+__all__ = ['Filo', 'TemelGNC', 'Koordinator', 'SafeDict', 'DamageSystem', 'Motor']
