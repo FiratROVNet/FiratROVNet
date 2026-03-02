@@ -53,10 +53,7 @@ def test_senaryo_100_ornekler():
             # 1. Senaryo oluştur - RASTGELE sayıda entity (headless)
             # Parametresiz çağırılırsa object pooling otomatik rastgele seçer:
             # ROV: 4-12, Ada: 3-6, Kaya: 10-20
-            senaryo.uret(
-                havuz_genisligi=200,
-                verbose=False
-            )
+            senaryo.uret(verbose=False)
             
             if not senaryo.filo:
                 print(f"❌ Örnek {ornekNo}: Filo kurulmadı")

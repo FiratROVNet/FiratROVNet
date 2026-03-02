@@ -383,7 +383,10 @@ class NavigationMixin:
 
             HAVUZ_GUVENLIK_MESAFESI = 10.0
             if hasattr(rov, 'environment_ref') and rov.environment_ref:
-                havuz_genisligi = getattr(rov.environment_ref, 'havuz_genisligi', 200)
+                havuz_genisligi = getattr(rov.environment_ref, 'havuz_genisligi', None)
+                if havuz_genisligi is None:
+                    from FiratROVNet.config import HavuzAyarlari
+                    havuz_genisligi = HavuzAyarlari.HAVUZ_GENISLIK
                 havuz_sinir = havuz_genisligi
                 guvenli_sinir = havuz_sinir - HAVUZ_GUVENLIK_MESAFESI
 

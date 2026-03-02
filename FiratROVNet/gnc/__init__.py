@@ -12,7 +12,7 @@ import numpy as np
 from ursina import *
 
 # Yerel modül importları
-from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, FizikSabitleri, Hidrodinamik, BasitKalmanFiltresi
+from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, FizikSabitleri, Hidrodinamik, BasitKalmanFiltresi, HavuzAyarlari
 # Motor sınıfı importu
 from .motor import Motor
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon
@@ -41,7 +41,7 @@ import logging
 class Filo:
     def __init__(self, ortam_ref=None):
         # Motorlar listesi (her filo için erişilebilir)
-        self.motorlar = []  # Ör: self.motorlar.append(Motor(...))
+        self.motorlar = {}  # Ör: self.motorlar.append(Motor(...))
         # Temel Referanslar
         self.ortam_ref = ortam_ref
         self.hull_manager = HullManager(self)
@@ -49,6 +49,7 @@ class Filo:
         self._main_thread_id = threading.get_ident()
         self.helper = FiloHelper(self)
         self.Motor=Motor
+        self.motorlar_bv={}
         
         # Sorumlu Sistemler (ModülerYapı)
         self.damage_system = DamageSystem(filo_ref=self)
@@ -105,14 +106,15 @@ class Filo:
 
             for rov in self.ortam_ref.rovs:
                 rov.gnc = TemelGNC(rov, self)
+
+                if self.motorlar.get(rov.id) is None:
+                    self.motorlar[rov.id] = []
                 
-                # A. Fiziksel Düğüm (RigidBody) Oluşturma
+                # A. Fiziksel Düğüm (RigidBody) — kütle ve sönümleme: config.Hidrodinamik
                 node = BulletRigidBodyNode(f"ROV_{rov.id}")
-                node.setMass(8.0) # 15 kg
-                
-                # STABİLİZASYON (Fırıldak gibi dönmeyi engeller)
-                node.setLinearDamping(0.6) 
-                node.setAngularDamping(0.9) 
+                node.setMass(Hidrodinamik.KUTLE)
+                node.setLinearDamping(Hidrodinamik.LINEAR_DAMPING)
+                #node.setAngularDamping(Hidrodinamik.ANGULAR_DAMPING) 
                 
                 # Çarpışma Şekli (ROV boyutlarına göre)
                 shape = BulletBoxShape(Vec3(0.5, 0.4, 0.7)) 
@@ -127,14 +129,255 @@ class Filo:
                 # B. Referansları Kaydet
                 rov.physics_node = node
                 rov.physics_np = rov_np
+                
 
+                # C. BlueROV2 benzeri 6 itki motoru (4 yatay, 2 dikey)
+                #    ROV modelinde ileri yön -Z (Ursina/loader convention).
+                #      - İleri:  -Z
+                #      - Sağ:    +X
+                #      - Yukarı: +Y
+                #
+                #    4 yatay motor: ROV önü (-Z) = 0°, 45° dışa (sol: -X, sağ: +X) + ileri (-Z).
+                #      - Sol taraf: (-cos45, 0, -cos45)
+                #      - Sağ taraf: (+cos45, 0, -cos45)
+                #    Konumlar: ön z>0, arka z<0 (modelde ön -Z yönünde olduğu için ön motorlar z=+200).
+                #
+                #    2 dikey motor: m4, m5
+                #    Motor ID: m0=ön-sol, m1=ön-sağ, m2=arka-sol, m3=arka-sağ, m4=dikey-sol, m5=dikey-sağ
+                try:
+                    self.BlueROV2_motor_konfigurasyonu(rov)
+                    
 
+                except Exception as e:
+                    logging.warning(f"[Filo] ROV-{getattr(rov, 'id', '?')} için motor oluşturulamadı: {e}")
 
             self.minimap(scale=1.0)
+            self.motor_sema_kaydet()
+            self.tum_motor_bv_kutuphanelerini_guncelle()
+            
 
     # ============================================================
     # KURULUM VE SİSTEM YÖNETİMİ (SADELEŞTİRİLMİŞ)
     # ============================================================
+
+    def BlueROV2_motor_konfigurasyonu(self,rov):
+                    # m0: ön-sol (yatay)
+                    rov.m0 = Motor(rov)
+                    rov.m0.ekle(koordinat=Vec3(-200.0, 0.0, 200.0), yon_vec=(90, 0.0, 45))
+                    self.motorlar[rov.id].append(rov.m0)
+
+                    # m1: ön-sağ (yatay)
+                    rov.m1 = Motor(rov)
+                    rov.m1.ekle(koordinat=Vec3(200.0, 0.0, 200.0), yon_vec=(90, 0.0, -45))
+                    self.motorlar[rov.id].append(rov.m1)
+
+                    # m2: arka-sol (yatay)
+                    rov.m2 = Motor(rov)
+                    rov.m2.ekle(koordinat=Vec3(-200.0, 0.0, -200.0), yon_vec=(90, 0.0, 135))
+                    self.motorlar[rov.id].append(rov.m2)
+
+                    # m3: arka-sağ (yatay)
+                    rov.m3 = Motor(rov)
+                    rov.m3.ekle(koordinat=Vec3(200.0, 0.0, -200.0), yon_vec=(90, 0.0, -135))
+                    self.motorlar[rov.id].append(rov.m3)
+
+                    # m4: dikey-sol (heave)
+                    rov.m4 = Motor(rov)
+                    rov.m4.ekle(koordinat=Vec3(-100, 0.0, 0.0), yon_vec=(0.0, 0, 0.0))
+                    self.motorlar[rov.id].append(rov.m4)
+
+                    # m5: dikey-sağ (heave)
+                    rov.m5 = Motor(rov)
+                    rov.m5.ekle(koordinat=Vec3(100, 0.0, 0.0), yon_vec=(0.0, 0, 0.0))
+                    self.motorlar[rov.id].append(rov.m5)
+
+
+    def _euler_deg_to_direction(self,rot_deg: Vec3,v=Vec3(0,1,0), Transpose=False):
+        """
+        REFERANS: schema_export.py içerisindeki mantıkla birebir aynıdır.
+        Rotasyonlar tam olarak (X -> Z -> Y) sırasıyla matris çarpımıyla uygulanır.
+        (0,0,0) -> (0,1,0) (dikey yukarı).
+        """
+        # Dereceleri radyana çevir
+        rx, ry, rz = map(math.radians, [rot_deg.x, rot_deg.y, rot_deg.z])
+        
+        # Başlangıç: Motor dik duruyor (Azure durumu)
+        v = np.array([v.x, v.y, v.z])
+
+        # 1. X ekseninde yatır (Pitch) - rx: 90 ileri (+Z), -90 geri (-Z) yapar.
+        Rx = np.array([
+            [1, 0, 0],
+            [0, math.cos(rx), -math.sin(rx)],
+            [0, math.sin(rx), math.cos(rx)]
+        ])
+        
+        # 2. Z ekseninde döndür (Roll/Açı) - Bu matris çizimdeki 'Ry' isimlendirmesine karşılık gelir
+        # rz açısını kullanarak Y ekseni etrafındaki dönüşü simüle eder
+        Ry_custom = np.array([
+            [math.cos(rz), 0, math.sin(rz)],
+            [0, 1, 0],
+            [-math.sin(rz), 0, math.cos(rz)]
+        ])
+        
+        # 3. Y ekseninde döndür (Yaw) - Bu matris çizimdeki 'Rz' isimlendirmesine karşılık gelir
+        # ry açısını kullanarak Z ekseni etrafındaki dönüşü simüle eder
+        Rz_custom = np.array([
+            [math.cos(ry), -math.sin(ry), 0],
+            [math.sin(ry), math.cos(ry), 0],
+            [0, 0, 1]
+        ])
+
+        # Dönüşüm Zinciri (Schema dosyasındaki ile birebir aynı sıra):
+        # res = Ry @ (Rz @ (Rx @ v))
+        if not Transpose:   
+            res = Ry_custom @ (Rz_custom @ (Rx @ v))
+        else:
+            res = Rx.T @ (Rz_custom.T @ (Ry_custom.T @ v))
+        
+        return Vec3(res[0], res[1], res[2])
+
+
+
+
+
+
+    def tum_motor_bv_kutuphanelerini_guncelle(self):
+            self.motorlar_bv = {} 
+            for rov_id, motor_listesi in self.motorlar.items():
+                rov = self.find_rov_by_id(rov_id)
+                if not rov: continue
+                
+                # ROV'un güncel ölçek değerlerini al
+                scale_v = Vec3(rov.scale_x, rov.scale_y, rov.scale_z)
+                
+                rov_icin_bv_listesi = []
+                for motor in motor_listesi:
+                    # 1. İtki Yönü (Birim Vektör - Ölçekten bağımsızdır)
+                    rot = motor.motor_entity.rotation 
+                    birim_vektor = self._euler_deg_to_direction(Vec3(rot.x, rot.y, rot.z))
+                    motor.r_bv = birim_vektor
+                    
+                    # 2. GERÇEK MOMENT KOLU (Scaling Uygulanmış)
+                    # Motorun modeldeki yerel pozisyonunu ROV ölçeğiyle çarpıyoruz
+                    l_pos = motor.motor_entity.position # Örn: (-200, 0, 200)
+                    r_real = Vec3(
+                        l_pos.x * scale_v.x, 
+                        l_pos.y * scale_v.y, 
+                        l_pos.z * scale_v.z
+                    )
+                    #print(r_real,l_pos)
+                    
+                    # 3. GERÇEK TORK VEKTÖRÜ
+                    # Artık tork, gerçek dünya metre birimleri üzerinden hesaplanıyor
+                    motor.tork_bv = r_real.cross(birim_vektor).normalized()
+                    
+                    rov_icin_bv_listesi.append(birim_vektor)
+
+                self.motorlar_bv[rov_id] = rov_icin_bv_listesi
+                rov.motorlar = motor_listesi
+
+    def tum_motorlarin_guclerini_hesapla(self,rov_id=0,hedef_vektor:Vec3=Vec3(0.0,0.0,0.0),guc:float=0.0):
+        Powers=[v.dot(hedef_vektor)*guc for v in self.motorlar_bv[rov_id]]
+        return Powers
+
+    def hedef_tork_global(self, rov, hedef_vektor:Vec3):
+        rov_forward = self._euler_deg_to_direction(rov.rotation, Vec3(0, 0, 1))
+        tork_global_error = rov_forward.cross(hedef_vektor).normalized()
+        return tork_global_error
+
+    def hedef_tork_local(self, rov, hedef_vektor:Vec3):
+        tork_global = self.hedef_tork_global(rov, hedef_vektor)
+        tork_local = self._euler_deg_to_direction(rov.rotation,v=tork_global, Transpose=True)
+        return tork_local
+
+    def tork_gucleri_hesapla(self, rov=None, hedef_vektor:Vec3=Vec3(0.0,0.0,0.0),guc_orani:float=0.0):
+        tork_local = self.hedef_tork_local(rov, hedef_vektor).normalized()
+        tork_gucleri = []
+        for motor in rov.motorlar:
+            tork = motor.tork_bv.dot(tork_local)*guc_orani
+            itki = motor.r_bv.dot(hedef_vektor)*guc_orani
+            tork_gucleri.append(itki)
+            if tork > 1:
+                print(tork)
+        return tork_gucleri
+
+
+
+
+
+    def motor_sema_kaydet(self, rov=None, klasor=None, base_name="rov_motor_sema"):
+            """
+            ROV motor konfigürasyonunu ve saha üzerindeki konumunu/yönünü PDF olarak kaydeder.
+            """
+            # Klasör Hazırlığı
+            schema_root = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "SCHEMA")
+            if klasor is None:
+                klasor = schema_root
+                
+            # ROV Seçimi
+            if rov is None and getattr(self, "ortam_ref", None) and getattr(self.ortam_ref, "rovs", None):
+                rovs = [r for r in self.ortam_ref.rovs if r and not (hasattr(r, "is_destroyed") and r.is_destroyed)]
+                rov = rovs[0] if rovs else None
+                
+            if rov is None:
+                print("⚠️ [Filo] motor_sema_kaydet: Aktif ROV bulunamadı.")
+                return None
+
+            rov_id = getattr(rov, "id", 0)
+            rov_klasor = os.path.join(klasor, f"ROV{rov_id}")
+            
+            # 1. Motor Verilerini Topla (Yerel Bilgiler)
+            entries = []
+            for i in range(6):
+                m = getattr(rov, f"m{i}", None)
+                if m and hasattr(m, "l_pos"):
+                    # Motorun yerel rotasyonu
+                    rot = (0,0,0)
+                    if m.motor_entity:
+                        r = m.motor_entity.rotation
+                        rot = (r.x, r.y, r.z)
+                    
+                    entries.append({
+                        "name": f"m{i}",
+                        "position": (m.l_pos.x, m.l_pos.y, m.l_pos.z),
+                        "rotation": rot,
+                    })
+
+            # 2. Dünya Koordinatları ve Yönelimi (Global Bilgiler)
+            # Ursina'da: x, y, z konum; rotation_x, rotation_y, rotation_z açılar
+            world_pos = (rov.x, rov.y, rov.z)
+            world_rot = (rov.rotation_x, rov.rotation_y, rov.rotation_z)
+            pool_dimensions = (HavuzAyarlari.HAVUZ_TAM_GENISLIK, HavuzAyarlari.HAVUZ_TAM_GENISLIK)
+
+            try:
+                # Importları gerçekleştir
+                from .schema_export import draw_rov_motor_schema, save_rov_schema_info
+                
+                # Bilgi JSON dosyasını kaydet
+                save_rov_schema_info(rov_id=rov_id, motor_entries=entries, save_dir=rov_klasor)
+                
+                # Teknik Şemayı ve Saha Haritasını Çiz
+                paths = draw_rov_motor_schema(
+                    motor_entries=entries, 
+                    save_dir=rov_klasor, 
+                    world_pos=world_pos, 
+                    world_rot=world_rot, 
+                    pool_size=pool_dimensions, 
+                    base_name=base_name
+                )
+                
+                print(f"✅ [GNC] ROV-{rov_id} için 3 panelli teknik rapor oluşturuldu.")
+                print(f"📂 Kayıt Yeri: {paths['pdf']}")
+                return paths
+                
+            except Exception as e:
+                import logging
+                logging.error(f"[Filo] motor_sema_kaydet sırasında kritik hata: {e}")
+                return None
+
+    def motorlari_calistir(self,rov_id=0,gucler:list[float]=[]):
+        for i in range(len(gucler)):
+            self.motorlar[rov_id][i].calistir(gucler[i])
 
 
     def _basla_gat_modeli(self):
@@ -302,7 +545,8 @@ class Filo:
 
         # 1. FİZİK ADIMINI AT (En Önemli Satır)
         dt = time.dt
-        self.world.doPhysics(dt)
+        # 10 alt-adım atarak FPS düşse bile gerçek zamanı yakala
+        self.world.doPhysics(dt, 10, 1.0/60.0) 
 
         if not self.ortam_ref:
             return
@@ -357,8 +601,8 @@ class Filo:
             # MOTOR HAREKET KONTROLÜ (Düzeltildi)
             # ==========================================
             if held_keys['w']:
-                rov.m_sol.calistir(1.0)
-                rov.m_sag.calistir(1.0)
+                self.ileri(rov_id=rov.id,guc=1.0)
+                print(f"ROV-{rov.id} ileri hareketi")
             
             if held_keys['a']:
                 # Sola dönmek için sağ motor ileri, sol motor geri
