@@ -10,7 +10,7 @@ class Hidrodinamik:
     YER_CEKIMI = 9.81
     KUTLE = 8.0
     HACIM = 0.0122
-    MAX_ITME_KUVVETI = 240.0
+    MAX_ITME_KUVVETI = 150.0
     DRAG_KATSAYISI_CD = 0.85
     ON_YUZEY_ALANI = 0.15
 
