@@ -2,6 +2,7 @@ from FiratROVNet.config import HareketAyarlari
 import random
 import numpy as np
 import math
+import time
 
 
 class Formasyon:
@@ -370,15 +371,59 @@ class FormationMixin:
                 if not sessiz:
                     durum = "Dinamik" if dinamik else "Sabit"
                     print(f"✅ [MİNİMAP] {durum} {b['f_id']} seçildi. Alan Cyan olarak işlendi.")
-                return {
+                
+                # 🔹 FORMASYON + HULL BİLGİLERİ SÖZLÜĞÜ
+                hull_information_dict = {
+                    'hull': hull_obj,                           # Hull Shapely objesi
+                    'center': hull_merkez,                      # Hull merkezi (x, y)
+                    'hull_data': hull_data,                     # Tüm hull data
+                    'offset': offset,                           # Hull offset
+                    'yasakli_noktalar': yasakli_noktalar       # Engeller listesi
+                }
+                
+                formasyon_information_dict = {
+                    'formasyon_id': str(b['f_id']),            # Formasyon tipi adı
+                    'formasyon_index': int(b['f_id']),         # Formasyon indeksi
+                    'aralik': round(float(b['aralik']), 1),    # Araç arası mesafe
+                    'merkez': (round(b['merkez'][0], 2), round(b['merkez'][1], 2)),  # Formasyon merkezi
+                    'yaw': float(b['yaw']),                    # Yaw açısı
+                    'pozisyonlar': b['pozisyonlar'],          # ROV pozisyonları
+                    'lider_id': lider_id,                      # Lider ROV ID
+                    'grup_id': g_id                            # Grup ID
+                }
+                
+                # 🔹 SONUCU CACHE'E KAY
+                result = {
                     'f_id': int(b['f_id']),
                     'aralik': round(float(b['aralik']), 1),
                     'merkez': (round(b['merkez'][0], 2), round(b['merkez'][1], 2)),
-                    'yaw': float(b['yaw'])
+                    'yaw': float(b['yaw']),
+                    'hull_information': hull_information_dict,           # Hull verisi
+                    'formasyon_information': formasyon_information_dict  # Formasyon verisi
                 }
+                self.cache_formasyon_result(result)
+                
+                # 🔹 HULL INFORMATION'I OTOMATIK TETIKLE (JSON'a kaydet)
+                # Hull merkez kontrol: 25m'den az değişirse kaydetme
+                try:
+                    if self.filo and hasattr(self.filo, 'get_hull_information'):
+                        self.filo.get_hull_information(sample_count=50, g_id=g_id, kayit=True, sessiz=True, offset_threshold=25.0)
+                except Exception as e:
+                    self.filo.ds = e  # Hata bilgisini filo'ya kaydet (debug için)
+                
+                return result
+            
+
+            
+            # 🔹 BAŞARISIZ SONUCU DA CACHE'E KAY
+            self.cache_formasyon_result(None)
             return None
         except Exception as e:
             self.filo.ds=e
+            self.cache_formasyon_result(None)  # 🔹 HATA DURUMUNDA DA CACHE'E YAZ
+            
+
+            
             return None
 
     def _apply_formation_results(self, f_id, aralik, yaw, merkez, pozisyonlar, lider_id, is_3d, dinamik, sessiz, lider_hareket_halinde, g_id=0):
@@ -479,6 +524,35 @@ class FormationMixin:
             denenecek_formasyon_idleri.extend(kalan_idler)
         return denenecek_formasyon_idleri
     
+    def cache_formasyon_result(self, result, sessiz=True):
+        """
+        🔹 Formasyon seçim sonuçlarını cache'e kaydeder (async/worker friendly)
+        
+        Args:
+            result: Dict with {f_id, aralik, merkez, yaw} or None if failed
+            sessiz: True ise log yazma
+        """
+        self.last_formasyon_result = result
+        self.formasyon_result_timestamp = time.time()
+    
+    def get_formasyon_result(self, clear=False):
+        """
+        🔹 Cache'deki son formasyon seçim sonucunu al
+        
+        Args:
+            clear: True ise sonucu al ve temizle
+        
+        Returns:
+            Dict or None; timestamp ile birlikte
+        """
+        result = {
+            'sonuc': self.last_formasyon_result,
+            'zaman': self.formasyon_result_timestamp
+        }
+        if clear:
+            self.last_formasyon_result = None
+            self.formasyon_result_timestamp = None
+        return result
     def generate_search_points(self, lider_gps, hull_merkez):
         lider_pos_2d = np.array([float(lider_gps[0]), float(lider_gps[1])])
         merkez_pos_2d = np.array([float(hull_merkez[0]), float(hull_merkez[1])])

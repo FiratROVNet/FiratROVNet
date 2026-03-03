@@ -1,7 +1,6 @@
 import math
 import numpy as np
 
-
 class DataMixin:
     """Veri erisim fonksiyonlari."""
 
@@ -55,17 +54,12 @@ class DataMixin:
             # --- OZEL VERI TIPI ISLEMLERI ---
 
             if veri_tipi == "lidar":
-                # ROV sinifinda 'get' metodu lidar icin parametre almayabilir,
-                # bu yuzden dogrudan property uzerinden okuyoruz.
-                if hasattr(rov, 'son_lidar_mesafeleri'):
-                    if taraf is not None:
-                        val = rov.son_lidar_mesafeleri.get(taraf, -1)
-                    else:
-                        # Taraf belirtilmezse en yakin engeli dondur
-                        mesafeler = [m for m in rov.son_lidar_mesafeleri.values() if m > 0]
-                        val = min(mesafeler) if mesafeler else 999.0
-                else:
-                    val = -1
+                # Doğrudan ROV'dan lidar dict'i al
+                val = rov.get("lidar")
+
+            elif veri_tipi == "sonar":
+                # Doğrudan ROV'dan sonar scalar'ını al
+                val = rov.get("sonar")
 
             elif veri_tipi == "gps":
                 # ROV'dan ham (Ursina) GPS al
@@ -86,6 +80,22 @@ class DataMixin:
             elif veri_tipi == "engels":
                 # Engel hesaplama fonksiyonunu cagir
                 val = self.compute_obstacle_positions(rov_id)
+
+            elif veri_tipi == "mod":
+                # GNC'den mod bilgisi (TemelGNC.mod)
+                gnc = getattr(rov, 'gnc', None)
+                if gnc and hasattr(gnc, 'mod'):
+                    val = gnc.mod
+                else:
+                    val = None
+
+            elif veri_tipi == "gps_sinyal":
+                # GNC'den GPS sinyali bilgisi (TemelGNC.gps_sinyal)
+                gnc = getattr(rov, 'gnc', None)
+                if gnc and hasattr(gnc, 'gps_sinyal'):
+                    val = gnc.gps_sinyal
+                else:
+                    val = None
 
             else:
                 # Diger standart veriler (batarya, rol, hiz, yaw, sonar...)
@@ -130,11 +140,13 @@ class DataMixin:
         """
         ROV'un tum lidar sensorlerinden engel koordinatlarini hesaplar.
         Simulasyon formatinda (X: Sag-Sol, Y: Ileri-Geri, Z: Derinlik) calisir.
+        L0: İleri, L1: Sağ, L2: Sol, L3: Dip
         """
         LIDAR_OFFSETS = {
-            0: 0,     # on
+            0: 0,     # ileri
             1: -90,   # sag
             2: 90     # sol
+            # L3 (dip) offset yok, Z ekseninde işlem
         }
         obstacles = []
 
@@ -146,6 +158,7 @@ class DataMixin:
             x0, y0, z0 = gps[0], gps[1], gps[2]
             yaw_deg = self.filo.get(rov_id, "yaw") or 0.0
 
+            # L0, L1, L2: Horizontal lidarlar (İleri, Sağ, Sol)
             for lidar_indis in [0, 1, 2]:
                 distance = self.filo.get(rov_id, "lidar", lidar_indis)
                 if distance is not None and distance > 0 and distance != -1:
@@ -155,9 +168,20 @@ class DataMixin:
                     oy = y0 + distance * math.cos(theta_rad)
                     oz = z0
                     obstacles.append((ox, oy, oz))
+            
+            # L3: Dip lidar (vertical - Z ekseni)
+            distance_dip = self.filo.get(rov_id, "lidar", 3)
+            if distance_dip is not None and distance_dip > 0 and distance_dip != -1:
+                # Aşağı bakıyor, Z ekseninde değişim
+                ox = x0
+                oy = y0
+                oz = z0 - distance_dip  # Simulasyon: Z negatif = derinlik
+                obstacles.append((ox, oy, oz))
+                
         except Exception as e:
             print(f"❌ [HATA] Engel koordinatlari hesaplanirken hata: {e}")
             import traceback
             traceback.print_exc()
 
         return obstacles
+

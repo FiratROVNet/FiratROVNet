@@ -344,6 +344,8 @@ class TemelGNCHelper:
         if mevcut_indeks >= len(nokta_listesi):
             self.filo_ref._git_nokta_listesi.pop(rov_id, None)
             self.filo_ref._git_mevcut_nokta_indeksi.pop(rov_id, None)
+            if hasattr(self.filo_ref, '_git_hedef_derinligi'):
+                self.filo_ref._git_hedef_derinligi.pop(rov_id, None)
             return None, True
 
         # Mevcut waypoint
@@ -352,7 +354,16 @@ class TemelGNCHelper:
 
         target_x = float(wp[0])
         target_y = float(wp[1])
-        target_z = current_gps[2]
+        
+        # Hedef derinliği kullan (varsa), yoksa mevcut derinliği koru
+        target_depth = None
+        if hasattr(self.filo_ref, '_git_hedef_derinligi'):
+            target_depth = self.filo_ref._git_hedef_derinligi.get(rov_id)
+        
+        if target_depth is not None:
+            target_z = target_depth
+        else:
+            target_z = current_gps[2]
 
         waypoint_hedef = Vec3(target_x, target_y, target_z)
 
@@ -394,10 +405,15 @@ class TemelGNCHelper:
             mesafe = float(e_info.get('mesafe', 0.0))
 
             etki = 1.0 - (mesafe / GATLimitleri.ENGEL)
+            #print(f"ROV-{self.rov.id}: Mesafe = {mesafe}, Etki = {etki}")
+
             max_engel_etkisi = max(max_engel_etkisi, etki)
             guc1 = max(1 - self._guc_orani_hesapla(mesafe, GATLimitleri.ENGEL), guc0)
 
-            if etki > 0.001 and self.filo_ref.get(rov_id, 'rol') == 1:
+            
+
+            if etki > 0.2 and self.filo_ref.get(self.rov.id, 'rol') == 1 and e_info.get('yon') != 'asagi_lidar':
+                print(self.rov.id,etki,max_engel_etkisi)
                 self.filo_ref.formasyon_sec(dinamik=True, tekrar=30, g_id=self.rov.group_id)
 
             bv_yatay = Vec3(bv.x, bv.y, bv.z)

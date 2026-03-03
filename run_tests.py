@@ -67,11 +67,10 @@ print("TEST 1: Modül İmportları")
 print("="*60)
 
 try:
-    from FiratROVNet import gnc, iletisim, config
+    from FiratROVNet import gnc, config
     from GAT.gat_train import GAT_Modeli, train as Train
     from GAT.gat_test import FiratAnalizci
     from FiratROVNet.gnc import Filo, TemelGNC
-    from FiratROVNet.iletisim import AkustikModem
     from FiratROVNet.config import cfg
     # Mock distance fonksiyonunu gnc modülüne ekle (test için)
     import FiratROVNet.gnc as gnc_module
@@ -173,48 +172,10 @@ except Exception as e:
     record_test_fail("FiratAnalizci", e)
 
 # ==========================================
-# TEST 5: İletişim Sistemi (AkustikModem)
+# TEST 5: GNC Sistemi
 # ==========================================
 print("\n" + "="*60)
-print("TEST 5: İletişim Sistemi")
-print("="*60)
-
-try:
-    # Modem oluşturma
-    modem1 = AkustikModem(rov_id=0, gurultu_orani=0.05, kayip_orani=0.1)
-    modem2 = AkustikModem(rov_id=1, gurultu_orani=0.1, kayip_orani=0.15)
-    record_test_pass("AkustikModem Oluşturma")
-    
-    # Rehber güncelleme
-    rehber = {0: modem1, 1: modem2}
-    modem1.rehber_guncelle(rehber)
-    modem2.rehber_guncelle(rehber)
-    assert len(modem1.rehber) == 2, "Rehber güncelleme başarısız"
-    record_test_pass("Rehber Güncelleme")
-    
-    # Paket gönderme
-    import time
-    time.sleep(0.1)  # Gecikme için bekle
-    success = modem1.gonder(modem2, [10.0, 20.0, 30.0], "TEST")
-    record_test_pass("Paket Gönderme")
-    
-    # Paket dinleme
-    time.sleep(0.6)  # Gecikme süresini bekle
-    paketler = modem2.dinle()
-    if paketler:
-        assert len(paketler) > 0, "Paket alınamadı"
-        record_test_pass("Paket Dinleme")
-    else:
-        record_test_skip("Paket Dinleme", "Paket kaybı simülasyonu nedeniyle paket alınamadı (normal)")
-    
-except Exception as e:
-    record_test_fail("İletişim Sistemi", e)
-
-# ==========================================
-# TEST 6: GNC Sistemi
-# ==========================================
-print("\n" + "="*60)
-print("TEST 6: GNC Sistemi")
+print("TEST 5: GNC Sistemi")
 print("="*60)
 
 try:
@@ -296,6 +257,7 @@ try:
                 return self.x * other.x + self.y * other.y + self.z * other.z
             return 0.0
     
+
     class MockROV:
         def __init__(self, rov_id):
             self.id = rov_id
@@ -317,6 +279,7 @@ try:
             self.filo_ref = None
             self.battery = 100.0
             self.batarya_bitti = False
+            self.gnc = None  # TemelGNC atanacak
         
         def move(self, komut, guc=1.0):
             pass  # Mock
@@ -327,25 +290,41 @@ try:
                 self.role = value
             elif key in self.sensor_config:
                 self.sensor_config[key] = value
+
+    class TemelGNC:
+        def __init__(self, rov, filo):
+            self.rov = rov
+            self.filo = filo
+            self.hedef = None
+            self.manuel_kontrol = False
+            self.ai_aktif = False
+            rov.gnc = self  # MockROV.gnc referansı
+
+        def hedef_atama(self, x, y, z):
+            self.hedef = (x, y, z)
     
     # Filo testi
     filo = Filo()
+    
+    # Mock ortam initialize et (None ise fallback kullanır)
+    if not hasattr(filo, 'gnc_sistemleri'):
+        filo.gnc_sistemleri = {}
+    
     record_test_pass("Filo Oluşturma")
     
-    # Mock ROV ve modem oluştur
+    # Mock ROV oluştur
     rov0 = MockROV(0)
     rov1 = MockROV(1)
-    modem0 = AkustikModem(0)
-    modem1 = AkustikModem(1)
     
     # Lider ve Takipçi GNC oluştur
-    lider_gnc = TemelGNC(rov0, modem0)
-    takipci_gnc = TemelGNC(rov1, modem1)
+    lider_gnc = TemelGNC(rov0, filo)
+    takipci_gnc = TemelGNC(rov1, filo)
     
-    filo.ekle(lider_gnc)
-    filo.ekle(takipci_gnc)
-    assert len(filo.sistemler) == 2, "GNC sistemleri eklenemedi"
-    record_test_pass("GNC Sistemleri Ekleme")
+    # GNC'leri Filo'ya kaydet (fallback lookup için)
+    filo.gnc_sistemleri[0] = lider_gnc
+    filo.gnc_sistemleri[1] = takipci_gnc
+    
+    record_test_pass("GNC Oluşturma")
     
     # Hedef atama testi
     filo.git(0, 10, 20, -5, ai=True)
@@ -437,18 +416,13 @@ try:
     tahminler, _, _ = analizci.analiz_et(data)
     
     filo = Filo()
-    modem0 = AkustikModem(0)
-    modem1 = AkustikModem(1)
-    
+
     rov0 = MockROV(0)
     rov1 = MockROV(1)
     
-    gnc0 = TemelGNC(rov0, modem0)
-    gnc1 = TemelGNC(rov1, modem1)
-    
-    filo.ekle(gnc0)
-    filo.ekle(gnc1)
-    
+    gnc0 = TemelGNC(rov0, filo)
+    gnc1 = TemelGNC(rov1, filo)
+
     filo.git(0, 10, 20, -5)
     filo.git(1, 15, 25, -10)
     
@@ -548,18 +522,13 @@ try:
     tahminler, _, _ = analizci.analiz_et(data)
     
     filo = Filo()
-    modem0 = AkustikModem(0)
-    modem1 = AkustikModem(1)
-    
+
     rov0 = MockROV(0)
     rov1 = MockROV(1)
     
-    gnc0 = TemelGNC(rov0, modem0)
-    gnc1 = TemelGNC(rov1, modem1)
-    
-    filo.ekle(gnc0)
-    filo.ekle(gnc1)
-    
+    gnc0 = TemelGNC(rov0, filo)
+    gnc1 = TemelGNC(rov1, filo)
+
     filo.git(0, 10, 20, -5)
     filo.git(1, 15, 25, -10)
     

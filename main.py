@@ -36,26 +36,23 @@ print("✅ Sistem aktif. Minimap üzerinden hedef eklemek için sol tıkla.")
 # 2. ANA DÖNGÜ (UPDATE)
 # ==========================================
 def update():
-    """Ana simülasyon döngüsü (sadeleştirilmiş)."""
+    """Ana simülasyon döngüsü (maksimal sadeleştirme)."""
     try:
-        # --- 1. GAT ANALİZİ (Hedef hesaplama öncesi) ---
-        # Tahminler array'ını tüm ROV'lar (destroyed dahil) için oluştur
+        # Tahminler array'ı
         tahminler = np.zeros(len(app.rovs), dtype=int)
+        
+        # GAT analizi
         filo.guncelle_gat_analizi(tahminler)
         
-        # --- 2. LİDER GÜNCELLEME & PATH TRANSFER (Navigasyon öncesi!) ---
-        # Lider değişirse, eski liderin path'ı yeni lidere transfer edilir
+        # Tüm sistem güncellemeleri (guncelle_hepsi içinde):
+        # - Navigasyon kuyruğu
+        # - Lider yönetimi & path transfer
+        # - ROV hasar/GNC işlemleri
+        # - Sonar, minimap, engel bulut
         filo.guncelle_hepsi(tahminler)
         
-        # --- 3. NAVİGASYON KUYRUGU (Yeni lider artık tanındı) ---
-        filo.guncelle_navigasyon_kuyrugu()
+        # Görselleştirme
         
-        # --- 4. SİSTEM GÜNCELLEMELERİ ---
-        app.guncelle_sonar_cizgileri()
-        filo.execute_queued_commands()
-        
-        # --- 5. GÖRSELLEŞTİRME ---
-        filo.guncelle_gorseller_ve_renkler(tahminler)
         
     except Exception as e:
         print(f"❌ [HATA] Update döngüsü: {e}")
@@ -94,7 +91,7 @@ def input(key):
             
             # Mevcut derinliği grubun liderinden al
             lider_id, lider_gps = filo.find_leader_info(g_id=grup_id)
-            mevcut_z = lider_gps[2] if lider_gps else -10
+            mevcut_z = -20 #lider_gps[2] if lider_gps else -10
             
             # Benzersiz ID oluştur ve hedefi kaydet
             filo.target_counter += 1

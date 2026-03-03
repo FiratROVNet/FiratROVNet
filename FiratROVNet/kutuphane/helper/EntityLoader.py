@@ -7,6 +7,7 @@ from FiratROVNet.config import ROVModelleri, GATLimitleri  # Config dosyanızdan
 class EntityLoader:
     def __init__(self, ortam_ref):
         self.ortam = ortam_ref
+        self.rock_entities = []  # Kaya entity'lerini havuzda tutmak için
 
 
 
@@ -441,9 +442,12 @@ class EntityLoader:
         model_path = "Models-3D/rock/stone.glb"
 
         if os.path.exists(model_path):
-            Entity(model=model_path, scale=scale, position=position, collider='mesh', unlit=True)
+            rock_entity = Entity(model=model_path, scale=scale, position=position, collider='mesh', unlit=True)
+            self.rock_entities.append(rock_entity)  # Havuzda tut
+            return rock_entity
         else:
             print(f"⚠️ Kaya modeli bulunamadı: {model_path}")
+            return None
 
     def spawn_rocks(self, count=20, havuz_genisligi=200):
         """

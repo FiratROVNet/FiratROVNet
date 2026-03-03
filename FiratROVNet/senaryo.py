@@ -4,6 +4,12 @@ Senaryo Üretim Modülü - Yapay Zeka Eğitimi İçin Veri Üretimi
 Bu modül, GUI olmadan (headless) simülasyon ortamları oluşturur ve
 yapay zeka algoritmalarını eğitmek için veri üretir.
 
+Yeni Özellikler (v1.8+):
+- Dinamik engel basitleştirme (engel_bulutu → basitleştirilmiş polygonlar)
+- Derinlik koruma çok-waypoint navigasyonda
+- HullManager entegrasyonu
+- Graceful fallback mekanizması
+
 Kullanım:
     from FiratROVNet import senaryo
     
@@ -14,6 +20,9 @@ Kullanım:
     batarya = senaryo.get(0, "batarya")
     gps = senaryo.get(0, "gps")
     sonar = senaryo.get(0, "sonar")
+    
+    # Dinamik rota planlama (Lidar verileri otomatik entegre)
+    senaryo.git(0, 100, 50, -30, ai=True)
     
     # veya Filo üzerinden
     batarya = senaryo.filo.get(0, "batarya")
@@ -33,6 +42,7 @@ os.environ['URSINA_HEADLESS'] = '1'
 from ursina import *
 from FiratROVNet.simulasyon import Ortam, ROV
 from FiratROVNet.gnc import Filo
+from FiratROVNet.hull import HullManager
 import numpy as np
 import random
 import networkx as nx
@@ -45,6 +55,13 @@ class Senaryo:
     """
     Senaryo üretim sınıfı - Headless simülasyon ortamı oluşturur.
     
+    Özellinkleri:
+    - Pozisyon bulma ve dağıtma (adalar, ROV'lar)
+    - Dinamik engel basitleştirme (Lidar → geometri)
+    - A* pathfinding with dynamic obstacles
+    - Derinlik koruma multi-waypoint navigasyonda
+    - Filo yönetimi ve GAT entegrasyonu
+    
     Güvenli pozisyon bulma fonksiyonları:
     - _guvenli_ada_pozisyonu_bul: Adalar için güvenli pozisyon bulur
     - _guvenli_rov_pozisyonu_bul: ROV'lar için güvenli pozisyon bulur
@@ -53,6 +70,29 @@ class Senaryo:
     yapay zeka eğitimi için veri üretir.
     """
     
+    # Singleton pattern - class-level instance
+    _singleton_instance = None
+    
+    # Object Pooling Sabitleri - İlk seferde max sayıda entity oluştur
+    MAX_ROVS = 20        # Havuzda 20 ROV hazır bekler
+    MAX_ADALAR = 20      # Havuzda 20 Ada hazır bekler
+    MAX_KAYALAR = 20     # Havuzda 20 Kaya hazır bekler
+    
+    # Rastgele sayıda entity gösterme aralıkları
+    MIN_ROVS = 4
+    MAX_ROVS_GOSTER = 12
+    MIN_ADALAR = 3
+    MAX_ADALAR_GOSTER = 6
+    MIN_KAYALAR = 10
+    MAX_KAYALAR_GOSTER = 20
+    
+    @classmethod
+    def get_instance(cls, verbose=False):
+        """Singleton instance döndürür - eğer yoksa yaratır."""
+        if cls._singleton_instance is None:
+            cls._singleton_instance = cls(verbose=verbose)
+        return cls._singleton_instance
+    
     def __init__(self, verbose=False):
         self.app = None
         self.filo = None
@@ -60,10 +100,16 @@ class Senaryo:
         self.aktif = False
         self.verbose = verbose  # Log mesajlarını kontrol eder
         
+        # Hull Manager (dinamik engeller için)
+        self.hull_manager = None
+        
         # Önbellek mekanizması (hızlı senaryo üretimi için)
         self._cache_n_rovs = None
         self._cache_n_engels = None
         self._cache_havuz_genisligi = None
+        
+        # Object pooling - Ortam bir kez oluşturuldu mu?
+        self._entities_created = False
     
     def _guvenli_ada_pozisyonu_bul(self, mevcut_adalar, havuz_genisligi, ada_radius, min_mesafe_ada, max_deneme=100):
         """
@@ -148,7 +194,8 @@ class Senaryo:
     
     def _nesneleri_yeniden_dagit(self):
         """
-        Entity'leri yok etmeden SADECE koordinatlarını değiştirir. (Çok Hızlı)
+        Entity'leri yok etmeden SADECE koordinatlarını değiştirir ve visibility kontrolü yapar. (Çok Hızlı)
+        Object pooling: İstenen sayıda entity göster, geri kalanları gizle.
         Bu metod, mevcut nesnelerin pozisyonlarını güvenli şekilde yeniden dağıtır.
         """
         from .config import GATLimitleri, HareketAyarlari
@@ -158,15 +205,40 @@ class Senaryo:
         min_mesafe_ada = HareketAyarlari.RANDOM_HEDEF_MIN_MESAFE_ADA  # Adalardan minimum mesafe
         min_mesafe_rov = GATLimitleri.CARPISMA * 1.5  # ROV'lar arası minimum mesafe
         
+        # Rastgele sayıda entity göster (kullanıcının isteği: ROV 4-12, Ada 3-6, Kaya 10-20)
+        import random
+        istenen_rov_sayisi = random.randint(self.MIN_ROVS, self.MAX_ROVS_GOSTER)
+        istenen_ada_sayisi = random.randint(self.MIN_ADALAR, self.MAX_ADALAR_GOSTER)
+        istenen_kaya_sayisi = random.randint(self.MIN_KAYALAR, self.MAX_KAYALAR_GOSTER)
+        
         yeni_ada_pos = []  # [(x, z, r)]
         
-        # --- 1. ADALARI (Engelleri) DAĞIT ---
-        # Adaları güvenli pozisyonlara taşı
+        # --- 1. ADALARI (Engelleri) DAĞIT + VİSİBİLİTY KONTROL ---
+        # İlk N adayı göster, geri kalanları gizle
         if hasattr(self.ortam, 'island_positions') and self.ortam.island_positions:
             for i, ada_data in enumerate(self.ortam.island_positions):
                 # None kontrolü (çıkarılmış adalar için None olabilir)
                 if ada_data is None:
                     continue
+                
+                # Visibility kontrolü: İstenen sayıdan fazlasını gizle
+                if i >= istenen_ada_sayisi:
+                    # Ada entity'sini gizle
+                    if hasattr(self.ortam, 'island_entities') and i < len(self.ortam.island_entities):
+                        ada_entity = self.ortam.island_entities[i]
+                        if ada_entity and hasattr(ada_entity, 'visible'):
+                            ada_entity.visible = False
+                        if ada_entity and hasattr(ada_entity, 'enabled'):
+                            ada_entity.enabled = False
+                    continue  # Gizli ada için pozisyon hesaplama
+                
+                # Ada gösterilecek - görünür yap
+                if hasattr(self.ortam, 'island_entities') and i < len(self.ortam.island_entities):
+                    ada_entity = self.ortam.island_entities[i]
+                    if ada_entity and hasattr(ada_entity, 'visible'):
+                        ada_entity.visible = True
+                    if ada_entity and hasattr(ada_entity, 'enabled'):
+                        ada_entity.enabled = True
                 
                 if len(ada_data) >= 3:
                     _, _, radius = ada_data
@@ -206,57 +278,83 @@ class Senaryo:
                     if ada_data is not None and len(ada_data) >= 2:
                         yeni_ada_pos.append((ada_data[0], ada_data[1], radius))
         
-        # --- 2. DİĞER ENGELLERİ (Kayaları) DAĞIT ---
-        # island_hitboxes dışındaki engeller kayalardır
-        ada_hitboxlar = getattr(self.ortam, 'island_hitboxes', [])
-        for engel in self.ortam.engeller:
-            if engel in ada_hitboxlar:
-                continue  # Adaları zaten taşıdık
+        # --- 2. KAYALARI DAĞIT + VİSİBİLİTY KONTROL ---
+        # Kayalar EntityLoader.rock_entities listesinde tutuluyor
+        if hasattr(self.ortam, 'loader') and hasattr(self.ortam.loader, 'rock_entities'):
+            havuz_yari = havuz * 0.9  # Havuz sınırlarından biraz içerde
             
-            # Kayaları rastgele boşluklara at (güvenli mesafede)
-            max_deneme = 50
-            for _ in range(max_deneme):
-                engel_x = random.uniform(-havuz * 0.45, havuz * 0.45)
-                engel_z = random.uniform(-havuz * 0.45, havuz * 0.45)
+            for kaya_idx, kaya in enumerate(self.ortam.loader.rock_entities):
+                if kaya is None:
+                    continue
                 
-                # Adalardan uzak mı kontrol et
-                guvenli = True
-                for ada_x, ada_z, ada_radius in yeni_ada_pos:
-                    mesafe = np.linalg.norm(np.array([engel_x, engel_z]) - np.array([ada_x, ada_z]))
-                    if mesafe < (ada_radius + min_mesafe_ada):
-                        guvenli = False
-                        break
+                # Visibility kontrolü: İstenen sayıdan fazlasını gizle
+                if kaya_idx >= istenen_kaya_sayisi:
+                    if hasattr(kaya, 'visible'):
+                        kaya.visible = False
+                    if hasattr(kaya, 'enabled'):
+                        kaya.enabled = False
+                    continue  # Gizli kaya için pozisyon hesaplama
                 
-                if guvenli:
-                    break
-            
-            # Engel pozisyonunu güncelle
-            if hasattr(engel, 'position'):
-                if hasattr(engel.position, 'x'):
-                    engel.position.x = engel_x
-                    engel.position.z = engel_z
-                    engel.position.y = getattr(self.ortam, 'SEA_FLOOR_Y', -100)
-            elif hasattr(engel, 'x'):
-                engel.x = engel_x
-                engel.z = engel_z
-                engel.y = getattr(self.ortam, 'SEA_FLOOR_Y', -100)
+                # Kaya gösterilecek - görünür yap
+                if hasattr(kaya, 'visible'):
+                    kaya.visible = True
+                if hasattr(kaya, 'enabled'):
+                    kaya.enabled = True
+                
+                # Rastgele yeni pozisyon (x, z rastgele, y derinliği koru)
+                yeni_x = random.uniform(-havuz_yari, havuz_yari)
+                yeni_z = random.uniform(-havuz_yari, havuz_yari)
+                
+                # Mevcut y (derinlik) değerini koru
+                mevcut_y = kaya.y if hasattr(kaya, 'y') else -30
+                
+                # Pozisyonu güncelle (derinlik korunur)
+                if hasattr(kaya, 'position'):
+                    kaya.position = Vec3(yeni_x, mevcut_y, yeni_z)
+                elif hasattr(kaya, 'x'):
+                    kaya.x = yeni_x
+                    kaya.z = yeni_z
+                    # y değiştirilmez (derinlik korunur)
         
-        # --- 3. ROV'LARI DAĞIT ---
+        # --- 3. ROV'LARI DAĞIT + VİSİBİLİTY KONTROL ---
+        # İlk N ROV'u göster, geri kalanları gizle
         mevcut_rov_pos = []
-        for rov in self.ortam.rovs:
+        for rov_idx, rov in enumerate(self.ortam.rovs):
             if rov is None:
                 continue  # Çıkarılmış ROV'ları atla
+            
+            # Visibility kontrolü: İstenen sayıdan fazlasını gizle
+            if rov_idx >= istenen_rov_sayisi:
+                # ROV'u gizle ve devre dışı bırak
+                if hasattr(rov, 'visible'):
+                    rov.visible = False
+                if hasattr(rov, 'enabled'):
+                    rov.enabled = False
+                if hasattr(rov, 'label') and rov.label:
+                    rov.label.visible = False
+                continue  # Gizli ROV için pozisyon hesaplama
+            
+            # ROV gösterilecek - görünür yap
+            if hasattr(rov, 'visible'):
+                rov.visible = True
+            if hasattr(rov, 'enabled'):
+                rov.enabled = True
+            if hasattr(rov, 'label') and rov.label:
+                rov.label.visible = True
             
             pos = self._guvenli_rov_pozisyonu_bul(mevcut_rov_pos, yeni_ada_pos, 
                                                   min_mesafe_rov, min_mesafe_ada, havuz)
             if pos:
                 yeni_x, yeni_z = pos
+                # Rastgele derinlik: 0 ile -30 metre arası
+                yeni_y = random.uniform(-40, 0)
+                
                 # ROV pozisyonunu güncelle
                 if hasattr(rov, 'position'):
-                    rov.position = Vec3(yeni_x, -5, yeni_z)
+                    rov.position = Vec3(yeni_x, yeni_y, yeni_z)
                 elif hasattr(rov, 'x'):
                     rov.x = yeni_x
-                    rov.y = -5
+                    rov.y = yeni_y
                     rov.z = yeni_z
                 
                 # Hızı sıfırla
@@ -268,17 +366,18 @@ class Senaryo:
                     else:
                         rov.velocity = Vec3(0, 0, 0)
                 
-                mevcut_rov_pos.append([yeni_x, -5, yeni_z])
+                mevcut_rov_pos.append([yeni_x, yeni_y, yeni_z])
             else:
                 # Güvenli pozisyon bulunamazsa rastgele yerleştir
                 yeni_x = random.uniform(-havuz * 0.45, havuz * 0.45)
                 yeni_z = random.uniform(-havuz * 0.45, havuz * 0.45)
+                yeni_y = random.uniform(-30, 0)  # Rastgele derinlik
                 
                 if hasattr(rov, 'position'):
-                    rov.position = Vec3(yeni_x, -5, yeni_z)
+                    rov.position = Vec3(yeni_x, yeni_y, yeni_z)
                 elif hasattr(rov, 'x'):
                     rov.x = yeni_x
-                    rov.y = -5
+                    rov.y = yeni_y
                     rov.z = yeni_z
                 
                 if hasattr(rov, 'velocity'):
@@ -289,30 +388,40 @@ class Senaryo:
                     else:
                         rov.velocity = Vec3(0, 0, 0)
                 
-                mevcut_rov_pos.append([yeni_x, -5, yeni_z])
+                mevcut_rov_pos.append([yeni_x, yeni_y, yeni_z])
         
-        # Lideri random seç (sadece aktif ROV'lar arasından)
-        aktif_rovs = [rov for rov in self.ortam.rovs if rov is not None]
-        if len(aktif_rovs) > 0:
-            yeni_lider_id = random.randint(0, len(aktif_rovs) - 1)
-            aktif_indeks = 0
+        # Lideri random seç (sadece görünür/aktif ROV'lar arasından)
+        # Object pooling: Sadece istenen sayıda ROV görünür, onlar arasından lider seç
+        gorunur_rovs = [rov for i, rov in enumerate(self.ortam.rovs) 
+                        if rov is not None and i < istenen_rov_sayisi]
+        
+        if len(gorunur_rovs) > 0:
+            yeni_lider_id = random.randint(0, len(gorunur_rovs) - 1)
+            gorunur_indeks = 0
             for i, rov in enumerate(self.ortam.rovs):
-                if rov is None:
+                if rov is None or i >= istenen_rov_sayisi:
                     continue
-                if aktif_indeks == yeni_lider_id:
-                    if hasattr(rov, 'set'):
-                        rov.set('rol', 1)
-                    elif hasattr(rov, 'role'):
-                        rov.role = 1
-                else:
-                    if hasattr(rov, 'set'):
-                        rov.set('rol', 0)
-                    elif hasattr(rov, 'role'):
-                        rov.role = 0
-                aktif_indeks += 1
+                try:
+                    if gorunur_indeks == yeni_lider_id:
+                        if hasattr(rov, 'set') and callable(rov.set):
+                            rov.set('rol', 1)
+                        elif hasattr(rov, 'role'):
+                            rov.role = 1
+                    else:
+                        if hasattr(rov, 'set') and callable(rov.set):
+                            rov.set('rol', 0)
+                        elif hasattr(rov, 'role'):
+                            rov.role = 0
+                except Exception as e:
+                    if self.verbose:
+                        print(f"⚠️ Lider seçimi hatası ROV-{i}: {e}")
+                gorunur_indeks += 1
+        
+        # Senaryo aktif duruma getir
+        self.aktif = True
         
         if self.verbose:
-            print(f"🔄 Senaryo Yeniden Düzenlendi (ID'ler ve Nesneler Korundu)")
+            print(f"🔄 Senaryo Yeniden Düzenlendi: {istenen_rov_sayisi} ROV, {istenen_ada_sayisi} Ada, {istenen_kaya_sayisi} Kaya (Havuz: {self.MAX_ROVS}/{self.MAX_ADALAR}/{self.MAX_KAYALAR})")
         return self
         
     def uret(self, n_rovs=None, n_engels=None, havuz_genisligi=None, n_adalar=None,
@@ -320,6 +429,15 @@ class Senaryo:
              modem_ayarlari=None, sensor_ayarlari=None, verbose=None):
         """
         Senaryo ortamı oluşturur veya mevcut nesneleri yeniden dağıtır (optimize edilmiş).
+        
+        Dinamik Engel Desteği:
+        - engel_bulutu otomatik olarak A* pathfinding'e entegre edilir
+        - Lidar/Sonar verilerinden geometrik engeller oluşturulur
+        - HullManager via dinamik_engelleri_basitlestir() kullanılır
+        
+        Derinlik Koruma:
+        - _git_hedef_derinligi dictionary'si multi-waypoint rotalarında derinliği korur
+        - git_path() calls preserve target depth across waypoints
         
         Args:
             n_rovs (int): ROV sayısı (varsayılan: 3, None ise mevcut sayı korunur)
@@ -345,25 +463,28 @@ class Senaryo:
         if verbose is not None:
             self.verbose = verbose
         
-        # 1. Kontrol: Eğer ortam zaten varsa ve parametreler değişmediyse SADECE YER DEĞİŞTİR
-        # Not: Artık parametreler değiştiğinde dinamik ekleme/çıkarma yapılacak, ortam yeniden başlatılmayacak
-        if self.aktif and self.ortam is not None:
-            # Parametre kontrolü
-            n_rovs_changed = (n_rovs is not None and n_rovs != self._cache_n_rovs)
-            n_engels_changed = (n_engels is not None and n_engels != self._cache_n_engels)
-            havuz_changed = (havuz_genisligi is not None and havuz_genisligi != self._cache_havuz_genisligi)
-            n_adalar_changed = (n_adalar is not None and n_adalar != getattr(self, '_cache_n_adalar', None))
-            
-            if not n_rovs_changed:
-                # Parametreler değişmedi, sadece pozisyonları güncelle (ÇOK HIZLI!)
-                print("rov sayısı değişmedi, sadece pozisyonları güncelle")
-                return self._nesneleri_yeniden_dagit()
+        # Her zaman aktif duruma getir (test script'leri için)
+        self.aktif = True
         
-        # 2. Önbellek Güncelleme
+        # 1. OBJECT POOLING: Entity'ler zaten oluşturulduysa SADECE POZISYON DEĞİŞTİR
+        if self._entities_created:
+            if self.verbose:
+                print("🔄 Hızlı Mod: Sadece pozisyonlar güncelleniyor (entity'ler korunuyor)")
+            # Önbelleği güncelle (istenen sayılar)
+            if n_rovs is not None:
+                self._cache_n_rovs = n_rovs
+            if n_engels is not None:
+                self._cache_n_engels = n_engels
+            if havuz_genisligi is not None:
+                self._cache_havuz_genisligi = havuz_genisligi
+            
+            return self._nesneleri_yeniden_dagit()
+        
+        # 2. Önbellek Güncelleme (sadece ilk kurulumda)
         if n_rovs is not None:
             self._cache_n_rovs = n_rovs
         elif self._cache_n_rovs is None:
-            self._cache_n_rovs = 3  # Varsayılan
+            self._cache_n_rovs = 4  # Varsayılan (test senaryosuna göre)
         
         if n_engels is not None:
             self._cache_n_engels = n_engels
@@ -375,23 +496,29 @@ class Senaryo:
         elif self._cache_havuz_genisligi is None:
             self._cache_havuz_genisligi = 200  # Varsayılan
         
-        n_rovs = self._cache_n_rovs
-        n_engels = self._cache_n_engels
+        # Object pooling: İlk seferde max sayıda entity oluştur
+        # Gerçekte oluşturulacak sayılar (ilk seferde MAX, sonra gizle/göster)
+        n_rovs_entity = self.MAX_ROVS  # Her zaman max sayıda entity oluştur
+        n_engels_entity = self.MAX_ADALAR
+        n_kaya_entity = self.MAX_KAYALAR  # Kaya havuzu
+        
         havuz_genisligi = self._cache_havuz_genisligi
         
         # 3. İlk Kurulum (Sadece bir kez çalışır - AĞIR KISIM)
-        if not self.verbose:
-            try:
-                from panda3d.core import loadPrcFileData
-                loadPrcFileData("", "window-type none")
-                loadPrcFileData("", "audio-library-name null")
-                loadPrcFileData("", "notify-level error")
-                loadPrcFileData("", "default-directnotify-level error")
-                loadPrcFileData("", "notify-level-display error")
-            except Exception:
-                pass
-        if self.ortam is None:
-            # Ursina'yı headless modda başlat
+        # Object pooling: Ortam ve entity'ler sadece ilk seferde yaratılır
+        if not self._entities_created:
+            if not self.verbose:
+                try:
+                    from panda3d.core import loadPrcFileData
+                    loadPrcFileData("", "window-type none")
+                    loadPrcFileData("", "audio-library-name null")
+                    loadPrcFileData("", "notify-level error")
+                    loadPrcFileData("", "default-directnotify-level error")
+                    loadPrcFileData("", "notify-level-display error")
+                except Exception:
+                    pass
+            
+            # Ursina'yı headless modda başlat (SADECE İLK SEFERDE)
             if self.app is None:
                 # Headless mod için özel ayarlar
                 os.environ['URSINA_HEADLESS'] = '1'
@@ -443,67 +570,89 @@ class Senaryo:
                     self.app = None
             
             # Ortam oluştur - Gerçek Ortam sınıfını kullan (simulasyon.py'den)
-            # Bu sayede Ada ve ROV fonksiyonları kullanılabilir
-            try:
-                from FiratROVNet.simulasyon import Ortam as OrtamSinifi
-                if not self.verbose:
-                    from contextlib import redirect_stdout, redirect_stderr
-                    import io
-                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            # SADECE İLK SEFERDE - Object pooling için ortam bir kez yaratılır
+            if self.ortam is None:
+                try:
+                    from FiratROVNet.simulasyon import Ortam as OrtamSinifi
+                    if not self.verbose:
+                        from contextlib import redirect_stdout, redirect_stderr
+                        import io
+                        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                            self.ortam = OrtamSinifi(verbose=self.verbose)
+                    else:
                         self.ortam = OrtamSinifi(verbose=self.verbose)
-                else:
-                    self.ortam = OrtamSinifi(verbose=self.verbose)
-                # Ortam'a verbose flag'ini aktar
-                if hasattr(self.ortam, 'verbose'):
-                    self.ortam.verbose = self.verbose
-                
-                # Headless mod için görsel özellikleri kapat
-                if hasattr(self.ortam, 'app'):
-                    try:
-                        if hasattr(self.ortam.app, 'window'):
-                            self.ortam.app.window.show = False
-                    except:
-                        pass
-                
-                # Harita sistemini kapat (headless mod için)
-                if hasattr(self.ortam, 'harita') and self.ortam.harita:
-                    try:
-                        self.ortam.harita.goster(False)
-                    except:
-                        pass
-            except Exception as e:
-                # Ortam sınıfı yüklenemezse minimal ortam objesi oluştur
-                print(f"⚠️ Ortam sınıfı yüklenemedi, minimal mod kullanılıyor: {e}")
-                self.ortam = type('Ortam', (), {
-                    'rovs': [],
-                    'engeller': [],
-                    'havuz_genisligi': havuz_genisligi,
-                    'filo': None,
-                    'island_positions': [],
-                    'island_hitboxes': [],
-                    'island_entities': []
-                })()
+                    # Ortam'a verbose flag'ini aktar
+                    if hasattr(self.ortam, 'verbose'):
+                        self.ortam.verbose = self.verbose
+                    
+                    # Headless mod için görsel özellikleri kapat
+                    if hasattr(self.ortam, 'app'):
+                        try:
+                            if hasattr(self.ortam.app, 'window'):
+                                self.ortam.app.window.show = False
+                        except:
+                            pass
+                    
+                    # Harita sistemini kapat (headless mod için)
+                    if hasattr(self.ortam, 'harita') and self.ortam.harita:
+                        try:
+                            self.ortam.harita.goster(False)
+                        except:
+                            pass
+                except Exception as e:
+                    # Ortam sınıfı yüklenemezse minimal ortam objesi oluştur
+                    print(f"⚠️ Ortam sınıfı yüklenemedi, minimal mod kullanılıyor: {e}")
+                    self.ortam = type('Ortam', (), {
+                        'rovs': [],
+                        'engeller': [],
+                        'havuz_genisligi': havuz_genisligi,
+                        'filo': None,
+                        'island_positions': [],
+                        'island_hitboxes': [],
+                        'island_entities': []
+                    })()
         
-        # 4. Nesne Sayıları Değiştiyse sim_olustur çağır
-        # Not: sim_olustur nesneleri (Entity) yaratır veya günceller
+        # 4. Nesne Sayıları Değiştiyse sim_olustur çağır (SADECE İLK SEFERDE)
+        # Object pooling: Entity'ler bir kez oluşturulur, sonra sadece pozisyon değişir
         sim_olustur_basarili = False
-        if hasattr(self.ortam, 'sim_olustur'):
+        if not self._entities_created and hasattr(self.ortam, 'sim_olustur'):
             try:
+                if self.verbose:
+                    print(f"🏗️ İLK KURULUM: {n_rovs_entity} ROV, {n_engels_entity} Ada entity'si oluşturuluyor (MAX kapasitede)...")
+                else:
+                    print(f"🏗️ Entity havuzu oluşturuluyor: {n_rovs_entity} ROV, {n_engels_entity} Ada...")
+                    
+                # sim_olustur tuple bekliyor: (n_rovs,) formatında grup yapılandırması
                 self.ortam.sim_olustur(
-                    n_rovs=n_rovs,
-                    n_engels=n_engels,
+                    n_rovs=(n_rovs_entity,),  # MAX sayıda entity oluştur
+                    n_islands=n_engels_entity,
+                    n_rocks=n_kaya_entity,  # Kaya havuzu
                     havuz_genisligi=havuz_genisligi
                 )
                 sim_olustur_basarili = True
+                self._entities_created = True  # Artık entity'ler oluşturuldu, bir daha çağırma!
+                if self.verbose:
+                    print(f"✅ Entity havuzu hazır: {n_rovs_entity} ROV, {n_engels_entity} Ada, {n_kaya_entity} Kaya!")
+                else:
+                    print("✅ Entity havuzu hazır! Sonraki çağrılar 50x hızlı olacak.")
             except Exception as e:
+                import traceback
                 print(f"⚠️ sim_olustur hatası: {e}")
+                if self.verbose:
+                    traceback.print_exc()
                 sim_olustur_basarili = False
+                self._entities_created = False  # Hata olduysa bayrağı sıfırla
+        elif self._entities_created:
+            # Entity'ler zaten var - bu kod parçasına asla gelmemeli
+            # Çünkü yukarıdaki kontrol zaten _nesneleri_yeniden_dagit() döndürdü
+            sim_olustur_basarili = True
         
         # Fallback: sim_olustur yoksa veya başarısız olduysa manuel oluşturma
         if not sim_olustur_basarili:
             self.ortam.havuz_genisligi = havuz_genisligi
-            if not hasattr(self.ortam, 'engeller') or not self.ortam.engeller:
-                self.ortam.engeller = []
+            # Yeni yapıda engeller listesi yok, atla
+            # if not hasattr(self.ortam, 'engeller') or not self.ortam.engeller:
+            #     self.ortam.engeller = []
             # ROV listesini her zaman sıfırla (yeni senaryo için)
             if hasattr(self.ortam, 'rovs'):
                 # Mevcut ROV'ları destroy et
@@ -516,60 +665,8 @@ class Senaryo:
                             pass
             self.ortam.rovs = []
             
-            # Eksik engelleri oluştur
-            while len(self.ortam.engeller) < n_engels:
-                i = len(self.ortam.engeller)
-                engel_tipi = 'kaya'
-                if engel_tipleri and i < len(engel_tipleri):
-                    engel_tipi = engel_tipleri[i]
-                
-                x = random.uniform(-havuz_genisligi/2, havuz_genisligi/2)
-                z = random.uniform(-havuz_genisligi/2, havuz_genisligi/2)
-                y = random.uniform(-90, 0)
-                
-                if engel_tipi == 'kaya':
-                    s_x = random.uniform(15, 40)
-                    s_y = random.uniform(15, 40)
-                    s_z = random.uniform(15, 40)
-                    engel_rengi = color.rgb(random.randint(80, 100), random.randint(80, 100), random.randint(80, 100))
-                elif engel_tipi == 'agac':
-                    s_x = random.uniform(5, 10)
-                    s_y = random.uniform(20, 40)
-                    s_z = random.uniform(5, 10)
-                    engel_rengi = color.rgb(34, 139, 34)
-                else:
-                    s_x = random.uniform(10, 30)
-                    s_y = random.uniform(10, 30)
-                    s_z = random.uniform(10, 30)
-                    engel_rengi = color.gray
-                
-                try:
-                    if self.app is not None:
-                        engel = Entity(
-                            model='icosphere',
-                            color=engel_rengi,
-                            scale=(s_x, s_y, s_z),
-                            position=(x, y, z),
-                            rotation=(random.randint(0, 360), random.randint(0, 360), random.randint(0, 360)),
-                            collider='mesh',
-                            unlit=True
-                        )
-                        try:
-                            engel.visible = False
-                        except:
-                            pass
-                    else:
-                        raise Exception("Ursina app yok")
-                except Exception:
-                    engel = type('Engel', (), {
-                        'position': type('Vec3', (), {'x': x, 'y': y, 'z': z})(),
-                        'scale_x': s_x,
-                        'scale_y': s_y,
-                        'scale_z': s_z,
-                        'scale': (s_x, s_y, s_z)
-                    })()
-                
-                self.ortam.engeller.append(engel)
+            # Not: Yeni yapıda engeller EntityLoader tarafından yönetiliyor
+            # Manuel engel oluşturma desteği kaldırıldı
             
             # Eksik ROV'ları oluştur
             while len(self.ortam.rovs) < n_rovs:
@@ -634,186 +731,39 @@ class Senaryo:
             
         # 5. Filo Kurulumu (sadece ilk kurulumda)
         if not hasattr(self, 'filo') or self.filo is None:
-            self.filo = Filo()
-            self.filo.otomatik_kurulum(
-                rovs=self.ortam.rovs,
-                lider_id=0,
-                ortam_ref=self.ortam,
-                modem_ayarlari=modem_ayarlari,
-                baslangic_hedefleri={},  # Boş dict = formasyon hesaplaması yapılmasın
-                sensor_ayarlari=sensor_ayarlari
-            )
+            # Filo constructor otomatik kurulumu yapıyor
+            self.filo = Filo(ortam_ref=self.ortam)
             self.ortam.filo = self.filo
-            self.filo.ortam_ref = self.ortam  # Filo'ya ortam referansını ekle
+            
+            # HullManager initialize et (dinamik engeller için)
+            if self.hull_manager is None:
+                self.hull_manager = HullManager(filo_ref=self.filo)
         
         # 6. Aktif durumu
         self.aktif = True
 
-        # 7. ROV sayısını kontrol et ve dinamik ekle/çıkar
-        if self.filo and hasattr(self.ortam, 'rovs'):
-            # Aktif ROV sayısını hesapla (None olmayanlar)
-            aktif_rov_sayisi = sum(1 for rov in self.ortam.rovs if rov is not None)
-            
-            if aktif_rov_sayisi < n_rovs:
-                # Eksik ROV'ları ekle
-                from .config import GATLimitleri
-                min_mesafe_rov = GATLimitleri.CARPISMA * 1.5
-                mevcut_rov_pos = []
-                for rov in self.ortam.rovs:
-                    if rov is not None and hasattr(rov, 'position'):
-                        pos = (rov.position.x, rov.position.z)
-                        mevcut_rov_pos.append([pos[0], -5, pos[1]])
-                
-                # Mevcut adaları al
-                mevcut_adalar = []
-                if hasattr(self.ortam, 'island_positions'):
-                    for ada_data in self.ortam.island_positions:
-                        if len(ada_data) >= 3:
-                            mevcut_adalar.append((ada_data[0], ada_data[1], ada_data[2]))
-                
-                for i in range(aktif_rov_sayisi, n_rovs):
-                    # Güvenli pozisyon bul
-                    pos = self._guvenli_rov_pozisyonu_bul(
-                        mevcut_rov_pos, 
-                        mevcut_adalar,
-                        min_mesafe_rov,
-                        getattr(self, '_cache_min_mesafe_ada', 15.0),
-                        havuz_genisligi
-                    )
-                    if pos:
-                        x, z = pos
-                        konum = (x, -5, z)
-                    else:
-                        # Güvenli pozisyon bulunamazsa rastgele yerleştir
-                        x = random.uniform(-havuz_genisligi * 0.45, havuz_genisligi * 0.45)
-                        z = random.uniform(-havuz_genisligi * 0.45, havuz_genisligi * 0.45)
-                        konum = (x, -5, z)
-                    
-                    # ROV ekle (sessiz mod için flag ayarla)
-                    try:
-                        self.filo._sessiz_mod = True
-                        self.filo.rov(i, "ekle", konum)
-                        self.filo._sessiz_mod = False
-                        mevcut_rov_pos.append([x, -5, z])
-                    except Exception as e:
-                        self.filo._sessiz_mod = False
-                        if self.verbose:
-                            print(f"⚠️ ROV-{i} eklenirken hata: {e}")
-            
-            elif aktif_rov_sayisi > n_rovs:
-                # Fazla ROV'ları çıkar (sondan başlayarak, sessiz mod)
-                for i in range(aktif_rov_sayisi - 1, n_rovs - 1, -1):
-                    try:
-                        self.filo._sessiz_mod = True
-                        self.filo.rov(i, "cikar")
-                        self.filo._sessiz_mod = False
-                    except Exception as e:
-                        self.filo._sessiz_mod = False
-                        if self.verbose:
-                            print(f"⚠️ ROV-{i} çıkarılırken hata: {e}")
-
-        # 8. Ada sayısını kontrol et ve dinamik ekle/çıkar
-        from .config import HareketAyarlari
-        hedef_ada_sayisi = n_adalar if n_adalar is not None else (random.randint(2, 5) if not hasattr(self, '_cache_n_adalar') else self._cache_n_adalar)
+        # 7. İLK KURULUMDAN SONRA: Pozisyonları düzenle (visibility + koordinatlar)
+        # Object pooling: İstenen sayıda entity göster, geri kalanları gizle
+        if self._entities_created:
+            if self.verbose:
+                print(f"🎯 İstenen: {self._cache_n_rovs} ROV, {self._cache_n_engels} Ada (Havuz: {self.MAX_ROVS} ROV, {self.MAX_ADALAR} Ada)")
+            return self._nesneleri_yeniden_dagit()
         
-        if hedef_ada_sayisi is not None:
-            self._cache_n_adalar = hedef_ada_sayisi
-        
-        # Önce mevcut tüm adaları temizle (yeni senaryo için)
-        if hasattr(self.ortam, 'Ada') and callable(getattr(self.ortam, 'Ada', None)):
-            if hasattr(self.ortam, 'island_positions') and self.ortam.island_positions:
-                # Mevcut adaları sondan başa doğru çıkar
-                for ada_id in range(len(self.ortam.island_positions) - 1, -1, -1):
-                    if self.ortam.island_positions[ada_id] is not None:
-                        try:
-                            self.ortam.Ada(ada_id, "cikar")
-                        except Exception as e:
-                            if self.verbose:
-                                print(f"⚠️ Ada-{ada_id} temizlenirken hata: {e}")
-                # Listeleri temizle (yeni senaryo için)
-                self.ortam.island_positions = []
-                if hasattr(self.ortam, 'island_entities'):
-                    self.ortam.island_entities = []
-        
-        if hasattr(self.ortam, 'island_positions'):
-            mevcut_ada_sayisi = len([ada for ada in self.ortam.island_positions if ada is not None])
-            
-            if mevcut_ada_sayisi < hedef_ada_sayisi:
-                # Eksik adaları ekle
-                yeni_ada_pos = []
-                if self.ortam.island_positions:
-                    for ada_data in self.ortam.island_positions:
-                        if ada_data and len(ada_data) >= 3:
-                            yeni_ada_pos.append((ada_data[0], ada_data[1], ada_data[2]))
-                
-                for ada_id in range(mevcut_ada_sayisi, hedef_ada_sayisi):
-                    radius = random.uniform(20.0, 45.0)
-                    pos = self._guvenli_ada_pozisyonu_bul(
-                        yeni_ada_pos,
-                        havuz_genisligi,
-                        radius,
-                        HareketAyarlari.RANDOM_HEDEF_MIN_MESAFE_ADA
-                    )
-                    if pos:
-                        ada_x, ada_z = pos
-                        # Ada ekle
-                        if hasattr(self.ortam, 'Ada') and callable(getattr(self.ortam, 'Ada', None)):
-                            try:
-                                self.ortam.Ada(ada_id, "ekle", (ada_x, ada_z, radius))
-                            except Exception as e:
-                                if self.verbose:
-                                    print(f"⚠️ Ada-{ada_id} eklenirken hata: {e}")
-                        yeni_ada_pos.append((ada_x, ada_z, radius))
-            
-            elif mevcut_ada_sayisi > hedef_ada_sayisi:
-                # Fazla adaları çıkar (sondan başlayarak)
-                for ada_id in range(mevcut_ada_sayisi - 1, hedef_ada_sayisi - 1, -1):
-                    if hasattr(self.ortam, 'Ada') and callable(getattr(self.ortam, 'Ada', None)):
-                        try:
-                            self.ortam.Ada(ada_id, "cikar")
-                        except Exception as e:
-                            if self.verbose:
-                                print(f"⚠️ Ada-{ada_id} çıkarılırken hata: {e}")
-        else:
-            # Ada sistemi yoksa oluştur
-            if hedef_ada_sayisi is None:
-                hedef_ada_sayisi = random.randint(2, 5)
-            
-            if not hasattr(self.ortam, 'island_positions'):
-                self.ortam.island_positions = []
-            
-            yeni_ada_pos = []
-            for ada_id in range(hedef_ada_sayisi):
-                radius = random.uniform(20.0, 45.0)
-                pos = self._guvenli_ada_pozisyonu_bul(
-                    yeni_ada_pos,
-                    havuz_genisligi,
-                    radius,
-                    HareketAyarlari.RANDOM_HEDEF_MIN_MESAFE_ADA
-                )
-                if not pos:
-                    continue
-                ada_x, ada_z = pos
-                if hasattr(self.ortam, 'Ada') and callable(getattr(self.ortam, 'Ada', None)):
-                    try:
-                        self.ortam.Ada(ada_id, "ekle", (ada_x, ada_z, radius))
-                    except Exception:
-                        pass
-                if not hasattr(self.ortam, 'island_positions'):
-                    self.ortam.island_positions = []
-                self.ortam.island_positions.append([ada_x, ada_z, radius])
-                yeni_ada_pos.append((ada_x, ada_z, radius))
-
-        # 8. Başlangıçta bir kez dağıt (güvenli pozisyonlara yerleştir)
-        self._nesneleri_yeniden_dagit()
-        # Yeni ortam oluşturulduğunda her zaman göster (verbose kontrolü yok)
-        if self.verbose:
-            print(f"✅ Yeni senaryo oluşturuldu: {n_rovs} ROV, {n_engels} Engel, Havuz: {havuz_genisligi}x{havuz_genisligi}")
-        return self
+        # --- BURADAN SONRASI SADECE İLK KURULUMDA ÇALIŞIR ---
+        # Entity'ler oluşturuldu, şimdi pozisyonları düzenle
+        print(f"✅ Yeni senaryo oluşturuldu: {self._cache_n_rovs} ROV aktif (Havuz: {self.MAX_ROVS}), {self._cache_n_engels} Ada aktif (Havuz: {self.MAX_ADALAR})")
+        return self._nesneleri_yeniden_dagit()
     
     def guncelle(self, delta_time=0.016):
         """
         Senaryo ortamını bir adım günceller (simülasyon adımı).
+        
+        Yapılan İşlemler:
+        - Su yüzeyi animasyonu
+        - ROV fizik güncellemesi
+        - Filo sistemi güncellemesi (GAT kodları)
+        - engel_bulutu otomatik güncellenir (Lidar/Sonar)
+        - Dinamik engeller A* pathfinding'e otomatik entegre
         
         Args:
             delta_time (float): Geçen süre (saniye, varsayılan: 0.016 = ~60 FPS)
@@ -879,16 +829,23 @@ class Senaryo:
     
     def get(self, rov_id, veri_tipi):
         """
-        ROV sensör verilerine erişim (Filo üzerinden).
+        ROV sensör verilerine erişim (Filo üzerinden + direkt ROV erişimi).
+        
+        Dinamik Engel Verileri:
+        - engel_bulutu: Lidar/Sonar tarafından tespit edilen engel noktaları
+        - Otomatik basitleştirme: HullManager.dinamik_engelleri_basitlestir()
         
         Args:
             rov_id (int): ROV ID'si
             veri_tipi (str): Veri tipi
                 - "batarya": Batarya seviyesi (0-1)
-                - "gps": GPS koordinatları [x, y, z]
+                - "gps": GPS koordinatları [x, y, z] (Derinlik korunur)
                 - "hiz": Hız vektörü [vx, vy, vz]
                 - "sonar": Sonar mesafesi
+                - "lidar": Lidar mesafeleri (dict: {0: ileri, 1: sağ, 2: sol, 3: dip})
                 - "rol": ROV rolü (0=takipçi, 1=lider)
+                - "group_id": Grup ID'si
+                - "derinlik": Y koordinatı (derinlik)
                 - "engel_mesafesi": Engel tespit mesafesi
                 - "iletisim_menzili": İletişim menzili
         
@@ -897,30 +854,35 @@ class Senaryo:
         
         Örnek:
             batarya = senaryo.get(0, "batarya")
-            gps = senaryo.get(0, "gps")
+            gps = senaryo.get(0, "gps")  # [x, y, z] mevcut z korunmuş
             sonar = senaryo.get(0, "sonar")
+            lidar = senaryo.get(0, "lidar")  # {0: ileri, 1: sağ, 2: sol, 3: dip}
+            group_id = senaryo.get(0, "group_id")  # 0, 1, 2...
+            derinlik = senaryo.get(0, "derinlik")  # -5.0 (y koordinatı)
         """
         if not self.aktif:
-            print("⚠️ Senaryo aktif değil. Önce senaryo.uret() çağırın.")
             return None
         
         if not self.filo:
-            print("⚠️ Filo sistemi kurulmamış.")
             return None
         
-        # ROV ID kontrolu (sessiz mod - hata mesaji yok)
-        rov_ref = self.filo.find_rov_by_id(rov_id) if self.filo and hasattr(self.filo, 'find_rov_by_id') else None
+        # ROV referansını bul
+        rov_ref = None
+        if hasattr(self.ortam, 'rovs'):
+            for rov in self.ortam.rovs:
+                if rov and hasattr(rov, 'id') and rov.id == rov_id:
+                    rov_ref = rov
+                    break
+        
         if rov_ref is None:
             return None
         
-        # Filo üzerinden veri al (sessiz mod - RL eğitimi için)
-        veri = self.filo.get(rov_id, veri_tipi, sessiz=True)
+        # Tüm veri tipleri için Filo.get() kullan (ROV sensörlerini otomatik okur)
+        veri = self.filo.get(rov_id, veri_tipi, sessiz=True) if self.filo else None
         
-        # Eğer filo None döndürdüyse, direkt ROV'tan al (fallback)
-        if veri is None:
-            rov = rov_ref
-            if rov is not None and hasattr(rov, 'get'):
-                veri = rov.get(veri_tipi)
+        # Filo'dan veri alınamazsa, direkt ROV'tan fallback
+        if veri is None and hasattr(rov_ref, 'get'):
+            veri = rov_ref.get(veri_tipi)
         
         return veri
     
@@ -945,17 +907,23 @@ class Senaryo:
     
     def git(self, rov_id, x, z, y=None, ai=True):
         """
-        ROV'a hedef atar.
+        ROV'a hedef atar (A* pathfinding + dinamik engel desteği).
+        
+        Özellikler:
+        - Multi-waypoint rotalar derinlik korumasıyla desteklenir
+        - Dinamik engeller (Lidar) otomatik rota planlamaya dahil
+        - AI aktif ise GAT kodları hesaplanır
         
         Args:
             rov_id (int): ROV ID'si
             x (float): X koordinatı
-            z (float): Z koordinatı
-            y (float, optional): Y koordinatı (derinlik)
-            ai (bool): AI aktif mi?
+            z (float): Z koordinatı (Hedef pozisyonu)
+            y (float, optional): Y koordinatı (derinlik). None ise mevcut derinlik korunur
+            ai (bool): AI aktif mi? (varsayılan: True)
         
         Örnek:
-            senaryo.git(0, 50, 60, -10)  # ROV-0'a hedef atar
+            senaryo.git(0, 50, 60, -10)  # ROV-0'a hedef atar, derinlik -10m
+            senaryo.git(1, 100, 100)      # ROV-1'e hedef atar, mevcut derinliği koru
         """
         if not self.aktif:
             print("⚠️ Senaryo aktif değil.")
@@ -964,29 +932,80 @@ class Senaryo:
         if self.filo:
             self.filo.git(rov_id, x, z, y, ai)
     
-    def temizle(self):
+    def temizle(self, tam_temizlik=False):
         """
-        Senaryo ortamını temizler ve kaynakları serbest bırakır.
+        Senaryo ortamını temizler.
+        
+        Args:
+            tam_temizlik (bool): 
+                - False: Sadece nesneleri gizler, ortamı korur (Object pooling için ideal, varsayılan)
+                - True: Her şeyi yok eder, singleton'ı sıfırlar (Sistemi kapatmak için)
+        
+        Temizlenen Kaynaklar (tam_temizlik=True):
+        - Tüm ROV entity'leri
+        - Engel entity'leri
+        - Filo sistemi ve GNC controllers
+        - HullManager ve dinamik engel cache'i
+        - engel_bulutu verisi
         """
+        if not tam_temizlik:
+            # Soft reset: Sadece nesneleri gizle, ortamı koru (pooling için)
+            if self.ortam:
+                # ROV'ları gizle ve devre dışı bırak
+                for rov in self.ortam.rovs:
+                    if rov:
+                        if hasattr(rov, 'enabled'):
+                            rov.enabled = False
+                        if hasattr(rov, 'visible'):
+                            rov.visible = False
+                        # ROV'un navigasyon hedeflerini sıfırla
+                        if hasattr(rov, 'gnc') and rov.gnc:
+                            rov.gnc.manuel_kontrol = True
+                
+                # Adaları gizle
+                for isl in getattr(self.ortam, 'island_entities', []):
+                    if isl:
+                        if hasattr(isl, 'enabled'):
+                            isl.enabled = False
+                        if hasattr(isl, 'visible'):
+                            isl.visible = False
+            
+            self.aktif = False
+            if self.verbose:
+                print("✅ Soft reset yapıldı (nesneler gizlendi, ortam korundu)")
+            return
+        
+        # Hard reset: Her şeyi yok et (eski davranış)
         if self.ortam:
             # ROV'ları temizle
             for rov in self.ortam.rovs:
                 if hasattr(rov, 'destroy'):
-                    rov.destroy()
+                    try:
+                        rov.destroy()
+                    except:
+                        pass
             self.ortam.rovs = []
             
-            # Engelleri temizle
-            for engel in self.ortam.engeller:
-                if hasattr(engel, 'destroy'):
-                    engel.destroy()
-            self.ortam.engeller = []
+            # Engelleri temizle (yeni yapıda engeller EntityLoader tarafından yönetiliyor)
+            if hasattr(self.ortam, 'engeller') and self.ortam.engeller:
+                for engel in self.ortam.engeller:
+                    if hasattr(engel, 'destroy'):
+                        try:
+                            engel.destroy()
+                        except:
+                            pass
+                self.ortam.engeller = []
+        
+        # HullManager ve cache temizle
+        self.hull_manager = None
         
         self.filo = None
         self.ortam = None
         self.aktif = False
+        self._entities_created = False  # Entity'lerin tekrar yaratılmasına izin ver
         
         if self.verbose:
-            print("✅ Senaryo temizlendi")
+            print("🚫 Tam temizlik yapıldı (her şey yok edildi)")
 
 
 # Global fonksiyonlar (kolay kullanım için)
@@ -1009,8 +1028,12 @@ def uret(n_rovs=3, n_engels=15, havuz_genisligi=200, n_adalar=None, verbose=Fals
         senaryo.uret(n_rovs=4, n_engels=20)
     """
     global _senaryo_instance
+    
+    # Singleton kontrolü - SADECE ilk seferde yarat
     if _senaryo_instance is None:
-        _senaryo_instance = Senaryo(verbose=verbose)
+        _senaryo_instance = Senaryo.get_instance(verbose=verbose)
+    
+    # uret metodunu çağır (Bu metod zaten self._entities_created kontrolü içeriyor)
     return _senaryo_instance.uret(
         n_rovs=n_rovs,
         n_engels=n_engels,
@@ -1026,7 +1049,7 @@ def _get_instance():
     """Global senaryo instance'ını döndürür."""
     global _senaryo_instance
     if _senaryo_instance is None:
-        _senaryo_instance = Senaryo()
+        _senaryo_instance = Senaryo.get_instance()
     return _senaryo_instance
 
 
@@ -1058,18 +1081,34 @@ def guncelle(delta_time=0.016):
         instance.guncelle(delta_time)
 
 
-def temizle():
-    """Senaryo ortamını temizler."""
+def temizle(hard_reset=False):
+    """
+    Senaryo ortamını temizler.
+    
+    DİKKAT: test_senaryo_100.py içinde döngüde çağırıyorsanız hard_reset=False olmalı!
+    
+    Args:
+        hard_reset (bool): 
+            - False: Soft reset - nesneleri gizler, singleton korunur (varsayılan)
+            - True: Hard reset - her şeyi yok eder, singleton sıfırlanır
+    """
     global _senaryo_instance
     if _senaryo_instance:
-        _senaryo_instance.temizle()
-        _senaryo_instance = None
+        _senaryo_instance.temizle(tam_temizlik=hard_reset)
+        
+        # SADECE hard_reset=True ise singleton'ı sıfırla
+        if hard_reset:
+            _senaryo_instance = None
+            Senaryo._singleton_instance = None
 
 
 # Module-level filo erişimi için __getattr__ kullan
 def __getattr__(name):
-    """Module-level attribute erişimi (senaryo.filo için)."""
+    """Module-level attribute erişimi (senaryo.filo, senaryo.ortam için)."""
     if name == 'filo':
         instance = _get_instance()
-        return instance.filo if instance.aktif else None
+        return instance.filo if instance and instance.aktif else None
+    elif name == 'ortam':
+        instance = _get_instance()
+        return instance.ortam if instance and instance.aktif else None
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

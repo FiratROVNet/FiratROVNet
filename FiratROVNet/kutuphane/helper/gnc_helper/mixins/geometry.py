@@ -37,25 +37,54 @@ class GeometryMixin:
 
     def _engel_bul_cache_sonuc(self, rov, rov_id: int, menzil: float) -> list:
         """
-        Ana thread disindan engel_bul cagrildiginda: ROV'un sonar/lidar onbelleklerinden
-        (son_sonar_mesafesi, son_lidar_mesafeleri) engel listesi olusturur. Raycast atilmaz.
+        Ana thread disindan engel_bul cagrildiginda: ROV'un lidar onbelleginden
+        (son_lidar_mesafeleri) engel listesi olusturur. Raycast atilmaz.
+        
+        DEPRECATED: _engel_bul_lidar_isle() kullanın.
+        """
+        lidar = getattr(rov, 'son_lidar_mesafeleri', None)
+        return self._engel_bul_lidar_isle(rov, rov_id, lidar, menzil)
+    
+    def _engel_bul_lidar_isle(self, rov, rov_id: int, lidar: dict = None, menzil: float = None) -> list:
+        """
+        🔹 Sadece Lidar verilerinden engel listesi oluşturur (Sonar YOK, Raycast YOK!)
+        
+        Args:
+            rov: ROV Entity nesnesi
+            rov_id: ROV ID'si
+            lidar: Lidar mesafe dict'i {0: mesafe_ileri, 1: mesafe_sag, 2: mesafe_sol, 3: mesafe_dip}
+            menzil: Maksimum algılama mesafesi (None ise GATLimitleri.ENGEL)
+        
+        Returns:
+            List[Dict]: Engel listesi
         """
         try:
             from ursina import Vec3
         except ImportError:
             return []
-        sonar = getattr(rov, 'son_sonar_mesafesi', -1)
-        lidar = getattr(rov, 'son_lidar_mesafeleri', None)
+        
+        if menzil is None:
+            from FiratROVNet.config import GATLimitleri
+            menzil = GATLimitleri.ENGEL
+        
         if lidar is None:
             lidar = {}
-        # Onbellekte gecerli mesafe var mi?
-        lidar_0 = lidar.get(0, -1)
-        lidar_1 = lidar.get(1, -1)
-        lidar_2 = lidar.get(2, -1)
-        if sonar < 0 and lidar_0 < 0 and lidar_1 < 0 and lidar_2 < 0:
+        
+        # Önbellekte geçerli mesafe var mı?
+        lidar_0 = lidar.get(0, -1) if isinstance(lidar, dict) else -1  # İleri
+        lidar_1 = lidar.get(1, -1) if isinstance(lidar, dict) else -1  # Sağ
+        lidar_2 = lidar.get(2, -1) if isinstance(lidar, dict) else -1  # Sol
+        lidar_3 = lidar.get(3, -1) if isinstance(lidar, dict) else -1  # Dip
+        
+        if lidar_0 < 0 and lidar_1 < 0 and lidar_2 < 0 and lidar_3 < 0:
             return []
-        # ROV konumu ve yaw (derece) — ana engel_bul ile ayni koordinat donusumu
+        
+        # ROV konumu ve yaw (derece) — ana engel_bul ile aynı koordinat dönüşümü
         origin = Vec3(rov.world_position.x, rov.world_position.y, rov.world_position.z) + Vec3(0, 0.5, 0)
+        
+        # 🔹 L3 (dip lidar) için özel origin - ROV gövdesinin ALTINDAN başlat
+        origin_l3 = Vec3(rov.world_position.x, rov.world_position.y, rov.world_position.z) + Vec3(0, -8, 0)
+        
         yaw_deg = 0.0
         if hasattr(rov, 'rotation') and rov.rotation is not None:
             if hasattr(rov.rotation, 'y'):
@@ -74,50 +103,93 @@ class GeometryMixin:
         ileri = global_vektor(0, 0, 1)
         sag = global_vektor(1, 0, 0)
         sol = global_vektor(-1, 0, 0)
+        asagi = Vec3(0, -1, 0)
+        
         sonuclar = []
-        if sonar > 0 and sonar <= menzil:
-            sonuclar.append({
-                'koordinat': origin + ileri * sonar,
-                'mesafe': sonar,
-                'vektor': ileri,
-                'yon': 'ileri',
-                'radius': 0.0,
-            })
+        
+        # Lidar 0 (ön/ileri)
         if lidar_0 > 0 and lidar_0 <= menzil:
+            pt = origin + ileri * lidar_0
             sonuclar.append({
-                'koordinat': origin + ileri * lidar_0,
-                'mesafe': lidar_0,
-                'vektor': ileri,
                 'yon': 'on_lidar',
+                'mesafe': lidar_0,
+                'koordinat': (pt.x, pt.z, pt.y),
+                'ursina_pos': pt,
+                'vektor': ileri,
                 'radius': 0.0,
             })
+        
+        # Lidar 1 (sağ)
         if lidar_1 > 0 and lidar_1 <= menzil:
+            pt = origin + sag * lidar_1
             sonuclar.append({
-                'koordinat': origin + sol * lidar_1,
-                'mesafe': lidar_1,
-                'vektor': sol,
-                'yon': 'sol_lidar',
-                'radius': 0.0,
-            })
-        if lidar_2 > 0 and lidar_2 <= menzil:
-            sonuclar.append({
-                'koordinat': origin + sag * lidar_2,
-                'mesafe': lidar_2,
-                'vektor': sag,
                 'yon': 'sag_lidar',
+                'mesafe': lidar_1,
+                'koordinat': (pt.x, pt.z, pt.y),
+                'ursina_pos': pt,
+                'vektor': sag,
                 'radius': 0.0,
             })
+        
+        # Lidar 2 (sol)
+        if lidar_2 > 0 and lidar_2 <= menzil:
+            pt = origin + sol * lidar_2
+            sonuclar.append({
+                'yon': 'sol_lidar',
+                'mesafe': lidar_2,
+                'koordinat': (pt.x, pt.z, pt.y),
+                'ursina_pos': pt,
+                'vektor': sol,
+                'radius': 0.0,
+            })
+        
+        # Lidar 3 (dip/aşağı) - 🔹 Özel origin kullan (ROV'un üstünden başlat)
+        if lidar_3 > 0 and lidar_3 <= menzil:
+            pt = origin_l3 + asagi * lidar_3
+            sonuclar.append({
+                'yon': 'asagi_lidar',
+                'mesafe': lidar_3,
+                'koordinat': (pt.x, pt.z, pt.y),
+                'ursina_pos': pt,
+                'vektor': asagi,
+                'radius': 0.0,
+            })
+        
         return sonuclar
 
     def engel_bul(self, rov_id: int, menzil: float = None, debug: bool = False) -> list:
         """
-        ROV icin 3D cevresel tarama yapar.
-        DUZELTME: Yeni mimaride ortam.rovs listesi dogrudan Entity'leri tutar.
+        🔹 ROV için mevcut lidar verilerinden engel listesi oluşturur.
+        
+        MODÜLER YAPI: filo.get(rov_id, "lidar") kullanarak mevcut sensör 
+        verilerini alır. Raycast yapmaz, direkt lidar okumalarını kullanır.
+        
+        Lidar Yönleri:
+            - L0 (0): İleri
+            - L1 (1): Sağ
+            - L2 (2): Sol
+            - L3 (3): Dip/Aşağı
+        
+        Args:
+            rov_id: ROV ID'si
+            menzil: Maksimum algılama mesafesi (metre, None ise GATLimitleri.ENGEL)
+            debug: Debug modu (şu an kullanılmıyor)
+        
+        Returns:
+            List[Dict]: Engel listesi, her engel:
+                {
+                    'yon': 'on_lidar' | 'sol_lidar' | 'sag_lidar' | 'asagi_lidar',
+                    'mesafe': float (metre),
+                    'koordinat': tuple (x, z, y) - sim koordinat,
+                    'ursina_pos': Vec3 (ursina global koordinat),
+                    'vektor': Vec3 (yön vektörü),
+                    'radius': float (engel yarıçapı, şu an 0.0)
+                }
         """
         if menzil is None:
             menzil = GATLimitleri.ENGEL
 
-        # ROV nesnesine erisim
+        # ROV nesnesine erişim
         if not self.filo.ortam_ref or not hasattr(self.filo.ortam_ref, 'rovs'):
             return []
 
@@ -125,88 +197,27 @@ class GeometryMixin:
         if rov is None:
             return []
 
-        # ROV silinmisse veya None ise islem yapma
+        # ROV silinmişse veya None ise işlem yapma
         if rov is None or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
             return []
 
-        # Thread guvenligi: konsol thread'inden cagriliyorsa raycast yapma, cache don.
-        if not self.filo._is_main_thread():
-            return getattr(rov, '_son_engeller', [])
-
-        # Ignore listesi (ROV'un tum parcalari)
-        ignore_list = [rov]
-        if hasattr(rov, 'children'):
-            ignore_list.extend(rov.children)
-
-        ortam = self.filo.ortam_ref
-        if ortam and hasattr(ortam, 'rovs'):
-            for other in ortam.rovs:
-                if other and other != rov:
-                    ignore_list.append(other)
-                    if hasattr(other, 'children'):
-                        ignore_list.extend(other.children)
-
-        ignore_tuple = tuple(ignore_list)
-
-        # Tarama yonleri
-        tarama_yonleri = {
-            'ileri': rov.forward,
-            'geri': -rov.forward,
-            'sag': rov.right,
-            'sol': -rov.right,
-            'yukari': Vec3(0, 1, 0),
-            'asagi': Vec3(0, -1, 0),
-        }
-
-        origin = rov.world_position + Vec3(0, 0.2, 0)
-        sonuclar = []
-
-        # Raycast dongusu
-        for ad, yon in tarama_yonleri.items():
-            hit = raycast(origin, yon, distance=menzil, ignore=ignore_tuple, debug=False)
-
-            if hit.hit:
-                pt = hit.world_point
-
-                # Ursina -> Simulasyon koordinat donusumu
-                sim_koord = (pt.x, pt.z, pt.y)
-
-                # Radius hesaplama
-                radius = 5.0
-                if hasattr(self, '_engel_radius_al'):
-                    radius = self._engel_radius_al(hit.entity, (pt.x, pt.z))
-
-                res = {
-                    'yon': ad,
-                    'mesafe': hit.distance,
-                    'koordinat': sim_koord,
-                    'radius': radius,
-                    'entity': hit.entity,
-                    'ursina_pos': pt,
-                }
-                sonuclar.append(res)
-
-                # Haritaya (minimap) nokta ekleme
-                if ad in ['ileri', 'geri', 'sag', 'sol'] and ortam and hasattr(ortam, 'engel_bulutu'):
-                    is_unique = True
-                    if len(ortam.engel_bulutu) > 0:
-                        for old_pt in ortam.engel_bulutu[-10:]:
-                            if (old_pt[0] - pt.x) ** 2 + (old_pt[1] - pt.z) ** 2 < 1.0:
-                                is_unique = False
-                                break
-                    if is_unique:
-                        ortam.engel_bulutu.append((pt.x, pt.z))
-
-                # Debug gorseli
-                if debug:
-                    if not hasattr(self, '_debug_ents'):
-                        self._debug_ents = []
-                    if len(self._debug_ents) > 50:
-                        destroy(self._debug_ents.pop(0))
-                    dot = Entity(model='sphere', color=color.red, scale=0.5, position=pt, unlit=True)
-                    self._debug_ents.append(dot)
-
-        # Cache guncelleme
+        # 🔹 MODÜLER YAPILANDIRMA: Lidar verilerini filo.get() ile al
+        # Bu, sensör simülasyonu ile tamamen entegre çalışır
+        lidar_data = self.filo.get(rov_id, "lidar") if hasattr(self.filo, 'get') else None
+        
+        # Fallback: ROV attribute'larından al
+        if lidar_data is None:
+            lidar_data = getattr(rov, 'son_lidar_mesafeleri', {})
+        
+        # Lidar verilerinden engel listesi oluştur (sonar YOK)
+        sonuclar = self._engel_bul_lidar_isle(
+            rov=rov, 
+            rov_id=rov_id, 
+            lidar=lidar_data, 
+            menzil=menzil
+        )
+        
+        # Cache güncelleme
         rov._son_engeller = sonuclar
         return sonuclar
 
@@ -383,6 +394,7 @@ class GeometryMixin:
                             'birim_vektor': res.get('birim_vektor_3d', (0, 0, 0)),
                             'mesafe': sensor_mesafesi,
                             'radius': e.get('radius', 0.0),
+                            'yon': e.get('yon'),
                         })
 
         # 3. Diger ROV'lardan kacinma

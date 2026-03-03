@@ -14,7 +14,6 @@ from ursina import *
 # Yerel modül importları
 from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, FizikSabitleri, Hidrodinamik, BasitKalmanFiltresi
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon
-from ..iletisim import AkustikModem
 from ..hull import HullManager
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper
 import concurrent.futures
@@ -25,6 +24,7 @@ from FiratROVNet.lider_sec import liderlik_secimini_baslat
 from .koordinator import Koordinator, SafeDict
 from .damage_system import DamageSystem
 from .logs import LogSystem
+from .hull_information import HullInformationManager
 from ..animations import GelismisParcacik, entity_patlat
 from ..camera_manager import CameraManager
 from ..lider_sec import LeaderManager
@@ -50,6 +50,7 @@ class Filo:
         self.camera_manager = CameraManager(filo_ref=self)
         self.leader_manager = LeaderManager(filo_ref=self)
         self.log_system = LogSystem()
+        self.hull_info_manager = HullInformationManager(filo_ref=self)
         
         # Hedef ve Formasyon Durumu
         self.asil_hedef = None
@@ -140,6 +141,7 @@ class Filo:
                 self.current_target_id[g_id] = next_data['id']
 
                 print(f"🚀 [NAV] Grup-{g_id} siradaki hedefe geciliyor: {self.current_target_id[g_id]}")
+                print(target_pos)
                 self.git_path(lider_id, target_pos, isaret=True)
 
     def guncelle_gat_analizi(self, tahminler):
@@ -224,11 +226,18 @@ class Filo:
 
     @property
     def g_rovs(self):
+        """Tüm ROV gruplarını döner. ortam_ref None ise boş SafeDict döner."""
+        if not self.ortam_ref or not hasattr(self.ortam_ref, 'g_rovs'):
+            return SafeDict({})
         return SafeDict(self.ortam_ref.g_rovs)
-
 
     def find_rov_by_id(self, rov_id):
         """ID'si verilen ROV'u tüm gruplar içerisinde arayıp bulur."""
+        # Önce ortam_ref kontrolü
+        if not self.ortam_ref:
+            return None
+        
+        # g_rovs'dan arama yap
         for g_id, grup in self.g_rovs.items():
             for rov in grup:
                 if rov and rov.id == rov_id:
@@ -256,55 +265,100 @@ class Filo:
             
     def guncelle_hepsi(self, tahminler):
         """
-        Tüm GNC sistemlerini günceller. 
-        self.sistemler yerine doğrudan ortam.rovs üzerinden çalışır.
+        Tüm GNC sistemlerini koordineli şekilde günceller.
+        
+        Operasyon Sırası (Önem Sırasına Göre):
+        1. Sistem Hazırlığı      → Command queue işle
+        2. Navigasyon Kuyruğu    → Hedef yönetimi
+        3. Lider Yönetimi        → Yeni lider seç & değişim yap
+        4. ROV Başına İşlemler   → Hasar, GNC, Motor komutları
+        5. Sistem Güncellemeleri → Sonar, Minimap, engel bulut
         """
+        
+        # ============================================================
+        # 1. SİSTEM HAZIRLIGI
+        # ============================================================
         self._process_command_queue()
-        #print(self)
         
-        if not self.ortam_ref: return
+        if not self.ortam_ref:
+            return
 
-        # Canlı ROV'ların kopyasını al (Döngü sırasında silinirse çökmemesi için)
-        mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
-        
-        for i, rov in enumerate(mevcut_rovlar):
-            if not hasattr(rov, 'gnc') or rov.gnc is None:
-                continue
+        # ============================================================
+        # 2. NAVİGASYON KUYRUGU (Grup bazlı hedef yönetimi)
+        # ============================================================
+        self.guncelle_navigasyon_kuyrugu()
+        self.guncelle_gorseller_ve_renkler(tahminler)
 
-            # GAT Tahmini (Liste sınır kontrolü ile)
-            gat_kodu = tahminler[i] if tahminler is not None and i < len(tahminler) else None
+        # ============================================================
+        # 3. LİDER YÖNETİMİ (Grup bazlı lider seçim ve role transfer)
+        # ============================================================
+        yeni_lider_id, skor = liderlik_secimini_baslat(self, self.asil_hedef)
+        self.leader_manager.guncelle_liderler(yeni_lider_id)
 
-
-            yeni_lider_id, skor = liderlik_secimini_baslat(self, self.asil_hedef)
-            #print(yeni_lider_id)
-            self.leader_manager.guncelle_liderler(yeni_lider_id)
-            self.ortam_ref.minimap._engel_bulutu_guncelle()
-
-            # Örnek: Normalde 15 Joule, ama istersen 25 yapıp daha dayanıklı yapabilirsin
-            if self.damage_system.rov_hasar_kontrol_direct(rov, joule_esigi=10.0):
-                self.entity_patlat(rov, parca_sayisi=80)
-                continue #patlayan rovar için güncelleme yapma
-
-            
-            
+        # ============================================================
+        # 4. ROV BAŞINA İŞLEMLER
+        # ============================================================
+        # Canlı ROV'ları doğrudan işle (destroyed'lar otomatik filtrelendi)
+        for rov in self.rovs:
+            # --- 4A. GAT Tahmini ve İndeks Bulma ---
             try:
-                # GNC güncelle
-                rov.gnc.guncelle(gat_kodu=gat_kodu)
+                rov_idx = self.ortam_ref.rovs.index(rov)
+                gat_kodu = tahminler[rov_idx] if rov_idx < len(tahminler) else 0
+            except (ValueError, IndexError):
+                gat_kodu = 0
+
+            # --- 4B. Hasar Kontrol (Öncelikli - Patlama Check) ---
+            joule_esigi = 10.0  # Joule cinsinden hasar eşiği
+            if self.damage_system.rov_hasar_kontrol_direct(rov, joule_esigi=joule_esigi):
+                # ROV patladı - Patlama efekti ve limbo
+                self.entity_patlat(rov, parca_sayisi=80)
+                continue  # Bu ROV için işlem yapma
+
+            # --- 4C. Sensör Güncelleme (GNC öncesi - sensor verisini güncelle) ---
+            try:
+                if hasattr(rov, '_guncelle_sensorler'):
+                    rov._guncelle_sensorler()
             except Exception as e:
-                # Patlama anındaki hataları sessizce geç
+                # Ursina objesi yoksa sessizce geç
+                if "!is_empty()" not in str(e):
+                    print(f"⚠️ [FİLO] ROV-{rov.id} Sensör Hatası: {e}")
+
+            # --- 4D. GNC Sistem Güncelleme ---
+            try:
+                if hasattr(rov, 'gnc') and rov.gnc:
+                    rov.gnc.guncelle(gat_kodu=gat_kodu)
+            except Exception as e:
+                # Detaylı hata loglama
                 if "!is_empty()" not in str(e):
                     print(f"⚠️ [FİLO] ROV-{rov.id} GNC Hatası: {e}")
                 LogSystem.log_exception(e)
 
-        # Minimap Güncellemesi
+        # ============================================================
+        # 5. SİSTEM GÜNCELLEMELERİ
+        # ============================================================
+        # --- 5A. Sonar Çizgileri Güncelleme ---
+        if self.ortam_ref:
+            try:
+                self.ortam_ref.guncelle_sonar_cizgileri()
+            except Exception as e:
+                LogSystem.log_exception(e)
+
+        # --- 5B. Kuyruk Komutları Tamamlanması ---
+        self.execute_queued_commands()
+
+        # --- 5C. Engel Bulut Güncelleme ---
+        if self.ortam_ref.minimap:
+            try:
+                self.ortam_ref.minimap._engel_bulutu_guncelle()
+            except Exception as e:
+                LogSystem.log_exception(e)
+
+        # --- 5D. Minimap Görsel Güncelleme ---
         if self.ortam_ref.minimap:
             try:
                 self.ortam_ref.minimap.gorsel_guncelle()
             except Exception as e:
                 LogSystem.log_exception(e)
-
-
-
 
     def carpisma_enerjisi_hesapla(self, *args, **kwargs):
         """Hasar hesaplamalarını damage_system'a yönlendir."""
@@ -450,13 +504,81 @@ class Filo:
 
     def hull(self, offset=40.0): return self.helper.hull(offset=offset)
     def ada_cevre(self, offset=0.0, sessiz=False): return self.helper.ada_cevre(offset=offset, sessiz=sessiz)
+    
+    def get_engel_ve_ada(self, sessiz=True):
+        """
+        🔹 Engel bulutunu (engel_bulutu) + Ada cevrelerini birleştir
+        
+        Engel noktalarını dinamik_engelleri_basitlestir() ile Polygon'lara dönüştür,
+        ada cevresi ile birleştirip tek liste olarak döndür.
+        
+        Returns:
+            List: Birleştirilmiş engel (centroid noktaları) ve ada cevre noktaları
+            
+        Kullanım:
+            tum_engeller = filo.get_engel_ve_ada()
+            # A* algoritmasına geç:
+            path = a_star_algorithm(baslangic, hedef, tum_engeller)
+        """
+        try:
+            all_obstacles = []
+            engel_count = 0
+            ada_count = 0
+            
+            # 1️⃣ Mevcut ada cevrelerini al
+            ada_list = self.ada_cevre(sessiz=True)
+            if ada_list:
+                all_obstacles.extend(ada_list)
+                ada_count = len(ada_list)
+            
+            # 2️⃣ Engel bulutunu al ve dinamik_engelleri_basitlestir ile cluster oluştur
+            if self.ortam_ref and hasattr(self.ortam_ref, 'engel_bulutu'):
+                engel_points = self.ortam_ref.engel_bulutu
+                
+                if engel_points and len(engel_points) > 0:
+                    # Dinamik engelleri basitleştir (Polygon listesi döndür)
+                    simplified_obstacles = self.hull_manager.dinamik_engelleri_basitlestir(
+                        engel_points,
+                        kume_mesafesi=25.0,
+                        buffer_radius=5.0,
+                        min_kume_boyutu=3
+                    )
+                    
+                    # Polygon'lardan merkez noktaları ve sınırları çıkar
+                    if simplified_obstacles:
+                        for poly in simplified_obstacles:
+                            if hasattr(poly, 'centroid'):
+                                # Centroid (merkez) noktası
+                                centroid = poly.centroid
+                                all_obstacles.append([float(centroid.x), float(centroid.y)])
+                                engel_count += 1
+                            
+                            if hasattr(poly, 'exterior'):
+                                # Polygon kenarlarındaki noktaları da ekle (precision için)
+                                for coord in poly.exterior.coords:
+                                    all_obstacles.append([float(coord[0]), float(coord[1])])
+                                    engel_count += 1
+            
+            if not sessiz and all_obstacles:
+                print(f"✅ Birleştirilmiş engeller: {len(all_obstacles)} nokta "
+                      f"(Ada: {ada_count}, Dinamik Engel: {engel_count})")
+            
+            return all_obstacles if all_obstacles else None
+            
+        except Exception as e:
+            if not sessiz:
+                print(f"❌ get_engel_ve_ada hatası: {e}")
+            return None
+    
     def apf(self, rov_id): return self.helper.apf(rov_id)
     def apf_guncelle_tum(self): return self.helper.apf_guncelle_tum()
     def apf_temizle(self, rov_id=None): return self.helper.apf_temizle(rov_id)
     def formasyon(self, *args, **kwargs): return self.helper.formasyon(*args, **kwargs)
     def formasyon_sec(self, *args, **kwargs): 
-        
-        return self._executor.submit(self.helper._formasyon_sec_impl, *args, **kwargs)
+        # 🔹 ASYNC WRAPPER: Future'ı track etmek için, sonuç cache'e yazılacak
+        future = self._executor.submit(self.helper._formasyon_sec_impl, *args, **kwargs)
+        self.helper.formasyon_future = future  # Future tracking
+        return future
     
 
     def _hedef_gorsel_olustur(self, x, y, z, id=None, debug=True): return self.helper.hedef_gorsel_olustur(x, y, z, id=id, debug=debug)
@@ -474,6 +596,84 @@ class Filo:
             if hasattr(rov, 'gnc'): rov.gnc.manuel_kontrol = aktif
 
     def find_leader_info(self,*args,**kwargs): return self.helper.find_leader_info(*args,**kwargs)
+    
+    # ============================================================
+    # 🔹 HULL CONSOLE WRAPPERS (2 Main Functions)
+    # ============================================================
+    
+    def get_hull_100_samples(self, hull_output=None, sample_count=100):
+        """
+        🎯 KONSOL FONKSİYONU: Hull'dan 100 örnek al (direkt + cache)
+        
+        Kullanım (önerilen):
+            samples = filo.get_hull_100_samples()  # Hesapla + cache + döndür
+            print(len(samples))  # 100
+        
+        Args:
+            hull_output: Özel hull dict (None ise otomatik calc)
+            sample_count: Örnek sayısı (default 100)
+        
+        Returns:
+            [[x1,y1], [x2,y2], ...] (100 nokta) veya None
+        """
+        result = self.hull_info_manager.get_hull_100_samples(hull_output, sample_count)
+        if result is not None:
+            return result
+        else:
+            return None
+
+    def get_hull_information(self, sample_count=50, g_id=0, kayit=False, sessiz=True, offset_threshold=20.0):
+        """
+        🎯 KONSOL FONKSİYONU: Kapsamlı hull + formasyon + grup bilgisi
+        
+        Kullanım (önerilen):
+            info = filo.get_hull_information()                # Default 50 samples
+            info = filo.get_hull_information(sample_count=100) # 100 samples
+            info = filo.get_hull_information(kayit=True)      # Sonucu JSON'a kaydet (append mode)
+        
+        Çıktı:
+            {
+                'hull_center': [x, y],
+                'hull_samples': [[x1,y1], [x2,y2], ...],          # 50 nokta
+                'formasyon_id': 'LINE',
+                'formasyon_aralik': 15.2,
+                'lider_rov_id': 0,
+                'lider_yaw': 90.0,
+                'grup_id': 0,
+                'grup_bilgisi': {
+                    'rov_sayisi': 6,
+                    'rov_idleri': [0, 1, 2, 3, 4, 5],
+                    'rovlar': [
+                        {'rov_id': 0, 'pozisyon': {...}, 'batarya': 0.98, 'gnc_mode': 1, ...},
+                        ...
+                    ]
+                }
+            }
+        
+        Args:
+            sample_count: Hull üzerine kaç örnek nokta yerleştirilecek (default 50)
+            g_id: Grup ID (default 0)
+            kayit: True ise sonucu JSON dosyasına kaydet (append mode - dosya varsa altına ekle) (default False)
+        
+        Returns:
+            Dict: Tüm bilgileri içeren JSON-serializable sonuç veya None
+        """
+        result = self.hull_info_manager.get_hull_information(sample_count=sample_count, g_id=g_id, sessiz=sessiz, offset_threshold=offset_threshold)
+        if result:
+            
+            # 🔹 Eğer kayit=True ise, sonucu JSON dosyasına kaydet (append mode)
+            if kayit:
+                success = self.hull_info_manager.save_hull_information('hull_information.json', result, sessiz=sessiz)
+                if not success:
+                    print("⚠️ Hull information kaydedilemedi")
+            
+            return result
+        else:
+            if not sessiz:
+                print("⚠️ get_hull_information: result None")
+            return None
+    
+
 
 # ==========================================
 # 2. TEMEL GNC SINIFI (SADELEŞTİRİLMİŞ)
@@ -509,9 +709,7 @@ class TemelGNC:
     def guncelle(self, gat_kodu=None):
         # GPS sinyal kontrolu: ROV'un en ust noktasi su yuzeyinden 5m+ asagidaysa sinyal=0
         if self.rov:
-            
-            derinlik = self.filo_ref.get(self.rov.id, 'gps')[2]  # Z koordinatı derinlik olarak varsayılmıştır
-            if derinlik < -5.0:
+            if self.filo_ref.get(self.rov.id, 'gps')[2] < -5.0:
                 self.gps_sinyal = 0
             else:
                 self.gps_sinyal = 1
@@ -540,18 +738,30 @@ class TemelGNC:
                 nxt = nokta_listesi[yeni_indeks]
                 self.filo_ref._git_mevcut_nokta_indeksi[my_id] = yeni_indeks
                 
-                # Z koordinatını koru veya tamamla
-                curr_z = self.hedef.z if self.hedef else Koordinator.ursina_to_sim(self.rov.x, self.rov.y, self.rov.z)[2]
+                # Hedef derinliği kullan (varsa), yoksa mevcut derinliği koru
+                target_depth = None
+                if hasattr(self.filo_ref, '_git_hedef_derinligi'):
+                    target_depth = self.filo_ref._git_hedef_derinligi.get(my_id)
+                
+                if target_depth is not None:
+                    curr_z = target_depth
+                else:
+                    curr_z = self.hedef.z if self.hedef else Koordinator.ursina_to_sim(self.rov.x, self.rov.y, self.rov.z)[2]
+                
                 self.hedef = Vec3(nxt[0], nxt[1], curr_z)
                 return True
             elif nokta_listesi:
                 # Rota tamamlandı, listeyi temizle
                 self.filo_ref._git_nokta_listesi.pop(my_id, None)
+                if hasattr(self.filo_ref, '_git_hedef_derinligi'):
+                    self.filo_ref._git_hedef_derinligi.pop(my_id, None)
         except Exception as e:
             if self.filo_ref:
                 self.filo_ref.ds = e
             pass
         return False
+    
+
 
 
 # Export sınıfları

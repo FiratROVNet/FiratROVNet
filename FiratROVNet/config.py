@@ -8,9 +8,9 @@ import math
 class Hidrodinamik:
     SU_YOGUNLUGU = 1000.0
     YER_CEKIMI = 9.81
-    KUTLE = 10.0
+    KUTLE = 8.0
     HACIM = 0.0122
-    MAX_ITME_KUVVETI = 240.0
+    MAX_ITME_KUVVETI = 150.0
     DRAG_KATSAYISI_CD = 0.85
     ON_YUZEY_ALANI = 0.15
 
@@ -129,7 +129,8 @@ class FizikSabitleri:
     """
     Fizik simülasyonu için sabitler - Sadece kullanılan değerler.
     """
-    BATARYA_SOMURME_KATSAYISI = 0.001    # Batarya sömürme katsayısı (maksimum güçte ~66 saniye dayanır)
+    BATARYA_SOMURME_KATSAYISI = 0.001    # Batarya sömürme katsayısı (sabit azalma)
+    BATARYA_HIZ_KATSAYISI = 0.0005       # Hıza göre batarya azalma katsayısı (hız*katsayı*dt)
 
 
 class ROVModelleri:
