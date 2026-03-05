@@ -1,7 +1,7 @@
 import math
 import numpy as np
 from ursina import Vec3, time
-from FiratROVNet.config import Hidrodinamik, BasitKalmanFiltresi, GATLimitleri
+from FiratROVNet.config import Hidrodinamik, BasitKalmanFiltresi, GATLimitleri, HavuzAyarlari
 from .mixins.formation import Formasyon
 
 
@@ -29,33 +29,8 @@ class TemelGNCHelper:
         self._last_sim_vektor = None
         self._last_guc = None
 
-    def hiz_hesapla(self, mesafe: float) -> float:
-        """
-        Hedefe yaklasirken hizi azaltir.
-        """
-        if mesafe < self.YAVASLAMA_MESAFESI:
-            return max(0.1, min(1.0, mesafe / self.YAVASLAMA_MESAFESI))
-        return 1.0
 
-    def yaw_ayarla(self, fark_vektoru: Vec3, ani: bool = False):
-        """
-        Yaw acisini hedefe dogru ayarlar.
-        """
-        dx, dy = fark_vektoru.x, fark_vektoru.y
-        if abs(dx) < 0.01 and abs(dy) < 0.01:
-            return
 
-        hedef_yaw = math.degrees(math.atan2(dx, dy)) % 360
-
-        if hasattr(self.rov, 'rotation_y'):
-            mevcut = self.rov.rotation_y
-            if ani:
-                self.rov.rotation_y = hedef_yaw
-            else:
-                delta = (hedef_yaw - mevcut + 180) % 360 - 180
-                max_step = 8.0
-                delta = max(-max_step, min(max_step, delta))
-                self.rov.rotation_y = (mevcut + delta) % 360
 
     def waypoint_izdusum(self, rov_id: int, mevcut_waypoint, sonraki_waypoint):
         """
@@ -150,7 +125,7 @@ class TemelGNCHelper:
         oran = suyun_altindaki_kisim / rov_yukseklik
         return max(0.0, min(1.0, oran))
 
-    def fizik_uygula(self, hedef_yon_ursina: Vec3, guc_orani: float, dt: float, uygula: bool = True):
+    def fizik_uygula_yedek(self, hedef_yon_ursina: Vec3, guc_orani: float, dt: float, uygula: bool = True):
         if not uygula:
             return hedef_yon_ursina * guc_orani
 
@@ -177,39 +152,96 @@ class TemelGNCHelper:
 
         return yeni_hiz
 
+
+    def fizik_uygula(self, motor_gucleri: list[float]):
+            """
+            Gelen motor güçlerini, suyun karesel direncini, yerçekimini ve 
+            kaldırma kuvvetini hesaplayarak ROV'a tek bir 'Impulse' uygular.
+            """
+            # 1. MOTORLARDAN GELEN TOPLAM KUVVET VE TORK (Yerel Eksen)
+            toplam_itki_yerel = Vec3(0, 0, 0)
+            toplam_tork_yerel = Vec3(0, 0, 0)
+
+            # Moment kolu etkisi (Ölçeklemeyi hesaba katar)
+            MOMENT_KOLU_ETKISI = 0.2 # Dönüşler çok sertse bu değeri küçült
+
+            for i, guc in enumerate(motor_gucleri):
+                motor = self.rov.motorlar[i]
+                
+                # İtki (N)
+                toplam_itki_yerel += motor.r_bv * guc * Hidrodinamik.MAX_ITME_KUVVETI
+                
+                # Tork (Nm)
+                toplam_tork_yerel += motor.tork_bv * guc * Hidrodinamik.MAX_ITME_KUVVETI * MOMENT_KOLU_ETKISI
+
+            # 2. DİNAMİK LİNEER SÖNÜMLEME (Suyun İlerlemeye Karşı Direnci)
+            mevcut_hiz = self.rov.physics_node.getLinearVelocity()
+            hiz_buyuklugu = mevcut_hiz.length()
+            f_drag = Vec3(0, 0, 0)
+
+            if hiz_buyuklugu > 0.001:
+                # F_drag = 1/2 * rho * Cd * A * V^2
+                drag_quadratic = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * Hidrodinamik.ON_YUZEY_ALANI * (hiz_buyuklugu ** 2)
+                # Düşük hızlarda yumuşak duruş için hafif lineer direnç
+                drag_linear = hiz_buyuklugu * 2.0 
+                f_drag = -mevcut_hiz.normalized() * (drag_quadratic + drag_linear)
+
+            # 3. DİNAMİK AÇISAL SÖNÜMLEME (Suyun Dönmeye Karşı Direnci)
+            mevcut_acisal_hiz = self.rov.physics_node.getAngularVelocity()
+            acisal_hiz_buyuklugu = mevcut_acisal_hiz.length()
+            t_drag = Vec3(0, 0, 0)
+
+            if acisal_hiz_buyuklugu > 0.001:
+                # Dönüş hızının karesiyle artan frenleme
+                a_drag_quad = 0.5 * Hidrodinamik.SU_YOGUNLUGU * 0.05 * (acisal_hiz_buyuklugu ** 2)
+                a_drag_lin = acisal_hiz_buyuklugu * 5
+                t_drag = -mevcut_acisal_hiz.normalized() * (a_drag_quad + a_drag_lin)
+
+            # 4. YERÇEKİMİ VE KALDIRMA KUVVETİ (Y EKSENİNDE OLMALI!)
+            batma = self.batma_orani_hesapla()
+            su_icindeki_hacim = Hidrodinamik.HACIM * batma
+            
+            # DİKKAT: Ursina'da Y ekseni Yukarı/Aşağı'dır!
+            f_yercekimi = Vec3(0, -Hidrodinamik.KUTLE * Hidrodinamik.YER_CEKIMI, 0)
+            f_kaldirma = Vec3(0, su_icindeki_hacim * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.YER_CEKIMI, 0)
+
+            # 5. DÜNYA KOORDİNATLARINA ÇEVİRİ
+            f_thrust_world = self.rov.quaternion.xform(toplam_itki_yerel)
+            t_thrust_world = self.rov.quaternion.xform(toplam_tork_yerel)
+
+            # 6. NET KUVVET VE IMPULSE UYGULAMASI (Hızın birikmesi için dt şart!)
+            f_net = f_thrust_world + f_yercekimi + f_kaldirma + f_drag
+            t_net = t_thrust_world + t_drag
+            
+            dt = time.dt
+            
+            # applyForce değil, applyCentralImpulse (Kuvvet * Zaman = İtme)
+            self.rov.physics_node.applyCentralImpulse(f_net * dt)
+            self.rov.physics_node.applyTorqueImpulse(t_net * dt)
+
     def vektor_to_motor_sim(self, v_sim_dir: Vec3, guc_orani: float):
         """
-        Fizikten gelen vektoru ROV'un govdesine (pozisyon ve rotasyon) uygular.
+        APF'den gelen 3B hareket vektörünü BlueROV2 benzeri 6 motor
+        (4 yatay, 2 dikey) için güç komutlarına dönüştürür.
         """
+        # Güç oranını sınırla
         guc_orani = max(0.0, min(1.0, guc_orani))
-        dt = time.dt
-        if dt > 0.08:
-            dt = 0.08
-        vim_dir2 = v_sim_dir.normalized() if v_sim_dir.length() > 0.001 else Vec3(0, 0, 0)
+        v_sim_dir=Vec3(v_sim_dir.x,v_sim_dir.z,v_sim_dir.y)
 
-        hesaplanan_hiz = self.fizik_uygula(vim_dir2, guc_orani, dt, uygula=True)
-        self.rov.velocity = self._kalman_vektor_filtrele(hesaplanan_hiz)
 
-        if guc_orani > 0.01:
-            self.yaw_ayarla(self.rov.velocity, ani=False)
+        if self.rov is None:
+            return
 
-        ursina_rov_velocity = Vec3(self.rov.velocity.x, self.rov.velocity.z, self.rov.velocity.y)
+        
 
-        GORSEL_HIZ_CARPANI = 50.0
-        self.rov.position += ursina_rov_velocity * dt * GORSEL_HIZ_CARPANI
 
-        if guc_orani > 0.01 and hasattr(self.rov, 'velocity'):
-            if hasattr(self, 'filo_ref') and self.filo_ref.helper:
-                self.filo_ref.helper.vektor(
-                    rov_id_ilk=self.rov.id,
-                    vektor=self.rov.velocity,
-                    renk='m',
-                    ciz=True,
-                )
-        else:
-            self.rov.hedef = None
+        # Birim vektör
+        v_dir = v_sim_dir.normalized()
+        #gucler = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id,hedef_vektor=v_dir,guc=guc_orani) 
+        gucler = self.filo_ref.tork_gucleri_hesapla(self.rov,v_dir,guc_orani)
 
-        return hesaplanan_hiz
+        #self.filo_ref.motorlari_calistir(self.rov.id,gucler)
+        self.fizik_uygula(gucler)
 
     def _guncelle_kontroller(self):
         """
@@ -258,7 +290,7 @@ class TemelGNCHelper:
             return None
         return (toplam_x / n, toplam_y / n)
 
-    def _guc_orani_hesapla(self, mesafe: float, limit=(np.sqrt(3) * 400)):
+    def _guc_orani_hesapla(self, mesafe: float, limit=(np.sqrt(3) * HavuzAyarlari.HAVUZ_TAM_GENISLIK)):
         if mesafe < 2:
             return 0.0
 
@@ -413,7 +445,7 @@ class TemelGNCHelper:
             
 
             if etki > 0.2 and self.filo_ref.get(self.rov.id, 'rol') == 1 and e_info.get('yon') != 'asagi_lidar':
-                print(self.rov.id,etki,max_engel_etkisi)
+                #print(self.rov.id,etki,max_engel_etkisi)
                 self.filo_ref.formasyon_sec(dinamik=True, tekrar=30, g_id=self.rov.group_id)
 
             bv_yatay = Vec3(bv.x, bv.y, bv.z)

@@ -1,6 +1,6 @@
 import numpy as np
 import time
-from FiratROVNet.config import HareketAyarlari
+from FiratROVNet.config import HareketAyarlari, HavuzAyarlari
 
 
 class TrainingMixin:
@@ -87,7 +87,7 @@ class TrainingMixin:
             n_engels = random.randint(12, 22)
             n_adalar = random.randint(2, 5)
 
-            senaryo.uret(n_rovs=secilen_n, n_engels=n_engels, n_adalar=n_adalar, havuz_genisligi=200, verbose=False)
+            senaryo.uret(n_rovs=secilen_n, n_engels=n_engels, n_adalar=n_adalar, verbose=False)
             aktif_filo = senaryo.filo
             if not aktif_filo:
                 return None
@@ -181,7 +181,7 @@ class TrainingMixin:
             n_rov_list = [4, 6, 8]
             secilen_n = random.choice(n_rov_list)
             n_adalar = random.randint(2, 5)
-            senaryo.uret(n_rovs=secilen_n, n_engels=random.randint(10, 20), n_adalar=n_adalar, havuz_genisligi=200, verbose=False)
+            senaryo.uret(n_rovs=secilen_n, n_engels=random.randint(10, 20), n_adalar=n_adalar, verbose=False)
 
             if not senaryo.filo:
                 return None
@@ -264,7 +264,7 @@ class TrainingMixin:
                 senaryo_instance._cache_n_adalar = None
                 senaryo_instance._cache_havuz_genisligi = None
 
-            havuz_genisligi = 200 + random.uniform(-5, 5)
+            havuz_genisligi = HavuzAyarlari.HAVUZ_GENISLIK + random.uniform(-5, 5)
 
             senaryo.uret(n_rovs=secilen_n, n_engels=n_engels, n_adalar=n_adalar, havuz_genisligi=havuz_genisligi, verbose=False)
 

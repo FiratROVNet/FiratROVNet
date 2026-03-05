@@ -6,13 +6,18 @@ import math
 
 # ==========================================
 class Hidrodinamik:
+    """ROV hidrodinamik ve Bullet fizik sabitleri (kütle, sönümleme, itme, sürükleme)."""
     SU_YOGUNLUGU = 1000.0
     YER_CEKIMI = 9.81
-    KUTLE = 8.0
+    KUTLE = 8.0              # ROV kütlesi (kg) — Bullet rigid body ve hesaplarda kullanılır
     HACIM = 0.0122
-    MAX_ITME_KUVVETI = 150.0
-    DRAG_KATSAYISI_CD = 0.85
-    ON_YUZEY_ALANI = 0.15
+    MAX_ITME_KUVVETI = 50.0  # Motor max itme kuvveti (N) — motor.calistir ölçeklemesi
+    DRAG_KATSAYISI_CD = 0.1
+    ON_YUZEY_ALANI = 0.01
+
+    # Bullet sönümleme (ROV stabil hareket; etrafında dönme / kayma azalır)
+    LINEAR_DAMPING = 0 # Doğrusal hız sönümleme
+    ANGULAR_DAMPING = 0  # Açısal hız sönümleme
 
 class BasitKalmanFiltresi:
     def __init__(self, R=0.1, Q=0.1, baslangic_degeri=0.0):
@@ -29,6 +34,22 @@ class BasitKalmanFiltresi:
         self.P = (1 - K) * p_pred
         return self.x
 
+
+
+class HavuzAyarlari:
+    """
+    Havuz ayarları - Eğitim ve kullanımda tutarlı olmalı!
+    HAVUZ_GENISLIK = yarı genişlik (metre), simülasyon ve senaryolarda havuz_genisligi olarak kullanılır.
+    Minimap grid ve havuz sınırları bu ayarlardan okunur.
+    """
+    HAVUZ_GENISLIK = 200.0
+    HAVUZ_TAM_GENISLIK = HAVUZ_GENISLIK * 2  # Tam genişlik (metre), minimap ve şema boyutları için
+    # Minimap: grid adımı (metre); grid_sayisi verilmezse kullanılır
+    MINIMAP_GRID_UNIT = 25.0
+    HAVUZ_DERINLIK = 50.0
+    HAVUZ_YUKSEKLIGI = 10.0
+    HAVUZ_SICAKLIK = 20.0
+    HAVUZ_BASINC = 101325.0
 # ==========================================
 # SİSTEM AYARLARI
 # ==========================================
@@ -60,7 +81,7 @@ class GATLimitleri:
     KOPMA = 50.0      # Kod 3: Bağlantı kopması mesafesi
     UZAK = 80.0       # Kod 5: Liderden uzaklık mesafesi
     ILETISIM_MENZILI = 100.0  # Sonar iletişim maksimum menzili (metre)
-    
+
     @classmethod
     def dict(cls):
         """Dictionary formatında limitleri döndürür."""

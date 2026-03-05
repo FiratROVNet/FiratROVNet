@@ -9,7 +9,8 @@ from ursina import *
 
 # Yerel modül importları
 from .config import (
-    SensorAyarlari, GATLimitleri, HareketAyarlari, 
+    SensorAyarlari, GATLimitleri, HareketAyarlari,
+    HavuzAyarlari,
     FizikSabitleri, ROVModelleri
 )
 from .utils import sim_to_ursina, ursina_to_sim
@@ -351,7 +352,7 @@ class Minimap(Entity):
         self.ada_cevre_entity = None # Ada çevre noktaları için referans
         self.ortam_ref = ortam_ref
         self.loader = ortam_ref.loader
-        self.havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', 200)
+        self.havuz_genisligi = getattr(ortam_ref, 'havuz_genisligi', HavuzAyarlari.HAVUZ_GENISLIK)
         
         self.rov_ikonlari, self.statik_nesneler, self.engel_noktalari = {}, [], []
         self.vektor_cizgi_entities, self.git_hedef_isaret_entities = [], {}
@@ -727,8 +728,8 @@ class Ortam:
             (-150.0, -150.0), (-50, -150), (50, -150.0), (150, -150),
         ]
         
-        # Fiziksel Sabitler
-        self.havuz_genisligi = 200
+        # Fiziksel Sabitler (havuz boyutu config'den)
+        self.havuz_genisligi = HavuzAyarlari.HAVUZ_GENISLIK
         self.su_hacmi_yuksekligi, self.su_hacmi_merkez_y = 50, -25
         self.WATER_SURFACE_Y_BASE, self.SEA_FLOOR_Y = 0.0, -50.0
         self.SONAR_MENZILI = GATLimitleri.ILETISIM_MENZILI
@@ -756,7 +757,7 @@ class Ortam:
         # Su yüzeyi - L2 yukarı raycast için invisible collider
         self.water_surface = Entity(
             model='plane',
-            scale=2000,
+            scale=self.havuz_genisligi * 10,
             position=(0, self.WATER_SURFACE_Y_BASE, 0),
             rotation=(0, 0, 0),
             collider='box',
@@ -766,7 +767,7 @@ class Ortam:
         # Deniz tabanı - L2 aşağı lidar için invisible collider
         self.sea_floor = Entity(
             model='plane',
-            scale=2000,  # Büyük alan (havuz_genisligi * 10)
+            scale=self.havuz_genisligi * 10,
             position=(0, self.SEA_FLOOR_Y, 0),
             rotation=(0, 0, 0),
             collider='box',
@@ -825,19 +826,24 @@ class Ortam:
         return (0, 0, -15) # Fallback
     
 
-    def _find_safe_rov_spawn_pos(self, group_config: tuple, alan_genisligi=100, bosluk=10):
+    def _find_safe_rov_spawn_pos(self, group_config: tuple, alan_genisligi=100, bosluk=10, havuz_genisligi=None):
         """
         group_config: (3, 4, 1) gibi bir tuple alır.
-        - 3 grup oluşturur.
-        - Grup 0: 3 ROV, Grup 1: 4 ROV, Grup 2: 1 ROV yerleştirir.
+        ROV dağılım sınırları havuz boyutuna göre (havuz_genisligi) belirlenir.
         """
         import math, random
-        
-        all_groups_rovs = [] 
-        
-        # Tarama sınırları ve adım boyutu
-        baslangic_x, baslangic_y = -180, -180
-        bitis_x, bitis_y = 180, 180
+
+        if havuz_genisligi is None:
+            havuz_genisligi = getattr(self, 'havuz_genisligi', HavuzAyarlari.HAVUZ_GENISLIK)
+        oran = havuz_genisligi / HavuzAyarlari.HAVUZ_GENISLIK
+
+        all_groups_rovs = []
+
+        # Tarama sınırları havuz oranına göre (referans 200m için ±180)
+        margin = havuz_genisligi * 0.9
+        baslangic_x, baslangic_y = -margin, -margin
+        bitis_x, bitis_y = margin, margin
+        alan_genisligi = max(30, (havuz_genisligi * 2) // 4)  # havuzun ~1/4'ü
         adim = alan_genisligi + bosluk
 
         mevcut_x = baslangic_x
@@ -898,14 +904,21 @@ class Ortam:
 
         return all_groups_rovs
 
-    def sim_olustur(self, n_rovs=(6,), n_islands=5, n_rocks=20, havuz_genisligi=200, rov_model='submarine'):
+    def sim_olustur(self, n_rovs=(6,), n_islands=5, n_rocks=10, rov_model='submarine'):
+   
+        havuz_genisligi = HavuzAyarlari.HAVUZ_GENISLIK
         self.havuz_genisligi = havuz_genisligi
-        
-        # Temizlik
-        for obj in [r for r in self.rovs if r] + [i for i in self.island_entities if i]: 
+        oran = havuz_genisligi / 200
+
+        # Temizlik: ROV, adalar + eski su/deniz tabanı (havuz küçülünce deniz kumu da küçülsün)
+        for obj in [r for r in self.rovs if r] + [i for i in self.island_entities if i]:
             if obj: destroy(obj)
+        for attr in ('water_volume', 'ocean_surface', 'ocean_taban', 'seabed', 'cimen_katmani'):
+            if hasattr(self, attr):
+                e = getattr(self, attr, None)
+                if e is not None: destroy(e)
         self.rovs, self.island_entities, self.island_positions, self.engel_bulutu = [], [], [], []
-        
+
         # Dünya İnşası
         size = havuz_genisligi * 2
         self.loader.build_ocean(size=size)
@@ -916,19 +929,24 @@ class Ortam:
         if n_rocks > 0:
             self.loader.spawn_rocks(count=n_rocks, havuz_genisligi=havuz_genisligi)
         
-        # 1. Adaları Sabit Noktalardan Yerleştir
+        # 1. Adaları Sabit Noktalardan Yerleştir (pozisyonlar havuz oranına göre ölçeklenir)
         count = min(n_islands, len(self.FIXED_ISLAND_POSITIONS))
         chosen_islands = random.sample(self.FIXED_ISLAND_POSITIONS, count)
-        chosen_islands.insert(0,(0,0))
+        chosen_islands.insert(0, (0, 0))
         for i, pos in enumerate(chosen_islands):
-            self.Ada(i, x="ekle", y=pos)
+            # Referans 200m için -150..150; havuz 100 ise -75..75 olacak şekilde ölçekle
+            if pos == (0, 0):
+                scaled_pos = (0, 0)
+            else:
+                scaled_pos = (pos[0] * oran, pos[1] * oran)
+            self.Ada(i, x="ekle", y=scaled_pos)
 
         # 2. ROV'ları Güvenli Noktalara Yerleştir
         # n_rovs tuple'ından toplam ROV sayısını hesapla
         toplam_rov_sayisi = sum(n_rovs)
         print(f"🌊 Simülasyon Başlatılıyor: {toplam_rov_sayisi} ROV, {count} Ada")
 
-        all_group = self._find_safe_rov_spawn_pos(n_rovs)
+        all_group = self._find_safe_rov_spawn_pos(n_rovs, havuz_genisligi=havuz_genisligi)
 
         # Global ROV ID counter
         global_rov_id = 0

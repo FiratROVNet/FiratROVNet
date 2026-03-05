@@ -1,6 +1,6 @@
 import math
 from ursina import Entity, color, destroy, Text
-from FiratROVNet.config import HareketAyarlari
+from FiratROVNet.config import HareketAyarlari, HavuzAyarlari
 
 
 class VisualizationMixin:
@@ -136,7 +136,7 @@ class VisualizationMixin:
         if not apf_list:
             return []
         z_line = -0.37
-        havuz_genisligi = getattr(minimap, 'havuz_genisligi', 200.0)
+        havuz_genisligi = getattr(minimap, 'havuz_genisligi', HavuzAyarlari.HAVUZ_GENISLIK)
         sonuc = []
         for item in apf_list:
             p1_xyz = item.get('baslangic')
@@ -156,7 +156,7 @@ class VisualizationMixin:
         """Minimap vektor cizgisi icin renk kodu doner: k, y, m, s, t (varsayilan m)."""
         return getattr(self, '_vektor_renk', 'm')
 
-    def _vektor_verts_birim(self, p1, p2, z_line=-0.37, havuz_genisligi=200.0, uzunluk_metre=None, reverse=False):
+    def _vektor_verts_birim(self, p1, p2, z_line=-0.37, havuz_genisligi=None, uzunluk_metre=None, reverse=False):
         """
         Harita koordinatinda p1 -> p2 yonunde (reverse=True ise ters yonde) sabit uzunlukta vektor kose listesi doner.
         """
@@ -167,6 +167,8 @@ class VisualizationMixin:
             ux, uy = dx / d, dy / d
             if reverse:
                 ux, uy = -ux, -uy
+            if havuz_genisligi is None:
+                havuz_genisligi = HavuzAyarlari.HAVUZ_GENISLIK
             h = max(float(havuz_genisligi), 1.0)
             if uzunluk_metre is None:
                 uzunluk_metre = getattr(self, '_vektor_uzunluk_metre', 10.0)

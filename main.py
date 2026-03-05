@@ -10,8 +10,8 @@ import os
 # ==========================================
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
-# Simülasyonu oluştur: 6 ROV, 6 Ada, 200m havuz yarıçapı
-app.sim_olustur(n_rovs=(4,3,), n_islands=4, havuz_genisligi=200, rov_model='submarine')
+# Simülasyonu oluştur (havuz boyutu FiratROVNet/config.py HavuzAyarlari'dan alınır)
+app.sim_olustur(n_rovs=(4,3,), n_islands=4, rov_model='submarine')
 
 # Filo sistemini ortamla birlikte oluştur (otomatik bağlantı)
 # GAT modeli ve navigasyon kuyruğu da Filo içinde initialize edilir
@@ -83,9 +83,9 @@ def input(key):
     if key == 'left mouse down':
         # Eğer tıklanan nesne minimap ise
         if hasattr(app, 'minimap') and mouse.hovered_entity == app.minimap:
-            # Tıklanan yerin koordinatını havuz boyutuna göre çevir
-            local_pos = mouse.point 
-            havuz_tam_cap = 400 
+            # Tıklanan yerin koordinatını havuz boyutuna göre çevir (config'den)
+            local_pos = mouse.point
+            havuz_tam_cap = app.havuz_genisligi * 2
             sim_x = local_pos.x * havuz_tam_cap
             sim_y = local_pos.y * havuz_tam_cap
             
