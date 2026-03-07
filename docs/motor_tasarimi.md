@@ -99,7 +99,7 @@ $F_i = u_i \cdot F_{max}$; $u_i \in [-1, 1]$ normalize motor komutu.
 
 ### 4.1. Öteleme (İtki Yönüne Dağıtım)
 
-Hedef **dünya vektörü** yerel eksene çevrilir: $\mathbf{h}_{yerel} = \mathrm{dunya\_to\_yerel}(\mathbf{h}_{dunya})$. Motor birim vektörleri $\hat{\mathbf{m}}_j$ (yerel) ile skaler çarpım:
+Hedef **dünya vektörü** yerel eksene çevrilir: $$\mathbf{h}_{yerel} = \mathrm{dunya\_to\_yerel}(\mathbf{h}_{dunya})$$. Motor birim vektörleri $$\hat{\mathbf{m}}_j$$ (yerel) ile skaler çarpım:
 
 $$ P_j = (\hat{\mathbf{m}}_j \cdot \mathbf{h}_{yerel})\, g $$
 
