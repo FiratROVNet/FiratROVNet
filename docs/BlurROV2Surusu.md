@@ -81,4 +81,4 @@ Sürüde her ROV bir **grup (group)** içinde tanımlanır; grupta **lider** ve 
 - GNC mimarisi ve motor dağılımı: [Motor ve İtki Sistemi](./motor_tasarimi.md), [GNC Mimarisi](./gnc_mimari.md).
 - BlueROV2 motor şeması: [SCHEMA/ROV0](../SCHEMA/README.md).
 
-*Fırat Üniversitesi – Otonom Sistemler & Yapay Zeka Laboratuvarı*
+*Ömer Faruk Çelik — Fırat Üniversitesi, Otonom Sistemler & Yapay Zeka Laboratuvarı*

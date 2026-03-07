@@ -1,56 +1,51 @@
 # 🚢 FiratROVNet Kullanım Kılavuzu
 
-FiratROVNet, çoklu ROV (Remotely Operated Vehicle) simülasyonu ve yönetimi için geliştirilmiş bir Python kütüphanesidir.
+FiratROVNet, çoklu ROV (Remotely Operated Vehicle) simülasyonu ve yönetimi için geliştirilmiş bir Python kütüphanesidir. Güdüm, Navigasyon ve Kontrol (GNC), kamera yönetimi, GAT tabanlı analiz ve grup bazlı navigasyon kuyruğu destekler.
 
 ---
 
 ## 📦 Kurulum
 
-### Pip ile Kurulum
-
-```bash
-pip install git+https://github.com/FiratROVNet/FiratROVNet.git
-```
-
 ### Gereksinimler
 
 ```bash
-pip install -r requirements.txt
+pip install torch torch_geometric ursina numpy networkx scipy
 ```
 
 **Ana Bağımlılıklar:**
-- `torch>=2.0.0` - Derin öğrenme
-- `torch-geometric>=2.3.0` - Graf sinir ağları
-- `ursina>=5.0.0` - 3D simülasyon motoru
-- `numpy>=1.21.0` - Matematik işlemleri
-- `scipy>=1.9.0` - Convex Hull hesaplamaları
-- `matplotlib>=3.5.0` - Görselleştirme
+- `torch` – Derin öğrenme (GAT)
+- `torch-geometric` – Graf sinir ağları
+- `ursina` – 3D simülasyon ve fizik
+- `numpy`, `scipy` – Hesaplama ve Convex Hull
+- `networkx` – Graf işlemleri
 
 ---
 
 ## 🚀 Hızlı Başlangıç
 
-### Basit Simülasyon
+### Ana Uygulama ile Simülasyon
 
 ```python
 from FiratROVNet.simulasyon import Ortam
 from FiratROVNet.gnc import Filo
-from FiratROVNet.iletisim import AkustikModem
 
-# Simülasyon ortamı oluştur
+# Ortam ve simülasyon
 app = Ortam()
-app.sim_olustur(n_rovs=4, n_engels=15)
-
-# Filo oluştur ve otomatik kurulum yap
-filo = Filo()
-tum_modemler = filo.otomatik_kurulum(
-    rovs=app.rovs,
-    lider_id=0
+app.sim_olustur(
+    n_rovs=(4, 3),           # Grup başına ROV sayıları (toplam 7)
+    n_islands=4,
+    havuz_genisligi=200,
+    rov_model='submarine'    # veya 'bluerov2'
 )
 
-# Simülasyonu çalıştır
+# Filo, ortama referans ile oluşturulur (GNC, motor, kamera otomatik kurulur)
+filo = Filo(ortam_ref=app)
+
+# Simülasyonu çalıştır (konsol interaktif)
 app.run(interaktif=True)
 ```
+
+`Filo(ortam_ref=app)` verildiğinde fizik gövdeleri, motorlar, minimap ve varsayılan kamera otomatik ayarlanır.
 
 ---
 
@@ -61,56 +56,48 @@ app.run(interaktif=True)
 ```python
 from FiratROVNet.gnc import Filo
 
-filo = Filo()
+# Ortam referansı ile (önerilen — main.py ile uyumlu)
+filo = Filo(ortam_ref=app)
 ```
 
-### 1. Otomatik Kurulum
+### 1. Simülasyon Oluşturma — `sim_olustur()`
 
-Tüm ROV'ları otomatik olarak kurar (modem, GNC, sensör, hedefler):
+Ortam nesnesi üzerinde çağrılır:
 
 ```python
-tum_modemler = filo.otomatik_kurulum(
-    rovs=app.rovs,                    # ROV listesi
-    lider_id=0,                       # Lider ROV ID
-    modem_ayarlari={                  # Modem parametreleri (opsiyonel)
-        'lider': {'gurultu_orani': 0.05, 'kayip_orani': 0.05},
-        'takipci': {'gurultu_orani': 0.1, 'kayip_orani': 0.1}
-    },
-    baslangic_hedefleri={             # Başlangıç hedefleri (opsiyonel)
-        0: (40, 0, 60),              # ROV-0: (x, y, z)
-        1: (35, -10, 50)              # ROV-1: (x, y, z)
-    },
-    sensor_ayarlari={                 # Sensör ayarları (opsiyonel)
-        'engel_mesafesi': 30.0,
-        'iletisim_menzili': 40.0
-    }
+app.sim_olustur(
+    n_rovs=(4, 3),           # Tuple: her eleman bir gruptaki ROV sayısı
+    n_islands=5,             # Ada sayısı
+    n_rocks=20,              # Kaya/engel sayısı (opsiyonel)
+    havuz_genisligi=200,     # Havuz yarı genişliği (metre)
+    rov_model='submarine'    # 'submarine' | 'bluerov2'
 )
 ```
 
-### 2. Hedef Atama - `git()`
+### 2. Hedef Atama — `git()`
 
-ROV'a hedef koordinatı atar:
+ROV’a hedef koordinatı atar (konsolda `git(rov_id, x, z, y=None, ai=True)` olarak kullanılır):
 
 ```python
-# ROV-0'ı (40, 60, 0) koordinatına gönder
-filo.git(0, 40, 60, 0)
+# ROV-0'ı (x=50, z=50, derinlik=-5) koordinatına gönder
+filo.git(0, 50, 50, -5)
 
-# ROV-1'i (35, 50, -10) koordinatına gönder, AI kapalı
-filo.git(1, 35, 50, -10, ai=False)
+# ROV-1'i aynı şekilde, AI kapalı (kör mod)
+filo.git(1, -20, 100, -10, ai=False)
 
-# Sadece x ve z koordinatları (y=derinlik varsayılan)
+# Sadece yatay koordinat (y/derinlik opsiyonel)
 filo.git(2, 30, 40)
 ```
 
 **Parametreler:**
-- `rov_id`: ROV ID (0, 1, 2, ...)
-- `x, z, y`: Hedef koordinatları (y=derinlik, opsiyonel)
-- `ai`: AI aktif/pasif (varsayılan: True)
+- `rov_id`: ROV indeksi (0, 1, 2, …)
+- `x`, `z`: Yatay düzlem koordinatları
+- `y`: Derinlik (opsiyonel; negatif = su altı)
+- `ai`: `True` = zeki mod (GAT/APF), `False` = kör mod
 
 **Koordinat Sistemi:**
-- `x`: Sağ-Sol (horizontal)
-- `y`: İleri-Geri (forward-backward)
-- `z`: Derinlik (depth, negatif = su altı)
+- `x`, `z`: Yatay düzlem (sağ-sol, ileri-geri)
+- `y`: Derinlik (negatif = su altı)
 
 ### 3. Toplu Güncelleme - `guncelle_hepsi()`
 
@@ -129,80 +116,67 @@ filo.guncelle_hepsi(tahminler)
 - `3`: KOPUK (Bağlantı koptu)
 - `5`: UZAK (Liderden uzak)
 
-### 4. Manuel Hareket - `move()`
+### 4. Manuel Hareket — `move()`
 
-ROV'a güç bazlı hareket komutu verir:
-
-```python
-# ROV-0 %100 güçle ileri
-filo.move(0, 'ileri', 1.0)
-
-# ROV-1 %50 güçle sağa
-filo.move(1, 'sag', 0.5)
-
-# ROV-2 %30 güçle yukarı
-filo.move(2, 'cik', 0.3)
-
-# ROV-3 dur
-filo.move(3, 'dur', 0.0)
-```
-
-**Yönler:**
-- `'ileri'`, `'geri'`, `'sag'`, `'sol'`, `'cik'`, `'bat'`, `'dur'`
-
-**Güç Parametresi:**
-- `1.0` = %100 güç (maksimum hız)
-- `0.5` = %50 güç (yarı hız)
-- `0.0` = %0 güç (dur)
-
-### 5. ROV Ayarları - `set()`
-
-ROV ayarlarını değiştirir:
+ROV’a güç bazlı hareket komutu verir (konsolda `move(rov_id, yon, guc=1.0)`):
 
 ```python
-# ROV-0'ı lider yap
-filo.set(0, 'rol', 1)
-
-# ROV-1'i kırmızı yap
-filo.set(1, 'renk', (255, 0, 0))
-
-# Sensör ayarı
-filo.set(2, 'engel_mesafesi', 30.0)
+filo.move(0, 'ileri', 1.0)   # ROV-0 %100 ileri
+filo.move(1, 'sag', 0.5)     # ROV-1 %50 sağa
+filo.move(2, 'cik', 0.3)     # ROV-2 %30 yukarı
+filo.move(3, 'dur', 0.0)     # ROV-3 dur
 ```
 
-**Desteklenen Ayarlar:**
-- `'rol'`: Lider (1) veya Takipçi (0)
-- `'renk'`: RGB tuple `(r, g, b)` veya renk ismi
-- `'engel_mesafesi'`: Engel algılama menzili (metre)
-- `'iletisim_menzili'`: İletişim menzili (metre)
-- `'min_pil_uyarisi'`: Minimum pil seviyesi (0-100)
+**Yönler:** `'ileri'`, `'geri'`, `'sag'`, `'sol'`, `'cik'`, `'bat'`, `'dur'`  
+**Güç:** `0.0`–`1.0` (örn. `1.0` = %100).
 
-### 6. ROV Bilgisi - `get()`
+### 5. ROV Ayarları — `set()`
 
-ROV bilgilerini alır:
+ROV ayarlarını değiştirir (konsolda `set(rov_id, ayar_adi, deger)`):
 
 ```python
-# Pozisyon bilgisi
-pozisyon = filo.get(0, 'gps')  # (x, y, z)
-
-# Rol bilgisi
-rol = filo.get(1, 'rol')  # 1 = Lider, 0 = Takipçi
-
-# Sensör bilgileri
-sensörler = filo.get(2, 'sensör')  # Dict
-
-# Batarya seviyesi
-batarya = filo.get(0, 'batarya')  # 0-100
+filo.set(0, 'rol', 1)                    # ROV-0 lider
+filo.set(1, 'engel_mesafesi', 30.0)      # Engel menzili (m)
+filo.set(2, 'iletisim_menzili', 80.0)    # İletişim menzili (m)
 ```
 
-**Desteklenen Veri Tipleri:**
-- `'gps'`: Pozisyon (x, y, z)
-- `'hiz'`: Hız vektörü
-- `'batarya'`: Batarya seviyesi (0-100)
-- `'rol'`: Rol (1=Lider, 0=Takipçi)
-- `'renk'`: Renk bilgisi
-- `'sensör'`: Tüm sensör ayarları
-- `'sonar'`: Sonar mesafesi
+**Ayar örnekleri:** `'rol'`, `'renk'`, `'engel_mesafesi'`, `'iletisim_menzili'`, `'min_pil_uyarisi'` vb.
+
+### 6. ROV Bilgisi — `get()`
+
+ROV verilerini okur (konsolda `get(rov_id, veri_tipi)`):
+
+```python
+pozisyon = filo.get(0, 'gps')      # (x, y, z)
+batarya = filo.get(0, 'batarya')
+rol = filo.get(1, 'rol')           # 1=Lider, 0=Takipçi
+sensörler = filo.get(2, 'sensör')
+```
+
+**Veri tipleri:** `'gps'`, `'hiz'`, `'batarya'`, `'rol'`, `'renk'`, `'sensör'`, `'sonar'` vb.
+
+### 7. Kamera Yönetimi
+
+Filo, `camera_manager` ile ROV FPV kameralarını yönetir:
+
+```python
+# Belirli bir ROV'un kamerasını aktif et (önceki kameralar kapatılır)
+filo.kamera_ayarla(rov_id=1)
+
+# Kamera kaldır
+filo.kamera_kaldir(rov_id=1)
+```
+
+Oyun içi **R** tuşu, bilgi paneli ve takip kamerasını sıradaki ROV’a geçirir; bu da dahili olarak `filo.kamera_ayarla(rov_id=...)` kullanır.
+
+### 8. Navigasyon Kuyruğu
+
+Minimap’e tıklanarak eklenen hedefler grup bazlı `nav_queue` içinde tutulur:
+
+```python
+# filo.nav_queue = { g_id: [ {'pos': (x,y,z), 'id': n}, ... ] }
+# Konsoldan izlemek için: nav_queue
+```
 
 ### 7. Formasyon Sistemi - `formasyon()`
 
@@ -320,17 +294,21 @@ filo.guncelle_hepsi(tahminler)
 
 ## 🎮 Konsol Erişimi
 
-Simülasyon çalışırken konsola erişim:
+Simülasyon `interaktif=True` ile çalışırken terminalde Python kabuğu (`>>>`) açık kalır. `main.py` aşağıdaki fonksiyonları ve nesneleri konsola ekler:
+
+- **`git(rov_id, x, z, y=None, ai=True)`** — Hedef atama
+- **`move(rov_id, yon, guc=1.0)`** — Manuel hareket
+- **`get(rov_id, veri_tipi)`** — Veri okuma
+- **`set(rov_id, ayar_adi, deger)`** — Ayar değiştirme
+- **`Ada(ada_id, x=None, y=None)`**, **`ROV(rov_id, x=None, y=None, z=None)`** — Ortam nesneleri
+- **`filo`**, **`rovs`**, **`cfg`**, **`nav_queue`** — Referanslar
 
 ```python
-# main.py'de konsola ekle
-app.konsola_ekle("filo", filo)
-app.konsola_ekle("gnc", filo.sistemler)
-
-# Konsolda kullanım
->>> filo.git(0, 50, 70, 0)
->>> filo.get(0, 'gps')
->>> filo.sistemler[0].hedef
+>>> git(0, 50, 70, -5)
+>>> move(0, "ileri", 1.0)
+>>> get(0, 'gps')
+>>> set(0, 'engel_mesafesi', 50.0)
+>>> filo.kamera_ayarla(rov_id=1)
 ```
 
 ---
@@ -344,11 +322,8 @@ from FiratROVNet.simulasyon import Ortam
 from FiratROVNet.gnc import Filo
 
 app = Ortam()
-app.sim_olustur(n_rovs=4, n_engels=15)
-
-filo = Filo()
-filo.otomatik_kurulum(rovs=app.rovs)
-
+app.sim_olustur(n_rovs=(4, 3), n_islands=4, havuz_genisligi=200, rov_model='submarine')
+filo = Filo(ortam_ref=app)
 app.run(interaktif=True)
 ```
 
@@ -383,11 +358,10 @@ app.run(interaktif=True)
 ### Senaryo 4: Manuel Kontrol
 
 ```python
-# Güç bazlı manuel kontrol
-filo.move(0, 'ileri', 1.0)   # %100 güçle ileri
-filo.move(1, 'sag', 0.5)      # %50 güçle sağa
-filo.move(2, 'cik', 0.3)       # %30 güçle yukarı
-filo.move(3, 'dur', 0.0)       # Dur
+filo.move(0, 'ileri', 1.0)
+filo.move(1, 'sag', 0.5)
+filo.move(2, 'cik', 0.3)
+filo.move(3, 'dur', 0.0)
 ```
 
 ---
@@ -434,11 +408,7 @@ filo.formasyon("V_SHAPE", aralik=20)
 
 ### Konsol Erişimi Yok
 
-```python
-# main.py'de konsola ekle
-app.konsola_ekle("filo", filo)
-app.konsola_ekle("gnc", filo.sistemler)
-```
+`main.py` zaten `filo`, `rovs`, `cfg`, `git`, `move`, `get`, `set`, `Ada`, `ROV`, `nav_queue` ekler. Konsol mesajı 1–2 saniye sonra görünür; terminali kontrol edin.
 
 ---
 
@@ -449,17 +419,16 @@ app.konsola_ekle("gnc", filo.sistemler)
 
 ---
 
-## 🙏 Katkıda Bulunanlar
+## 👨‍💻 Geliştirici
 
-FiratROVNet Development Team
+Ömer Faruk Çelik — Fırat Üniversitesi, Otonom Sistemler & Yapay Zeka Laboratuvarı
 
 ---
 
 ## 📝 Notlar
 
-- `otomatik_kurulum()` çağrıldığında tüm ayarlar otomatik yapılır
-- `guncelle_hepsi()` her frame'de çağrılmalı (update döngüsünde)
-- Lider ROV (`rol=1`) batırılamaz, otomatik su yüzeyinde kalır
-- Formasyon sistemi liderin yaw açısına göre dinamik olarak döndürülür
-- Tüm koordinatlar Sim formatında: (x: sağ-sol, y: ileri-geri, z: derinlik)
+- `Filo(ortam_ref=app)` ile ortam verildiğinde GNC, motor ve kamera otomatik kurulur.
+- `guncelle_hepsi()` ana döngüde (update) her frame çağrılmalıdır.
+- Koordinatlar: yatay `x`, `z`; derinlik `y` (negatif = su altı).
+- Kamera: **R** tuşu veya `filo.kamera_ayarla(rov_id=...)`; minimap tıklama ile hedef kuyruğa eklenir.
 

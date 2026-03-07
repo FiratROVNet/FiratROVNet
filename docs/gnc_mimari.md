@@ -35,4 +35,4 @@ Detaylı formüller ve motor konfigürasyonu için: [Motor ve İtki Sistemi](./m
 
 ---
 
-*Fırat Üniversitesi – Otonom Sistemler ve Yapay Zeka Laboratuvarı*
+*Ömer Faruk Çelik — Fırat Üniversitesi, Otonom Sistemler ve Yapay Zeka Laboratuvarı*

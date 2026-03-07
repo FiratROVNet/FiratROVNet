@@ -452,8 +452,8 @@ Bu yaklaşım, eğitim ve kullanım arasında tutarlılık sağlar.
 
 ---
 
-**Son Güncelleme**: 2024  
-**Versiyon**: 2.0 (Config modülü entegrasyonu ile güncellendi)
+**Son Güncelleme**: 2025  
+**Geliştirici**: Ömer Faruk Çelik — Fırat Üniversitesi, Otonom Sistemler & Yapay Zeka Laboratuvarı
 
 
 

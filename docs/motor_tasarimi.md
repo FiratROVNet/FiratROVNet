@@ -177,4 +177,4 @@ Klasör isimleri ROV’ları temsil eder; her ROV klasöründe **rov_motor_sema.
 
 ---
 
-*Fırat Üniversitesi – Otonom Sistemler & Yapay Zeka Laboratuvarı*
+*Ömer Faruk Çelik — Fırat Üniversitesi, Otonom Sistemler & Yapay Zeka Laboratuvarı*

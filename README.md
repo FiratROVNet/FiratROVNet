@@ -161,104 +161,179 @@ Detaylı formüller, motor tablosu ve şemalar: **[Motor ve İtki Sistemi](./doc
 ## 📂 Proje Yapısı
 
 ```text
-StarProjesi/
+FiratRovNet-org/
 │
-├── main.py                  # Ana çalıştırıcı (Simülasyonu başlatır)
-├── rov_modeli_multi.pth     # Eğitilmiş Yapay Zeka Modeli
-├── docs/                    # Dokümantasyon (GNC, Motor, APF)
+├── main.py                     # Ana çalıştırıcı (simülasyonu başlatır)
+├── rov_modeli_multi.pth        # Eğitilmiş GAT modeli (opsiyonel)
+├── docs/                       # Teknik dokümantasyon (GNC, Motor, APF, BlueROV2)
+├── KILAVUZ/                    # Kullanım kılavuzları (Konsol, Senaryo)
 │
-└── FiratROVNet/             # Çekirdek Kütüphane
+└── FiratROVNet/                # Çekirdek kütüphane
     ├── __init__.py
-    ├── gat.py               # GAT modeli ve eğitim fonksiyonları
-    ├── simulasyon.py        # 3D render & fizik motoru
-    ├── iletisim.py          # Akustik modem simülatörü
-    ├── gnc.py               # Güdüm, Navigasyon ve Kontrol
-    └── config.py            # Canlı ayar yönetimi
+    ├── config.py                # Canlı ayar ve sabitler (cfg, GAT, sensör, motor)
+    ├── simulasyon.py            # 3D ortam, fizik, minimap (Ortam, sim_olustur)
+    ├── senaryo.py               # Headless senaryo ve GAT veri üretimi
+    ├── camera_manager.py        # ROV FPV kamera ve ekran bölgeleri
+    ├── iletisim.py              # Akustik modem simülatörü
+    ├── hull.py                  # Convex hull ve güvenlik çevresi
+    ├── a_star.py                # A* yol planlama
+    ├── gnc/                     # Güdüm, Navigasyon ve Kontrol
+    │   ├── __init__.py          # Filo, TemelGNC
+    │   ├── motor.py             # Motor itki/tork ve BlueROV2 konfigürasyonu
+    │   └── ...
+    └── kutuphane/               # Helper modülleri (gnc_helper, EntityLoader, vb.)
+```
 
-🛠️ Kurulum
+---
+
+## 🛠️ Kurulum
 
 Gerekli Python kütüphanelerini yükleyin:
 
-pip install torch torch_geometric ursina numpy networkx
+```bash
+pip install torch torch_geometric ursina numpy networkx scipy
+```
 
-🧠 Yapay Zeka Eğitimi
+---
 
-İlk çalıştırmadan önce veya modeli güncellemek için eğitim yapılmalıdır.
+## 🧠 Yapay Zeka Eğitimi (GAT)
 
-    Terminali açın ve Python interaktif moda girin
+İlk çalıştırmadan önce veya modeli güncellemek için isteğe bağlı eğitim yapılabilir.
 
-    Aşağıdaki komutları çalıştırın:
+- **Komut:** `python -m GAT.gat_train [--epochs 200] [--no-resume]`
+- Veri kaynağı: senaryo tabanlı `filo.gat_veri_uret()`
+- Eğitim sonunda `rov_modeli_multi.pth` oluşturulur.
 
-    GAT eğitimi için: python -m GAT.gat_train [--epochs 200] [--no-resume]
-    Veri kaynağı olarak filo.gat_veri_uret() (senaryo tabanlı) kullanılır.
-    Eğitim tamamlandığında rov_modeli_multi.pth otomatik olarak oluşturulur.
+---
 
-🚀 Çalıştırma
-Linux (Grafik Uyumluluk Modu)
+## 🚀 Çalıştırma
 
+**Linux (grafik uyumluluk modu):**
+
+```bash
 LIBGL_ALWAYS_SOFTWARE=1 python main.py
+```
 
-Windows
+**Windows:**
 
+```bash
 python main.py
+```
 
-💻 Canlı Konsol Komutları
+Simülasyon açıldıktan sonra **minimap** sol tıklanarak hedef eklenir; **F** tuşu ile makale kalitesinde ekran görüntüsü `Pictures/` klasörüne kaydedilir.
 
-Simülasyon başladıktan sonra terminal donmaz.
-Arka planda çalışan Python kabuğu (>>>) üzerinden sistemi kontrol edebilirsiniz.
-1️⃣ Otonom Görev Atama (git)
+---
 
-git(rov_id, x, z, y, ai=True)
+## 💻 Canlı Konsol Komutları
 
-Parametre	Açıklama
-x, z	Yatay düzlem koordinatları
-y	Derinlik (Negatif = su altı)
-ai	True: Zeki Mod / False: Kör Mod
+Simülasyon çalışırken terminalde Python kabuğu (`>>>`) açık kalır; aşağıdaki fonksiyonlar ve değişkenler kullanılabilir.
 
-Örnekler:
+### 1️⃣ Otonom görev atama — `git`
 
->>> git(1, 50, 50, -5)
->>> git(2, -20, 100, -10, ai=False)
+```python
+git(rov_id, x, z, y=None, ai=True)
+```
 
-Toplu Formasyon:
+| Parametre | Açıklama |
+|-----------|----------|
+| `rov_id`  | ROV indeksi (0, 1, 2, …) |
+| `x`, `z`  | Yatay düzlem koordinatları |
+| `y`       | Derinlik (opsiyonel; negatif = su altı) |
+| `ai`      | `True`: zeki mod (GAT/APF) / `False`: kör mod |
 
+**Örnekler:**
+
+```python
+>>> git(0, 50, 50, -5)
+>>> git(1, -20, 100, -10, ai=False)
 >>> for i in range(4):
 ...     git(i, i*10, 100, -5)
+```
 
-2️⃣ Sistem Ayarları (cfg)
+### 2️⃣ Manuel hareket — `move`
 
->>> cfg.goster_modem = True
->>> cfg.goster_gnc = True
->>> cfg.ai_aktif = False
+```python
+move(rov_id, yon, guc=1.0)
+```
 
-3️⃣ Manuel Müdahale (rovs)
+- **Yönler:** `'ileri'`, `'geri'`, `'sag'`, `'sol'`, `'cik'`, `'bat'`, `'dur'`
+- **Güç:** `0.0`–`1.0` (örn. `1.0` = %100)
 
->>> rovs[0].move("ileri", 100)
->>> rovs[1].set("engel_mesafesi", 50.0)
+**Örnek:** `>>> move(0, "ileri", 1.0)`
 
->>> from ursina import color
->>> rovs[2].color = color.green
+### 3️⃣ Veri okuma — `get`
 
-🌈 Renk Kodları ve Durumlar
-Renk	Durum	Açıklama
-🔴 Kırmızı	Lider / Engel	Lider araç veya engel algılandı
-🟠 Turuncu	Güvenli	Normal seyir
-⚫ Siyah	Çarpışma	Acil durum
-🟡 Sarı	Kopuk	İletişim menzili dışında
-🟣 Mor	Uzak	Liderden aşırı uzak
-🛑 Çıkış
+```python
+get(rov_id, veri_tipi)
+```
 
-Simülasyonu güvenli şekilde kapatmak için:
+- **Veri tipleri:** `'gps'`, `'batarya'`, `'hiz'`, `'rol'`, `'sensör'`, `'sonar'` vb.
 
-    ESC veya Q tuşuna basın
+**Örnek:** `>>> get(0, 'gps')`
 
-👨‍💻 Geliştirici
+### 4️⃣ Ayar değiştirme — `set`
 
-Ömer Faruk Çelik
-Mustafa Polat
-Gizem Yılmaz
-Fırat Üniversitesi
-Otonom Sistemler & Yapay Zeka Laboratuvarı
-📜 Lisans
+```python
+set(rov_id, ayar_adi, deger)
+```
+
+- **Ayar örnekleri:** `'engel_mesafesi'`, `'iletisim_menzili'`, `'rol'`, `'renk'` vb.
+
+**Örnek:** `>>> set(0, "engel_mesafesi", 50.0)`
+
+### 5️⃣ Ortam nesneleri — `Ada`, `ROV`
+
+```python
+Ada(ada_id, x=None, y=None)   # Ada konumu / listeleme
+ROV(rov_id, x=None, y=None, z=None)  # ROV konumu / listeleme
+```
+
+### 6️⃣ Sistem ayarları — `cfg`
+
+```python
+>>> cfg.goster_modem = True   # İletişim mesajları
+>>> cfg.goster_gnc = True    # Navigasyon mesajları
+>>> cfg.goster_sistem = True # Genel sistem mesajları
+```
+
+### 7️⃣ Referanslar
+
+- **`filo`** — Filo nesnesi (hedef, formasyon, kamera, nav kuyruğu)
+- **`rovs`** — ROV entity listesi
+- **`nav_queue`** — Grup bazlı hedef kuyruğu (minimap tıklama ile eklenen hedefler)
+
+### 8️⃣ Kamera
+
+- **R tuşu:** Bilgi paneli ve takip kamerası bir sonraki ROV’a geçer; `filo.kamera_ayarla(rov_id=...)` ile aynı ROV’a odaklanılır.
+- Konsoldan: `>>> filo.kamera_ayarla(rov_id=1)` — ROV-1 FPV kamerası aktif edilir.
+
+---
+
+## 🌈 Renk kodları ve durumlar
+
+| Renk       | Durum        | Açıklama                          |
+|------------|--------------|------------------------------------|
+| 🔴 Kırmızı | Lider / Engel| Lider araç veya engel algılandı   |
+| 🟠 Turuncu | Güvenli      | Normal seyir                      |
+| ⚫ Siyah   | Çarpışma     | Acil durum                        |
+| 🟡 Sarı    | Kopuk        | İletişim menzili dışında         |
+| 🟣 Mor     | Uzak         | Liderden aşırı uzak               |
+
+---
+
+## 🛑 Çıkış
+
+Simülasyonu güvenli kapatmak için **ESC** veya **Q** tuşuna basın.
+
+---
+
+## 👨‍💻 Geliştirici
+
+**Ömer Faruk Çelik**  
+Fırat Üniversitesi – Otonom Sistemler & Yapay Zeka Laboratuvarı
+
+---
+
+## 📜 Lisans
 
 MIT License
