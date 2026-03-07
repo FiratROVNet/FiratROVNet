@@ -6,6 +6,18 @@
 Fırat-GNC, çoklu **Sualtı Otonom Araçları (ROV/AUV)** ve **Su Üstü Araçları (ASV)** için tasarlanmış,  
 **Yapay Zeka Destekli (GAT)**, **Fizik Tabanlı** ve **İletişim Kısıtlı** bir sürü simülasyon ortamıdır.
 
+<p align="center">
+  <a href="./docs/gnc_mimari.md">
+    <img src="https://img.shields.io/badge/🧠_GNC_Mimarisi-0052CC?style=for-the-badge&logo=dependabot&logoColor=white" alt="GNC"/>
+  </a>
+  <a href="./docs/motor_tasarimi.md">
+    <img src="https://img.shields.io/badge/⚙️_Motor_ve_İtki_Sistemi-FF3333?style=for-the-badge&logo=gears&logoColor=white" alt="Motor"/>
+  </a>
+  <a href="./docs/apf_navigasyon.md">
+    <img src="https://img.shields.io/badge/🌊_APF_Navigasyon-28A745?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="APF"/>
+  </a>
+</p>
+
 ---
 
 ## ✨ Özellikler
@@ -133,6 +145,34 @@ Sistemin farklı özelliklerini ve kullanım senaryolarını gösteren ekran gö
 
 ---
 
+## 📐 Motor ve GNC Mimarisi
+
+ROV itki sistemi: **yerel koordinat** birim vektörleri, **dünya koordinatına** quaternion ile dönüştürülür; itki **skaler çarpım** (dot) ile dağıtılır, tork **vektörel çarpım** (r × F) ile hesaplanır. Akış özeti:
+
+```mermaid
+flowchart LR
+    A[Hedef Vektör] --> B[Dünya]
+    B --> C[Dünya→Yerel]
+    C --> D[İtki: dot]
+    C --> E[Tork: cross→yerel]
+    E --> F[Tork: dot]
+    D --> G[P0..P5]
+    F --> G
+    G --> H[Motor.calistir]
+    H --> I[F_dunya, τ_dunya]
+```
+
+| Öğe | Açıklama |
+|-----|----------|
+| **Yerel ↔ Dünya** | Euler (Z→X→Y) ve quaternion; `dunya_to_yerel_vektor` skaler çarpımla izdüşüm. |
+| **İtki dağılımı** | Hedef yerel vektör ile motor birim vektörlerinin dot çarpımı. |
+| **Tork** | τ = r × F (moment kolu × kuvvet); yerel tork ile motor tork vektörlerinin dot çarpımı. |
+| **Konfigürasyon** | 6 motor (4 yatay + 2 dikey), BlueROV2 benzeri; şema: `SCHEMA/ROV0/`. |
+
+Detaylı formüller, motor tablosu ve şemalar: **[Motor ve İtki Sistemi](./docs/motor_tasarimi.md)** · **[GNC Mimarisi](./docs/gnc_mimari.md)** · **[APF Navigasyon](./docs/apf_navigasyon.md)**.
+
+---
+
 ## 📂 Proje Yapısı
 
 ```text
@@ -140,6 +180,7 @@ StarProjesi/
 │
 ├── main.py                  # Ana çalıştırıcı (Simülasyonu başlatır)
 ├── rov_modeli_multi.pth     # Eğitilmiş Yapay Zeka Modeli
+├── docs/                    # Dokümantasyon (GNC, Motor, APF)
 │
 └── FiratROVNet/             # Çekirdek Kütüphane
     ├── __init__.py
