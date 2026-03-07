@@ -102,7 +102,7 @@ $F\_i = u\_i \cdot F\_{max}$; $u\_i \in [-1, 1]$ normalize motor komutu.
 
 Hedef **dünya vektörü** ($\mathbf{h}_{dunya}$), ROV'un o anki yönelimine göre yerel eksene iz düşürülür:
 
-$(\mathbf{h}_{dunya}=\mathbf{h}_{dunya})$
+$\mathbf{h}_{dunya}$ = $\mathbf{h}_{dunya}$
 
 Her bir motor $j$ için itki katsayısı, motorun yerel birim itki vektörü $\hat{\mathbf{m}}_j$ ile yerel hedef vektörünün skaler çarpımı (iz düşümü) ile hesaplanır:
 
