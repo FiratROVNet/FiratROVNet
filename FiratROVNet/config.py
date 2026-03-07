@@ -11,28 +11,14 @@ class Hidrodinamik:
     YER_CEKIMI = 9.81
     KUTLE = 8.0              # ROV kütlesi (kg) — Bullet rigid body ve hesaplarda kullanılır
     HACIM = 0.0122
-    MAX_ITME_KUVVETI = 50.0  # Motor max itme kuvveti (N) — motor.calistir ölçeklemesi
-    DRAG_KATSAYISI_CD = 0.1
+    MAX_ITME_KUVVETI = 200.0  # Motor max itme kuvveti (N) — motor.calistir ölçeklemesi
+    DRAG_KATSAYISI_CD = 0.25
     ON_YUZEY_ALANI = 0.01
 
     # Bullet sönümleme (ROV stabil hareket; etrafında dönme / kayma azalır)
     LINEAR_DAMPING = 0 # Doğrusal hız sönümleme
     ANGULAR_DAMPING = 0  # Açısal hız sönümleme
 
-class BasitKalmanFiltresi:
-    def __init__(self, R=0.1, Q=0.1, baslangic_degeri=0.0):
-        self.R = R
-        self.Q = Q
-        self.P = 1.0
-        self.x = baslangic_degeri
-
-    def guncelle(self, olcum):
-        x_pred = self.x
-        p_pred = self.P + self.Q
-        K = p_pred / (p_pred + self.R)
-        self.x = x_pred + K * (olcum - x_pred)
-        self.P = (1 - K) * p_pred
-        return self.x
 
 
 
@@ -50,6 +36,24 @@ class HavuzAyarlari:
     HAVUZ_YUKSEKLIGI = 10.0
     HAVUZ_SICAKLIK = 20.0
     HAVUZ_BASINC = 101325.0
+
+
+
+class BasitKalmanFiltresi:
+    def __init__(self, R=0.1, Q=0.1, baslangic_degeri=0.0):
+        self.R = R
+        self.Q = Q
+        self.P = 1.0
+        self.x = baslangic_degeri
+
+    def guncelle(self, olcum):
+        x_pred = self.x
+        p_pred = self.P + self.Q
+        K = p_pred / (p_pred + self.R)
+        self.x = x_pred + K * (olcum - x_pred)
+        self.P = (1 - K) * p_pred
+        return self.x
+
 # ==========================================
 # SİSTEM AYARLARI
 # ==========================================
@@ -81,7 +85,7 @@ class GATLimitleri:
     KOPMA = 50.0      # Kod 3: Bağlantı kopması mesafesi
     UZAK = 80.0       # Kod 5: Liderden uzaklık mesafesi
     ILETISIM_MENZILI = 100.0  # Sonar iletişim maksimum menzili (metre)
-
+    
     @classmethod
     def dict(cls):
         """Dictionary formatında limitleri döndürür."""
@@ -150,7 +154,7 @@ class FizikSabitleri:
     """
     Fizik simülasyonu için sabitler - Sadece kullanılan değerler.
     """
-    BATARYA_SOMURME_KATSAYISI = 0.001    # Batarya sömürme katsayısı (sabit azalma)
+    BATARYA_SOMURME_KATSAYISI = 0.0007    # Batarya sömürme katsayısı (sabit azalma)
     BATARYA_HIZ_KATSAYISI = 0.0005       # Hıza göre batarya azalma katsayısı (hız*katsayı*dt)
 
 

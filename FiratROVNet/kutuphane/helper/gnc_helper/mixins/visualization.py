@@ -61,28 +61,22 @@ class VisualizationMixin:
         if not hasattr(self.filo, 'kalici_hedefler'):
             self.filo.kalici_hedefler = {}
 
-        # Gecici hedef
+        # Gecici hedef: create-once, her cagrida sadece konum guncelle
         if debug:
-            if self.filo.hedef_gorsel:
-                try:
-                    destroy(self.filo.hedef_gorsel)
-                except Exception:
-                    pass
-
-            self.filo.hedef_gorsel = Entity()
-            self.filo.hedef_gorsel.position = (x_urs, y_urs, z_urs)
-
             x_boyutu = getattr(HareketAyarlari, 'HEDEF_X_BOYUTU', 15)
             kalinlik = getattr(HareketAyarlari, 'HEDEF_KALINLIK', 0.5)
-
-            Entity(model='cube', rotation=(90, 0, 45), scale=(x_boyutu, kalinlik, kalinlik),
-                   color=color.rgba(255, 0, 0, 0.5), parent=self.filo.hedef_gorsel, unlit=True)
-            Entity(model='cube', rotation=(90, 0, -45), scale=(x_boyutu, kalinlik, kalinlik),
-                   color=color.rgba(255, 0, 0, 0.5), parent=self.filo.hedef_gorsel, unlit=True)
-            Entity(model='sphere', scale=(2, 2, 2), color=color.rgba(255, 0, 0, 0.5),
-                   parent=self.filo.hedef_gorsel, unlit=True)
-            Entity(model='circle', rotation=(90, 0, 0), scale=(x_boyutu * 1.5, x_boyutu * 1.5, 1),
-                   color=color.rgb(0, 255, 120), parent=self.filo.hedef_gorsel, unlit=True, wireframe=True)
+            if self.filo.hedef_gorsel is None:
+                self.filo.hedef_gorsel = Entity()
+                Entity(model='cube', rotation=(90, 0, 45), scale=(x_boyutu, kalinlik, kalinlik),
+                       color=color.rgba(255, 0, 0, 0.5), parent=self.filo.hedef_gorsel, unlit=True)
+                Entity(model='cube', rotation=(90, 0, -45), scale=(x_boyutu, kalinlik, kalinlik),
+                       color=color.rgba(255, 0, 0, 0.5), parent=self.filo.hedef_gorsel, unlit=True)
+                Entity(model='sphere', scale=(2, 2, 2), color=color.rgba(255, 0, 0, 0.5),
+                       parent=self.filo.hedef_gorsel, unlit=True)
+                Entity(model='circle', rotation=(90, 0, 0), scale=(x_boyutu * 1.5, x_boyutu * 1.5, 1),
+                       color=color.rgb(0, 255, 120), parent=self.filo.hedef_gorsel, unlit=True, wireframe=True)
+            self.filo.hedef_gorsel.position = (x_urs, y_urs, z_urs)
+            self.filo.hedef_gorsel.enabled = True
 
         # Kalici hedef
         else:
@@ -183,9 +177,12 @@ class VisualizationMixin:
             w1y = ey + kanat_uzunluk * math.sin(aci_145)
             w2x = ex + kanat_uzunluk * math.cos(aci_225)
             w2y = ey + kanat_uzunluk * math.sin(aci_225)
+            # Titremeyi onlemek icin koordinatlari yuvarla (minimap APF sabit gorunur)
+            r3 = lambda x: round(float(x), 3)
             return [
-                (p1.x, p1.y, z_line), (ex, ey, z_line),
-                (ex, ey, z_line), (w1x, w1y, z_line),
-                (ex, ey, z_line), (w2x, w2y, z_line),
+                (r3(p1.x), r3(p1.y), z_line), (r3(ex), r3(ey), z_line),
+                (r3(ex), r3(ey), z_line), (r3(w1x), r3(w1y), z_line),
+                (r3(ex), r3(ey), z_line), (r3(w2x), r3(w2y), z_line),
             ]
-        return [(p1.x, p1.y, z_line), (p1.x, p1.y, z_line)]
+        r3 = lambda x: round(float(x), 3)
+        return [(r3(p1.x), r3(p1.y), z_line), (r3(p1.x), r3(p1.y), z_line)]

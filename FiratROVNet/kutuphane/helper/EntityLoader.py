@@ -1,18 +1,24 @@
 import os
 import math
-from ursina import *
+from ursina import *  # type: ignore[reportMissingImports]
+from ursina import (  # type: ignore[reportMissingImports]
+    Entity,
+    Vec3,
+    color,
+    destroy,
+    Text,
+    Mesh,
+    MeshCollider,
+    Circle,
+    time,
+)
 from FiratROVNet.utils import sim_to_ursina
-from FiratROVNet.config import ROVModelleri, GATLimitleri, HavuzAyarlari
+from FiratROVNet.config import ROVModelleri, GATLimitleri  # Config dosyanızdan importlar
 
 class EntityLoader:
     def __init__(self, ortam_ref):
         self.ortam = ortam_ref
         self.rock_entities = []  # Kaya entity'lerini havuzda tutmak için
-
-    def _havuz_scale_oran(self):
-        """Havuz boyutuna göre scale çarpanı: mevcut_havuz_boyutu / 200 (referans).
-        Havuz yarıya inince scale'ler de yarıya iner; iki katına çıkınca iki katına çıkar."""
-        return HavuzAyarlari.HAVUZ_GENISLIK/200
 
 
 
@@ -82,28 +88,29 @@ class EntityLoader:
         )
 
     def create_minimap_grid(self, minimap_entity, havuz_genisligi, grid_sayisi=None):
-        """Grid ve havuz sınırları; havuz boyutu HavuzAyarlari ile uyumlu (grid adımı config'den)."""
+        """Grid Sistemi (Referans koddan birebir değerler)."""
+        # Temizlik
         if hasattr(minimap_entity, 'grid_items'):
             for item in minimap_entity.grid_items: destroy(item)
         minimap_entity.grid_items = []
 
-        # Grid ve havuz sınırı ayarları config'den (HavuzAyarlari)
-        grid_unit = HavuzAyarlari.MINIMAP_GRID_UNIT
+        # SABİTLER (Eski koddan)
+        GRID_UNIT = 25
         grid_z = -0.1
         label_z = grid_z - 0.05
         grid_color = color.rgba(255, 255, 255, 0.5)
         line_thick = 0.004
         label_scale = 1.25
 
-        # Havuz sınırları: yarı genişlik = havuz_genisligi (ortamdan gelir, config ile uyumlu)
-        half = havuz_genisligi
-        factor = 1.0 / (half * 2) if half > 0 else 1.0 / HavuzAyarlari.HAVUZ_TAM_GENISLIK
-
-        # Grid adımı: grid_sayisi verilirse (2*havuz)/N, yoksa HavuzAyarlari.MINIMAP_GRID_UNIT
+        # Grid Adımı Hesapla
+        # (Eski kod mantığı: helper_grid_step_metre)
         if grid_sayisi:
             step = (havuz_genisligi * 2) / grid_sayisi
         else:
-            step = grid_unit
+            step = GRID_UNIT
+
+        factor = 1.0 / (havuz_genisligi * 2)
+        half = havuz_genisligi
         
         # --- Ana Eksenler ---
         minimap_entity.grid_items.append(Entity(parent=minimap_entity, model='quad', scale=(1, 0.005), color=color.rgba(255,255,255,100), z=grid_z))
@@ -173,7 +180,7 @@ class EntityLoader:
         )
         minimap_entity.grid_items.append(t)
 
-        # --- Menzil Halkaları (havuz sınırına göre: 33%, 66%, 100% - ROV dağılım gösterimi) ---
+        # --- Menzil Halkaları ---
         for r in [0.33, 0.66, 1.0]:
             minimap_entity.grid_items.append(Entity(
                 parent=minimap_entity,
@@ -193,12 +200,11 @@ class EntityLoader:
         )
 
     def draw_static_circle(self, minimap_entity, x, z, r, havuz_genisligi, color_val=None):
-        """Basit dairesel ada/engel çizimi. Havuz sınırı için havuz_genisligi (config referanslı) kullanılır."""
+        """Basit dairesel ada/engel çizimi."""
         if color_val is None: color_val = color.hex('#8B5A3C') # Toprak rengi
-        # Havuz sınırları: ortamdan gelen havuz_genisligi; yoksa config
-        h = havuz_genisligi if havuz_genisligi and havuz_genisligi > 0 else HavuzAyarlari.HAVUZ_GENISLIK
-        map_scale = (r * 2) / (h * 2)
-        factor = 1.0 / (h * 2)
+        
+        map_scale = (r * 2) / (havuz_genisligi * 2)
+        factor = 1.0 / (havuz_genisligi * 2)
         
         return Entity(
             parent=minimap_entity,
@@ -273,11 +279,10 @@ class EntityLoader:
     def build_seabed(self, size=600):
         fbx_mod = "Models-3D/water/my_models/ocean_taban/sand_envi_034.fbx"
         fbx_tex = "Models-3D/water/my_models/ocean_taban/sand_envi_034-0.jpg"
-        # Referans (200m) scale: 1.8, 0.6, 1.55 → mevcut_havuz/200 oranıyla çarpılır
-        oran = self._havuz_scale_oran()
-        scalex = 1.8 * oran
-        scaley = 0.6 * oran
-        scalez = 1.55 * oran
+
+        scalex = 1.8 * (self.ortam.havuz_genisligi / 200)
+        scaley = 0.6 * (self.ortam.havuz_genisligi / 200)
+        scalez = 1.55 * (self.ortam.havuz_genisligi / 200)
         
         self.ortam.ocean_taban = Entity(
             model=fbx_mod, scale=(scalex, scaley, scalez), 
@@ -301,17 +306,15 @@ class EntityLoader:
 
         # --- 3. ADALAR ---
     def create_island(self, sx, sz):
-            """Çift modelli adayı (görsel + fizik) tek bir Entity ile yükler. Scale havuz boyutuna orantılı."""
-            oran = self._havuz_scale_oran()
+            """Çift modelli adayı (görsel + fizik) tek bir Entity ile yükler."""
             ux, _, uz = sim_to_ursina(sx, sz, 0)
             model_path = "Models-3D/lowpoly-island/source/island1_design4_c4d.glb"
-            # Referans scale (200m havuz): (0.23, 0.5, 0.24), offset (4, 6, 6)
-            base_scale = (0.23, 0.5, 0.24)
-            base_offset = (4, 6.0, 6)
+            
+            # 1. Modeli doğrudan ana Entity'ye yükle
             island = Entity(
                 model=model_path,
-                position=(ux + base_offset[0] * oran, base_offset[1] * oran, uz + base_offset[2] * oran),
-                scale=(base_scale[0] * oran, base_scale[1] * oran, base_scale[2] * oran),
+                position=(ux+4, 6.0, uz+6),
+                scale=(0.23, 0.5, 0.24),
                 double_sided=True
             )
 
@@ -330,28 +333,24 @@ class EntityLoader:
                 # Eğer bulunamazsa, tüm adayı collider yap (Güvenlik önlemi)
                 island.collider = 'mesh'
 
-            # Minimap yarıçapı da havuz oranına göre (referans 38m)
-            return island, 38 * oran
+            return island, 38
 
     # --- 4. MERKEZİ KAYALIK ---
     def load_rocky_reef(self, show_on_minimap=True):
         path = "Models-3D/floating_island_with_roots_and_rocks/scene2.glb"
         path = path.replace('\\', '/') if os.name != 'nt' else path.replace('/', '\\')
-        oran = self._havuz_scale_oran()
+        
         if os.path.exists(path):
             try:
-                # Referans (200m): scale (3.5, 3.4, 3.5), position y=5
                 self.ortam.central_reef = Entity(
-                    model=path,
-                    scale=(3.5 * oran, 3.4 * oran, 3.5 * oran),
-                    position=(0, 5 * oran, 0),
+                    model=path, scale=(3.5, 3.4, 3.5), position=(0, 5, 0),
                     collider='box', unlit=True, double_sided=True
                 )
                 if show_on_minimap:
                     if not hasattr(self.ortam, 'static_obstacles'):
                         self.ortam.static_obstacles = []
                     self.ortam.static_obstacles.append({
-                        'pos': (0, 0), 'radius': 35.0 * oran, 'color': color.gray, 'name': 'Merkez Kayalık'
+                        'pos': (0, 0), 'radius': 35.0, 'color': color.gray, 'name': 'Merkez Kayalık'
                     })
                     if hasattr(self.ortam, 'minimap') and self.ortam.minimap:
                         self.ortam.minimap._statik_yeniden_ciz()
@@ -361,13 +360,11 @@ class EntityLoader:
 
     # --- 5. SINIRLAR ---
     def build_boundaries(self, s):
-        oran = self._havuz_scale_oran()
-        # Referans (200m) yükseklikler: 150, 100
         p = {'model': 'cube', 'color': color.clear, 'visible': False, 'collider': 'box'}
-        Entity(x=s+2, scale=(1, 150 * oran, s*2.5), position=(s+2, 0, 0), **p)
-        Entity(x=-s-2, scale=(1, 100 * oran, s*2.5), position=(-s-2, 0, 0), **p)
-        Entity(z=s+2, scale=(s*2.5, 150 * oran, 1), position=(0, 0, s+2), **p)
-        Entity(z=-s-2, scale=(s*2.5, 150 * oran, 1), position=(0, 0, -s-2), **p)
+        Entity(x=s+2, scale=(1, 150, s*2.5), position=(s+2, 0, 0), **p)
+        Entity(x=-s-2, scale=(1, 100, s*2.5), position=(-s-2, 0, 0), **p)
+        Entity(z=s+2, scale=(s*2.5, 150, 1), position=(0, 0, s+2), **p)
+        Entity(z=-s-2, scale=(s*2.5, 150, 1), position=(0, 0, -s-2), **p)
 
     # --- 6. ROV MODEL YÜKLEME (YENİ) ---
     def setup_rov(self, rov_entity, model_key):
@@ -406,7 +403,7 @@ class EntityLoader:
         rov_entity.scale = model_info['scale']
         rov_entity.collider = 'box'
         
-        # Görsel Yardımcılar (Label, Sensör Alanı)
+        # Görsel Yardımcılar (Create-once: label sadece burada olusturulur; rol degisince sadece .text guncellenir)
         rov_entity.label = Text(
             text=f"ROV-{rov_entity.id}", parent=rov_entity, y=3.0, scale=20,
             billboard=False, color=color.white, origin=(0, 0),
@@ -422,37 +419,6 @@ class EntityLoader:
         )
 
 
-# --- 4. MERKEZİ KAYALIK (GÜNCELLENDİ) ---
-    def load_rocky_reef(self, show_on_minimap=True):
-        """
-        secene4.glb dosyasını yükler. 
-        Bu dosya içinde hem görsel hem de collider mesh varsa otomatik algılar.
-        """
-        # Dosya yolu (Senin verdiğin konuma göre)
-        # Not: Ursina 'Models-3D' klasörünü otomatik tanıyabilir ama tam yol garantidir.
-        model_path = "Models-3D/floating_island_with_roots_and_rocks/scene2.glb"
-        
-        # İşletim sistemine göre yol düzeltmesi (\ veya /)
-        if os.name == 'nt': 
-            model_path = model_path.replace('/', '\\')
-        
-        # Dosya var mı kontrolü
-        if not os.path.exists(model_path):
-            print(f"⚠️ [UYARI] Merkez kayalık dosyası bulunamadı: {model_path}")
-            return
-
-    
-        # 1. Modeli Yükle (scale havuz boyutuna orantılı: referans 200m için (2, 3, 2))
-        oran = self._havuz_scale_oran()
-        self.ortam.central_reef = Entity(
-                model=model_path,
-                scale=(2 * oran, 3 * oran, 2 * oran),
-                position=(0, 5 * oran, 0),
-                double_sided=True,
-                collider="cube"
-            )
-
-
     def rock(self, scale, position):
         model_path = "Models-3D/rock/stone.glb"
 
@@ -464,26 +430,23 @@ class EntityLoader:
             print(f"⚠️ Kaya modeli bulunamadı: {model_path}")
             return None
 
-    def spawn_rocks(self, count=20, havuz_genisligi=None):
+    def spawn_rocks(self, count=20, havuz_genisligi=200):
         """
         Havuz içinde rastgele konumlarda kayalar oluşturur.
         
         Args:
             count: Oluşturulacak kaya sayısı
-            havuz_genisligi: Havuz yarı genişliği (None ise config'den alınır)
+            havuz_genisligi: Havuz yarıçapı (default: 200m)
         """
         import random
-        if havuz_genisligi is None:
-            havuz_genisligi = HavuzAyarlari.HAVUZ_GENISLIK
-
+        
         # Havuz sınırları: ±havuz_genisligi (x ve z için)
         min_coord = -(havuz_genisligi - 20)
         max_coord = (havuz_genisligi - 20)
-        oran = havuz_genisligi / HavuzAyarlari.HAVUZ_GENISLIK  # mevcut_havuz/200
-
+        
         for _ in range(count):
-            # Scale: referans 200m için 20-50; havuz boyutuna orantılı
-            scale = random.uniform(20, 50) * oran
+            # Scale: 10-30 arası rastgele
+            scale = random.uniform(20, 50)
             
             # Position: x ve z havuz içinde, y=-30 sabit (derinlik)
             x = random.uniform(min_coord, max_coord)

@@ -1,6 +1,7 @@
 """
-Camera Manager Module
-ROV kamera sistemlerinin yönetimi ve ayarları.
+Camera Manager Module - Saf Panda3D DisplayRegion Odaklı
+ROV kamera sistemleri ve ekrandaki projeksiyon bölgeleri (DisplayRegion)
+Panda3D NodePath ile yönetilir; Ursina update döngüsüne girmez.
 """
 
 import builtins
@@ -8,203 +9,146 @@ import builtins
 
 class CameraManager:
     """
-    ROV'lara dinamik FPV kamera bağlama ve yönetme sistemi.
-    Modern programlama prensipleriyle tasarlanmıştır.
+    ROV kamera sistemlerini ve ekrandaki DisplayRegion (Projeksiyon) bölgelerini
+    saf Panda3D performansı ile yönetir.
     """
-    
+
     def __init__(self, filo_ref=None):
-        """
-        Args:
-            filo_ref: Filo referansı (ROV bulma için)
-        """
         self.filo_ref = filo_ref
-        self.aktif_kameralar = {}  # {rov_id: camera_node_path}
-        
-    def kamera_ekle(self, rov_id=0, mesafe=(0, -40, 120), aci=(0, 0, 0), fov=75, bolge=(0.02, 0.20, 0.80, 0.98)):
+        self.aktif_kameralar = {}  # {rov_id: camera_nodepath}
+        # Varsayılan kamera ayarları
+        self.default_rov_id = 0
+        self.default_mesafe = (0, -40, 120)
+        self.default_aci = (0, 0, 0)
+        self.default_fov = 75
+        self.default_bolge = (0, 0.20, 0.80, 1.0)
+
+    def kamera_ekle(self, rov_id=None, mesafe=None, aci=None, fov=None, bolge=None):
         """
-        ROV'a dinamik bir FPV kamera bağlar.
-        
-        Args:
-            rov_id: ROV ID'si
-            mesafe: Kameranın ROV'a göre pozisyonu (x, y, z) - Panda3D koordinat sistemi
-            aci: Kameranın açısı (heading, pitch, roll)
-            fov: Field of View (Görüş açısı)
-            bolge: Ekran bölgesi (sol, sağ, alt, üst) - 0-1 arası normalize değerler
-            
-        Returns:
-            camera_node_path veya None (hata durumunda)
+        Kamerayı oluşturur ve ekranın belirli bir bölgesine yansıtır.
+        bolge: (sol, sağ, alt, üst) -> 0.0 - 1.0 arası ekran koordinatları.
         """
-        # Simülasyonun çalışıp çalışmadığını kontrol et
-        if not hasattr(builtins, 'base'):
+        if rov_id is None:
+            rov_id = self.default_rov_id
+        if mesafe is None:
+            mesafe = self.default_mesafe
+        if aci is None:
+            aci = self.default_aci
+        if fov is None:
+            fov = self.default_fov
+        if bolge is None:
+            bolge = self.default_bolge
+
+        b = getattr(builtins, "base", None)
+        if b is None:
             print("❌ HATA: Simülasyon henüz başlatılmadığı için kamera oluşturulamaz.")
             return None
-        
-        b = builtins.base  # Panda3D ana nesnesi
 
-        # 1. Eğer bu ROV için zaten bir kamera varsa temizle
         if rov_id in self.aktif_kameralar:
             self.kamera_kaldir(rov_id)
 
-        # 2. Yeni Kamera Oluştur
+        # 1. Saf Panda3D Kamerası Oluştur
         cam_np = b.makeCamera(b.win)
         cam_node = cam_np.node()
-        
-        # 3. Kamerayı ROV'a Bağla
+
+        # 2. ROV'a Bağla (Panda3D hiyerarşisiyle)
         try:
-            if not self.filo_ref:
-                raise ValueError("Filo referansı bulunamadı")
-                
-            target_rov = self.filo_ref.find_rov_by_id(rov_id)
+            filo = self.filo_ref
+            if filo is None:
+                raise ValueError("Filo referansı yok")
+            target_rov = filo.find_rov_by_id(rov_id)
             if not target_rov:
                 raise ValueError(f"ROV-{rov_id} bulunamadı")
-            cam_np.reparentTo(target_rov)
+            # Ursina Entity → Panda3D NodePath (Ursina'da Entity bazen .entity ile NodePath verir)
+            parent_np = getattr(target_rov, "entity", target_rov)
+            cam_np.reparentTo(parent_np)
         except Exception as e:
-            print(f"❌ HATA: ROV-{rov_id} nesnesine ulaşılamadı: {e}")
+            print(f"❌ HATA: Kamera ROV'a bağlanamadı: {e}")
+            b.win.removeDisplayRegion(cam_node.getDisplayRegion(0))
+            cam_np.removeNode()
             return None
-        
-        # 4. Konum ve Açı (Panda3D: X sağ, Y ileri, Z yukarı)
+
+        # 3. 3D Konum ve Lens Ayarı (Panda3D transform – update döngüsüne gerek yok)
         cam_np.setPos(mesafe[0], mesafe[1], mesafe[2])
-        cam_np.setHpr(aci[0], aci[1], aci[2])
-        
-        # 5. Lens ve Ekran Bölgesi
+        cam_np.setHpr(aci[0], aci[1], aci[2])  # H(Yaw), P(Pitch), R(Roll)
         cam_node.getLens().setFov(fov)
-        region = cam_node.get_display_region(0)
+
+        # 4. Ekran Projeksiyon Bölgesi (DisplayRegion)
+        region = cam_node.getDisplayRegion(0)
         region.set_dimensions(bolge[0], bolge[1], bolge[2], bolge[3])
-        region.set_sort(10)  # En üstte çizilmesi için
-        
-        # Minimap ve UI'yı bu kameradan gizle (isteğe bağlı)
-        cam_node.set_camera_mask(1) 
+        region.set_sort(100)  # Sahne üstünde dursun
 
         self.aktif_kameralar[rov_id] = cam_np
-        print(f"🎥 ROV-{rov_id} FPV Kamera Aktif (Bölge: {bolge})")
+        print(f"🎥 ROV-{rov_id} FPV Kamera Aktif (saf Panda3D).")
         return cam_np
-    
-    def kamera_kaldir(self, rov_id):
+
+    def ekran_bolgesi_ayarla(self, rov_id, sol=0.0, sag=1.0, alt=0.0, ust=1.0):
         """
-        Belirtilen ROV'un kamerasını kaldırır.
-        
-        Args:
-            rov_id: ROV ID'si
-            
-        Returns:
-            bool: Başarılı ise True
+        Kameranın ekrana yansıyan görüntüsünün yerini ve boyutunu değiştirir.
+        sol, sag, alt, ust: 0.0 - 1.0 arası ekran koordinatları.
         """
-        if rov_id not in self.aktif_kameralar:
+        cam_np = self.aktif_kameralar.get(rov_id)
+        if cam_np is None:
             return False
-            
-        try:
-            b = builtins.base
-            eski_cam = self.aktif_kameralar[rov_id]
-            b.win.removeDisplayRegion(eski_cam.node().getDisplayRegion(0))
-            eski_cam.removeNode()
-            del self.aktif_kameralar[rov_id]
-            print(f"🎥 ROV-{rov_id} kamerası kaldırıldı")
-            return True
-        except Exception as e:
-            print(f"❌ HATA: ROV-{rov_id} kamerası kaldırılırken hata: {e}")
-            return False
-    
+        region = cam_np.node().getDisplayRegion(0)
+        region.set_dimensions(sol, sag, alt, ust)
+        return True
+
+    def tam_ekran_yap(self, rov_id):
+        """Kamerayı tüm ekrana yayar (0, 1, 0, 1)."""
+        return self.ekran_bolgesi_ayarla(rov_id, 0.0, 1.0, 0.0, 1.0)
+
     def kamera_guncelle(self, rov_id, mesafe=None, aci=None, fov=None):
-        """
-        Mevcut kameranın ayarlarını günceller.
-        
-        Args:
-            rov_id: ROV ID'si
-            mesafe: Yeni pozisyon (opsiyonel)
-            aci: Yeni açı (opsiyonel)
-            fov: Yeni FOV (opsiyonel)
-            
-        Returns:
-            bool: Başarılı ise True
-        """
-        if rov_id not in self.aktif_kameralar:
-            print(f"❌ HATA: ROV-{rov_id} için aktif kamera bulunamadı")
+        """Kamera pozisyonunu veya lensini Panda3D üzerinden günceller."""
+        cam_np = self.aktif_kameralar.get(rov_id)
+        if cam_np is None:
             return False
-            
+        if mesafe is not None:
+            cam_np.setPos(mesafe[0], mesafe[1], mesafe[2])
+        if aci is not None:
+            cam_np.setHpr(aci[0], aci[1], aci[2])
+        if fov is not None:
+            cam_np.node().getLens().setFov(fov)
+        return True
+
+    def kamera_kaldir(self, rov_id):
+        """Kamerayı ve DisplayRegion'ı kaldırır."""
+        if rov_id not in self.aktif_kameralar:
+            return False
+        b = getattr(builtins, "base", None)
+        if b is None:
+            return False
         try:
             cam_np = self.aktif_kameralar[rov_id]
-            
-            if mesafe is not None:
-                cam_np.setPos(mesafe[0], mesafe[1], mesafe[2])
-                
-            if aci is not None:
-                cam_np.setHpr(aci[0], aci[1], aci[2])
-                
-            if fov is not None:
-                cam_np.node().getLens().setFov(fov)
-                
-            print(f"🎥 ROV-{rov_id} kamera ayarları güncellendi")
+            b.win.removeDisplayRegion(cam_np.node().getDisplayRegion(0))
+            cam_np.removeNode()
+            del self.aktif_kameralar[rov_id]
+            print(f"🎥 ROV-{rov_id} kamerası kaldırıldı.")
             return True
         except Exception as e:
-            print(f"❌ HATA: ROV-{rov_id} kamera güncellenirken hata: {e}")
+            print(f"❌ HATA: Kamera kaldırılırken sorun: {e}")
             return False
-    
-    def tum_kameralari_kaldir(self):
-        """
-        Tüm aktif kameraları kaldırır.
-        
-        Returns:
-            int: Kaldırılan kamera sayısı
-        """
-        kaldirilan = 0
-        for rov_id in list(self.aktif_kameralar.keys()):
-            if self.kamera_kaldir(rov_id):
-                kaldirilan += 1
-        return kaldirilan
-    
-    def kamera_var_mi(self, rov_id):
-        """
-        Belirtilen ROV'un kamerası var mı kontrol eder.
-        
-        Args:
-            rov_id: ROV ID'si
-            
-        Returns:
-            bool: Kamera varsa True
-        """
-        return rov_id in self.aktif_kameralar
-    
+
     def kamera_bilgisi(self, rov_id):
-        """
-        Belirtilen ROV'un kamera bilgilerini döner.
-        
-        Args:
-            rov_id: ROV ID'si
-            
-        Returns:
-            dict: Kamera bilgileri (pozisyon, açı, fov) veya None
-        """
-        if rov_id not in self.aktif_kameralar:
+        """Kamera bilgilerini Panda3D pozisyon/açı/FOV olarak döner."""
+        cam_np = self.aktif_kameralar.get(rov_id)
+        if cam_np is None:
             return None
-            
-        try:
-            cam_np = self.aktif_kameralar[rov_id]
-            pos = cam_np.getPos()
-            hpr = cam_np.getHpr()
-            fov = cam_np.node().getLens().getFov()
-            
-            return {
-                'pozisyon': (pos.x, pos.y, pos.z),
-                'aci': (hpr.x, hpr.y, hpr.z),
-                'fov': fov[0] if isinstance(fov, tuple) else fov
-            }
-        except Exception as e:
-            print(f"❌ HATA: ROV-{rov_id} kamera bilgisi alınırken hata: {e}")
-            return None
-    
+        pos = cam_np.getPos()
+        hpr = cam_np.getHpr()
+        return {
+            "pozisyon": (pos.x, pos.y, pos.z),
+            "aci": (hpr.x, hpr.y, hpr.z),
+            "fov": cam_np.node().getLens().getFov(),
+        }
+
     def aktif_kamera_listesi(self):
-        """
-        Aktif kameraların ROV ID listesini döner.
-        
-        Returns:
-            list: ROV ID'leri
-        """
         return list(self.aktif_kameralar.keys())
-    
-    # Backward compatibility için wrapper metod
-    def kamera_ayarla(self, rov_id=0, mesafe=(0, -40, 120), aci=(0, 0, 0), fov=75, bölge=(0.02, 0.20, 0.80, 0.98)):
-        """
-        Eski API uyumluluğu için wrapper metod.
-        kamera_ekle() metodunu çağırır.
-        """
-        return self.kamera_ekle(rov_id, mesafe, aci, fov, bölge)
+
+    def kamera_var_mi(self, rov_id):
+        """Belirtilen ROV için aktif kamera var mı."""
+        return rov_id in self.aktif_kameralar
+
+    def tum_kameralari_kaldir(self):
+        for rid in list(self.aktif_kameralar.keys()):
+            self.kamera_kaldir(rid)

@@ -14,44 +14,6 @@ try:
 except ImportError:
     HAS_MPL = False
 
-def _euler_deg_to_direction(rx_deg, ry_deg, rz_deg):
-    """
-    Kritik Düzeltme: Rotasyonlar tam olarak belirtilen sırayla (X -> Z -> Y) uygulanır.
-    rx: 90 ve -90 arasındaki farkı korumak için başlangıç vektörü (0,1,0) dikey seçilir.
-    """
-
-    #print(rx_deg, ry_deg, rz_deg)
-    rx, ry, rz = map(math.radians, [rx_deg, ry_deg, rz_deg])
-    
-    # Başlangıç: Motor dik duruyor (Azure durumu)
-    v = np.array([0, 1, 0])
-
-    # 1. X ekseninde yatır (Pitch) - rx: 90 ileri (+Z), -90 geri (-Z) yapar.
-    Rx = np.array([
-        [1, 0, 0],
-        [0, math.cos(rx), -math.sin(rx)],
-        [0, math.sin(rx), math.cos(rx)]
-    ])
-    
-    # 2. Z ekseninde döndür (Roll/Açı)
-    Ry = np.array([
-        [math.cos(rz),0, math.sin(rz)],
-        [0, 1, 0],
-        [-math.sin(rz),0, math.cos(rz)]
-
-    ])
-    
-    # 3. Y ekseninde döndür (Yaw)
-    Rz = np.array([
-        [math.cos(ry), -math.sin(ry),0],
-        [math.sin(ry), math.cos(ry),0],
-        [0, 0, 1]
-    ])
-
-    # Dönüşüm Zinciri: Ry * Rx * Rz * v
-    # Bu sıra, 90 derece yatmış bir motorun rz açısıyla yer düzleminde dönmesini sağlar.
-    res = Ry @ (Rz @ (Rx @ v))
-    return res[0], res[1], res[2]
 
 def save_rov_schema_info(rov_id, motor_entries, save_dir):
     os.makedirs(save_dir, exist_ok=True)
@@ -60,7 +22,13 @@ def save_rov_schema_info(rov_id, motor_entries, save_dir):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 def draw_rov_motor_schema(motor_entries, save_dir, world_pos=(0,0,0), world_rot=(0,0,0), pool_size=None, base_name="rov_motor_sema"):
-    if not HAS_MPL: raise RuntimeError("matplotlib gerekli")
+    """
+    Motor listesi: her biri name, position, direction (x,y,z birim yön) içerir.
+    Aşama 1: Pozisyon ve yön vektörüne göre çizim verisi hazırlanır.
+    Aşama 2: Aynı görsel mantıkla PDF üretilir.
+    """
+    if not HAS_MPL:
+        raise RuntimeError("matplotlib gerekli")
     if pool_size is None:
         pool_size = (HavuzAyarlari.HAVUZ_TAM_GENISLIK, HavuzAyarlari.HAVUZ_TAM_GENISLIK)
     os.makedirs(save_dir, exist_ok=True)
@@ -74,7 +42,7 @@ def draw_rov_motor_schema(motor_entries, save_dir, world_pos=(0,0,0), world_rot=
     # --- 1. PANEL: ÜST GÖRÜNÜM (YEREL) ---
     ax1.set_aspect("equal")
     ax1.set_xlim(-300, 300); ax1.set_ylim(-300, 300)
-    ax1.set_title("1. Detaylı Motor Konfigürasyonu (P, Y, R Bilgili)", fontsize=14)
+    ax1.set_title("1. Motor Konfigürasyonu (Pozisyon + Yön Vektörü)", fontsize=14)
     ax1.add_patch(mpatches.Rectangle((-100, -body_half_z), 200, 2*body_half_z, color="gray", alpha=0.1))
     ax1.add_patch(mpatches.Polygon([(-35, body_half_z), (35, body_half_z), (0, body_half_z+40)], color="green", alpha=0.5))
 
@@ -105,41 +73,47 @@ def draw_rov_motor_schema(motor_entries, save_dir, world_pos=(0,0,0), world_rot=
     ax3.add_patch(mpatches.Rectangle((w_x-icon_w/2, w_z-icon_h/2), icon_w, icon_h, fill=False, edgecolor="red", linewidth=2, transform=t))
     ax3.add_patch(mpatches.Polygon([[w_x, w_z+icon_h/2+25], [w_x-20, w_z+icon_h/2-5], [w_x+20, w_z+icon_h/2-5]], color="green", alpha=0.8, transform=t))
 
+    # Aşama 1: Pozisyon ve yön vektörüne göre çizim verileri
+    draw_items = []
     for e in motor_entries:
-        xm_l, ym_l, zm_l = e["position"]; rx, ry, rz = e["rotation"]
-        dx, dy, dz = _euler_deg_to_direction(rx, ry, rz)
-        
-        # --- ORTAK ÇİZİM MANTIĞI ---
-        # Panel 1 (Yerel)
+        xm_l, ym_l, zm_l = e["position"]
+        dx, dy, dz = e["direction"][0], e["direction"][1], e["direction"][2]
+        draw_items.append((e["name"], xm_l, ym_l, zm_l, dx, dy, dz))
+
+    # Aşama 2: Aynı görsel mantıkla PDF panelleri
+    for name, xm_l, ym_l, zm_l, dx, dy, dz in draw_items:
+        # Panel 1: Üst görünüm (yerel – ROV üzerinde nereye takılı)
         if abs(dy) > 0.8:
             ax1.add_patch(mpatches.Circle((xm_l, zm_l), 22, color="midnightblue", fill=False))
-            if dy > 0: ax1.plot(xm_l, zm_l, 'o', color="midnightblue", markersize=8)
-            else: ax1.text(xm_l, zm_l, 'X', color="midnightblue", fontsize=10, fontweight='bold', ha='center', va='center')
+            if dy > 0:
+                ax1.plot(xm_l, zm_l, 'o', color="midnightblue", markersize=8)
+            else:
+                ax1.text(xm_l, zm_l, 'X', color="midnightblue", fontsize=10, fontweight='bold', ha='center', va='center')
         else:
             ax1.arrow(xm_l, zm_l, dx*50, dz*50, head_width=20, head_length=15, fc="midnightblue", length_includes_head=True)
-        ax1.annotate(f"{e['name']}\n({int(rx)},{int(ry)},{int(rz)})", (xm_l, zm_l), xytext=(20, 20), textcoords="offset points", fontsize=8, bbox=dict(boxstyle="round", fc="white", alpha=0.7))
+        ax1.annotate(f"{name}\n({dx:.2f},{dy:.2f},{dz:.2f})", (xm_l, zm_l), xytext=(20, 20), textcoords="offset points", fontsize=8, bbox=dict(boxstyle="round", fc="white", alpha=0.7))
 
-        # Panel 2 (Yan)
+        # Panel 2: Yan profil itki
         ax2.plot(zm_l, ym_l, "o", color="steelblue")
         ax2.arrow(zm_l, ym_l, dz*50, dy*50, head_width=20, head_length=15, fc="forestgreen", length_includes_head=True)
 
-        # Panel 3 (SAHA HARİTASI - Sabit Boyutlu Oklar)
-        s = 0.15 # İkon ölçeği
+        # Panel 3: Saha haritası (ROV konumu + motor yönü)
+        s = 0.15
         curr_x, curr_z = xm_l * s, zm_l * s
-        
-        if abs(dy) > 0.8: # Dikey
+        if abs(dy) > 0.8:
             circ = mpatches.Circle((w_x+curr_x, w_z+curr_z), radius=6, color="midnightblue", fill=False, transform=t)
             ax3.add_patch(circ)
-            if dy > 0: ax3.plot(w_x+curr_x, w_z+curr_z, 'o', color="midnightblue", markersize=2, transform=t)
-            else: ax3.text(w_x+curr_x, w_z+curr_z, 'x', color="midnightblue", fontsize=7, ha='center', va='center', transform=t)
-        else: # Yatay (Normalize edilmiş sabit ok boyutu)
+            if dy > 0:
+                ax3.plot(w_x+curr_x, w_z+curr_z, 'o', color="midnightblue", markersize=2, transform=t)
+            else:
+                ax3.text(w_x+curr_x, w_z+curr_z, 'x', color="midnightblue", fontsize=7, ha='center', va='center', transform=t)
+        else:
             mag = math.sqrt(dx**2 + dz**2)
             if mag > 0:
                 ndx, ndz = (dx/mag), (dz/mag)
-                ax3.arrow(w_x+curr_x, w_z+curr_z, ndx*map_arrow_scale, ndz*map_arrow_scale, 
+                ax3.arrow(w_x+curr_x, w_z+curr_z, ndx*map_arrow_scale, ndz*map_arrow_scale,
                           head_width=6, head_length=6, fc="midnightblue", ec="black", length_includes_head=True, transform=t)
-
-        ax3.text(w_x+curr_x+8, w_z+curr_z+8, f"{e['name']}\n({int(rx)},{int(ry)},{int(rz)})", 
+        ax3.text(w_x+curr_x+8, w_z+curr_z+8, f"{name}\n({dx:.2f},{dy:.2f},{dz:.2f})",
                  fontsize=5, fontweight='bold', transform=t, bbox=dict(boxstyle="round,pad=0.1", fc="white", alpha=0.6))
 
     # --- BİLGİ KUTUSU (BURUNA ORTALANMIŞ) ---
