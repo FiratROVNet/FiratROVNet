@@ -9,15 +9,18 @@ import threading
 import math
 import random
 import numpy as np
-from ursina import *
+from ursina import *  # type: ignore[reportMissingImports]
+from ursina import Vec3, color, time, destroy, window, camera  # type: ignore[reportMissingImports]
+from panda3d.bullet import BulletWorld  # type: ignore[reportMissingImports]
 
 # Yerel modül importları
-from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, FizikSabitleri, Hidrodinamik, BasitKalmanFiltresi
+from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, FizikSabitleri, Hidrodinamik, BasitKalmanFiltresi, HavuzAyarlari
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon
 from ..hull import HullManager
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper
 import concurrent.futures
 from FiratROVNet.lider_sec import liderlik_secimini_baslat
+from FiratROVNet.gnc.motor import Motor
 # Lazy import: FiratAnalizci circular import problemini önlemek için _basla_gat_modeli içinde import edilir
 
 # Modüler yapı - GNC subpackage
@@ -59,6 +62,10 @@ class Filo:
         
         # Formasyon Yönetimi
         self.aktif_formasyon = {}
+        self.Motor=Motor
+        self.motorlar_bv={}
+        self.motorlar={}
+
         self._formasyon_id_pool = list(range(len(Formasyon.TIPLER)))
         random.shuffle(self._formasyon_id_pool)
         self._formasyon_hedefleri = {}
@@ -85,8 +92,17 @@ class Filo:
         self.target_counter = 0           # Her tıklamada artan benzersiz ID sayacı
         
         # Ortam referansını ayarla ve başlat
-        if self.ortam_ref:
-            self.ortam_ref.filo = self
+        self.world = BulletWorld()
+        ortam = self.ortam_ref
+        if ortam:
+            # Ursina Entity.update() yerine tek merkezden (guncelle_hepsi) guncelleme
+            # yapabilmek için ortamı "central update" moduna al.
+            # (Örn: ROV.update içindeki sensör çağrısı bu modda devre dışı kalır.)
+            try:
+                setattr(ortam, 'central_update', True)
+            except Exception:
+                pass
+            ortam.filo = self
             self._baslatma_tamamla()
     
 
@@ -95,16 +111,322 @@ class Filo:
     # ============================================================
     
     def _baslatma_tamamla(self):
-        """Filo ve ortam ilk kurulumunu tamamla."""
-        if not self.ortam_ref:
+            """ROV'lar için fiziksel gövdeleri ve motorları kurar."""
+            from panda3d.bullet import BulletRigidBodyNode, BulletBoxShape
+            from panda3d.core import Vec3
+
+            ortam = self.ortam_ref
+            if ortam is None:
+                return
+            render = getattr(ortam, 'app', None) and getattr(ortam.app, 'render', None)
+            if render is None:
+                render = globals().get('render')
+            if render is None:
+                return
+            for rov in ortam.rovs:
+                if rov is None:
+                    continue
+                rov.gnc = TemelGNC(rov, self)
+
+                if self.motorlar.get(rov.id) is None:
+                    self.motorlar[rov.id] = []
+                
+                # A. Fiziksel Düğüm (RigidBody) — kütle ve sönümleme: config.Hidrodinamik
+                node = BulletRigidBodyNode(f"ROV_{rov.id}")
+                node.setMass(Hidrodinamik.KUTLE)
+                node.setLinearDamping(Hidrodinamik.LINEAR_DAMPING)
+                node.setAngularDamping(Hidrodinamik.ANGULAR_DAMPING) 
+                
+                # Çarpışma Şekli (ROV boyutlarına göre)
+                shape = BulletBoxShape(Vec3(1.5, 1.0, 4.5)) # Submarine boyutuna uygun gerçekçi fizik
+                node.addShape(shape)
+                
+                # Panda3D'ye ekle
+                rov_np = render.attachNewNode(node)
+                rov_np.setPos(rov.position) # Ursina pozisyonundan başlat
+                self.world.attachRigidBody(node)
+                #node.setGravity(Vec3(0, 0, 0)) # Bu ROV için yerçekimini sıfırla
+                
+                # B. Referansları Kaydet
+                rov.physics_node = node
+                rov.physics_np = rov_np
+                
+
+                # C. BlueROV2 benzeri 6 itki motoru (4 yatay, 2 dikey)
+                #    ROV modelinde ileri yön -Z (Ursina/loader convention).
+                #      - İleri:  -Z
+                #      - Sağ:    +X
+                #      - Yukarı: +Y
+                #
+                #    4 yatay motor: ROV önü (-Z) = 0°, 45° dışa (sol: -X, sağ: +X) + ileri (-Z).
+                #      - Sol taraf: (-cos45, 0, -cos45)
+                #      - Sağ taraf: (+cos45, 0, -cos45)
+                #    Konumlar: ön z>0, arka z<0 (modelde ön -Z yönünde olduğu için ön motorlar z=+200).
+                #
+                #    2 dikey motor: m4, m5
+                #    Motor ID: m0=ön-sol, m1=ön-sağ, m2=arka-sol, m3=arka-sağ, m4=dikey-sol, m5=dikey-sağ
+                try:
+                    self.BlueROV2_motor_konfigurasyonu(rov)
+                    
+
+                except Exception as e:
+                    logging.warning(f"[Filo] ROV-{getattr(rov, 'id', '?')} için motor oluşturulamadı: {e}")
+
+            self.minimap(scale=1.0)
+            self.motor_sema_kaydet()
+            self.tum_motor_bv_kutuphanelerini_guncelle()
+            self.kamera_ayarla()
+            
+
+    # ============================================================
+    # KURULUM VE SİSTEM YÖNETİMİ (SADELEŞTİRİLMİŞ)
+    # ============================================================
+
+    def BlueROV2_motor_konfigurasyonu(self, rov):
+                    # m0: ön-sol (yatay) — Filo._euler_deg_to_direction tek kaynak (filo_ref ile)
+                    rov.m0 = Motor(rov, filo_ref=self)
+                    rov.m0.ekle(koordinat=Vec3(-200.0, 0.0, 200.0), yon_vec=(90, 45, 0))
+                    self.motorlar[rov.id].append(rov.m0)
+
+                    # m1: ön-sağ (yatay)
+                    rov.m1 = Motor(rov, filo_ref=self)
+                    rov.m1.ekle(koordinat=Vec3(200.0, 0.0, 200.0), yon_vec=(90, -45, 0))
+                    self.motorlar[rov.id].append(rov.m1)
+
+                    # m2: arka-sol (yatay)
+                    rov.m2 = Motor(rov, filo_ref=self)
+                    rov.m2.ekle(koordinat=Vec3(-200.0, 0.0, -200.0), yon_vec=(90, 135, 0))
+                    self.motorlar[rov.id].append(rov.m2)
+
+                    # m3: arka-sağ (yatay)
+                    rov.m3 = Motor(rov, filo_ref=self)
+                    rov.m3.ekle(koordinat=Vec3(200.0, 0.0, -200.0), yon_vec=(90, -135, 0))
+                    self.motorlar[rov.id].append(rov.m3)
+
+                    # m4: dikey-sol (heave)
+                    rov.m4 = Motor(rov, filo_ref=self)
+                    rov.m4.ekle(koordinat=Vec3(-100, 0.0, 0.0), yon_vec=(0.0, 0, 0.0))
+                    self.motorlar[rov.id].append(rov.m4)
+
+                    # m5: dikey-sağ (heave)
+                    rov.m5 = Motor(rov, filo_ref=self)
+                    rov.m5.ekle(koordinat=Vec3(100, 0.0, 0.0), yon_vec=(0.0, 0, 0.0))
+                    self.motorlar[rov.id].append(rov.m5)
+
+
+
+    def _euler_deg_to_direction(self, rot_deg: Vec3, v=Vec3(0, 1, 0)):
+        # Ursina görseli ile matematiksel matrisleri eşitlemek için:
+        # X (Pitch): Ursina +X (Aşağı/İleri) = Matris +X
+        # Y (Yaw): Ursina +Y (Sağa) = Matris +Y
+        # Z (Roll): Ursina +Z (Sağa Yatış) = Matris -Z
+        rx = math.radians(rot_deg.x)
+        ry = math.radians(rot_deg.y)
+        rz = math.radians(-rot_deg.z) # Sadece Z işaretini ters çeviriyoruz
+        
+        v_np = np.array([v.x, v.y, v.z])
+
+        Rx = np.array([[1, 0, 0],
+                    [0, math.cos(rx), -math.sin(rx)],
+                    [0, math.sin(rx), math.cos(rx)]])
+        
+        Ry = np.array([[math.cos(ry), 0, math.sin(ry)],
+                    [0, 1, 0],
+                    [-math.sin(ry), 0, math.cos(ry)]])
+        
+        Rz = np.array([[math.cos(rz), -math.sin(rz), 0],
+                    [math.sin(rz), math.cos(rz), 0],
+                    [0, 0, 1]])
+
+        # Ursina Sıralaması: Önce Z, Sonra X, En son Y (Ry @ Rx @ Rz)
+        res = Ry @ (Rx @ (Rz @ v_np))
+        return Vec3(res[0], res[1], res[2])
+
+
+
+    def tum_motor_bv_kutuphanelerini_guncelle(self):
+            self.motorlar_bv = {} 
+            for rov_id, motor_listesi in self.motorlar.items():
+                rov = self.find_rov_by_id(rov_id)
+                if not rov: continue
+                
+                # ROV'un güncel ölçek değerlerini al
+                scale_v = Vec3(rov.scale_x, rov.scale_y, rov.scale_z)
+                
+                rov_icin_bv_listesi = []
+                for motor in motor_listesi:
+                    # 1. İtki Yönü (Birim Vektör - Ölçekten bağımsızdır)
+                    rot = motor.motor_entity.rotation 
+                    birim_vektor = self._euler_deg_to_direction(Vec3(rot.x, rot.y, rot.z))
+                    motor.r_bv = birim_vektor
+                    
+                    # 2. GERÇEK MOMENT KOLU (Scaling Uygulanmış)
+                    # Motorun modeldeki yerel pozisyonunu ROV ölçeğiyle çarpıyoruz
+                    l_pos = motor.motor_entity.position # Örn: (-200, 0, 200)
+                    r_real = Vec3(
+                        l_pos.x * scale_v.x, 
+                        l_pos.y * scale_v.y, 
+                        l_pos.z * scale_v.z
+                    )
+                    #print(r_real,l_pos)
+                    
+                    # 3. GERÇEK TORK VEKTÖRÜ
+                    # Artık tork, gerçek dünya metre birimleri üzerinden hesaplanıyor
+                    motor.tork_bv = r_real.cross(birim_vektor).normalized()
+                    
+                    rov_icin_bv_listesi.append(birim_vektor)
+
+                self.motorlar_bv[rov_id] = rov_icin_bv_listesi
+                rov.motorlar = motor_listesi
+
+
+    def dunya_to_yerel_vektor(self, dunya_vektor: Vec3, rotasyon: Vec3) -> Vec3:
+            """
+            Dünya koordinat sistemindeki bir vektörü, verilen dönüş açısına (rotasyon)
+            göre yerel (Local) koordinat sistemine dönüştürür.
+            """
+            # ROV'un dünya eksenindeki yönlerini Euler fonksiyonumuzla buluyoruz
+            rov_ileri  = self._euler_deg_to_direction(rotasyon, v=Vec3(0, 0, 1)) # Z
+            rov_sag    = self._euler_deg_to_direction(rotasyon, v=Vec3(1, 0, 0)) # X
+            rov_yukari = self._euler_deg_to_direction(rotasyon, v=Vec3(0, 1, 0)) # Y
+
+            # Dünya vektörünün bu eksenlerdeki izdüşümlerini alıyoruz (Dot Product)
+            yerel_x = dunya_vektor.dot(rov_sag)
+            yerel_y = dunya_vektor.dot(rov_yukari)
+            yerel_z = dunya_vektor.dot(rov_ileri)
+
+            return Vec3(yerel_x, yerel_y, yerel_z)
+
+    def tum_motorlarin_guclerini_hesapla(self, rov_id=0, hedef_vektor_dunya: Vec3 = Vec3(0.0, 0.0, 0.0), guc: float = 0.0):
+            rov = self.find_rov_by_id(rov_id)
+            if not rov:
+                return [0.0] * 6
+
+            # Yardımcı metot ile hedefi yerel eksene çevir
+            hedef_yerel = self.dunya_to_yerel_vektor(hedef_vektor_dunya, rov.rotation)
+
+            # Motorlarla skaler çarpım (İkisi de artık yerel eksende!)
+            Powers =[v.dot(hedef_yerel) * guc for v in self.motorlar_bv[rov_id]]
+            
+            return Powers
+
+    def tork_gucleri_hesapla(self, rov=None, hedef_vektor_dunya: Vec3 = Vec3(0.0, 0.0, 0.0), guc_orani: float = 0.0):
+            if rov is None:
+                return [0.0] * 6, 0.0
+
+            # 1. Dünya eksenindeki bakış yönü
+            V_rov_dunya = rov.gnc.r_bv
+            
+            # Sadece Yatay (Yaw) dönüşü yapmak için Y (dikey) eksenini sıfırlıyoruz
+            V_rov_yatay = Vec3(V_rov_dunya.x, 0, V_rov_dunya.z)
+            hedef_yatay = Vec3(hedef_vektor_dunya.x, 0, hedef_vektor_dunya.z)
+
+            # Hata payı kontrolü (Eğer hedef sadece aşağı/yukarı ise dönme yapma)
+            if V_rov_yatay.length() < 0.001 or hedef_yatay.length() < 0.001:
+                return [0.0] * len(rov.motorlar), 0.0
+
+            # 2. DÜNYA TORK EKSENİ (Vektörel Çarpım)
+            # Hangi dünya ekseni etrafında döneceğimizi buluruz
+            Tork_istenen_dunya = V_rov_yatay.cross(hedef_yatay)
+
+            # 3. YEREL TORK EKSENİNE ÇEVİRME (Yeni Yardımcı Metot!)
+            # Dünya torkunu, ROV'un o anki duruşuna göre kendi iç eksenlerine çeviriyoruz
+            Tork_istenen_yerel = self.dunya_to_yerel_vektor(Tork_istenen_dunya, rov.rotation)
+
+            # 4. MOTORLARI DAĞIT (Yerel tork ihtiyacı ile motorların yerel tork yeteneği çarpılır)
+            Powers =[m.tork_bv.dot(Tork_istenen_yerel) * guc_orani for m in rov.motorlar]
+            
+            return Powers, 0
+
+    def yaw(self,rov,guc:float=0.1):
+        motorlar = rov.motorlar
+        m0=motorlar[0]
+        m1=motorlar[1]
+        m2=motorlar[2]
+        m3=motorlar[3]
+        m0.calistir(guc)
+        m1.calistir(-guc)
+        m2.calistir(-guc)
+        m3.calistir(guc)
+
+
+
+
+
+
+
+
+
+    def motor_sema_kaydet(self, rov=None, klasor=None, base_name="rov_motor_sema"):
+        """ROV motorlarının pozisyon ve yön vektörünü toplayıp şemaya gönderir. rov verilmezse ilk ROV kullanılır."""
+        ortam = getattr(self, "ortam_ref", None)
+        if rov is None and ortam is not None and getattr(ortam, "rovs", None):
+            rovs = [r for r in ortam.rovs if r and not (hasattr(r, "is_destroyed") and r.is_destroyed)]
+            rov = rovs[0] if rovs else None
+        if rov is None:
+            return None
+
+        from .schema_export import draw_rov_motor_schema, save_rov_schema_info
+
+        schema_root = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "SCHEMA")
+        if klasor is None:
+            klasor = schema_root
+        save_dir = os.path.join(klasor, f"ROV{rov.id}")
+
+        # Güncel motor pozisyonu ve yönü: motor_entity değiştirildiyse onu kullan, yoksa l_pos / yon_vec
+        entries = []
+        for i in range(6):
+            m = getattr(rov, f"m{i}", None)
+            if not m:
+                continue
+            # Pozisyon: görsel güncellendiyse motor_entity.position, yoksa l_pos
+            if getattr(m, "motor_entity", None) is not None:
+                pos = m.motor_entity.position
+                pos_t = (getattr(pos, "x", pos[0]), getattr(pos, "y", pos[1]), getattr(pos, "z", pos[2]))
+            elif hasattr(m, "l_pos") and m.l_pos is not None:
+                pos_t = (m.l_pos.x, m.l_pos.y, m.l_pos.z)
+            else:
+                continue
+            # Yön: görsel rotasyon güncellendiyse ondan hesapla, yoksa yon_vec
+            if getattr(m, "motor_entity", None) is not None:
+                rot = m.motor_entity.rotation
+                rx = getattr(rot, "x", rot[0])
+                ry = getattr(rot, "y", rot[1])
+                rz = getattr(rot, "z", rot[2])
+                dir_vec = self._euler_deg_to_direction(Vec3(rx, ry, rz), v=Vec3(0, 1, 0))
+                dir_t = (dir_vec.x, dir_vec.y, dir_vec.z)
+            elif getattr(m, "yon_vec", None) is not None:
+                v = m.yon_vec
+                dir_t = (getattr(v, "x", v[0]), getattr(v, "y", v[1]), getattr(v, "z", v[2]))
+            else:
+                continue
+            entries.append({"name": f"m{i}", "position": pos_t, "direction": dir_t})
+        if not entries:
+            return None
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 3. Bilgileri kaydet ve PDF/Şema çizdir
+        save_rov_schema_info(rov_id=rov.id, motor_entries=entries, save_dir=save_dir)
+        
+        return draw_rov_motor_schema(
+            motor_entries=entries,
+            save_dir=save_dir,
+            world_pos=(rov.x, rov.y, rov.z),
+            world_rot=(rov.rotation_x, rov.rotation_y, rov.rotation_z),
+            pool_size=(HavuzAyarlari.HAVUZ_TAM_GENISLIK, HavuzAyarlari.HAVUZ_TAM_GENISLIK),
+            base_name=base_name,
+        )
+
+
+    def motorlari_calistir(self, rov_id=0, gucler: list[float] | None = None):
+        if gucler is None:
+            gucler = []
+        motor_listesi = self.motorlar.get(rov_id)
+        if not motor_listesi:
             return
-        
-        # ROV'lara GNC örnekleri ekle
-        for rov in self.ortam_ref.rovs:
-            rov.gnc = TemelGNC(rov, self)
-        
-        # Minimap başlat
-        self.minimap(scale=1.0)
+        n = len(gucler)
+        for i in range(n):
+            motor_listesi[i].calistir(gucler[i])
 
     def _basla_gat_modeli(self):
         """GAT modelini yükle ve başlat. Başarısız olursa disable et."""
@@ -256,109 +578,207 @@ class Filo:
         return positions
     
     def kamera_ayarla(self, *args, **kwargs):
-        """Kamera yönetimini camera_manager'a yönlendir."""
-        return self.camera_manager.kamera_ayarla(*args, **kwargs)
+        """Kamera yönetimini camera_manager'a yönlendir (kamera_ekle ile aynı API)."""
+        kamera_id = self.camera_manager.aktif_kamera_listesi()
+        for kamera in kamera_id:
+            self.camera_manager.kamera_kaldir(kamera)
+        return self.camera_manager.kamera_ekle(*args, **kwargs)
     
     def kamera_kaldir(self, rov_id):
         """Kamera kaldırma işlemini camera_manager'a yönlendir."""
         return self.camera_manager.kamera_kaldir(rov_id)
-            
-    def guncelle_hepsi(self, tahminler):
-        """
-        Tüm GNC sistemlerini koordineli şekilde günceller.
-        
-        Operasyon Sırası (Önem Sırasına Göre):
-        1. Sistem Hazırlığı      → Command queue işle
-        2. Navigasyon Kuyruğu    → Hedef yönetimi
-        3. Lider Yönetimi        → Yeni lider seç & değişim yap
-        4. ROV Başına İşlemler   → Hasar, GNC, Motor komutları
-        5. Sistem Güncellemeleri → Sonar, Minimap, engel bulut
-        """
-        
-        # ============================================================
-        # 1. SİSTEM HAZIRLIGI
-        # ============================================================
-        self._process_command_queue()
-        
-        if not self.ortam_ref:
-            return
 
-        # ============================================================
-        # 2. NAVİGASYON KUYRUGU (Grup bazlı hedef yönetimi)
-        # ============================================================
+
+    def kamera_pozisyonu(self,x,z):
+        size=window.size
+        genislik=size[0]
+        yukseklik=size[1]
+
+        x1=(1/2)*(2*x/genislik - 0.2)
+        x2=(1/2)*(2*x/genislik + 0.2)
+        z1=(1/2)*(2*z/yukseklik - 0.2)
+        z2=(1/2)*(2*z/yukseklik + 0.2)
+        return x1,x2,z1,z2
+
+    def ekran(self):
+        return window.size
+
+    def yuzey_bilgileri(self):
+        """
+        Okyanus yüzeyinin (ocean_surface) ana kameraya göre durumunu analiz eder.
+        Returns:
+            dict: mesafe (vektör: kamera -> yüzey), bagil_rotasyon veya None (ortam / ocean_surface yoksa).
+        """
+        ortam = self.ortam_ref
+        if ortam is None:
+            return None
+        yuzey = getattr(ortam, "ocean_surface", None)
+        if yuzey is None:
+            return None
+        kamera = getattr(ortam, "camera", None)
+        if kamera is None:
+            return None
+        try:
+            cam_pos = kamera.world_position
+            yuzey_pos = yuzey.world_position
+            # Kamera -> yüzey vektörü (x, y, z)
+            mesafe = (
+                float(yuzey_pos.x - cam_pos.x),
+                float(yuzey_pos.y - cam_pos.y),
+                float(yuzey_pos.z - cam_pos.z),
+            )
+
+            yuzey_rot = getattr(yuzey, "world_rotation", getattr(yuzey, "rotation", Vec3(0, 0, 0)))
+            cam_rot = getattr(kamera, "world_rotation", getattr(kamera, "rotation", Vec3(0, 0, 0)))
+            if not hasattr(yuzey_rot, "x"):
+                yuzey_rot = Vec3(yuzey_rot[0], yuzey_rot[1], yuzey_rot[2])
+            if not hasattr(cam_rot, "x"):
+                cam_rot = Vec3(cam_rot[0], cam_rot[1], cam_rot[2])
+            bagil_rotasyon = (
+                yuzey_rot.x - cam_rot.x,
+                yuzey_rot.y - cam_rot.y,
+                yuzey_rot.z - cam_rot.z,
+            )
+
+            zoom=camera.position.z
+
+            return {
+                "mesafe": mesafe,
+                "bagil_rotasyon": bagil_rotasyon,
+                "zoom": float(zoom),
+            }
+        except Exception:
+            return None
+
+    # ============================================================
+    # MERKEZI TICK PARCALARI (MODULER)
+    # ============================================================
+    def _tick_sistem_hazirligi(self):
+        """Command queue + physics step."""
+        self._process_command_queue()
+        dt = time.dt
+        self.world.doPhysics(dt, 10, 1.0/60.0)
+
+    def _tick_navigasyon_ve_gorseller(self, tahminler):
+        """Grup bazlı hedef yönetimi + renk/gorsel state."""
         self.guncelle_navigasyon_kuyrugu()
         self.guncelle_gorseller_ve_renkler(tahminler)
 
-        # ============================================================
-        # 3. LİDER YÖNETİMİ (Grup bazlı lider seçim ve role transfer)
-        # ============================================================
-        yeni_lider_id, skor = liderlik_secimini_baslat(self, self.asil_hedef)
+    def _tick_lider_yonetimi(self):
+        """Lider seçim + leader manager güncellemesi."""
+        yeni_lider_id, _skor = liderlik_secimini_baslat(self, self.asil_hedef)
         self.leader_manager.guncelle_liderler(yeni_lider_id)
 
-        # ============================================================
-        # 4. ROV BAŞINA İŞLEMLER
-        # ============================================================
-        # Canlı ROV'ları doğrudan işle (destroyed'lar otomatik filtrelendi)
-        for rov in self.rovs:
-            # --- 4A. GAT Tahmini ve İndeks Bulma ---
+    def _tick_rovler(self, tahminler):
+        """ROV başına hasar/sensör/gnc + basit limit/batarya güncellemeleri."""
+        if not self.ortam_ref or not hasattr(self.ortam_ref, 'rovs'):
+            return
+
+        sea_floor_y = getattr(self.ortam_ref, 'SEA_FLOOR_Y', -50.0)
+        ortam_rovs = self.ortam_ref.rovs
+        tahmin_len = len(tahminler) if tahminler is not None else 0
+        dt = time.dt
+
+        # Tek geciste (O(n)): idx -> tahminler esleme + ROV tick
+        for idx, rov in enumerate(ortam_rovs):
+            if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                continue
+
+            # Tahminler bounds check
+            gat_kodu = int(tahminler[idx]) if idx < tahmin_len else 0
+
+            # --- Physics sync (Panda3D -> Ursina transform/velocity) ---
             try:
-                rov_idx = self.ortam_ref.rovs.index(rov)
-                gat_kodu = tahminler[rov_idx] if rov_idx < len(tahminler) else 0
-            except (ValueError, IndexError):
-                gat_kodu = 0
+                p = rov.physics_np.getPos()
+                rov.position = Vec3(p.x, p.y, p.z)
+                h, pr, r = rov.physics_np.getHpr()
+                rov.rotation = Vec3(pr, h, r)
+                if hasattr(rov, 'velocity'):
+                    v = rov.physics_node.getLinearVelocity()
+                    rov.velocity = Vec3(v.x, v.y, v.z)
+            except Exception:
+                # physics node yoksa bu rov'u atla
+                continue
 
             # --- 4B. Hasar Kontrol (Öncelikli - Patlama Check) ---
-            joule_esigi = 10.0  # Joule cinsinden hasar eşiği
+            joule_esigi = 120.0
             if self.damage_system.rov_hasar_kontrol_direct(rov, joule_esigi=joule_esigi):
-                # ROV patladı - Patlama efekti ve limbo
                 self.entity_patlat(rov, parca_sayisi=80)
-                continue  # Bu ROV için işlem yapma
+                continue
 
-            # --- 4C. Sensör Güncelleme (GNC öncesi - sensor verisini güncelle) ---
+            # --- 4C. Sensör Güncelleme (tek merkez) ---
             try:
                 if hasattr(rov, '_guncelle_sensorler'):
                     rov._guncelle_sensorler()
             except Exception as e:
-                # Ursina objesi yoksa sessizce geç
                 if "!is_empty()" not in str(e):
                     print(f"⚠️ [FİLO] ROV-{rov.id} Sensör Hatası: {e}")
+
+            # --- 4C.1 Batarya + derinlik limitleri (ROV.update devre dışı iken burada) ---
+            try:
+                if hasattr(rov, 'velocity') and rov.velocity and rov.velocity.length() > 0.01:
+                    rov.battery -= FizikSabitleri.BATARYA_SOMURME_KATSAYISI * dt
+            except Exception:
+                pass
+
+            try:
+                if rov.y > 0:
+                    rov.y = 0
+                if rov.y < sea_floor_y:
+                    rov.y = sea_floor_y
+            except Exception:
+                pass
 
             # --- 4D. GNC Sistem Güncelleme ---
             try:
                 if hasattr(rov, 'gnc') and rov.gnc:
                     rov.gnc.guncelle(gat_kodu=gat_kodu)
             except Exception as e:
-                # Detaylı hata loglama
                 if "!is_empty()" not in str(e):
                     print(f"⚠️ [FİLO] ROV-{rov.id} GNC Hatası: {e}")
                 LogSystem.log_exception(e)
 
-        # ============================================================
-        # 5. SİSTEM GÜNCELLEMELERİ
-        # ============================================================
-        # --- 5A. Sonar Çizgileri Güncelleme ---
+    def _tick_sistem_guncellemeleri(self, guncelle_gorseller: bool):
+        """Queued commands + sonar/minimap + obstacle cloud."""
+        # Komut kuyruğu frame başında (_tick_sistem_hazirligi) işlenir.
+        # Burada tekrar işlemek aynı frame içinde çift çağrıya sebep olur.
+        if not guncelle_gorseller:
+            return
+
         if self.ortam_ref:
             try:
                 self.ortam_ref.guncelle_sonar_cizgileri()
             except Exception as e:
                 LogSystem.log_exception(e)
 
-        # --- 5B. Kuyruk Komutları Tamamlanması ---
-        self.execute_queued_commands()
-
-        # --- 5C. Engel Bulut Güncelleme ---
-        if self.ortam_ref.minimap:
+        if self.ortam_ref and getattr(self.ortam_ref, 'minimap', None):
             try:
                 self.ortam_ref.minimap._engel_bulutu_guncelle()
             except Exception as e:
                 LogSystem.log_exception(e)
-
-        # --- 5D. Minimap Görsel Güncelleme ---
-        if self.ortam_ref.minimap:
             try:
                 self.ortam_ref.minimap.gorsel_guncelle()
             except Exception as e:
                 LogSystem.log_exception(e)
+            
+    def guncelle_hepsi(self, tahminler, guncelle_gorseller=True):
+        """
+        Tüm GNC sistemlerini koordineli şekilde günceller.
+        guncelle_gorseller=False iken sonar/minimap/engel bulut atlanır (FPS için throttle).
+        Operasyon Sırası (Önem Sırasına Göre):
+        1. Sistem Hazırlığı      → Command queue işle
+        2. Navigasyon Kuyruğu    → Hedef yönetimi
+        3. Lider Yönetimi        → Yeni lider seç & değişim yap
+        4. ROV Başına İşlemler   → Hasar, GNC, Motor komutları
+        5. Sistem Güncellemeleri → Sonar, Minimap, engel bulut (guncelle_gorseller=True ise)
+        """
+        self._tick_sistem_hazirligi()
+        if not self.ortam_ref:
+            return
+        self._tick_navigasyon_ve_gorseller(tahminler)
+        self._tick_lider_yonetimi()
+        self._tick_rovler(tahminler)
+        self._tick_sistem_guncellemeleri(guncelle_gorseller)
 
     def carpisma_enerjisi_hesapla(self, *args, **kwargs):
         """Hasar hesaplamalarını damage_system'a yönlendir."""
@@ -399,8 +819,10 @@ class Filo:
     # HEDEF VE HAREKET YÖNETİMİ
     # ============================================================
 
-    def git(self, rov_id: int, x, y: float = None, z: float = None, ai: bool = True, sessiz: bool = True):
-        return self.helper.git(rov_id=rov_id, x=x, y=y, z=z, ai=ai, sessiz=sessiz)
+    def git(self, rov_id: int, x, y: float | None = None, z: float | None = None, ai: bool = True, sessiz: bool = True):
+        y_val = y if y is not None else 0.0
+        z_val = z if z is not None else 0.0
+        return self.helper.git(rov_id=rov_id, x=x, y=y_val, z=z_val, ai=ai, sessiz=sessiz)
 
     def git_path(self, rov_id, hedef, ai=True, isaret=False):
         return self.helper.git_path(rov_id, hedef, ai=ai, isaret=isaret)
@@ -451,17 +873,20 @@ class Filo:
     # VERİ ERİŞİMİ VE AYARLAR (GET/SET)
     # ============================================================
 
-    def get(self, rov_id: int = None, veri_tipi: str = None, taraf: int = None, sessiz: bool = False):
-        return self.helper.get(rov_id=rov_id, veri_tipi=veri_tipi, taraf=taraf, koordinator=Koordinator, sessiz=sessiz)
+    def get(self, rov_id: int | None = None, veri_tipi: str | None = None, taraf: int | None = None, sessiz: bool = False):
+        return self.helper.get(rov_id=rov_id, veri_tipi=veri_tipi, taraf=taraf, koordinator=Koordinator, sessiz=sessiz)  # type: ignore[arg-type]
 
-    def set(self, rov_id: int, ayar_adi: str, deger) -> bool:
+    def set(self, rov_id: int | None, ayar_adi: str | None, deger) -> bool:
+        if rov_id is None or ayar_adi is None:
+            return False
+        rid, aname = rov_id, ayar_adi  # narrowed for type checker
         if not self._is_main_thread():
-            self._command_queue.put(('set', (rov_id, ayar_adi, deger), {}))
+            self._command_queue.put(('set', (rid, aname, deger), {}))
             return True
-        return self._set_impl(rov_id, ayar_adi, deger)
+        return self._set_impl(rid, aname, deger)
 
     def _set_impl(self, rov_id: int, ayar_adi: str, deger) -> bool:
-        if not self.ortam_ref:
+        if rov_id is None or ayar_adi is None or not self.ortam_ref:
             return False
         rov = self.find_rov_by_id(rov_id)
         if not rov: return False
@@ -587,7 +1012,7 @@ class Filo:
     def minimap(self, *args, **kwargs): return self.helper.minimap(*args, **kwargs)
     
     # ... Diğer wrapperlar (vektor, engel_bul vb.) ...
-    def engel_bul(self, rov_id, menzil=None, debug=False): return self.helper.engel_bul(rov_id, menzil, debug)
+    def engel_bul(self, rov_id, menzil=None, debug=False): return self.helper.engel_bul(rov_id, float(menzil) if menzil is not None else 20.0, debug)
     def vektor(self, *args, **kwargs): return self.helper.vektor(*args, **kwargs)
     def get_100_samples(self, *args, **kwargs): return self.helper.get_100_samples(*args, **kwargs)
     def gat_veri_uret(self): return self.helper.gat_veri_uret()
@@ -695,6 +1120,7 @@ class TemelGNC:
 
         self.mod = 1
         self.batma_orani = 0
+        self.r_bv = Vec3(0,0,0)
 
     @property
     def gps(self):
@@ -707,20 +1133,43 @@ class TemelGNC:
         self.hedef = Vec3(x, y, z)
     
     def guncelle(self, gat_kodu=None):
+        filo = self.filo_ref
         # GPS sinyal kontrolu: ROV'un en ust noktasi su yuzeyinden 5m+ asagidaysa sinyal=0
-        if self.rov:
-            if self.filo_ref.get(self.rov.id, 'gps')[2] < -5.0:
+        if self.rov and filo is not None:
+
+            self.r_bv = filo._euler_deg_to_direction(rot_deg=self.rov.rotation, v=Vec3(0, 0, 1))
+            if filo.get(self.rov.id, 'gps')[2] < -5.0:
                 self.gps_sinyal = 0
             else:
                 self.gps_sinyal = 1
         
         if self.temel_gnc_helper:
+            self.batma_orani = self.batma_orani_hesapla()
             return self.temel_gnc_helper.guncelle(gat_kodu=gat_kodu)
-    
+        
+        
+            
+    def batma_orani_hesapla(self):
+        """ROV govdesinin suyun icindeki yuzdesini doner (0.0 - 1.0)."""
+        su_yuzeyi = 0.0
+        rov_yukseklik = self.rov.scale.y * 500
+        rov_y = self.rov.y
+        en_ust_nokta = rov_y + (rov_yukseklik / 2)
+        en_alt_nokta = rov_y - (rov_yukseklik / 2)
+
+        if en_alt_nokta >= su_yuzeyi:
+            return 0.0
+        if en_ust_nokta <= su_yuzeyi:
+            return 1.0
+
+        suyun_altindaki_kisim = su_yuzeyi - en_alt_nokta
+        oran = suyun_altindaki_kisim / rov_yukseklik
+        return max(0.0, min(1.0, oran))
+
     # Yardımcı metodlar
     def _hedefe_varis_islemleri(self, fark):
         # Çoklu nokta geçişi
-        if self.filo_ref and self._siradaki_noktaya_gec():
+        if self.filo_ref is not None and self._siradaki_noktaya_gec():
             return
         # Rota bitti
         self.hedef = None
@@ -728,20 +1177,23 @@ class TemelGNC:
         self.ai_aktif = False
 
     def _siradaki_noktaya_gec(self):
+        filo = self.filo_ref
+        if filo is None:
+            return False
         try:
             my_id = self.rov.id
-            nokta_listesi = self.filo_ref._git_nokta_listesi.get(my_id)
-            mevcut_indeks = self.filo_ref._git_mevcut_nokta_indeksi.get(my_id, 0)
+            nokta_listesi = filo._git_nokta_listesi.get(my_id)
+            mevcut_indeks = filo._git_mevcut_nokta_indeksi.get(my_id, 0)
             
             if nokta_listesi and mevcut_indeks + 1 < len(nokta_listesi):
                 yeni_indeks = mevcut_indeks + 1
                 nxt = nokta_listesi[yeni_indeks]
-                self.filo_ref._git_mevcut_nokta_indeksi[my_id] = yeni_indeks
+                filo._git_mevcut_nokta_indeksi[my_id] = yeni_indeks
                 
                 # Hedef derinliği kullan (varsa), yoksa mevcut derinliği koru
                 target_depth = None
-                if hasattr(self.filo_ref, '_git_hedef_derinligi'):
-                    target_depth = self.filo_ref._git_hedef_derinligi.get(my_id)
+                if hasattr(filo, '_git_hedef_derinligi'):
+                    target_depth = filo._git_hedef_derinligi.get(my_id)
                 
                 if target_depth is not None:
                     curr_z = target_depth
@@ -752,13 +1204,11 @@ class TemelGNC:
                 return True
             elif nokta_listesi:
                 # Rota tamamlandı, listeyi temizle
-                self.filo_ref._git_nokta_listesi.pop(my_id, None)
-                if hasattr(self.filo_ref, '_git_hedef_derinligi'):
-                    self.filo_ref._git_hedef_derinligi.pop(my_id, None)
+                filo._git_nokta_listesi.pop(my_id, None)
+                if hasattr(filo, '_git_hedef_derinligi'):
+                    filo._git_hedef_derinligi.pop(my_id, None)
         except Exception as e:
-            if self.filo_ref:
-                self.filo_ref.ds = e
-            pass
+            filo.ds = e
         return False
     
 
