@@ -147,25 +147,26 @@ Klasör isimleri ROV’ları temsil eder; her ROV klasöründe **rov_motor_sema.
 
 ## 7. Motor Şemaları (PDF) — Doğrudan Görüntüleme
 
-Aşağıda her ROV için `SCHEMA/ROVx/rov_motor_sema.pdf` dosyaları doğrudan açılır (tarayıcı veya MD önizleyici embed destekliyorsa sayfada görünür; değilse bağlantıya tıklayın).
+GitHub ve çoğu MD görüntüleyici PDF `<embed>` desteklemediği için şema **PNG görseli** ile sayfada gösterilir; tam çözünürlük için PDF bağlantısı kullanılır.
 
 ### ROV0 (BlueROV2 benzeri)
 
 <p align="center">
   <strong>📄 ROV0 Motor Şeması</strong><br>
-  <a href="../SCHEMA/ROV0/rov_motor_sema.pdf" target="_blank" rel="noopener">Yeni sekmede aç</a>
+  <a href="../SCHEMA/ROV0/rov_motor_sema.pdf" target="_blank" rel="noopener">PDF olarak indir / yeni sekmede aç</a>
 </p>
 
-<embed src="../SCHEMA/ROV0/rov_motor_sema.pdf" type="application/pdf" width="100%" height="600" />
+![ROV0 Motor Şeması](./docs/SCHEMA/ROV0/rov_motor_sema.png)
 
 
 ### Diğer ROV'lar (ROV1, ROV2, …)
 
-SCHEMA altında `ROV1`, `ROV2` vb. klasörlerde `rov_motor_sema.pdf` varsa aynı şekilde eklenebilir. Yeni ROV ekledikten sonra bu bölüme aşağıdaki formatta blok ekleyin:
+SCHEMA altında `ROV1`, `ROV2` vb. klasörlerde `rov_motor_sema.pdf` ve (GitHub’da görünsün diye) `rov_motor_sema.png` ekleyin. PNG için: `pdftoppm -png -f 1 -l 1 rov_motor_sema.pdf rov_motor_sema` ile ilk sayfayı dışa aktarabilirsiniz. Bu bölüme örnek:
 
-```html
+```markdown
 ### ROVx
-<embed src="../SCHEMA/ROVx/rov_motor_sema.pdf" type="application/pdf" width="100%" height="600" />
+![ROVx Motor Şeması](../SCHEMA/ROVx/rov_motor_sema.png)
+[PDF indir](../SCHEMA/ROVx/rov_motor_sema.pdf)
 ```
 
 ---

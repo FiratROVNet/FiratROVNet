@@ -117,27 +117,58 @@ def input(key):
     global bilgi_rov_id
 
     if key in ('f', 'F'):
-        # Ekran goruntusu: Pictures/ sim_capture_YYYYMMDD_HHMMSS.png (yuksek kalite, makale icin uygun)
-        try:
-            from ursina import application
-            from panda3d.core import Filename
-            _script_dir = os.path.dirname(os.path.abspath(__file__))
-            _pictures = os.path.join(_script_dir, "Pictures")
-            os.makedirs(_pictures, exist_ok=True)
-            _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            _name = f"sim_capture_{_ts}.png"
-            _path = os.path.join(_pictures, _name)
-            _path_abs = os.path.abspath(_path)
-            base = getattr(application, "base", None)
-            if base is not None and hasattr(base, "win"):
-                if base.win.saveScreenshot(Filename.fromOsSpecific(_path_abs)):
-                    print(f"📸 Ekran goruntusu kaydedildi: {_path}")
-                else:
-                    print("📸 Ekran goruntusu kaydedilemedi.")
-            else:
-                print("📸 Pencere (base.win) bulunamadi.")
-        except Exception as e:
-            print(f"📸 Ekran goruntusu hatasi: {e}")
+            try:
+                from ursina import application, camera, window, destroy, invoke
+                from panda3d.core import Filename
+                from PIL import Image
+                from datetime import datetime
+                import os
+
+                # --- AYARLAR (Akademik Standartlar) ---
+                TARGET_WIDTH = 1280  # Makale için ideal genişlik
+                TARGET_HEIGHT = 720  # Makale için ideal yükseklik
+                UI_GIZLE = True      # Makale resminde minimap/yazı görünmesin
+                
+                _script_dir = os.path.dirname(os.path.abspath(__file__))
+                _pictures = os.path.join(_script_dir, "Pictures")
+                os.makedirs(_pictures, exist_ok=True)
+                
+                _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                _temp_path = os.path.join(_pictures, f"temp_{_ts}.png")
+                _final_name = f"article_capture_{_ts}.png"
+                _final_path = os.path.join(_pictures, _final_name)
+
+                # 1. UI elemanlarını geçici olarak gizle (Profesyonel görünüm için)
+                if UI_GIZLE:
+                    camera.ui.enabled = False
+
+                # 2. Ekran görüntüsünü al (O anki tam çözünürlükte)
+                base = getattr(application, "base", None)
+                if base and base.win:
+                    base.win.saveScreenshot(Filename.fromOsSpecific(_temp_path))
+                    
+                    # 3. Pillow ile işle (Küçültme ve Kalite Artırma)
+                    # Küçük bir bekleme gerekebilir ama saveScreenshot senkrondur
+                    with Image.open(_temp_path) as img:
+                        # Görüntüyü Lanczos filtresiyle yeniden boyutlandır 
+                        # (Bu işlem tırtıklanmayı önler ve keskinliği korur)
+                        img_resized = img.resize((TARGET_WIDTH, TARGET_HEIGHT), Image.Resampling.LANCZOS)
+                        
+                        # DPI ayarı ekleyerek kaydet (300 DPI akademik baskı standardıdır)
+                        img_resized.save(_final_path, "PNG", dpi=(300, 300), optimize=True)
+                    
+                    # Geçici ham dosyayı sil
+                    if os.path.exists(_temp_path):
+                        os.remove(_temp_path)
+
+                    print(f"✅ Akademik kalite görsel kaydedildi (300 DPI): {_final_name}")
+                
+                # 4. UI'ı geri aç
+                if UI_GIZLE:
+                    camera.ui.enabled = True
+
+            except Exception as e:
+                print(f"📸 Görsel işleme hatası: {e}")
 
     if key == 'p':
         lider_id, _ = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)
