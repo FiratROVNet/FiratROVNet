@@ -157,6 +157,44 @@ class GeometryMixin:
         
         return sonuclar
 
+    def _statik_engeller_al(self, rov_id: int, menzil: float) -> list:
+        """
+        ROV'a menzil icinde kalan adalari (statik engeller) APF icin listeler.
+        Lidar isini vurmadan once de adalara karsi itme uygulanir; engellere carpmayi azaltir.
+        """
+        ortam = getattr(self.filo, 'ortam_ref', None)
+        if not ortam or not getattr(ortam, 'island_positions', None):
+            return []
+        rov = self.filo.find_rov_by_id(rov_id) if hasattr(self.filo, 'find_rov_by_id') else None
+        if rov is None or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+            return []
+        rx, ry, rz = float(rov.x), float(rov.y), float(rov.z)
+        sonuclar = []
+        for ip in ortam.island_positions:
+            if ip is None or len(ip) < 3:
+                continue
+            ix, iz, ir = float(ip[0]), float(ip[1]), float(ip[2])
+            dx, dz = ix - rx, iz - rz
+            d_center = math.sqrt(dx * dx + dz * dz)
+            if d_center < 1e-6:
+                continue
+            # ROV'tan adanin yuzeyine mesafe (2D)
+            mesafe_yuzey = max(0.0, d_center - ir)
+            if mesafe_yuzey >= menzil:
+                continue
+            # Ada cevresi uzerinde ROV'a en yakin nokta (itme vektoru hedefi)
+            scale = (d_center - ir) / d_center if d_center > 1e-6 else 0
+            closest_x = rx + dx * scale
+            closest_z = rz + dz * scale
+            # Koordinat: (x, z, y) Ursina - engel_bul ile ayni format
+            sonuclar.append({
+                'yon': 'ada',
+                'mesafe': mesafe_yuzey,
+                'koordinat': (closest_x, closest_z, ry),
+                'radius': ir,
+            })
+        return sonuclar
+
     def engel_bul(self, rov_id: int, menzil: float = None, debug: bool = False) -> list:
         """
         🔹 ROV için mevcut lidar verilerinden engel listesi oluşturur.
@@ -201,13 +239,12 @@ class GeometryMixin:
         if rov is None or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
             return []
 
-        # 🔹 MODÜLER YAPILANDIRMA: Lidar verilerini filo.get() ile al
-        # Bu, sensör simülasyonu ile tamamen entegre çalışır
+        # Lidar verisi: filo.get() veya ROV.son_lidar_mesafeleri (her kare guncelle_hepsi 4C'de guncellenir)
         lidar_data = self.filo.get(rov_id, "lidar") if hasattr(self.filo, 'get') else None
-        
-        # Fallback: ROV attribute'larından al
         if lidar_data is None:
-            lidar_data = getattr(rov, 'son_lidar_mesafeleri', {})
+            lidar_data = getattr(rov, 'son_lidar_mesafeleri', None)
+        if not isinstance(lidar_data, dict):
+            lidar_data = {}
         
         # Lidar verilerinden engel listesi oluştur (sonar YOK)
         sonuclar = self._engel_bul_lidar_isle(
@@ -372,11 +409,11 @@ class GeometryMixin:
                         'mesafe': res.get('uzaklik_metre', 0.0),
                     }
 
-        # 2. Engel kacinma
+        # 2. Engel kacinma: lidar + statik adalar (lidar isini vurmadan once de ada itmesi)
         if engel:
             tespit_edilenler = self.engel_bul(rov_id=rov_id, menzil=GATLimitleri.ENGEL)
-
-            for e in tespit_edilenler:
+            statik = self._statik_engeller_al(rov_id=rov_id, menzil=GATLimitleri.ENGEL)
+            for e in tespit_edilenler + statik:
                 target = e.get('koordinat')
                 sensor_mesafesi = float(e.get('mesafe', 0.0))
 
@@ -433,20 +470,24 @@ class GeometryMixin:
         """
         APF vektorlerini temizler. rov_id verilirse sadece o ROV'a ait vektorleri siler;
         bos birakilirsa hepsini temizler.
+        Minimap sadece hepsi temizlenirken guncellenir; tek ROV silinirken minimap dokunulmaz
+        ki diger ROV'larin vektorleri minimapte kalmaya devam etsin (her ROV icin APF gosterilir).
         """
         if rov_id is None:
             self._apf_vektor_list = []
+            ortam = getattr(self.filo, 'ortam_ref', None)
+            if ortam and hasattr(ortam, 'minimap') and ortam.minimap is not None:
+                try:
+                    ortam.minimap._apf_vektorlari_temizle()
+                except Exception:
+                    pass
         else:
             rid = int(rov_id)
             self._apf_vektor_list = [i for i in self._apf_vektor_list if i.get('rov_id') != rid]
 
-        # Minimap entity'lerini aninda temizle
-        ortam = getattr(self.filo, 'ortam_ref', None)
-        if ortam and hasattr(ortam, 'minimap') and ortam.minimap is not None:
-            try:
-                ortam.minimap._apf_vektorlari_temizle()
-            except Exception:
-                pass
+    def apf_guncelle_tum(self) -> None:
+        """APF vektorlerini tum ROV'lar icin gunceller (minimap vb.)."""
+        self.apf_temizle()
 
     def hedef_vektor(self, rov_id: int):
         """
@@ -482,11 +523,12 @@ class GeometryMixin:
         for r_ent in ortam.rovs:
             if r_ent is None or getattr(r_ent, 'id', None) == rov_id:
                 continue
+            if getattr(r_ent, 'is_destroyed', False):
+                continue
 
-            # Diger ROV'un 3D pozisyonu (Simulasyon formati)
+            # Diger ROV pozisyonu (x, z, y_depth) - vektor() ve get("gps") ile ayni format
             pos_other = (r_ent.x, r_ent.z, -r_ent.y)
 
-            # 3D Oklid mesafesi
             dist = math.sqrt(
                 (pos_other[0] - pos_self[0]) ** 2 +
                 (pos_other[1] - pos_self[1]) ** 2 +
