@@ -20,4 +20,4 @@ APF çıktısı → `tum_motorlarin_guclerini_hesapla(hedef_vektor_dunya=...)` v
 
 ---
 
-*Fırat Üniversitesi – Otonom Sistemler & Yapay Zeka Laboratuvarı*
+*Ömer Faruk Çelik — Fırat Üniversitesi, Otonom Sistemler & Yapay Zeka Laboratuvarı*

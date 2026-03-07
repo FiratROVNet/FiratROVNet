@@ -46,7 +46,7 @@ Görsel rotasyon (Ursina) ile matematiksel matris sıralaması eşleştirilmişt
 
 $$ \mathbf{v}_{yerel} = R_y(\psi)\, R_x(\theta)\, R_z(\phi)\, \mathbf{v}_{ref} $$
 
-Referans vektör silindir ekseni için $\mathbf{v}_{ref} = (0,1,0)$; Ursina Z işareti uyumu için $\phi \rightarrow -\phi$ kullanılır.
+Referans vektör silindir ekseni için $\mathbf{v}\_{ref} = (0,1,0)$; Ursina Z işareti uyumu için $\phi \rightarrow -\phi$ kullanılır.
 
 <details>
 <summary><b>📐 Matris formülleri (tıklayarak açın)</b></summary>
@@ -63,7 +63,7 @@ Kodda: `res = Ry @ (Rx @ (Rz @ v_np))`.
 
 ### 2.2. Yerel → Dünya (Quaternion)
 
-Motor itkisi önce **yerel birim yön** $\hat{\mathbf{f}}_i$ ve kuvvet büyüklüğü $F_i$ ile tanımlanır; dünya koordinatına ROV quaternion'ı ile dönüştürülür:
+Motor itkisi önce **yerel birim yön** $\hat{\mathbf{f}}\_i$ ve kuvvet büyüklüğü $F\_i$ ile tanımlanır; dünya koordinatına ROV quaternion'ı ile dönüştürülür:
 
 $$ \mathbf{F}_{i,dunya} = q \otimes \hat{\mathbf{f}}_i \otimes q^* \cdot F_i $$
 
@@ -71,7 +71,7 @@ Uygulamada `quat.xform(yon_vec) * mag` ile hesaplanır.
 
 ### 2.3. Dünya → Yerel (Skaler Çarpım ile İzdüşüm)
 
-Dünya vektörünü ROV’un yerel eksenlerine taşımak için ROV’un **sağ**, **yukarı** ve **ileri** birim vektörleri ($\hat{x}_r$, $\hat{y}_r$, $\hat{z}_r$) kullanılır; izdüşümler skaler çarpımla alınır:
+Dünya vektörünü ROV’un yerel eksenlerine taşımak için ROV’un **sağ**, **yukarı** ve **ileri** birim vektörleri ($\hat{x}\_r$, $\hat{y}\_r$, $\hat{z}\_r$) kullanılır; izdüşümler skaler çarpımla alınır:
 
 $$ v_{yerel,x} = \mathbf{v}_{dunya} \cdot \hat{x}_r, \quad v_{yerel,y} = \mathbf{v}_{dunya} \cdot \hat{y}_r, \quad v_{yerel,z} = \mathbf{v}_{dunya} \cdot \hat{z}_r $$
 
@@ -81,17 +81,17 @@ Bu, hedef hareket vektörünün motor birim vektörleriyle eşleştirilmesi içi
 
 ## 3. İtki ve Tork (Vektörel Çarpım)
 
-Her motor $i$ için **moment kolu** $\mathbf{r}_i$ (motor pozisyonu, ölçekleme uygulanmış) ve **itki vektörü** $\mathbf{F}_i$ (dünya ekseninde) ile tork:
+Her motor $i$ için **moment kolu** $\mathbf{r}\_i$ (motor pozisyonu, ölçekleme uygulanmış) ve **itki vektörü** $\mathbf{F}\_i$ (dünya ekseninde) ile tork:
 
 $$ \boldsymbol{\tau}_i = \mathbf{r}_i \times \mathbf{F}_i $$
 
-Kodda: `world_rel_pos = quat.xform(actual_l_pos)`, `world_torque = world_rel_pos.cross(world_force)`. Yaw ekseni (Ursina/Panda3D el uyumu) için $\tau_y \rightarrow -\tau_y$ düzeltmesi uygulanır.
+Kodda: `world_rel_pos = quat.xform(actual_l_pos)`, `world_torque = world_rel_pos.cross(world_force)`. Yaw ekseni (Ursina/Panda3D el uyumu) için $\tau\_y \rightarrow -\tau\_y$ düzeltmesi uygulanır.
 
 ### 3.1. Net Tork (Süperpozisyon)
 
 $$ \boldsymbol{\tau}_{net} = \sum_{i} \mathbf{r}_i \times \mathbf{F}_i $$
 
-$F_i = u_i \cdot F_{max}$; $u_i \in [-1, 1]$ normalize motor komutu.
+$F\_i = u\_i \cdot F\_{max}$; $u\_i \in [-1, 1]$ normalize motor komutu.
 
 ---
 
@@ -99,15 +99,28 @@ $F_i = u_i \cdot F_{max}$; $u_i \in [-1, 1]$ normalize motor komutu.
 
 ### 4.1. Öteleme (İtki Yönüne Dağıtım)
 
-Hedef **dünya vektörü** yerel eksene çevrilir: $\mathbf{h}_{yerel} = \mathrm{dunya\_to\_yerel}(\mathbf{h}_{dunya})$. Motor birim vektörleri $\hat{\mathbf{m}}_j$ (yerel) ile skaler çarpım:
 
-$$ P_j = (\hat{\mathbf{m}}_j \cdot \mathbf{h}_{yerel})\, g $$
+Hedef **dünya vektörü** ($\mathbf{h}_{dunya}$), ROV'un o anki yönelimine göre yerel eksene iz düşürülür:
 
-$g$ genel güç oranıdır; $P_j$ doğrudan motor komutuna ölçeklenir.
+$$
+h_{\text{yerel}} =
+\begin{bmatrix}
+h_{\text{dunya}} \cdot x^r \\
+h_{\text{dunya}} \cdot y^r \\
+h_{\text{dunya}} \cdot z^r
+\end{bmatrix}
+= q^* \otimes h_{\text{dunya}} \otimes q
+$$
+
+Her bir motor $j$ için itki katsayısı, motorun yerel birim itki vektörü $\hat{\mathbf{m}}_j$ ile yerel hedef vektörünün skaler çarpımı (iz düşümü) ile hesaplanır:
+
+$$ P_j = (\hat{\mathbf{m}}_j \cdot \mathbf{h}_{yerel}) \cdot g $$
+
+Burada $g$ genel güç oranını ($0 \leq g \leq 1$), $P_j$ ise ilgili motora gönderilecek nihai güç komutunu temsil eder.
 
 ### 4.2. Dönme (Tork Ekseni Dağılımı)
 
-İstenen **dünya torku** (yatay düzlemde yön hatalarından): $\boldsymbol{\tau}_{dunya} = \mathbf{V}_{yatay} \times \mathbf{h}_{yatay}$. Bu tork yerel eksene çevrilir; her motorun **yerel tork yeteneği** $\hat{\boldsymbol{\tau}}_{m,j}$ ($\mathbf{r}_j \times \hat{\mathbf{m}}_j$ ile tutarlı) ile skaler çarpılır:
+İstenen **dünya torku** (yatay düzlemde yön hatalarından): $\boldsymbol{\tau}\_{dunya} = \mathbf{V}\_{yatay} \times \mathbf{h}\_{yatay}$. Bu tork yerel eksene çevrilir; her motorun **yerel tork yeteneği** $\hat{\boldsymbol{\tau}}\_{m,j}$ ($\mathbf{r}\_j \times \hat{\mathbf{m}}\_j$ ile tutarlı) ile skaler çarpılır:
 
 $$ P_j^{tork} = \hat{\boldsymbol{\tau}}_{m,j} \cdot \boldsymbol{\tau}_{istenen,yerel} \cdot g_{tork} $$
 
@@ -147,8 +160,6 @@ Klasör isimleri ROV’ları temsil eder; her ROV klasöründe **rov_motor_sema.
 
 ## 7. Motor Şemaları
 
-GitHub ve çoğu MD görüntüleyici PDF `<embed>` desteklemediği için şema **PNG görseli** ile sayfada gösterilir; tam çözünürlük için PDF bağlantısı kullanılır.
-
 ### ROV0 (BlueROV2 benzeri)
 
 [📄 PDF Olarak İndir](../SCHEMA/ROV0/rov_motor_sema.pdf) | [📊 Birim Vektör Verileri (JSON)](../SCHEMA/ROV0/bilgi.json)
@@ -158,8 +169,6 @@ GitHub ve çoğu MD görüntüleyici PDF `<embed>` desteklemediği için şema *
 
 ### Diğer ROV'lar (ROV1, ROV2, …)
 
-SCHEMA altında `ROV1`, `ROV2` vb. klasörlerde `rov_motor_sema.pdf` ve (GitHub’da görünsün diye) `rov_motor_sema.png` ekleyin. PNG için: `pdftoppm -png -f 1 -l 1 rov_motor_sema.pdf rov_motor_sema` ile ilk sayfayı dışa aktarabilirsiniz. Bu bölüme örnek:
-
 ```markdown
 ### ROVx
 ![ROVx Motor Şeması](../SCHEMA/ROVx/rov_motor_sema.png)
@@ -168,4 +177,4 @@ SCHEMA altında `ROV1`, `ROV2` vb. klasörlerde `rov_motor_sema.pdf` ve (GitHub�
 
 ---
 
-*Fırat Üniversitesi – Otonom Sistemler & Yapay Zeka Laboratuvarı*
+*Ömer Faruk Çelik — Fırat Üniversitesi, Otonom Sistemler & Yapay Zeka Laboratuvarı*
