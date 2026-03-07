@@ -147,8 +147,6 @@ Klasör isimleri ROV’ları temsil eder; her ROV klasöründe **rov_motor_sema.
 
 ## 7. Motor Şemaları
 
-GitHub ve çoğu MD görüntüleyici PDF `<embed>` desteklemediği için şema **PNG görseli** ile sayfada gösterilir; tam çözünürlük için PDF bağlantısı kullanılır.
-
 ### ROV0 (BlueROV2 benzeri)
 
 [📄 PDF Olarak İndir](../SCHEMA/ROV0/rov_motor_sema.pdf) | [📊 Birim Vektör Verileri (JSON)](../SCHEMA/ROV0/bilgi.json)
@@ -157,8 +155,6 @@ GitHub ve çoğu MD görüntüleyici PDF `<embed>` desteklemediği için şema *
 
 
 ### Diğer ROV'lar (ROV1, ROV2, …)
-
-SCHEMA altında `ROV1`, `ROV2` vb. klasörlerde `rov_motor_sema.pdf` ve (GitHub’da görünsün diye) `rov_motor_sema.png` ekleyin. PNG için: `pdftoppm -png -f 1 -l 1 rov_motor_sema.pdf rov_motor_sema` ile ilk sayfayı dışa aktarabilirsiniz. Bu bölüme örnek:
 
 ```markdown
 ### ROVx
