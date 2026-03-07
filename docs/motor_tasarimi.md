@@ -156,7 +156,7 @@ GitHub ve çoğu MD görüntüleyici PDF `<embed>` desteklemediği için şema *
   <a href="../SCHEMA/ROV0/rov_motor_sema.pdf" target="_blank" rel="noopener">PDF olarak indir / yeni sekmede aç</a>
 </p>
 
-![ROV0 Motor Şeması](./docs/SCHEMA/ROV0/rov_motor_sema.png)
+![ROV0 Motor Şeması](../docs/SCHEMA/ROV0/rov_motor_sema.png)
 
 
 ### Diğer ROV'lar (ROV1, ROV2, …)
@@ -165,8 +165,8 @@ SCHEMA altında `ROV1`, `ROV2` vb. klasörlerde `rov_motor_sema.pdf` ve (GitHub�
 
 ```markdown
 ### ROVx
-![ROVx Motor Şeması](../SCHEMA/ROVx/rov_motor_sema.png)
-[PDF indir](../SCHEMA/ROVx/rov_motor_sema.pdf)
+![ROVx Motor Şeması](../docs/SCHEMA/ROVx/rov_motor_sema.png)
+[PDF indir](../docs/SCHEMA/ROVx/rov_motor_sema.pdf)
 ```
 
 ---
