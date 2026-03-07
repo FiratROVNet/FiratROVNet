@@ -16,6 +16,9 @@ Fırat-GNC, çoklu **Sualtı Otonom Araçları (ROV/AUV)** ve **Su Üstü Araçl
   <a href="./docs/apf_navigasyon.md">
     <img src="https://img.shields.io/badge/🌊_APF_Navigasyon-28A745?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="APF"/>
   </a>
+  <a href="./docs/BlurROV2Surusu.md">
+    <img src="https://img.shields.io/badge/BlueROV2_S%C3%BCr%C3%BC-6F42C1?style=for-the-badge&logoColor=white" alt="BlueROV2 Sürü"/>
+  </a>
 </p>
 
 ---

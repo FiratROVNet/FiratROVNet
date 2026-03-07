@@ -145,21 +145,28 @@ Klasör isimleri ROV’ları temsil eder; her ROV klasöründe **rov_motor_sema.
 
 ---
 
-## 7. ROV0 Motor Şeması (PDF)
+## 7. Motor Şemaları (PDF) — Doğrudan Görüntüleme
 
-BlueROV2 benzeri konfigürasyonun motor yerleşimi ve itki yönleri aşağıdaki PDF şemasında gösterilmektedir. Şemayı görüntülemek için bağlantıya tıklayın.
+Aşağıda her ROV için `SCHEMA/ROVx/rov_motor_sema.pdf` dosyaları doğrudan açılır (tarayıcı veya MD önizleyici embed destekliyorsa sayfada görünür; değilse bağlantıya tıklayın).
+
+### ROV0 (BlueROV2 benzeri)
 
 <p align="center">
-  <a href="../SCHEMA/ROV0/rov_motor_sema.pdf" target="_blank" rel="noopener">
-    <strong>📄 ROV0 Motor Şeması — rov_motor_sema.pdf</strong>
-  </a>
+  <strong>📄 ROV0 Motor Şeması</strong><br>
+  <a href="../SCHEMA/ROV0/rov_motor_sema.pdf" target="_blank" rel="noopener">Yeni sekmede aç</a>
 </p>
 
-| Bağlantı | Açıklama |
-|----------|----------|
-| [rov_motor_sema.pdf](../SCHEMA/ROV0/rov_motor_sema.pdf) | ROV0 motor konfigürasyonu ve itki vektörleri (PDF; yeni sekmede açılır). |
+<embed src="../SCHEMA/ROV0/rov_motor_sema.pdf" type="application/pdf" width="100%" height="600" />
 
-GitHub üzerinde PDF’i doğrudan sayfada göstermek yerine bağlantıya tıklayarak açabilirsiniz; yerel ortamda veya PDF görüntüleyicide tam çözünürlükte inceleyebilirsiniz.
+
+### Diğer ROV'lar (ROV1, ROV2, …)
+
+SCHEMA altında `ROV1`, `ROV2` vb. klasörlerde `rov_motor_sema.pdf` varsa aynı şekilde eklenebilir. Yeni ROV ekledikten sonra bu bölüme aşağıdaki formatta blok ekleyin:
+
+```html
+### ROVx
+<embed src="../SCHEMA/ROVx/rov_motor_sema.pdf" type="application/pdf" width="100%" height="600" />
+```
 
 ---
 
