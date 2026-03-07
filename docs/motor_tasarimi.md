@@ -151,12 +151,9 @@ GitHub ve çoğu MD görüntüleyici PDF `<embed>` desteklemediği için şema *
 
 ### ROV0 (BlueROV2 benzeri)
 
-<p align="center">
-  <strong>📄 ROV0 Motor Şeması</strong><br>
-  <a href="../SCHEMA/ROV0/rov_motor_sema.pdf" target="_blank" rel="noopener">PDF olarak indir / yeni sekmede aç</a>
-</p>
+[📄 PDF Olarak İndir](./ROV0/rov_motor_sema.pdf) | [📊 Birim Vektör Verileri (JSON)](./ROV0/bilgi.json)
 
-![ROV0 Motor Şeması](../docs/SCHEMA/ROV0/rov_motor_sema.png)
+![ROV0 Motor Şeması](./ROV0/rov_motor_sema.png)
 
 
 ### Diğer ROV'lar (ROV1, ROV2, …)
