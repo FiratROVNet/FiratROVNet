@@ -1,6 +1,17 @@
 import os
 import math
-from ursina import *
+from ursina import *  # type: ignore[reportMissingImports]
+from ursina import (  # type: ignore[reportMissingImports]
+    Entity,
+    Vec3,
+    color,
+    destroy,
+    Text,
+    Mesh,
+    MeshCollider,
+    Circle,
+    time,
+)
 from FiratROVNet.utils import sim_to_ursina
 from FiratROVNet.config import ROVModelleri, GATLimitleri  # Config dosyanızdan importlar
 
@@ -392,7 +403,7 @@ class EntityLoader:
         rov_entity.scale = model_info['scale']
         rov_entity.collider = 'box'
         
-        # Görsel Yardımcılar (Label, Sensör Alanı)
+        # Görsel Yardımcılar (Create-once: label sadece burada olusturulur; rol degisince sadece .text guncellenir)
         rov_entity.label = Text(
             text=f"ROV-{rov_entity.id}", parent=rov_entity, y=3.0, scale=20,
             billboard=False, color=color.white, origin=(0, 0),
@@ -406,36 +417,6 @@ class EntityLoader:
             collider=None, color=color.rgba(255, 0, 0, 50),
             visible=True, unlit=True
         )
-
-
-# --- 4. MERKEZİ KAYALIK (GÜNCELLENDİ) ---
-    def load_rocky_reef(self, show_on_minimap=True):
-        """
-        secene4.glb dosyasını yükler. 
-        Bu dosya içinde hem görsel hem de collider mesh varsa otomatik algılar.
-        """
-        # Dosya yolu (Senin verdiğin konuma göre)
-        # Not: Ursina 'Models-3D' klasörünü otomatik tanıyabilir ama tam yol garantidir.
-        model_path = "Models-3D/floating_island_with_roots_and_rocks/scene2.glb"
-        
-        # İşletim sistemine göre yol düzeltmesi (\ veya /)
-        if os.name == 'nt': 
-            model_path = model_path.replace('/', '\\')
-        
-        # Dosya var mı kontrolü
-        if not os.path.exists(model_path):
-            print(f"⚠️ [UYARI] Merkez kayalık dosyası bulunamadı: {model_path}")
-            return
-
-    
-        # 1. Modeli Yükle
-        self.ortam.central_reef = Entity(
-                model=model_path,
-                scale=(2, 3, 2), # Boyutunu isteğine göre ayarla
-                position=(0, 5, 0),    # Havuzun tam ortasında, biraz yukarıda
-                double_sided=True,     # İçini de gör
-                collider="cube"
-            )
 
 
     def rock(self, scale, position):

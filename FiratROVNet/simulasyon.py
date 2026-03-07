@@ -1,11 +1,14 @@
-import os
-import sys
 import math
 import random
 import threading
 import code
 import numpy as np
-from ursina import *
+from ursina import *  # type: ignore[reportMissingImports]
+from ursina import (  # type: ignore[reportMissingImports]
+    Entity, Vec3, destroy, raycast, Text, color, time,
+    camera, Mesh, window, application, mouse, Ursina, EditorCamera,
+    DirectionalLight, AmbientLight, Sky, lerp,
+)
 
 # Yerel modül importları
 from .config import (
@@ -20,6 +23,9 @@ from .kutuphane.helper.simulasyon_helper import OrtamHelper
 # 1. ROV SINIFI (Mantık ve Fizik)
 # ============================================================
 class ROV(Entity):
+    """Kesikli çizgi segment sayısı (havuz boyutu). Create-once, sonra sadece gösterme/gizleme."""
+    CIZGI_HAVUZ_SEGMENT = 25
+
     def __init__(self, rov_id,group_id, loader_ref=None, model_key='submarine', **kwargs):
         super().__init__()
         self.id = rov_id
@@ -34,12 +40,12 @@ class ROV(Entity):
         self.sensor_config = SensorAyarlari.VARSAYILAN.copy()
         self.sensor_config['engel_mesafesi'] = GATLimitleri.ENGEL  # GATLimitleri'ne göre sabitle (20.0m)
         self.son_sonar_mesafesi = -1
-        self.son_lidar_mesafeleri = {0: -1, 1: -1, 2: -1, 3: -1}  # L0: İleri, L1: Sağ, L2: Sol, L3: Dip
+        self.son_lidar_mesafeleri: dict[int, float] = {0: -1.0, 1: -1.0, 2: -1.0, 3: -1.0}  # L0: İleri, L1: Sağ, L2: Sol, L3: Dip
         self.engel_mesafesi = 999.0
         
         # Görsel Referanslar
-        self.engel_cizgi = None  # Sonar çizgisi
-        self.lidar_cizgileri = {0: None, 1: None, 2: None, 3: None}  # 🔹 Lidar çizgileri (L0, L1, L2, L3)
+        self.engel_cizgi = None  # Sonar çizgisi (havuz)
+        self.lidar_cizgileri = {0: None, 1: None, 2: None, 3: None}  # Lidar çizgileri (havuz)
         self.iletisim_rovlari = {}
         self.label = None
         self.safety_zone = None
@@ -53,6 +59,9 @@ class ROV(Entity):
             loader_ref.setup_rov(self, model_key)
 
         self.group_id = group_id # Grup ID bilgisi
+
+        # Havuz: sonar ve lidar kesikli çizgileri tek sefer oluştur; çizimde sadece güncelle/göster/gizle
+        self._cizgi_havuzlari_olustur()
 
     def ekle(self, ortam_ref):
         if not ortam_ref: return False
@@ -82,7 +91,11 @@ class ROV(Entity):
             if hasattr(ortam, 'sonar_cizgiler'):
                 for pair in list(ortam.sonar_cizgiler.keys()):
                     if silinen_id in pair:
-                        destroy(ortam.sonar_cizgiler[pair])
+                        data = ortam.sonar_cizgiler[pair]
+                        if isinstance(data, tuple):
+                            destroy(data[0])
+                        else:
+                            destroy(data)
                         del ortam.sonar_cizgiler[pair]
 
             # --- YENI: Grup listesinden temizle ---
@@ -97,9 +110,12 @@ class ROV(Entity):
                     ortam.rovs[idx] = None
                     break
 
-            # 2. Görselleri temizle
+            # 2. Görselleri temizle (havuz konteynerleri)
             if hasattr(self, 'label') and self.label: destroy(self.label)
             if hasattr(self, 'engel_cizgi') and self.engel_cizgi: destroy(self.engel_cizgi)
+            for lidar_id in (0, 1, 2, 3):
+                cont = getattr(self, 'lidar_cizgileri', {}).get(lidar_id)
+                if cont: destroy(cont)
 
             # 3. Listeyi yeniden numaralandirma yok
             print(f"✅ ROV-{silinen_id} ve tum gorsel izleri temizlendi.")
@@ -107,7 +123,7 @@ class ROV(Entity):
             
 
     def _etiket_guncelle(self):
-        """ID değiştiğinde üzerindeki yazıyı günceller."""
+        """ID/rol degistiginde etiketi gunceller. Create-once: label sadece yoksa olusturulur, sonra sadece .text guncellenir."""
         metin = f"{'LIDER' if self.role == 1 else 'ROV'}-{self.id}"
         if self.label:
             self.label.text = metin
@@ -131,151 +147,96 @@ class ROV(Entity):
 
 
     def update(self):
-        """Ursina Ana Döngüsü: Hareket, Sürtünme ve Sensörler."""
-        # Su Direnci (Damping) ve Hareket
-        
-        if self.environment_ref:
-            self._guncelle_sensorler()
-            if self.velocity.length() > 0.01:
-                self.battery -= FizikSabitleri.BATARYA_SOMURME_KATSAYISI * time.dt
-            
-            # Pozisyon sınırlaması: Y ekseninde (derinlik)
-            # Üst sınır: Su yüzeyi (Y = 0)
-            if self.y > 0:
-                self.y = 0
-            
-            # Alt sınır: Deniz tabanı (Y = SEA_FLOOR_Y)
-            sea_floor_y = getattr(self.environment_ref, 'SEA_FLOOR_Y', -50.0)
-            if self.y < sea_floor_y:
-                self.y = sea_floor_y
+        """
+        Ursina Entity.update().
+        Central-update modunda (ortam.central_update=True) per-entity update devre disidir;
+        tum sensor/limit/batarya islemleri Filo.guncelle_hepsi icinden tek sefer yapilir.
+        """
+        if not self.environment_ref or getattr(self.environment_ref, 'central_update', False):
+            return
+
+        # Merkezi loop kullanılmıyorsa: sensör+batarya+limitleri burada sürdür.
+        self._guncelle_sensorler()
+        if self.velocity.length() > 0.01:
+            self.battery -= FizikSabitleri.BATARYA_SOMURME_KATSAYISI * time.dt*self.velocity.length()
+
+        # Derinlik limitleri
+        if self.y > 0:
+            self.y = 0
+        sea_floor_y = getattr(self.environment_ref, 'SEA_FLOOR_Y', -50.0)
+        if self.y < sea_floor_y:
+            self.y = sea_floor_y
 
     def _guncelle_sensorler(self):
-        """Raycast taraması yaparken diğer tüm ROV'ları görmezden gelir."""
-        menzil = GATLimitleri.ENGEL  # Her zaman GATLimitleri.ENGEL (20.0m) kullan
-        origin = self.world_position + Vec3(0, 0.2, 0)  # engel_bul ile aynı offset
-        
-        # --- IGNORE LİSTESİ OLUŞTUR (engel_bul ile aynı mantık) ---
-        ignores = [self]
-        
-        # Kendinin children'ları
-        if hasattr(self, 'children'):
-            ignores.extend(self.children)
-        
-        # Tüm diğer ROV'lar ve onların children'ları
-        if self.environment_ref and hasattr(self.environment_ref, 'rovs'):
-            for r in self.environment_ref.rovs:
-                if r and r != self:
-                    ignores.append(r)
-                    if hasattr(r, 'children'):
-                        ignores.extend(r.children)
-        
-        ignore_tuple = tuple(ignores)
-        
-        # === SONAR: İleri yönde raycast (engel_bul 'ileri' ile aynı) ===
-        hit_sonar = raycast(origin, self.forward, distance=menzil, ignore=ignore_tuple, debug=False)
-        
-        if hit_sonar.hit:
-            self.engel_mesafesi = hit_sonar.distance
-            self.son_sonar_mesafesi = hit_sonar.distance
-            self._kesikli_cizgi_ciz(hit_sonar.world_point, hit_sonar.distance)
+            menzil = GATLimitleri.ENGEL
+            # 🔹 Origin'i biraz daha yukarı aldık (Örn: 0.5)
+            base_origin = self.world_position + Vec3(0, 0.5, 0)
             
-            # engel_bulutu'na ekle (engel_bul ile aynı)
-            if hasattr(self.environment_ref, 'engel_bulutu'):
-                pt = hit_sonar.world_point
-                is_unique = True
-                if len(self.environment_ref.engel_bulutu) > 0:
-                    for old_pt in self.environment_ref.engel_bulutu[-10:]:
-                        if (old_pt[0] - pt.x) ** 2 + (old_pt[1] - pt.z) ** 2 < 1.0:
-                            is_unique = False
-                            break
-                if is_unique:
-                    self.environment_ref.engel_bulutu.append((pt.x, pt.z, pt.y, 'sonar'))
-        else:
-            self.engel_mesafesi = 999.0
-            self.son_sonar_mesafesi = -1.0
-            if self.engel_cizgi: 
-                destroy(self.engel_cizgi)
-                self.engel_cizgi = None
-        
-        # === LIDAR: 4 farklı yönde raycast (İleri, Sağ, Sol, Dip) ===
-        # L0: İleri (forward)
-        hit_l0 = raycast(origin, self.forward, distance=menzil, ignore=ignore_tuple, debug=False)
-        self.son_lidar_mesafeleri[0] = hit_l0.distance if hit_l0.hit else -1.0
-        if hit_l0.hit:
-            self._lidar_cizgi_ciz(0, hit_l0.world_point, hit_l0.distance, color.cyan)  # Mavi-yeşil
-            # engel_bulutu'na ekle
-            if hasattr(self.environment_ref, 'engel_bulutu'):
-                pt = hit_l0.world_point
-                is_unique = True
-                if len(self.environment_ref.engel_bulutu) > 0:
-                    for old_pt in self.environment_ref.engel_bulutu[-10:]:
-                        if (old_pt[0] - pt.x) ** 2 + (old_pt[1] - pt.z) ** 2 < 1.0:
-                            is_unique = False
-                            break
-                if is_unique:
-                    self.environment_ref.engel_bulutu.append((pt.x, pt.z, pt.y, 'lidar_l0'))
-        else:
-            self._lidar_cizgi_temizle(0)
-        
-        # L1: Sağ (right)
-        hit_l1 = raycast(origin, self.right, distance=menzil, ignore=ignore_tuple, debug=False)
-        self.son_lidar_mesafeleri[1] = hit_l1.distance if hit_l1.hit else -1.0
-        if hit_l1.hit:
-            self._lidar_cizgi_ciz(1, hit_l1.world_point, hit_l1.distance, color.blue)  # Mavi
-            # engel_bulutu'na ekle
-            if hasattr(self.environment_ref, 'engel_bulutu'):
-                pt = hit_l1.world_point
-                is_unique = True
-                if len(self.environment_ref.engel_bulutu) > 0:
-                    for old_pt in self.environment_ref.engel_bulutu[-10:]:
-                        if (old_pt[0] - pt.x) ** 2 + (old_pt[1] - pt.z) ** 2 < 1.0:
-                            is_unique = False
-                            break
-                if is_unique:
-                    self.environment_ref.engel_bulutu.append((pt.x, pt.z, pt.y, 'lidar_l1'))
-        else:
-            self._lidar_cizgi_temizle(1)
-        
-        # L2: Sol (-right)
-        hit_l2 = raycast(origin, -self.right, distance=menzil, ignore=ignore_tuple, debug=False)
-        self.son_lidar_mesafeleri[2] = hit_l2.distance if hit_l2.hit else -1.0
-        if hit_l2.hit:
-            self._lidar_cizgi_ciz(2, hit_l2.world_point, hit_l2.distance, color.green)  # Yeşil
-            # engel_bulutu'na ekle
-            if hasattr(self.environment_ref, 'engel_bulutu'):
-                pt = hit_l2.world_point
-                is_unique = True
-                if len(self.environment_ref.engel_bulutu) > 0:
-                    for old_pt in self.environment_ref.engel_bulutu[-10:]:
-                        if (old_pt[0] - pt.x) ** 2 + (old_pt[1] - pt.z) ** 2 < 1.0:
-                            is_unique = False
-                            break
-                if is_unique:
-                    self.environment_ref.engel_bulutu.append((pt.x, pt.z, pt.y, 'lidar_l2'))
-        else:
-            self._lidar_cizgi_temizle(2)
-        
-        # L3: Dip/Aşağı (deniz tabanı algılama) - ÖZEL ORİGİN (ROV'un altında başlat)
-        # 🔹 ROV gövdesinin ALTINDAN başlat ki kendi gövdesini algılamasın
-        origin_l3 = self.world_position + Vec3(0, -8, 0)  # ROV merkezinden 8m aşağı (ROV'un altı)
-        hit_l3 = raycast(origin_l3, Vec3(0, -1, 0), distance=menzil, ignore=ignore_tuple, debug=False)
-        self.son_lidar_mesafeleri[3] = hit_l3.distance if hit_l3.hit else -1.0
-        if hit_l3.hit:
-            self._lidar_cizgi_ciz(3, hit_l3.world_point, hit_l3.distance, color.magenta)  # Mor/pembe
-            # engel_bulutu'na ekle (dip lidar)
-            if hasattr(self.environment_ref, 'engel_bulutu'):
-                pt = hit_l3.world_point
-                is_unique = True
-                if len(self.environment_ref.engel_bulutu) > 0:
-                    for old_pt in self.environment_ref.engel_bulutu[-10:]:
-                        if (old_pt[0] - pt.x) ** 2 + (old_pt[1] - pt.z) ** 2 < 1.0:
-                            is_unique = False
-                            break
-                if is_unique:
-                    self.environment_ref.engel_bulutu.append((pt.x, pt.z, pt.y, 'lidar_l3'))
-        else:
-            self._lidar_cizgi_temizle(3)
+            # --- GELİŞMİŞ IGNORE LİSTESİ (Recursive) ---
+            # Tüm ROV'ları ve onların içindeki TÜM parçaları (motorlar dahil) toplar
+            ignores = []
+            if self.environment_ref and hasattr(self.environment_ref, 'rovs'):
+                for r in self.environment_ref.rovs:
+                    if r:
+                        ignores.append(r)
+                        # ROV'un içindeki tüm alt nesneleri (mesh, motor, pervane) bul
+                        for child in r.children:
+                            ignores.append(child)
+                            if hasattr(child, 'children'): # Torunları da ekle
+                                ignores.extend(child.children)
+            
+            ignore_tuple = tuple(ignores)
 
+            # Yardımcı fonksiyon: Işını gövdenin dışından başlatır
+            def safe_raycast(origin, direction, dist, ignore_list):
+                # 🔹 Işın başlangıcını gövdenin 1.5 metre dışına taşıyoruz (Offset)
+                # Böylece ışın araçtan dışarıda doğar, gövdeye çarpma ihtimali 0 olur.
+                safe_start = origin + (direction * 1.5)
+                res = raycast(safe_start, direction, distance=dist - 1.5, ignore=ignore_list, debug=False)
+                
+                # HATA AYIKLAMA (Opsiyonel): Eğer beklenmedik bir engel çıkarsa ismini yazdır
+                # if res.hit: print(f"Çarpılan nesne: {res.entity.name}")
+                
+                return res
+
+            # === SONAR (İLERİ) ===
+            hit_sonar = safe_raycast(base_origin, self.forward, menzil, ignore_tuple)
+            if hit_sonar.hit:
+                self.engel_mesafesi = hit_sonar.distance + 1.5 # Offseti geri ekle
+                self.son_sonar_mesafesi = self.engel_mesafesi
+                self._kesikli_cizgi_ciz(hit_sonar.world_point, self.engel_mesafesi)
+                # ... (bulut ekleme mantığın aynı kalabilir) ...
+            else:
+                self.engel_mesafesi = 999.0
+                self.son_sonar_mesafesi = -1.0
+                if self.engel_cizgi: self.engel_cizgi.enabled = False
+
+            # === LIDARLAR (4 YÖN) ===
+            directions = [
+                (0, self.forward, color.cyan),    # L0: İleri
+                (1, self.right, color.blue),      # L1: Sağ
+                (2, -self.right, color.green),    # L2: Sol
+            ]
+
+            for idx, dir_vec, clr in directions:
+                hit = safe_raycast(base_origin, dir_vec, menzil, ignore_tuple)
+                if hit.hit:
+                    dist = hit.distance + 1.5
+                    self.son_lidar_mesafeleri[idx] = dist
+                    self._lidar_cizgi_ciz(idx, hit.world_point, dist, clr)
+                    # ... (bulut ekleme mantığı) ...
+                else:
+                    self.son_lidar_mesafeleri[idx] = -1.0
+                    self._lidar_cizgi_temizle(idx)
+
+            # === L3: DİP LIDAR (Zaten offsetliydi, ignore listesini güncelledik) ===
+            origin_l3 = self.world_position + Vec3(0, -2, 0) # 8m yerine 2m yeterli
+            hit_l3 = raycast(origin_l3, Vec3(0, -1, 0), distance=menzil, ignore=ignore_tuple, debug=False)
+            if hit_l3.hit:
+                self.son_lidar_mesafeleri[3] = hit_l3.distance
+                self._lidar_cizgi_ciz(3, hit_l3.world_point, hit_l3.distance, color.magenta)
+            else:
+                self._lidar_cizgi_temizle(3)
     def set(self, ayar, deger):
         """GNC sistemi tarafından çağrılır."""
         if ayar == "rol":
@@ -292,41 +253,70 @@ class ROV(Entity):
     def move(self, komut, guc=1.0):
         if self.battery <= 0: return
 
+    def _cizgi_havuzlari_olustur(self):
+        """Sonar ve lidar kesikli çizgileri için entity havuzunu tek sefer oluşturur. Çizimde sadece güncelle/göster/gizle."""
+        n = self.CIZGI_HAVUZ_SEGMENT
+        # Sonar (engel) çizgisi havuzu
+        self.engel_cizgi = Entity(parent=self)
+        self.engel_cizgi._segments = []
+        for _ in range(n):
+            seg = Entity(parent=self.engel_cizgi, model='cube', scale=(.1, .1, .5), color=color.red, unlit=True)
+            self.engel_cizgi._segments.append(seg)
+        self.engel_cizgi.enabled = False
+        # Lidar (4 yön) çizgisi havuzları
+        for lidar_id in (0, 1, 2, 3):
+            cont = Entity(parent=self)
+            cont._segments = []
+            for _ in range(n):
+                seg = Entity(parent=cont, model='cube', scale=(0.05, 0.05, 0.3), color=color.cyan, alpha=0.6, unlit=True)
+                cont._segments.append(seg)
+            cont.enabled = False
+            self.lidar_cizgileri[lidar_id] = cont
+
     def _kesikli_cizgi_ciz(self, hedef, mesafe):
-        """Sonar için engel çizgisi çiz."""
-        if self.engel_cizgi: destroy(self.engel_cizgi)
+        """Sonar engel çizgisi. Havuz zaten __init__'te oluşturuldu; sadece konum/renk/göster-gizle güncellenir."""
+        cizgi = self.engel_cizgi
+        if cizgi is None:
+            return
+        seg_list = cizgi._segments
+        max_seg = len(seg_list)
         c = color.red if mesafe < 5 else (color.orange if mesafe < 10 else color.yellow)
-        self.engel_cizgi = Entity()
         yon = (hedef - self.position).normalized()
-        for i in range(int(mesafe)):
-            Entity(parent=self.engel_cizgi, model='cube', scale=(.1,.1,.5), 
-                   position=self.position + yon*(i + 0.5), color=c, unlit=True).look_at(hedef)
-    
+        n_use = min(int(mesafe), max_seg)
+        for i in range(n_use):
+            seg = seg_list[i]
+            seg.position = self.position + yon * (i + 0.5)
+            seg.color = c
+            seg.look_at(hedef)
+            seg.enabled = True
+        for i in range(n_use, max_seg):
+            seg_list[i].enabled = False
+        cizgi.enabled = True
+
     def _lidar_cizgi_ciz(self, lidar_id, hedef, mesafe, renk):
-        """Lidar için engel çizgisi çiz (daha ince ve yarı şeffaf)."""
-        if self.lidar_cizgileri[lidar_id]:
-            destroy(self.lidar_cizgileri[lidar_id])
-        
-        self.lidar_cizgileri[lidar_id] = Entity()
+        """Lidar engel çizgisi. Havuz zaten __init__'te oluşturuldu; sadece konum/renk/göster-gizle güncellenir."""
+        cont = self.lidar_cizgileri.get(lidar_id)
+        if cont is None:
+            return
+        seg_list = cont._segments
+        max_seg = len(seg_list)
         yon = (hedef - self.position).normalized()
-        
-        # Daha ince çizgiler (0.05 kalınlık) ve yarı şeffaf
-        for i in range(int(mesafe)):
-            Entity(
-                parent=self.lidar_cizgileri[lidar_id], 
-                model='cube', 
-                scale=(0.05, 0.05, 0.3),  # İnce çubuklar
-                position=self.position + yon * (i + 0.5), 
-                color=renk, 
-                alpha=0.6,  # Yarı şeffaf
-                unlit=True
-            ).look_at(hedef)
+        n_use = min(int(mesafe), max_seg)
+        for i in range(n_use):
+            seg = seg_list[i]
+            seg.position = self.position + yon * (i + 0.5)
+            seg.color = renk
+            seg.look_at(hedef)
+            seg.enabled = True
+        for i in range(n_use, max_seg):
+            seg_list[i].enabled = False
+        cont.enabled = True
     
     def _lidar_cizgi_temizle(self, lidar_id):
-        """Belirli bir lidar çizgisini temizle."""
-        if self.lidar_cizgileri[lidar_id]:
-            destroy(self.lidar_cizgileri[lidar_id])
-            self.lidar_cizgileri[lidar_id] = None
+        """Belirli bir lidar çizgisini gizle (entity'leri yok etmeden)."""
+        cont = self.lidar_cizgileri.get(lidar_id)
+        if cont is not None:
+            cont.enabled = False
 
 # ============================================================
 # 2. MINIMAP SINIFI (UI)
@@ -387,8 +377,10 @@ class Minimap(Entity):
         )
         
         self._engel_bulutu_cizilen_len = 0
-        self.kayitli_noktalar = set() 
-
+        self.kayitli_noktalar = set()
+        # APF vektor havuzu: create-once, her karede sadece mesh/renk güncellenir
+        self._apf_vektor_pool = None
+        self._apf_vektor_pool_size = 128
 
     # --- KRİTİK GÜNCELLEME: goster metodu ---
     def goster(self, durum=True, convex=False, a_star=False, scale=None, **kwargs):
@@ -408,53 +400,53 @@ class Minimap(Entity):
 
     # --- KRİTİK GÜNCELLEME: update_hull metodu ---
     def update_hull(self, points):
-        """Filo GNC tarafından gönderilen noktaları kullanarak Cyan güvenlik bölgesini çizer."""
-        if self.hull_entity: 
-            destroy(self.hull_entity)
-            self.hull_entity = None
-            
-        if not points or len(points) < 3: 
+        """Filo GNC tarafından gönderilen noktaları kullanarak Cyan güvenlik bölgesini çizer. Create-once, mesh güncelle."""
+        if not points or len(points) < 3:
+            if self.hull_entity:
+                self.hull_entity.enabled = False
             return
-
-        # Noktaları harita koordinatına çevir
         verts = []
         for p in points:
             px, pz = p[0], p[1]
             mp = self.dunya_to_harita(px, pz)
-            verts.append((mp.x, mp.y, -0.25)) # Katman: Adaların üstü, ROV'un altı
-            
-        verts.append(verts[0]) # Çizgiyi kapat
-
-        self.hull_entity = Entity(
-            parent=self,
-            model=Mesh(vertices=verts, mode='line', thickness=2),
-            color=color.cyan,
-            alpha=0.6,
-            enabled=self.visible # Minimap kapalıysa gizli kalsın
-        )
+            verts.append((mp.x, mp.y, -0.25))
+        verts.append(verts[0])
+        if self.hull_entity is None:
+            self.hull_entity = Entity(
+                parent=self,
+                model=Mesh(vertices=verts, mode='line', thickness=2),
+                color=color.cyan,
+                alpha=0.6,
+                enabled=self.visible
+            )
+        else:
+            self.hull_entity.model.vertices = verts
+            self.hull_entity.model.generate()
+            self.hull_entity.enabled = self.visible
 
     # --- KRİTİK GÜNCELLEME: update_path metodu ---
     def update_path(self, path_points):
-        """A* algoritmasından gelen yeşil rota çizgisini günceller."""
-        if self.path_entity: 
-            destroy(self.path_entity)
-            self.path_entity = None
-            
-        if not path_points or len(path_points) < 2: 
+        """A* algoritmasından gelen yeşil rota çizgisini günceller. Create-once, mesh güncelle."""
+        if not path_points or len(path_points) < 2:
+            if self.path_entity:
+                self.path_entity.enabled = False
             return
-
         verts = []
         for p in path_points:
             mp = self.dunya_to_harita(p[0], p[1])
             verts.append((mp.x, mp.y, -0.3))
-
-        self.path_entity = Entity(
-            parent=self,
-            model=Mesh(vertices=verts, mode='line', thickness=3),
-            color=color.lime,
-            alpha=0.9,
-            enabled=self.visible
-        )
+        if self.path_entity is None:
+            self.path_entity = Entity(
+                parent=self,
+                model=Mesh(vertices=verts, mode='line', thickness=3),
+                color=color.lime,
+                alpha=0.9,
+                enabled=self.visible
+            )
+        else:
+            self.path_entity.model.vertices = verts
+            self.path_entity.model.generate()
+            self.path_entity.enabled = self.visible
 
     def dunya_to_harita(self, x, z):
         f = 1.0 / (self.havuz_genisligi * 2)
@@ -482,11 +474,9 @@ class Minimap(Entity):
                 # --- SONRA MEVCUTLARI GÜNCELLE ---
                 for rov in mevcut_rovlar:
                     target = self.dunya_to_harita(rov.x, rov.z)
-                    
-                    # Eğer ikon yoksa oluştur (ID kayması durumunda yeni ID'ye ikon atanır)
+
                     if rov.id not in self.rov_ikonlari:
                         self.rov_ikonlari[rov.id] = self.loader.create_rov_icon(self, rov.id, rov.color)
-                    
                     icon = self.rov_ikonlari[rov.id]
                     icon.position = target
                     icon.rotation_z = -rov.rotation_y
@@ -495,9 +485,15 @@ class Minimap(Entity):
             self._vektor_ve_hedef_guncelle()
 
     def _vektor_ve_hedef_guncelle(self):
+        """APF vektorleri: create-once havuz kullanir, her karede sadece mesh/renk güncellenir."""
         filo = getattr(self.ortam_ref, 'filo', None)
         helper = getattr(filo, 'helper', None) if filo else None
         apf_list = helper.get_apf_vektor_verts_list(self) if helper else []
+        vektor_renkler = {
+            'k': color.red, 'y': color.green, 'm': color.blue,
+            's': color.yellow, 't': color.orange
+        }
+        z_line = -0.35
         if apf_list:
             sig_sum = 0.0
             for verts, _ in apf_list:
@@ -511,17 +507,50 @@ class Minimap(Entity):
             sig = (0, 0.0)
         if self._apf_cache_sig != sig:
             self._apf_cache_sig = sig
-            for e in self.vektor_cizgi_entities: destroy(e)
-            self.vektor_cizgi_entities.clear()
-            for v, c in apf_list:
-                try: self.vektor_cizgi_entities.append(self.loader.create_vector_mesh(self, v, c))
-                except: pass
+            n_use = min(len(apf_list), self._apf_vektor_pool_size)
+            if self._apf_vektor_pool is None:
+                self._apf_vektor_pool = []
+                for _ in range(self._apf_vektor_pool_size):
+                    mesh = Mesh(vertices=[(0, 0, z_line), (0, 0, z_line)], mode='line', thickness=2)
+                    e = Entity(
+                        parent=self,
+                        model=mesh,
+                        color=color.white,
+                        alpha=0.95,
+                        z=z_line
+                    )
+                    self._apf_vektor_pool.append(e)
+            pool = self._apf_vektor_pool
+            # Titremeyi onlemek icin koordinatlari yuvarla (kucuk degisimler cizimi degistirmez)
+            round_ = 3
+            for i in range(n_use):
+                verts, c_code = apf_list[i]
+                if not verts or len(verts) < 2:
+                    pool[i].enabled = False
+                    continue
+                c = vektor_renkler.get(c_code, color.white)
+                verts_stable = [tuple(round(v, round_) for v in pt) for pt in verts]
+                pool[i].model.vertices = verts_stable
+                pool[i].model.generate()
+                pool[i].color = c
+                pool[i].enabled = True
+            for i in range(n_use, len(pool)):
+                pool[i].enabled = False
+
+    def _apf_vektorlari_temizle(self):
+        """APF vektorlerini gizler (havuz entity'leri yok edilmez, sadece cache sifirlanir)."""
+        self._apf_cache_sig = None
+        if self._apf_vektor_pool:
+            for e in self._apf_vektor_pool:
+                e.enabled = False
 
     def _engel_bulutu_guncelle_yedek(self):
         bulut = getattr(self.ortam_ref, 'engel_bulutu', [])
         if len(bulut) < self._engel_bulutu_cizilen_len:
-            for e in self.engel_noktalari: destroy(e)
-            self.engel_noktalari.clear(); self._engel_bulutu_cizilen_len = 0
+            for e in list(self.engel_noktalari):
+                destroy(e)
+            self.engel_noktalari.clear()
+            self._engel_bulutu_cizilen_len = 0
         for i in range(self._engel_bulutu_cizilen_len, len(bulut)):
             pos = self.dunya_to_harita(bulut[i][0], bulut[i][1])
             if abs(pos.x) < 0.5 and abs(pos.y) < 0.5:
@@ -600,55 +629,59 @@ class Minimap(Entity):
 
     def update_ada_cevre(self, points):
             """
-            GNC sisteminden gelen sahil şeridi noktalarını minimap üzerinde 
-            küçük noktalar halinde (nokta bulutu gibi) çizer.
+            GNC sisteminden gelen sahil şeridi noktalarını minimap üzerinde çizer.
+            Create-once: konteyner ve nokta entity havuzu bir kez oluşturulur, her cagrida sadece konumlar güncellenir.
             """
-            # Önceki noktaları temizle
-            if hasattr(self, 'ada_cevre_entity') and self.ada_cevre_entity:
-                destroy(self.ada_cevre_entity)
-                self.ada_cevre_entity = None
-                
-            if not points: return
-            
-            # Tüm noktaları tek bir konteyner (parent) altında topla
-            self.ada_cevre_entity = Entity(parent=self)
-            ada_renk = color.hex('#CD853F') # Peru/Toprak rengi (Ada ile uyumlu)
-            
-            for p in points:
-                # Dünya koordinatını harita koordinatına çevir
-                # p[0]=x, p[1]=z (bazı durumlarda y_coord olarak da gelebilir)
+            if not points:
+                if hasattr(self, 'ada_cevre_entity') and self.ada_cevre_entity:
+                    self.ada_cevre_entity.enabled = False
+                return
+            ada_renk = color.hex('#CD853F')
+            max_nokta = 2000
+            n_use = min(len(points), max_nokta)
+            if not hasattr(self, 'ada_cevre_entity') or self.ada_cevre_entity is None:
+                self.ada_cevre_entity = Entity(parent=self)
+                self.ada_cevre_entity._ada_noktalari = []
+                for _ in range(max_nokta):
+                    e = Entity(
+                        parent=self.ada_cevre_entity,
+                        model='circle',
+                        scale=0.01,
+                        position=(0, 0, -0.28),
+                        color=ada_renk,
+                        alpha=0.85
+                    )
+                    self.ada_cevre_entity._ada_noktalari.append(e)
+            pool = self.ada_cevre_entity._ada_noktalari
+            for i in range(n_use):
+                p = points[i]
                 mp = self.dunya_to_harita(p[0], p[1] if len(p) > 1 else 0)
-                
-                # Küçük bir nokta oluştur
-                Entity(
-                    parent=self.ada_cevre_entity,
-                    model='circle',
-                    scale=0.01, # İkonlardan çok daha küçük (0.022 vs 0.008)
-                    position=(mp.x, mp.y, -0.28), # Adaların biraz üstünde
-                    color=ada_renk,
-                    alpha=0.85
-                )
+                pool[i].position = (mp.x, mp.y, -0.28)
+                pool[i].enabled = True
+            for i in range(n_use, len(pool)):
+                pool[i].enabled = False
+            self.ada_cevre_entity.enabled = True
 
     def hedef_isaretle(self, x, z, id=None, debug=True):
-        """3D ortamda oluşturulan hedefi Minimap üzerinde 2D olarak çizer."""
+        """3D ortamda oluşturulan hedefi Minimap üzerinde 2D olarak çizer. Gecici hedef: create-once, sadece konum guncelle."""
         from ursina import Entity, destroy, color, Text
         
-        # Dünya (3D) koordinatını Minimap (2D) koordinatına çevir
         mp = self.dunya_to_harita(x, z)
         
         # --- DURUM 1: GEÇİCİ HEDEF (debug=True) ---
         if debug:
-            if hasattr(self, 'gecici_hedef_ikonu') and self.gecici_hedef_ikonu:
-                destroy(self.gecici_hedef_ikonu)
-                
-            self.gecici_hedef_ikonu = Entity(
-                parent=self,
-                model='circle',
-                color=color.red,
-                scale=0.035, # Harita üzerindeki boyutu
-                position=(mp.x, mp.y, -0.35), # Z ekseninde ikonların vs. üstünde durması için
-                enabled=self.visible # Minimap kapalıysa gizli kalsın
-            )
+            if not hasattr(self, 'gecici_hedef_ikonu') or self.gecici_hedef_ikonu is None:
+                self.gecici_hedef_ikonu = Entity(
+                    parent=self,
+                    model='circle',
+                    color=color.red,
+                    scale=0.035,
+                    position=(mp.x, mp.y, -0.35),
+                    enabled=self.visible
+                )
+            else:
+                self.gecici_hedef_ikonu.position = (mp.x, mp.y, -0.35)
+                self.gecici_hedef_ikonu.enabled = self.visible
             
         # --- DURUM 2: KALICI ID'Lİ HEDEF (debug=False) ---
         else:
@@ -715,7 +748,8 @@ class Ortam:
             borderless=False,
             title="FıratROVNet Simülasyonu"
         )
-        
+
+
         # --- ESKİ AYARLAR: SABİT ADA VE ROV KONUMLARI ---
         self.FIXED_ISLAND_POSITIONS = [
             (-150.0, 150.0), (-50, 150), (50, 150.0), (150, 150),
@@ -748,8 +782,8 @@ class Ortam:
         self.minimap = Minimap(ortam_ref=self)
         
         self.camera = EditorCamera(
-            enabled=True, rotate_speed=15, pan_speed=(10, 10), 
-            zoom_speed=1, position=(0, 20, -50), rotation=(20, 0, 0)
+            enabled=True, rotate_speed=15, pan_speed=(10, 10),
+            zoom_speed=1, position=(0, 0, -50), rotation=(20, 0, 0)
         )
         mouse.visible, mouse.locked = True, False
         
@@ -791,13 +825,29 @@ class Ortam:
         """ESKİ AYARLAR: Pencere konfigürasyonu."""
         window.fullscreen = False
         window.exit_button.visible = False
-        window.fps_counter.enabled = True
         window.size = (1280, 720)
         window.center_on_screen()
         window.color = color.rgb(10, 30, 50)
         application.run_in_background = True
         try: window.context_menu = False
         except: pass
+
+
+        # FPS gostergesi: ekranin tam sag ust kosesi (origin 0.5,0.5 = metnin sag ustu)
+        self.rov_label = Text(
+            text="FPS: --",
+            parent=camera.ui,
+            position=(0.69, 0.49),
+            origin=(-0.5, 0.5),
+            scale=1.0,
+            color=color.lime,
+            background=True,
+        )
+        self.rov_label.z = -10
+        self.rov_label.background.scale_x = 2
+        self.rov_label.background.scale_y = 2.2
+        self.rov_label.background.x = 0.1
+        self.rov_label.background.y = -0.07
 
     def _setup_lighting(self):
         self.sun = DirectionalLight()
@@ -946,8 +996,25 @@ class Ortam:
                 self.minimap._statik_yeniden_ciz()
 
 
+    def ROV(self, rov_id, x=None, y=None, z=None):
+        """Konsol: ROV rov_id konumunu (x, y, z) yapar. x,y,z verilmezse sadece mevcut ROV döner."""
+        if not self.rovs or rov_id is None:
+            return None
+        rov = next((r for r in self.rovs if r and getattr(r, "id", None) == rov_id), None)
+        if not rov:
+            return None
+        if x is not None:
+            rov.x = float(x)
+        if y is not None:
+            rov.y = float(y)
+        if z is not None:
+            rov.z = float(z)
+        return rov
+
     def Ada(self, ada_id, x=None, y=None):
         if x == "ekle":
+            if y is None:
+                return
             while len(self.island_positions) <= ada_id: self.island_positions.append(None)
             while len(self.island_entities) <= ada_id: self.island_entities.append(None)
             ent, radius = self.loader.create_island(y[0], y[1])
@@ -956,16 +1023,16 @@ class Ortam:
     def guncelle_sonar_cizgileri(self):
             """
             ROV'lar arası sonar iletişimini HACİMLİ KESİKLİ çizgilerle gösterir.
-            Dinamik Kalınlık: Yakınken kalın (1.25x), uzakken ince (0.75x).
+            Create-once per pair: konteyner ve segmentler bir kez oluşturulur, her karede sadece konum/ölçek güncellenir.
             """
             active_rovs = [r for r in self.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
             bu_frame_aktif_olanlar = set()
             
-            # --- AYARLAR ---
-            BASE_KALINLIK = 0.12 # Mevcut temel kalınlığın
+            BASE_KALINLIK = 0.12
             segment_boyu = 1.2
             bosluk_boyu = 1.8
             adim_toplam = segment_boyu + bosluk_boyu
+            max_segments = max(1, int(self.SONAR_MENZILI / adim_toplam) + 1)
 
             for i, r1 in enumerate(active_rovs):
                 for r2 in active_rovs[i+1:]:
@@ -979,14 +1046,9 @@ class Ortam:
                         pair = tuple(sorted((r1.id, r2.id)))
                         bu_frame_aktif_olanlar.add(pair)
                         
-                        # --- DİNAMİK KALINLIK HESABI ---
-                        # lerp(başlangıç, bitiş, oran) 
-                        # Mesafe 0 iken -> 1.25 | Mesafe MAX iken -> 0.75
                         oran = dist / self.SONAR_MENZILI
                         carpan = lerp(1.25, 0.75, oran)
                         guncel_kalinlik = BASE_KALINLIK * carpan
-                        
-                        # --- RENK MANTIĞI ---
                         if dist < 25:
                             c = color.red
                         elif dist < 80:
@@ -994,41 +1056,50 @@ class Ortam:
                         else:
                             c = color.white
                         
-                        # Önceki Entity'yi temizle
-                        if pair in self.sonar_cizgiler:
-                            destroy(self.sonar_cizgiler[pair])
-                        
-                        cizgi_konteyner = Entity(add_to_scene_entities=True)
-                        self.sonar_cizgiler[pair] = cizgi_konteyner
-                        
                         yon_vec = (p2 - p1).normalized()
+                        # Create-once: konteyner ve segment listesi
+                        if pair not in self.sonar_cizgiler:
+                            cizgi_konteyner = Entity(add_to_scene_entities=True)
+                            seg_list = []
+                            for _ in range(max_segments):
+                                parca = Entity(
+                                    parent=cizgi_konteyner,
+                                    model='cube',
+                                    color=c,
+                                    unlit=True
+                                )
+                                seg_list.append(parca)
+                            self.sonar_cizgiler[pair] = (cizgi_konteyner, seg_list)
+                        
+                        konteyner, seg_list = self.sonar_cizgiler[pair]
                         curr = 0
-                        while curr < dist:
+                        idx = 0
+                        while curr < dist and idx < len(seg_list):
                             kalin_uzunluk = min(segment_boyu, dist - curr)
-                            if kalin_uzunluk <= 0.1: break
-                            
+                            if kalin_uzunluk <= 0.1:
+                                break
                             parca_baslangic = p1 + yon_vec * curr
                             parca_bitis = parca_baslangic + yon_vec * kalin_uzunluk
                             orta_nokta = (parca_baslangic + parca_bitis) / 2
-                            
-                            parca = Entity(
-                                parent=cizgi_konteyner,
-                                model='cube',
-                                position=orta_nokta,
-                                # Dinamik kalınlık burada uygulanıyor:
-                                scale=(guncel_kalinlik, guncel_kalinlik, kalin_uzunluk),
-                                color=c,
-                                unlit=True
-                            )
+                            parca = seg_list[idx]
+                            parca.position = orta_nokta
+                            parca.scale = (guncel_kalinlik, guncel_kalinlik, kalin_uzunluk)
+                            parca.color = c
                             parca.look_at(parca_bitis)
+                            parca.enabled = True
+                            idx += 1
                             curr += adim_toplam
+                        for j in range(idx, len(seg_list)):
+                            seg_list[j].enabled = False
 
-            # Temizlik döngüsü
-            tum_cizilmis_ciftler = list(self.sonar_cizgiler.keys())
-            for pair in tum_cizilmis_ciftler:
+            # Temizlik: sadece artık menzilde olmayan çiftleri sil (list kopyası üzerinden)
+            for pair in list(self.sonar_cizgiler.keys()):
                 if pair not in bu_frame_aktif_olanlar:
-                    if self.sonar_cizgiler[pair]:
-                        destroy(self.sonar_cizgiler[pair])
+                    data = self.sonar_cizgiler[pair]
+                    if isinstance(data, tuple):
+                        destroy(data[0])
+                    else:
+                        destroy(data)
                     del self.sonar_cizgiler[pair]
 
     def run(self, interaktif=False):
