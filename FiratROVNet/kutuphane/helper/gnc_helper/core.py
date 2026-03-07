@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from concurrent.futures import Future
 from .mixins.data import DataMixin
 from .mixins.geometry import GeometryMixin
 from .mixins.formation import FormationMixin
@@ -31,7 +34,7 @@ class FiloHelper(DataMixin, GeometryMixin, FormationMixin, NavigationMixin, Visu
         # Async/Worker results cache sistemi
         self.last_formasyon_result = None          # Son formasyon_sec sonucu
         self.formasyon_result_timestamp = None     # Sonuçun zamanı
-        self.formasyon_future: "concurrent.futures.Future | None" = None  # Active Future (worker tracking)
+        self.formasyon_future: Future | None = None  # Active Future (worker tracking)
         
         # Hull 100 samples cache sistemi
         self.last_hull_samples = None              # Son get_100_samples sonucu (numpy array)

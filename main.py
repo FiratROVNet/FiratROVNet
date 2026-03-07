@@ -45,9 +45,6 @@ _FPS_HISTORY_SIZE = 10
 
 def update():
     """Ana simülasyon döngüsü. Frame süresi hedef FPS ile eşitlenir."""
-    global bilgi_rov_id
-
-
     # Verileri çek (filo.get metodunuza göre uyarlandı)
     gps = filo.get(bilgi_rov_id, "gps") or Vec3(0,0,0)
     batarya = filo.get(bilgi_rov_id, "batarya") or 0
@@ -116,7 +113,7 @@ bilgi_rov_id = 0
 
 def input(key):
     """Mouse ve keyboard girdilerini işle."""
-    global grup_id, lider_id, bilgi_rov_id
+    global bilgi_rov_id
 
     if key == 'p':
         lider_id, _ = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)
