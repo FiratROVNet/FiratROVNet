@@ -145,7 +145,7 @@ Klasör isimleri ROV’ları temsil eder; her ROV klasöründe **rov_motor_sema.
 
 ---
 
-## 7. Motor Şemaları (PDF) — Doğrudan Görüntüleme
+## 7. Motor Şemaları
 
 GitHub ve çoğu MD görüntüleyici PDF `<embed>` desteklemediği için şema **PNG görseli** ile sayfada gösterilir; tam çözünürlük için PDF bağlantısı kullanılır.
 
