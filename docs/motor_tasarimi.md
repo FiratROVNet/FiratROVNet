@@ -134,12 +134,39 @@ flowchart LR
 
 ---
 
-## 6. Şema ve Veri Kaynakları
+## 6. Şema ve Veri Kaynakları (SCHEMA/)
 
-- **SCHEMA/ROV0/bilgi.json**: Motor konum ve birim yön vektörleri (export).
-- **FiratROVNet/gnc/schema_export.py**: Şema çizimi ve JSON export.
+Klasör isimleri ROV’ları temsil eder; her ROV klasöründe **rov_motor_sema.pdf** (motor yönleri ve yerleşim şeması) ve **bilgi.json** (konum/birim yön vektörleri) bulunur. Yeni ROV eklemek için `SCHEMA/ROV<id>/` oluşturup bu iki dosyayı ekleyin; liste güncellemesi için `python SCHEMA/update_readme.py` çalıştırılır.
+
+- **[SCHEMA/README.md](../SCHEMA/README.md)**: Mevcut ROV şemalarının canlı listesi (PDF + bilgi.json linkleri).
+- **FiratROVNet/gnc/schema_export.py**: Şema çizimi ve `bilgi.json` export.
 
 İleride eklenebilecekler: APF parametreleri, GAT girdi/çıktı şemaları, iletişim protokolü.
+
+---
+
+## 7. Motor Şemaları (PDF) — Doğrudan Görüntüleme
+
+Aşağıda her ROV için `SCHEMA/ROVx/rov_motor_sema.pdf` dosyaları doğrudan açılır (tarayıcı veya MD önizleyici embed destekliyorsa sayfada görünür; değilse bağlantıya tıklayın).
+
+### ROV0 (BlueROV2 benzeri)
+
+<p align="center">
+  <strong>📄 ROV0 Motor Şeması</strong><br>
+  <a href="../SCHEMA/ROV0/rov_motor_sema.pdf" target="_blank" rel="noopener">Yeni sekmede aç</a>
+</p>
+
+<embed src="../SCHEMA/ROV0/rov_motor_sema.pdf" type="application/pdf" width="100%" height="600" />
+
+
+### Diğer ROV'lar (ROV1, ROV2, …)
+
+SCHEMA altında `ROV1`, `ROV2` vb. klasörlerde `rov_motor_sema.pdf` varsa aynı şekilde eklenebilir. Yeni ROV ekledikten sonra bu bölüme aşağıdaki formatta blok ekleyin:
+
+```html
+### ROVx
+<embed src="../SCHEMA/ROVx/rov_motor_sema.pdf" type="application/pdf" width="100%" height="600" />
+```
 
 ---
 

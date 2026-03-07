@@ -6,6 +6,7 @@ from ursina import time as utime, mouse, Vec3, time # type: ignore[reportMissing
 import numpy as np
 import os
 import time
+from datetime import datetime
 
 # ==========================================
 # 1. KURULUM VE YAPILANDIRMA
@@ -32,7 +33,7 @@ app.konsola_ekle("rovs", app.rovs)
 app.konsola_ekle("cfg", cfg)
 app.konsola_ekle("nav_queue", filo.nav_queue)  # Kuyruğu konsoldan izleyebilirsin
 
-print("✅ Sistem aktif. Minimap üzerinden hedef eklemek için sol tıkla.")
+print("✅ Sistem aktif. Minimap: sol tıkla. Ekran görüntüsü (makale kalitesi): F tuşu → Pictures/")
 
 
 # ==========================================
@@ -114,6 +115,29 @@ bilgi_rov_id = 0
 def input(key):
     """Mouse ve keyboard girdilerini işle."""
     global bilgi_rov_id
+
+    if key in ('f', 'F'):
+        # Ekran goruntusu: Pictures/ sim_capture_YYYYMMDD_HHMMSS.png (yuksek kalite, makale icin uygun)
+        try:
+            from ursina import application
+            from panda3d.core import Filename
+            _script_dir = os.path.dirname(os.path.abspath(__file__))
+            _pictures = os.path.join(_script_dir, "Pictures")
+            os.makedirs(_pictures, exist_ok=True)
+            _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            _name = f"sim_capture_{_ts}.png"
+            _path = os.path.join(_pictures, _name)
+            _path_abs = os.path.abspath(_path)
+            base = getattr(application, "base", None)
+            if base is not None and hasattr(base, "win"):
+                if base.win.saveScreenshot(Filename.fromOsSpecific(_path_abs)):
+                    print(f"📸 Ekran goruntusu kaydedildi: {_path}")
+                else:
+                    print("📸 Ekran goruntusu kaydedilemedi.")
+            else:
+                print("📸 Pencere (base.win) bulunamadi.")
+        except Exception as e:
+            print(f"📸 Ekran goruntusu hatasi: {e}")
 
     if key == 'p':
         lider_id, _ = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)

@@ -1,54 +1,46 @@
-# SCHEMA — ROV Şema ve Dokümanlar
+# SCHEMA — ROV Motor Şemaları
 
-Bu klasör, ROV motor yerleşimi ve diğer yapısal şemaların (PNG/PDF) kaydedildiği yerdir. Her ROV’a ait çıktılar **ROVid** (örn. `ROV0`, `ROV1`) alt klasöründe tutulur.
+Bu klasör, her ROV tipi için **motor konfigürasyon şemaları** ve **veri dosyalarını** tutar. Klasör isimleri ROV tanımlayıcısıdır (örn. ROV0, ROV1).
 
 ## Klasör yapısı
 
+Her ROV için bir alt klasör açın; klasör adı simülasyondaki ROV tipini/kinematiğini temsil eder. Her klasörde şu iki dosya **zorunludur**:
+
+| Dosya | Açıklama |
+|-------|----------|
+| rov_motor_sema.pdf | Motor yerleşimi ve itki yönlerini gösteren şema (yayında/makalede kullanılabilir). |
+| bilgi.json | Motor konumları ve birim yön vektörleri (kod ve dokümantasyonla uyumlu). |
+
+Yeni bir ROV eklediğinizde:
+
+1. `SCHEMA/ROV<id>/` klasörünü oluşturun.
+2. İçine `rov_motor_sema.pdf` ve `bilgi.json` ekleyin.
+3. Listeyi güncellemek için: `python SCHEMA/update_readme.py` çalıştırın (aşağıdaki tablo otomatik doldurulur).
+
+## Mevcut ROV şemaları
+
+*Aşağıdaki tablo `update_readme.py` ile otomatik üretilir.*
+
+| ROV | Motor şeması (PDF) | Veri (JSON) |
+|-----|-------------------|--------------|
+| ROV0 | [rov_motor_sema.pdf](ROV0/rov_motor_sema.pdf) | [bilgi.json](ROV0/bilgi.json) |
+
+---
+## bilgi.json formatı
+
+Her ROV klasöründeki `bilgi.json`, aşağıdaki yapıda motor konum ve yön vektörlerini içerir (Fırat-GNC `schema_export` ile uyumludur):
+
+```json
+{
+  "rov_id": 0,
+  "motorlar": [
+    { "name": "m0", "position": [-200, 0, 200], "direction": [0.707, 0, 0.707] },
+    ...
+  ]
+}
 ```
-SCHEMA/
-├── ROV0/
-│   ├── bilgi.json           # ROV id ve motor listesi (konum, açı)
-│   └── rov_motor_sema.pdf   # Teknik çizim: üst + yan görünüm
-├── ROV1/
-│   └── ...
-└── README.md
-```
 
-## Motor şeması
+- **position**: Yerel koordinatta motor konumu (model birimleri).
+- **direction**: Birim itki yön vektörü (yerel, normalize).
 
-- **Üst görünüm (XZ):** ROV yukarıdan; X = sol/sağ, Z = ön/arka. Motor konumları ve itiş yönleri (ok) ile açılar (rx, ry, rz °) gösterilir.
-- **Yan görünüm (ZY):** ROV yandan; Z = ön/arka, Y = aşağı/yukarı.
-
-### Oluşturma
-
-Simülasyon çalışırken (Filo ve ROV’lar oluşturulduktan sonra):
-
-```python
-# İlk ROV → SCHEMA/ROV0/
-filo = ortam.filo
-filo.motor_sema_kaydet()
-
-# Belirli ROV → SCHEMA/ROV{id}/
-filo.motor_sema_kaydet(rov=ortam.rovs[1])  # ROV1 klasörüne yazar
-
-# Özel üst klasör (çıktı yine klasor/ROV{id}/ olur)
-filo.motor_sema_kaydet(klasor="SCHEMA", base_name="rov_motor_sema")
-```
-
-Her ROV için oluşan dosyalar (`SCHEMA/ROV{id}/` içinde):
-
-- `bilgi.json` — rov_id ve motorlar (name, position, rotation)
-- `rov_motor_sema.pdf` — tek PDF; üstte üst görünüm (XZ), altta yan görünüm (ZY) (teknik çizim mantığı)
-
-### Motor ID eşlemesi (m0–m5)
-
-| ID  | Konum      | Açıklama   |
-|-----|------------|------------|
-| m0  | Ön sol     | Yatay      |
-| m1  | Ön sağ     | Yatay      |
-| m2  | Arka sol   | Yatay      |
-| m3  | Arka sağ   | Yatay      |
-| m4  | Dikey sol  | Heave      |
-| m5  | Dikey sağ  | Heave      |
-
-Bu klasöre ileride ek doküman ve şemalar eklenebilir.
+Detaylı motor kinematiği ve formüller için: [Motor ve İtki Sistemi](../docs/motor_tasarimi.md).
