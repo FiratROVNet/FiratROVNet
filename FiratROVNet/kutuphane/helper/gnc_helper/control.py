@@ -49,7 +49,9 @@ class TemelGNCHelper:
             hiz_buyuklugu = mevcut_hiz.length()
             f_drag = Vec3(0, 0, 0)
             if hiz_buyuklugu > 0.001:
-                drag_quadratic = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * Hidrodinamik.ON_YUZEY_ALANI * (hiz_buyuklugu ** 2)
+                cd = getattr(Hidrodinamik, "DRAG_KATSAYISI_CD", 0.25)
+                alan = getattr(Hidrodinamik, "ON_YUZEY_ALANI", 0.01)
+                drag_quadratic = 0.5 * Hidrodinamik.SU_YOGUNLUGU * cd * alan * (hiz_buyuklugu ** 2)
                 drag_linear = hiz_buyuklugu * 2.0 
                 yon_vec = Vec3(-mevcut_hiz.x, -mevcut_hiz.y, -mevcut_hiz.z).normalized()
                 f_drag = yon_vec * (drag_quadratic + drag_linear)
@@ -59,7 +61,7 @@ class TemelGNCHelper:
             acisal_hiz_buyuklugu = mevcut_acisal_hiz.length()
             t_drag = Vec3(0, 0, 0)
             if acisal_hiz_buyuklugu > 0.001:
-                a_drag_quad = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * (acisal_hiz_buyuklugu ** 2)
+                a_drag_quad = 0.5 * Hidrodinamik.SU_YOGUNLUGU * getattr(Hidrodinamik, "DRAG_KATSAYISI_CD", 0.25) * (acisal_hiz_buyuklugu ** 2)
                 a_drag_lin = acisal_hiz_buyuklugu * 5
                 a_yon_vec = Vec3(-mevcut_acisal_hiz.x, -mevcut_acisal_hiz.y, -mevcut_acisal_hiz.z).normalized()
                 t_drag = a_yon_vec * (a_drag_quad + a_drag_lin)

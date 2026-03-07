@@ -954,9 +954,9 @@ class Ortam:
 
         return all_groups_rovs
 
-    def sim_olustur(self, n_rovs=(6,), n_islands=5, n_rocks=10, rov_model='submarine'):
-   
-        havuz_genisligi = HavuzAyarlari.HAVUZ_GENISLIK
+    def sim_olustur(self, n_rovs=(6,), n_islands=5, n_rocks=10, rov_model='submarine', havuz_genisligi: float | None = None):
+        if havuz_genisligi is None:
+            havuz_genisligi = HavuzAyarlari.HAVUZ_GENISLIK
         self.havuz_genisligi = havuz_genisligi
         oran = havuz_genisligi / 200
 
