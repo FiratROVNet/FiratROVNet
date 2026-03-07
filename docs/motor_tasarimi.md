@@ -145,4 +145,22 @@ Klasör isimleri ROV’ları temsil eder; her ROV klasöründe **rov_motor_sema.
 
 ---
 
+## 7. ROV0 Motor Şeması (PDF)
+
+BlueROV2 benzeri konfigürasyonun motor yerleşimi ve itki yönleri aşağıdaki PDF şemasında gösterilmektedir. Şemayı görüntülemek için bağlantıya tıklayın.
+
+<p align="center">
+  <a href="../SCHEMA/ROV0/rov_motor_sema.pdf" target="_blank" rel="noopener">
+    <strong>📄 ROV0 Motor Şeması — rov_motor_sema.pdf</strong>
+  </a>
+</p>
+
+| Bağlantı | Açıklama |
+|----------|----------|
+| [rov_motor_sema.pdf](../SCHEMA/ROV0/rov_motor_sema.pdf) | ROV0 motor konfigürasyonu ve itki vektörleri (PDF; yeni sekmede açılır). |
+
+GitHub üzerinde PDF’i doğrudan sayfada göstermek yerine bağlantıya tıklayarak açabilirsiniz; yerel ortamda veya PDF görüntüleyicide tam çözünürlükte inceleyebilirsiniz.
+
+---
+
 *Fırat Üniversitesi – Otonom Sistemler & Yapay Zeka Laboratuvarı*
