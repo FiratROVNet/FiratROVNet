@@ -99,11 +99,16 @@ $F\_i = u\_i \cdot F\_{max}$; $u\_i \in [-1, 1]$ normalize motor komutu.
 
 ### 4.1. Öteleme (İtki Yönüne Dağıtım)
 
-Hedef **dünya vektörü** yerel eksene çevrilir: ${\mathbf{h}}\_{yerel} = \mathrm{dunya\_to\_yerel}({\mathbf{h}}\_{dunya})$. Motor birim vektörleri $\hat{\mathbf{m}}\_j$ (yerel) ile skaler çarpım:
 
-$$ P_j = (\hat{\mathbf{m}}_j \cdot \mathbf{h}_{yerel})\, g $$
+Hedef **dünya vektörü** ($\mathbf{h}_{dunya}$), ROV'un o anki yönelimine göre yerel eksene iz düşürülür:
 
-$g$ genel güç oranıdır; $P\_j$ doğrudan motor komutuna ölçeklenir.
+$$ \mathbf{h}_{yerel} = \text{dunya\_to\_yerel}(\mathbf{h}_{dunya}) $$
+
+Her bir motor $j$ için itki katsayısı, motorun yerel birim itki vektörü $\hat{\mathbf{m}}_j$ ile yerel hedef vektörünün skaler çarpımı (iz düşümü) ile hesaplanır:
+
+$$ P_j = (\hat{\mathbf{m}}_j \cdot \mathbf{h}_{yerel}) \cdot g $$
+
+Burada $g$ genel güç oranını ($0 \leq g \leq 1$), $P_j$ ise ilgili motora gönderilecek nihai güç komutunu temsil eder.
 
 ### 4.2. Dönme (Tork Ekseni Dağılımı)
 
