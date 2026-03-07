@@ -134,10 +134,12 @@ flowchart LR
 
 ---
 
-## 6. Şema ve Veri Kaynakları
+## 6. Şema ve Veri Kaynakları (SCHEMA/)
 
-- **SCHEMA/ROV0/bilgi.json**: Motor konum ve birim yön vektörleri (export).
-- **FiratROVNet/gnc/schema_export.py**: Şema çizimi ve JSON export.
+Klasör isimleri ROV’ları temsil eder; her ROV klasöründe **rov_motor_sema.pdf** (motor yönleri ve yerleşim şeması) ve **bilgi.json** (konum/birim yön vektörleri) bulunur. Yeni ROV eklemek için `SCHEMA/ROV<id>/` oluşturup bu iki dosyayı ekleyin; liste güncellemesi için `python SCHEMA/update_readme.py` çalıştırılır.
+
+- **[SCHEMA/README.md](../SCHEMA/README.md)**: Mevcut ROV şemalarının canlı listesi (PDF + bilgi.json linkleri).
+- **FiratROVNet/gnc/schema_export.py**: Şema çizimi ve `bilgi.json` export.
 
 İleride eklenebilecekler: APF parametreleri, GAT girdi/çıktı şemaları, iletişim protokolü.
 
