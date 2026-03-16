@@ -62,7 +62,7 @@ class Motor:
         # 6. VISUAL ENTITY (Silindir Modeli)
         # Pivot'un çocuğu olduğu için üstteki ölçekleme ve rotasyondan etkilenir
         self.visual_entity = Entity(
-            model=Cylinder(resolution=12, radius=1.0, height=1.0),
+            model=Cylinder(resolution=12, radius=1.0, height=1),
             parent=self.motor_entity,
             color=motor_color,
             rotation=(0, 0, 0), 

@@ -187,7 +187,9 @@ def input(key):
         # Eğer tıklanan nesne minimap ise
         if hasattr(app, 'minimap') and mouse.hovered_entity == app.minimap:
             # Tıklanan yerin koordinatını havuz boyutuna göre çevir
-            local_pos = mouse.point 
+            local_pos = mouse.point
+            if local_pos is None:
+                return
             havuz_tam_cap = 400 
             sim_x = local_pos.x * havuz_tam_cap
             sim_y = local_pos.y * havuz_tam_cap
