@@ -169,55 +169,61 @@ class ROV(Entity):
             self.y = sea_floor_y
 
     def _guncelle_sensorler(self):
-            print("güncelle sensorler detay")
             menzil = GATLimitleri.ENGEL
-            # 🔹 Origin'i biraz daha yukarı aldık (Örn: 0.5)
             base_origin = self.world_position + Vec3(0, 0.5, 0)
-            
-            # --- GELİŞMİŞ IGNORE LİSTESİ (Recursive) ---
-            # Tüm ROV'ları ve onların içindeki TÜM parçaları (motorlar dahil) toplar
-            ignores = []
-            if self.environment_ref and hasattr(self.environment_ref, 'rovs'):
+
+            # Filo frame-basinda hazirlanan global ignore tuple varsa onu kullan.
+            ignore_tuple = ()
+            if self.environment_ref:
+                ignore_tuple = getattr(self.environment_ref, 'ignore_tuple', ())
+
+            if not ignore_tuple and self.environment_ref and hasattr(self.environment_ref, 'rovs'):
+                ignores = []
                 for r in self.environment_ref.rovs:
-                    if r:
-                        ignores.append(r)
-                        # ROV'un içindeki tüm alt nesneleri (mesh, motor, pervane) bul
-                        for child in r.children:
-                            ignores.append(child)
-                            if hasattr(child, 'children'): # Torunları da ekle
-                                ignores.extend(child.children)
-            
-            ignore_tuple = tuple(ignores)
+                    if not r:
+                        continue
+                    ignores.append(r)
+                    for child in getattr(r, 'children', []):
+                        ignores.append(child)
+                        ignores.extend(getattr(child, 'children', []))
+                ignore_tuple = tuple(ignores)
 
-            # Yardımcı fonksiyon: Işını gövdenin dışından başlatır
+            def buluta_ekle(hit_point, lidar_idx):
+                ortam = self.environment_ref
+                if not ortam or not hasattr(ortam, 'engel_bulutu'):
+                    return
+                ortam.engel_bulutu.append((
+                    float(hit_point.x),
+                    float(hit_point.z),
+                    float(hit_point.y),
+                    f"L{lidar_idx}",
+                ))
+                if len(ortam.engel_bulutu) > 12000:
+                    del ortam.engel_bulutu[:2000]
+
             def safe_raycast(origin, direction, dist, ignore_list):
-                # 🔹 Işın başlangıcını gövdenin 1.5 metre dışına taşıyoruz (Offset)
-                # Böylece ışın araçtan dışarıda doğar, gövdeye çarpma ihtimali 0 olur.
                 safe_start = origin + (direction * 1.5)
-                res = raycast(safe_start, direction, distance=dist - 1.5, ignore=ignore_list, debug=False)
-                
-                # HATA AYIKLAMA (Opsiyonel): Eğer beklenmedik bir engel çıkarsa ismini yazdır
-                # if res.hit: print(f"Çarpılan nesne: {res.entity.name}")
-                
-                return res
+                ray_dist = max(1, int(float(dist) - 1.5))
+                return raycast(safe_start, direction, distance=ray_dist, ignore=ignore_list, debug=False)
 
-            # === SONAR (İLERİ) ===
+            # SONAR (L0)
             hit_sonar = safe_raycast(base_origin, self.forward, menzil, ignore_tuple)
             if hit_sonar.hit:
-                self.engel_mesafesi = hit_sonar.distance + 1.5 # Offseti geri ekle
+                self.engel_mesafesi = hit_sonar.distance + 1.5
                 self.son_sonar_mesafesi = self.engel_mesafesi
                 self._kesikli_cizgi_ciz(hit_sonar.world_point, self.engel_mesafesi)
-                # ... (bulut ekleme mantığın aynı kalabilir) ...
+                buluta_ekle(hit_sonar.world_point, 0)
             else:
                 self.engel_mesafesi = 999.0
                 self.son_sonar_mesafesi = -1.0
-                if self.engel_cizgi: self.engel_cizgi.enabled = False
+                if self.engel_cizgi:
+                    self.engel_cizgi.enabled = False
 
-            # === LIDARLAR (4 YÖN) ===
+            # LIDARLAR (L0, L1, L2)
             directions = [
-                (0, self.forward, color.cyan),    # L0: İleri
-                (1, self.right, color.blue),      # L1: Sağ
-                (2, -self.right, color.green),    # L2: Sol
+                (0, self.forward, color.cyan),
+                (1, self.right, color.blue),
+                (2, -self.right, color.green),
             ]
 
             for idx, dir_vec, clr in directions:
@@ -226,18 +232,20 @@ class ROV(Entity):
                     dist = hit.distance + 1.5
                     self.son_lidar_mesafeleri[idx] = dist
                     self._lidar_cizgi_ciz(idx, hit.world_point, dist, clr)
-                    # ... (bulut ekleme mantığı) ...
+                    buluta_ekle(hit.world_point, idx)
                 else:
                     self.son_lidar_mesafeleri[idx] = -1.0
                     self._lidar_cizgi_temizle(idx)
 
-            # === L3: DİP LIDAR (Zaten offsetliydi, ignore listesini güncelledik) ===
-            origin_l3 = self.world_position + Vec3(0, -2, 0) # 8m yerine 2m yeterli
-            hit_l3 = raycast(origin_l3, Vec3(0, -1, 0), distance=int(menzil), ignore=list(ignore_tuple), debug=False)
+            # L3: Dip lidar
+            origin_l3 = self.world_position + Vec3(0, -2, 0)
+            hit_l3 = raycast(origin_l3, Vec3(0, -1, 0), distance=max(1, int(menzil)), ignore=list(ignore_tuple), debug=False)
             if hit_l3.hit:
                 self.son_lidar_mesafeleri[3] = hit_l3.distance
                 self._lidar_cizgi_ciz(3, hit_l3.world_point, hit_l3.distance, color.magenta)
+                buluta_ekle(hit_l3.world_point, 3)
             else:
+                self.son_lidar_mesafeleri[3] = -1.0
                 self._lidar_cizgi_temizle(3)
     def set(self, ayar, deger):
         """GNC sistemi tarafından çağrılır."""
@@ -789,26 +797,6 @@ class Ortam:
         )
         mouse.visible, mouse.locked = True, False
         
-        # Su yüzeyi - L2 yukarı raycast için invisible collider
-        self.water_surface = Entity(
-            model='plane',
-            scale=2000,
-            position=(0, self.WATER_SURFACE_Y_BASE, 0),
-            rotation=(0, 0, 0),
-            collider='box',
-            visible=False
-        )
-        
-        # Deniz tabanı - L2 aşağı lidar için invisible collider
-        self.sea_floor = Entity(
-            model='plane',
-            scale=2000,  # Büyük alan (havuz_genisligi * 10)
-            position=(0, self.SEA_FLOOR_Y, 0),
-            rotation=(0, 0, 0),
-            collider='box',
-            visible=False  # Görünmez ama raycast'e takılır
-        )
-
 
 
     @property
@@ -1061,7 +1049,7 @@ class Ortam:
                         bu_frame_aktif_olanlar.add(pair)
                         
                         oran = dist / self.SONAR_MENZILI
-                        carpan = lerp(1.25, 0.75, oran)
+                        carpan = float(lerp(1.25, 0.75, oran) or 1.0)
                         guncel_kalinlik = BASE_KALINLIK * carpan
                         if dist < 25:
                             c = color.red
