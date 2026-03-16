@@ -8,13 +8,14 @@ import queue
 import threading
 import math
 import random
+from typing import cast, Any
 import numpy as np
 from ursina import *  # type: ignore[reportMissingImports]
 from ursina import Vec3, color, time, destroy, window, camera  # type: ignore[reportMissingImports]
 from panda3d.bullet import BulletWorld  # type: ignore[reportMissingImports]
 
 # Yerel modül importları
-from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, FizikSabitleri, Hidrodinamik, BasitKalmanFiltresi, HavuzAyarlari
+from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, FizikSabitleri, Hidrodinamik, BasitKalmanFiltresi, HavuzAyarlari  # HavuzAyarlari artık config.py'de tanımlanmış
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon
 from ..hull import HullManager
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper
@@ -628,8 +629,8 @@ class Filo:
                 float(yuzey_pos.z - cam_pos.z),
             )
 
-            yuzey_rot = getattr(yuzey, "world_rotation", getattr(yuzey, "rotation", Vec3(0, 0, 0)))
-            cam_rot = getattr(kamera, "world_rotation", getattr(kamera, "rotation", Vec3(0, 0, 0)))
+            yuzey_rot = cast(Any, getattr(yuzey, "world_rotation", getattr(yuzey, "rotation", Vec3(0, 0, 0))))
+            cam_rot = cast(Any, getattr(kamera, "world_rotation", getattr(kamera, "rotation", Vec3(0, 0, 0))))
             if not hasattr(yuzey_rot, "x"):
                 yuzey_rot = Vec3(yuzey_rot[0], yuzey_rot[1], yuzey_rot[2])
             if not hasattr(cam_rot, "x"):
@@ -656,7 +657,7 @@ class Filo:
     def _tick_sistem_hazirligi(self):
         """Command queue + physics step."""
         self._process_command_queue()
-        dt = time.dt
+        dt = time.dt  # type: ignore[attr-defined]
         self.world.doPhysics(dt, 10, 1.0/60.0)
 
     def _tick_navigasyon_ve_gorseller(self, tahminler):
@@ -677,7 +678,7 @@ class Filo:
         sea_floor_y = getattr(self.ortam_ref, 'SEA_FLOOR_Y', -50.0)
         ortam_rovs = self.ortam_ref.rovs
         tahmin_len = len(tahminler) if tahminler is not None else 0
-        dt = time.dt
+        dt = time.dt  # type: ignore[attr-defined]
 
         # Tek geciste (O(n)): idx -> tahminler esleme + ROV tick
         for idx, rov in enumerate(ortam_rovs):

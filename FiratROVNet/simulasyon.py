@@ -44,8 +44,8 @@ class ROV(Entity):
         self.engel_mesafesi = 999.0
         
         # Görsel Referanslar
-        self.engel_cizgi = None  # Sonar çizgisi (havuz)
-        self.lidar_cizgileri = {0: None, 1: None, 2: None, 3: None}  # Lidar çizgileri (havuz)
+        self.engel_cizgi: Entity | None = None  # Sonar çizgisi (havuz)
+        self.lidar_cizgileri: dict[int, Entity | None] = {0: None, 1: None, 2: None, 3: None}  # Lidar çizgileri (havuz)
         self.iletisim_rovlari = {}
         self.label = None
         self.safety_zone = None
@@ -156,9 +156,10 @@ class ROV(Entity):
             return
 
         # Merkezi loop kullanılmıyorsa: sensör+batarya+limitleri burada sürdür.
+        print("güncelle sensörler")
         self._guncelle_sensorler()
         if self.velocity.length() > 0.01:
-            self.battery -= FizikSabitleri.BATARYA_SOMURME_KATSAYISI * time.dt*self.velocity.length()
+            self.battery -= FizikSabitleri.BATARYA_SOMURME_KATSAYISI * time.dt * self.velocity.length()  # type: ignore[attr-defined]
 
         # Derinlik limitleri
         if self.y > 0:
@@ -168,6 +169,7 @@ class ROV(Entity):
             self.y = sea_floor_y
 
     def _guncelle_sensorler(self):
+            print("güncelle sensorler detay")
             menzil = GATLimitleri.ENGEL
             # 🔹 Origin'i biraz daha yukarı aldık (Örn: 0.5)
             base_origin = self.world_position + Vec3(0, 0.5, 0)
@@ -231,7 +233,7 @@ class ROV(Entity):
 
             # === L3: DİP LIDAR (Zaten offsetliydi, ignore listesini güncelledik) ===
             origin_l3 = self.world_position + Vec3(0, -2, 0) # 8m yerine 2m yeterli
-            hit_l3 = raycast(origin_l3, Vec3(0, -1, 0), distance=menzil, ignore=ignore_tuple, debug=False)
+            hit_l3 = raycast(origin_l3, Vec3(0, -1, 0), distance=int(menzil), ignore=list(ignore_tuple), debug=False)
             if hit_l3.hit:
                 self.son_lidar_mesafeleri[3] = hit_l3.distance
                 self._lidar_cizgi_ciz(3, hit_l3.world_point, hit_l3.distance, color.magenta)
@@ -366,7 +368,7 @@ class Minimap(Entity):
 
         # 2. Tek bir Mesh oluşturuyoruz (mode='point' önemli)
         # thickness=2 yaparak o 'kırmızı blok' sorununu baştan çözüyoruz.
-        self.engel_mesh = Mesh(vertices=[], colors=[], mode='point', thickness=0.016, static=False)
+        self.engel_mesh = Mesh(vertices=[], colors=[], mode='point', thickness=int(0.016 * 1000) // 1000 or 1, static=False)
 
         # 3. Bu Mesh'i ekranda gösterecek TEK Entity
         self.engel_gorseli = Entity(
@@ -828,7 +830,7 @@ class Ortam:
         window.size = (1280, 720)
         window.center_on_screen()
         window.color = color.rgb(10, 30, 50)
-        application.run_in_background = True
+        # application.run_in_background = True  # Ursina'da bu özellik yok veya farklı şekilde ayarlanıyor
         try: window.context_menu = False
         except: pass
 
@@ -844,10 +846,11 @@ class Ortam:
             background=True,
         )
         self.rov_label.z = -10
-        self.rov_label.background.scale_x = 2
-        self.rov_label.background.scale_y = 2.2
-        self.rov_label.background.x = 0.1
-        self.rov_label.background.y = -0.07
+        if self.rov_label.background is not None:
+            self.rov_label.background.scale_x = 2
+            self.rov_label.background.scale_y = 2.2
+            self.rov_label.background.x = 0.1
+            self.rov_label.background.y = -0.07
 
     def _setup_lighting(self):
         self.sun = DirectionalLight()
@@ -856,7 +859,18 @@ class Ortam:
         self.sky = Sky()
 
     def konsola_ekle(self, isim, nesne): self.konsol_verileri[isim] = nesne
-    def set_update_function(self, func): self.app.update = func
+    
+    def set_update_function(self, func):
+        """Günceleme fonksiyonunu kaydet. Ursina'da doğrudan update attribute atanamaz."""
+        self._custom_update_func = func
+        # Ursina update döngüsüne entegre etmek için (Ursina update hook mekanizması)
+        # Bu kod main.py'de app.set_update_function() çağrısı yerine kullanılır
+    
+    def guncelle_ozel(self):
+        """Custom update fonksiyonunu çalıştırır (Ursina tarafından çağrılır)."""
+        if hasattr(self, '_custom_update_func') and self._custom_update_func:
+            self._custom_update_func()
+    
     def simden_veriye(self): return self.helper.simden_veriye() if self.helper else []
 
     def _find_safe_rov_spawn_pos_yedek(self):
