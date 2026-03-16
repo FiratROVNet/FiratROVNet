@@ -14,7 +14,7 @@ Kullanım:
     from FiratROVNet import senaryo
     
     # Senaryo oluştur
-    senaryo.uret(n_rovs=4, n_engels=20, havuz_genisligi=200)
+    senaryo.uret(n_rovs=4, n_engels=20)
     
     # Veri al
     batarya = senaryo.get(0, "batarya")
@@ -43,6 +43,7 @@ from ursina import *
 from FiratROVNet.simulasyon import Ortam, ROV
 from FiratROVNet.gnc import Filo
 from FiratROVNet.hull import HullManager
+from FiratROVNet.config import HavuzAyarlari
 import numpy as np
 import random
 import networkx as nx
@@ -443,7 +444,7 @@ class Senaryo:
             n_rovs (int): ROV sayısı (varsayılan: 3, None ise mevcut sayı korunur)
             n_engels (int): Engel sayısı (varsayılan: 15, None ise mevcut sayı korunur)
             n_adalar (int): Ada sayısı (None ise otomatik belirlenir)
-            havuz_genisligi (float): Havuz genişliği (varsayılan: 200)
+            havuz_genisligi (float): Havuz genişliği (None ise config HavuzAyarlari.HAVUZ_GENISLIK)
             engel_tipleri (list, optional): Engel tipleri listesi (sadece ilk kurulumda kullanılır)
             baslangic_pozisyonlari (dict, optional): ROV başlangıç pozisyonları (sadece ilk kurulumda)
             modem_ayarlari (dict, optional): Modem ayarları
@@ -494,7 +495,7 @@ class Senaryo:
         if havuz_genisligi is not None:
             self._cache_havuz_genisligi = havuz_genisligi
         elif self._cache_havuz_genisligi is None:
-            self._cache_havuz_genisligi = 200  # Varsayılan
+            self._cache_havuz_genisligi = HavuzAyarlari.HAVUZ_GENISLIK
         
         # Object pooling: İlk seferde max sayıda entity oluştur
         # Gerçekte oluşturulacak sayılar (ilk seferde MAX, sonra gizle/göster)
@@ -1009,7 +1010,7 @@ class Senaryo:
 
 
 # Global fonksiyonlar (kolay kullanım için)
-def uret(n_rovs=3, n_engels=15, havuz_genisligi=200, n_adalar=None, verbose=False, **kwargs):
+def uret(n_rovs=3, n_engels=15, havuz_genisligi=None, n_adalar=None, verbose=False, **kwargs):
     """
     Senaryo oluşturur (global fonksiyon).
     
