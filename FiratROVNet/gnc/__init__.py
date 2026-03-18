@@ -345,7 +345,7 @@ class Filo:
         rov.m0 = Motor(rov, filo_ref=self)
         rov.m0.ekle(
             koordinat_metre=Vec3(-2, 0.0, 2),  # METRE cinsinden!
-            yon_vec=(90, 225, 0)
+            yon_vec=(90, 45, 0)
         )
         self.motorlar[rov.id].append(rov.m0)
 
@@ -353,7 +353,7 @@ class Filo:
         rov.m1 = Motor(rov, filo_ref=self)
         rov.m1.ekle(
             koordinat_metre=Vec3(2, 0.0, 2),   # METRE cinsinden!
-            yon_vec=(90, 135, 0)
+            yon_vec=(90, -45, 0)
         )
         self.motorlar[rov.id].append(rov.m1)
 
@@ -361,7 +361,7 @@ class Filo:
         rov.m2 = Motor(rov, filo_ref=self)
         rov.m2.ekle(
             koordinat_metre=Vec3(-2, 0.0, -2), # METRE cinsinden!
-            yon_vec=(90, 315, 0)
+            yon_vec=(90, 135, 0)
         )
         self.motorlar[rov.id].append(rov.m2)
 
@@ -369,7 +369,7 @@ class Filo:
         rov.m3 = Motor(rov, filo_ref=self)
         rov.m3.ekle(
             koordinat_metre=Vec3(2, 0.0, -2),  # METRE cinsinden!
-            yon_vec=(90, 45, 0)
+            yon_vec=(90, -135, 0)
         )
         self.motorlar[rov.id].append(rov.m3)
 
