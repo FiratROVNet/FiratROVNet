@@ -60,76 +60,67 @@ class TemelGNCHelper:
         physics_node = getattr(self.rov, 'physics_node', None)
         if physics_node is None: return
 
-        # A. LİNEER SÖNÜMLEME
+        # A. LİNEER SÖNÜMLEME (DAHA MAKUL)
         mevcut_hiz = physics_node.getLinearVelocity()
         if mevcut_hiz is None:
             mevcut_hiz = Vec3(0, 0, 0)
         hiz_buyuklugu = mevcut_hiz.length()
         f_drag = Vec3(0, 0, 0)
+        
         if hiz_buyuklugu > 0.001:
-            drag_quadratic = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * Hidrodinamik.ON_YUZEY_ALANI * (hiz_buyuklugu ** 2)
-            drag_linear = hiz_buyuklugu * 2.0 
+            # Quadratic drag - sadece çok yüksek hızlarda etkin
+            drag_quadratic = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * Hidrodinamik.ON_YUZEY_ALANI * (hiz_buyuklugu ** 1.5)  # Kare yerine 1.5 üs
+            drag_linear = hiz_buyuklugu * 1.0  # 2.0 yerine 1.0
             yon_vec = Vec3(-mevcut_hiz.x, -mevcut_hiz.y, -mevcut_hiz.z).normalized()
             if self._vec3_gecerli_mi(yon_vec):
                 f_drag = yon_vec * (drag_quadratic + drag_linear)
 
-        # B. AÇISAL SÖNÜMLEME (Damping / Anti-Spin)
+        # B. AÇISAL SÖNÜMLEME
         mevcut_acisal_hiz = physics_node.getAngularVelocity()
         if mevcut_acisal_hiz is None:
             mevcut_acisal_hiz = Vec3(0, 0, 0)
             
         acisal_hiz_buyuklugu = mevcut_acisal_hiz.length()
         
-        # 🚨 SPİNNİNG-TOP KİLL SWİTCH (Takla Atmayı Anında Durdur!)
-        # Yüksek moment veya osilasyon sebebiyle araç saniyede çılgın hızlara çıkarsa
-        # (Örn: 10 rad/s = saniyede ~1.5 tam tur atması demek, bir denizaltı için imkansızdır)
-        # Tork yerine direkt Bullet physics'in hızını keskiyle sıfırlayıp kurtarıyoruz.
+        # Spin kill - hala gerekli
         if acisal_hiz_buyuklugu > 10.0:
             physics_node.setAngularVelocity(Vec3(0, 0, 0))
             mevcut_acisal_hiz = Vec3(0, 0, 0)
             acisal_hiz_buyuklugu = 0.0
             
         t_drag = Vec3(0, 0, 0)
-        # Kuvvetli Doğrusal Sönümleme (Quadratic drag aşırı hızlarda aracı ters yöne taklaya sokar,
-        # bu nedenle linear ve yumuşak bir damping çarpanı kullanıyoruz).
         if acisal_hiz_buyuklugu > 0.001:
-            damping_factor = 50.0  # Tork etkilerinin görünmesi için frenlemeyi gerçekçi seviyeye indirelim
+            damping_factor = 5.0  # 10.0 yerine 5.0 - daha da düşük
             t_drag = Vec3(-mevcut_acisal_hiz.x * damping_factor, 
-                          -mevcut_acisal_hiz.y * damping_factor, 
-                          -mevcut_acisal_hiz.z * damping_factor)
+                        -mevcut_acisal_hiz.y * damping_factor, 
+                        -mevcut_acisal_hiz.z * damping_factor)
 
-        # C. YERÇEKİMİ VE KALDIRMA KUVVETİ (Merkezi İtme)
+        # C. YERÇEKİMİ VE KALDIRMA KUVVETİ
         batma = getattr(self.rov.gnc, 'batma_orani', 1.0) 
         su_icindeki_hacim = Hidrodinamik.HACIM * batma
         
         f_yercekimi = Vec3(0, -Hidrodinamik.KUTLE * Hidrodinamik.YER_CEKIMI, 0)
         f_kaldirma = Vec3(0, su_icindeki_hacim * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.YER_CEKIMI, 0)
         f_net_env: Vec3 = f_yercekimi + f_kaldirma + f_drag
-        
 
-        if not self._vec3_gecerli_mi(f_net_env):
-            f_net_env = Vec3(0, 0, 0)
-        if not self._vec3_gecerli_mi(t_drag):
-            t_drag = Vec3(0, 0, 0)
-
-        # E. FİZİK MOTORUNA AKTARIM
-        f_net_env = cast(Vec3, f_net_env) if f_net_env else Vec3(0, 0, 0)
-        
-        def safe_clamp(v, limit=10000.0):
-            return P3Vec(max(-limit, min(limit, v.x)), 
-                         max(-limit, min(limit, v.y)), 
-                         max(-limit, min(limit, v.z)))
-                         
-        if self._vec3_gecerli_mi(f_net_env) and not (math.isnan(f_net_env.x) or math.isinf(f_net_env.x)):
-            clamped_force = safe_clamp(f_net_env)
+        # D. FİZİK MOTORUNA AKTARIM
+        if f_net_env is not None and self._vec3_gecerli_mi(f_net_env):
+            # Limit uygula ama çok agresif olma
+            limit = 20000.0
+            clamped_force = P3Vec(
+                max(-limit, min(limit, f_net_env.x)),
+                max(-limit, min(limit, f_net_env.y)),
+                max(-limit, min(limit, f_net_env.z))
+            )
             physics_node.applyCentralForce(clamped_force)
         
-        toplam_tork: Vec3 = t_drag
-        if not self._vec3_gecerli_mi(toplam_tork):
-            toplam_tork = Vec3(0, 0, 0)
-        toplam_tork = cast(Vec3, toplam_tork) if toplam_tork else Vec3(0, 0, 0)
-        if self._vec3_gecerli_mi(toplam_tork) and not (math.isnan(toplam_tork.x) or math.isinf(toplam_tork.x)):
-            clamped_torque = safe_clamp(toplam_tork)
+        if t_drag is not None and self._vec3_gecerli_mi(t_drag):
+            limit = 10000.0
+            clamped_torque = P3Vec(
+                max(-limit, min(limit, t_drag.x)),
+                max(-limit, min(limit, t_drag.y)),
+                max(-limit, min(limit, t_drag.z))
+            )
             physics_node.applyTorque(clamped_torque)
 
     def vektor_to_motor_sim(self, v_sim_dir: Vec3, guc_orani: float):
@@ -139,6 +130,7 @@ class TemelGNCHelper:
         """
         # Güç oranını sınırla
         guc_orani = max(0.0, min(1.0, guc_orani))
+    
         v_sim_dir = Vec3(v_sim_dir.x, v_sim_dir.z, v_sim_dir.y)
         
         if self.rov is None or self.filo_ref is None:
@@ -149,11 +141,11 @@ class TemelGNCHelper:
 
         # 3. MOTOR GÜÇLERİNİ HESAPLA
         gucler = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id, v_sim_dir, guc_orani)
-        tork_gucleri = self.filo_ref.tork_gucleri_hesapla(self.rov, v_sim_dir, guc_orani)
+        tork_gucleri, _ = self.filo_ref.tork_gucleri_hesapla(self.rov, v_sim_dir, guc_orani)
         roll_gucleri = self.filo_ref.roll_guclerini_hesapla(self.rov,guc_orani)
         
         # Agirliklandir ve listeye donustur
-        g = [p  for t, p, r in zip(tork_gucleri, gucler, roll_gucleri)]
+        g = [p*0.9 + r*0 + t*0 for t, p, r in zip(tork_gucleri, gucler, roll_gucleri)]
 
         # 4. MOTORLARI ÇALIŞTIR VE FİZİKSEL İTKİYİ UYGULA
         self.filo_ref.motorlari_calistir(self.rov.id, g)

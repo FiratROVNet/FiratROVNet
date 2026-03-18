@@ -10,9 +10,9 @@ class Hidrodinamik:
     YER_CEKIMI = 9.81
     KUTLE = 8.0
     HACIM = 0.0122
-    MAX_ITME_KUVVETI = 60.0
-    DRAG_KATSAYISI_CD = 0.25
-    ON_YUZEY_ALANI = 0.01
+    MAX_ITME_KUVVETI = 50.0
+    DRAG_KATSAYISI_CD = 0.4
+    ON_YUZEY_ALANI = 0.02
     LINEAR_DAMPING = 0  # Su direnci nedeniyle doğrusal sönümleme
     ANGULAR_DAMPING = 0  # Su direnci nedeniyle açısal sönümleme
 
