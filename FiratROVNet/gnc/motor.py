@@ -6,7 +6,6 @@ from panda3d.bullet import BulletRigidBodyNode
 from panda3d.core import Vec3 as P3Vec
 from FiratROVNet.config import Hidrodinamik
 
-
 class Motor:
     def __init__(self, rov_entity: Entity, filo_ref=None):
         """
@@ -17,50 +16,67 @@ class Motor:
         self.rov_entity = rov_entity
         self.filo_ref = filo_ref
         self.motor_entity = None
-        self.l_pos = None
+        self.l_pos_ursina = None  # Ursina biriminde (görsel için)
+        self.metre_pos = None     # Metre cinsinden (fizik için!)
         self.physics_node = None
+        self.tork_bv = Vec3(0, 0, 0)  # Birim tork vektörü
+        self.r_bv = Vec3(0, 0, 0)     # Birim itki vektörü
+        self.is_vertical = False
 
-
-    def ekle(self, koordinat: Vec3 = Vec3(0,0,0), yon_vec=(0,0,0)):
+    def ekle(self, koordinat_metre: Vec3 = Vec3(0,0,0), yon_vec=(0,0,0)):
         """
-        Motorun görselini ve fiziksel itki parametrelerini ayarlar.
+        Motoru metre cinsinden konumlandır!
+        koordinat_metre: ROV merkezine göre METRE cinsinden konum (örnek: (1.8, 0, 1.8))
+        yon_vec: Motorun yönü (pitch, yaw, roll) derece cinsinden
+        """
+        # 1. Metre cinsinden konumu kaydet (fizik için)
+        self.metre_pos = Vec3(koordinat_metre) if isinstance(koordinat_metre, Vec3) else Vec3(*koordinat_metre)
         
-        Özellikler:
-        - Silindir başlangıçta (0,0,0 rotasyonda) Z eksenine paraleldir.
-        - Origin noktası silindirin tam tabanıdır.
-        - Ölçekleme, ROV ölçeğinden bağımsız olarak 0.5 birim sabit boy sağlar.
-        """
-        # 1. Giriş rotasyonunu Vec3 formatına getir
+        # 2. Giriş rotasyonunu Vec3 formatına getir
         rot_deg = Vec3(yon_vec) if isinstance(yon_vec, (list, tuple, Vec3)) else Vec3(0,0,0)
 
-        # 2. FİZİKSEL YÖN HESABI
-        # Başlangıçta silindiri Z eksenine paralel kabul ettiğimiz için v=(0,0,1)
+        # 3. FİZİKSEL YÖN HESABI
+        # Başlangıçta silindiri Y eksenine paralel kabul et (v=(0,1,0))
         filo = self.filo_ref
         if filo is not None:
             self.yon_vec = filo._euler_deg_to_direction(rot_deg, v=Vec3(0, 1, 0))
         else:
             self.yon_vec = Vec3(0, 1, 0)
+        
+        # Birim vektör olduğundan emin ol
+        if self.yon_vec.length() > 0.001:
+            self.yon_vec = self.yon_vec.normalized()
+        
+        self.r_bv = self.yon_vec  # Birim itki vektörü
 
-        # 3. RENK MANTIĞI
-        is_vertical = abs(rot_deg.y) == 0 and (abs(rot_deg.x) > 5 or abs(rot_deg.z) > 5)
-        motor_color = color.azure if is_vertical else color.green
+        # 4. GÖRSEL İÇİN: Metre'yi Ursina birimine çevir, ROV scale'ine BÖL!
+        # Kullanıcı 1.8 metre gönderdi → ROV scale 0.009 ise → 1.8 / 0.009 = 200 birim
+        scale_x = getattr(self.rov_entity, 'scale_x', 1.0) or 1.0
+        scale_y = getattr(self.rov_entity, 'scale_y', 1.0) or 1.0
+        scale_z = getattr(self.rov_entity, 'scale_z', 1.0) or 1.0
+        
+        self.l_pos_ursina = Vec3(
+            self.metre_pos.x / scale_x,  # Metre / scale = Ursina birimi
+            self.metre_pos.y / scale_y,
+            self.metre_pos.z / scale_z
+        )
 
-        # 4. PIVOT ENTITY (Ana Taşıyıcı ve Rotasyon Merkezi)
+        # 5. RENK MANTIĞI
+        self.is_vertical = abs(rot_deg.y) == 0 and (abs(rot_deg.x) > 5 or abs(rot_deg.z) > 5)
+        motor_color = color.azure if self.is_vertical else color.green
+
+        # 6. PIVOT ENTITY (Ana Taşıyıcı ve Rotasyon Merkezi)
         self.motor_entity = Entity(
             parent=self.rov_entity,
-            position=koordinat,
+            position=self.l_pos_ursina,  # Ursina biriminde!
             rotation=rot_deg
         )
 
-        # 5. ÖLÇEKLENDİRME (İstediğiniz özel yapı)
-        # ROV'un (parent) ölçeğini alarak motoru 0.5 birim sabit boya sabitler
-        sx = getattr(self.rov_entity, 'scale_x', 1.0) or 1.0
-        sy = getattr(self.rov_entity, 'scale_y', 1.0) or 1.0
-        sz = getattr(self.rov_entity, 'scale_z', 1.0) or 1.0
-        self.motor_entity.scale = Vec3(0.5 / sx, 0.5 / sy, 0.5 / sz)
+        # 7. ÖLÇEKLENDİRME (Görsel boyut - ROV ölçeğinden bağımsız)
+        # Motor görseli sabit 0.5 birim boyunda olsun
+        self.motor_entity.scale = Vec3(0.5 / scale_x, 0.5 / scale_y, 0.5 / scale_z)
 
-        # 6. VISUAL ENTITY (Silindir Modeli)
-        # Pivot'un çocuğu olduğu için üstteki ölçekleme ve rotasyondan etkilenir
+        # 8. VISUAL ENTITY (Silindir Modeli)
         self.visual_entity = Entity(
             model=Cylinder(resolution=12, radius=1.0, height=1),
             parent=self.motor_entity,
@@ -69,8 +85,7 @@ class Motor:
             unlit=True
         )
 
-        # Teknik verileri kaydet
-        self.l_pos = koordinat
+        # 9. Fizik düğümünü bul
         self._find_physics_node()
 
     @property
@@ -101,41 +116,86 @@ class Motor:
                     break
                 p = getattr(p, 'parent', None)
 
+    def _vec3_gecerli_mi(self, vec) -> bool:
+        """Vektörün geçerli (finite) olup olmadığını kontrol eder"""
+        try:
+            return (math.isfinite(float(vec.x)) and 
+                    math.isfinite(float(vec.y)) and 
+                    math.isfinite(float(vec.z)) and
+                    abs(vec.x) < 1e6 and abs(vec.y) < 1e6 and abs(vec.z) < 1e6)
+        except (AttributeError, TypeError, ValueError):
+            return False
+
     def calistir(self, guc: float):
-            if abs(guc) < 0.001 or math.isnan(guc):
-                return
+        """
+        Motoru çalıştır - KUVVETİ MOTORUN OLDUĞU YERE UYGULA!
+        """
+        if abs(guc) < 0.001 or math.isnan(guc) or math.isinf(guc):
+            return
+        
+        guc = max(-1.0, min(1.0, float(guc)))
 
-            if self.physics_node is not None and self.l_pos is not None:
-                self.physics_node.setActive(True)
-                quat = self.rov_entity.quaternion
+        if self.physics_node is None or self.metre_pos is None:
+            return
+            
+        self.physics_node.setActive(True)
+        
+        if self.yon_vec is None or self.yon_vec.length() <= 1e-6:
+            return
 
-                # 1. KUVVET BÜYÜKLÜĞÜ
-                mag = float(guc) * Hidrodinamik.MAX_ITME_KUVVETI
-                
-                # 2. DÜNYA EKSENİNDE ÇİZGİSEL KUVVET (İTME)
-                world_force = quat.xform(self.yon_vec) * mag
-                
-                # 3. GERÇEK MOMENT KOLU
-                actual_l_pos = Vec3(
-                    self.l_pos.x * self.rov_entity.scale_x,
-                    self.l_pos.y * self.rov_entity.scale_y,
-                    self.l_pos.z * self.rov_entity.scale_z
-                )
-                world_rel_pos = quat.xform(actual_l_pos)
+        quat = self.rov_entity.quaternion
 
-                # 4. TORKU MANUEL HESAPLA (r x F)
-                world_torque = world_rel_pos.cross(world_force)
+        # ==========================================
+        # 1. KUVVET HESABI
+        # ==========================================
+        force_magnitude = float(guc) * Hidrodinamik.MAX_ITME_KUVVETI
+        world_force_dir = quat.xform(self.yon_vec)
+        world_force = world_force_dir * force_magnitude
 
-                # 5. Y EKSENİ DÜZELTMESİ (KRİTİK NOKTA!)
-                # Fizik motorunun Sağ El - Sol El çatışmasını gidermek için 
-                # dönüş ekseninin (Yaw) yönünü tersine çeviriyoruz.
-                world_torque.y = -world_torque.y
+        # ==========================================
+        # 2. MOTORUN DÜNYA KONUMUNU HESAPLA
+        # ==========================================
+        # Motorun ROV merkezine göre konumu (metre)
+        motor_local_pos = self.metre_pos
+        
+        # ROV'un dünya konumu
+        rov_world_pos = self.rov_entity.world_position
+        
+        # ROV'un rotasyonunu motor konumuna uygula
+        # Bu, motorun ROV döndüğünde nerede olacağını hesaplar
+        motor_world_pos = rov_world_pos + quat.xform(motor_local_pos)
+        
+        # ==========================================
+        # 3. KUVVETİ MOTOR KONUMUNDA UYGULA!
+        # ==========================================
+        if (math.isfinite(world_force.x) and math.isfinite(world_force.y) and 
+            math.isfinite(world_force.z) and
+            abs(world_force.x) < 1e6 and abs(world_force.y) < 1e6 and abs(world_force.z) < 1e6 and
+            math.isfinite(motor_world_pos.x) and math.isfinite(motor_world_pos.y) and math.isfinite(motor_world_pos.z) and
+            abs(motor_world_pos.x) < 1e6 and abs(motor_world_pos.y) < 1e6 and abs(motor_world_pos.z) < 1e6):
+            
+            # applyForce (merkezden değil, BELİRLİ NOKTADAN kuvvet uygula!)
+            self.physics_node.applyForce(
+                P3Vec(world_force.x, world_force.y, world_force.z),
+                P3Vec(motor_world_pos.x, motor_world_pos.y, motor_world_pos.z)
+            )
+        
+        # Tork OTOMATİK hesaplanır - ayrıca tork eklemeye gerek yok!
+    def debug_bilgi(self):
+        """Motor hakkında debug bilgisi döndürür"""
+        def vec3_to_tuple(vec):
+            if vec is None:
+                return None
+            try:
+                return (float(vec.x), float(vec.y), float(vec.z))
+            except (AttributeError, TypeError, ValueError):
+                return None
 
-                # 6. FİZİK MOTORUNA İLET (applyForce Yerine Ayrı Ayrı)
-                if not world_force.is_nan():
-                    # Aracı ötelemek için merkeze itki uygula
-                    self.physics_node.applyCentralForce(P3Vec(world_force.x, world_force.y, world_force.z))
-                
-                if not world_torque.is_nan():
-                    # Aracı döndürmek için düzeltilmiş torku uygula
-                    self.physics_node.applyTorque(P3Vec(world_torque.x, world_torque.y, world_torque.z))
+        return {
+            'yon_vec': vec3_to_tuple(self.yon_vec),
+            'metre_pos': vec3_to_tuple(self.metre_pos),
+            'l_pos_ursina': vec3_to_tuple(self.l_pos_ursina),
+            'is_vertical': self.is_vertical,
+            'tork_bv': vec3_to_tuple(self.tork_bv),
+            'r_bv': vec3_to_tuple(self.r_bv)
+        }

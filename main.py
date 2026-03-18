@@ -6,7 +6,7 @@ from ursina import time as utime, mouse, Vec3, time # type: ignore[reportMissing
 import numpy as np
 import os
 import time
-from datetime import datetime
+from rerun_ayarla import QR, rerun_baslat, rerun_sahne_logla
 
 # ==========================================
 # 1. KURULUM VE YAPILANDIRMA
@@ -15,7 +15,7 @@ print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
 
 # Simülasyonu oluştur: 6 ROV, 6 Ada, 200m havuz yarıçapı
-app.sim_olustur(n_rovs=(4,3,), n_islands=4, havuz_genisligi=200, rov_model='submarine')
+app.sim_olustur(n_rovs=(8,), n_islands=4, havuz_genisligi=200, rov_model='submarine')
 
 # Filo sistemini ortamla birlikte oluştur (otomatik bağlantı)
 # GAT modeli ve navigasyon kuyruğu da Filo içinde initialize edilir
@@ -33,6 +33,16 @@ app.konsola_ekle("rovs", app.rovs)
 app.konsola_ekle("cfg", cfg)
 app.konsola_ekle("nav_queue", filo.nav_queue)  # Kuyruğu konsoldan izleyebilirsin
 
+_rr_runtime = rerun_baslat(ip_adresi=os.getenv("RR_IP_ADRESI"))
+
+QR(
+    ip_adresi=_rr_runtime.get("lan_ip", "127.0.0.1"),
+    link=_rr_runtime.get("web_lan_url", ""),
+)
+
+
+
+
 print("✅ Sistem aktif. Minimap: sol tıkla. Ekran görüntüsü (makale kalitesi): F tuşu → Pictures/")
 
 
@@ -43,9 +53,11 @@ print("✅ Sistem aktif. Minimap: sol tıkla. Ekran görüntüsü (makale kalite
 # FPS gosterimi: son N karenin ortalamasi (titreme azalir)
 _fps_history = []
 _FPS_HISTORY_SIZE = 10
+_rerun_step = 0
 
 def update():
     """Ana simülasyon döngüsü. Frame süresi hedef FPS ile eşitlenir."""
+    global _rerun_step
     # Verileri çek (filo.get metodunuza göre uyarlandı)
     gps = filo.get(bilgi_rov_id, "gps") or Vec3(0,0,0)
     batarya = filo.get(bilgi_rov_id, "batarya") or 0
@@ -98,6 +110,8 @@ def update():
     tahminler = np.zeros(len(app.rovs), dtype=int)
     filo.guncelle_gat_analizi(tahminler)
     filo.guncelle_hepsi(tahminler, guncelle_gorseller=True)
+    rerun_sahne_logla(app=app, filo=filo, step=_rerun_step)
+    _rerun_step += 1
 
 
 app.set_update_function(update)
@@ -196,7 +210,7 @@ def input(key):
             
             # Mevcut derinliği grubun liderinden al
             lider_id, lider_gps = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)
-            mevcut_z = -5 #lider_gps[2] if lider_gps else -10
+            mevcut_z = -20 #lider_gps[2] if lider_gps else -10
             
             # Benzersiz ID oluştur ve hedefi kaydet
             filo.target_counter += 1

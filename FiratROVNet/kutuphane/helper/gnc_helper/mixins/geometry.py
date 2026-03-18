@@ -49,10 +49,13 @@ class GeometryMixin:
         """
         🔹 Sadece Lidar verilerinden engel listesi oluşturur (Sonar YOK, Raycast YOK!)
         
+        Merkezi lidar kaynağı: rov.l0, rov.l1, rov.l2, rov.l3 (@property) kullan.
+        Eski lidar dict parametresi uyumluluğu için saklanmıştır.
+        
         Args:
             rov: ROV Entity nesnesi
             rov_id: ROV ID'si
-            lidar: Lidar mesafe dict'i {0: mesafe_ileri, 1: mesafe_sag, 2: mesafe_sol, 3: mesafe_dip}
+            lidar: DEPRECATED - Kullanılmıyor (rov.l0/1/2/3 properties'inden okunur)
             menzil: Maksimum algılama mesafesi (None ise GATLimitleri.ENGEL)
         
         Returns:
@@ -67,14 +70,11 @@ class GeometryMixin:
             from FiratROVNet.config import GATLimitleri
             menzil = GATLimitleri.ENGEL
         
-        if lidar is None:
-            lidar = {}
-        
-        # Önbellekte geçerli mesafe var mı?
-        lidar_0 = lidar.get(0, -1) if isinstance(lidar, dict) else -1  # İleri
-        lidar_1 = lidar.get(1, -1) if isinstance(lidar, dict) else -1  # Sağ
-        lidar_2 = lidar.get(2, -1) if isinstance(lidar, dict) else -1  # Sol
-        lidar_3 = lidar.get(3, -1) if isinstance(lidar, dict) else -1  # Dip
+        # 🔹 Merkezi lidar kaynakları: rov.l0, rov.l1, rov.l2, rov.l3 properties
+        lidar_0 = rov.l0 if hasattr(rov, 'l0') else -1.0  # İleri
+        lidar_1 = rov.l1 if hasattr(rov, 'l1') else -1.0  # Sağ
+        lidar_2 = rov.l2 if hasattr(rov, 'l2') else -1.0  # Sol
+        lidar_3 = rov.l3 if hasattr(rov, 'l3') else -1.0  # Dip
         
         if lidar_0 < 0 and lidar_1 < 0 and lidar_2 < 0 and lidar_3 < 0:
             return []
@@ -239,18 +239,14 @@ class GeometryMixin:
         if rov is None or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
             return []
 
-        # Lidar verisi: filo.get() veya ROV.son_lidar_mesafeleri (her kare guncelle_hepsi 4C'de guncellenir)
-        lidar_data = self.filo.get(rov_id, "lidar") if hasattr(self.filo, 'get') else None
-        if lidar_data is None:
-            lidar_data = getattr(rov, 'son_lidar_mesafeleri', None)
-        if not isinstance(lidar_data, dict):
-            lidar_data = {}
+        # 🔹 Lidar verisi: Merkezi kaynaklar rov.l0, rov.l1, rov.l2, rov.l3 (@property)
+        # (her kare guncelle_hepsi içinde _guncelle_sensorler() ile güncellenir)
         
         # Lidar verilerinden engel listesi oluştur (sonar YOK)
         sonuclar = self._engel_bul_lidar_isle(
             rov=rov, 
             rov_id=rov_id, 
-            lidar=lidar_data, 
+            lidar=None,  # Artık kullanılmıyor —  rov.l0/1/2/3'ten okuyu
             menzil=menzil
         )
         

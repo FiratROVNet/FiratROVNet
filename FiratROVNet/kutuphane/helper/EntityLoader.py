@@ -267,7 +267,8 @@ class EntityLoader:
         
         # Basit dalga animasyonu
         def ocean_update():
-            dt = time.dt if time.dt > 0 else 0.016
+            dt = getattr(time, 'dt', 0.016)
+            dt = dt if dt > 0 else 0.016
             if not hasattr(self.ortam.ocean_surface, 'sim_time'):
                 self.ortam.ocean_surface.sim_time = 0
             self.ortam.ocean_surface.sim_time += dt

@@ -4,7 +4,7 @@ import numpy as np
 class DataMixin:
     """Veri erisim fonksiyonlari."""
 
-    def get(self, rov_id: int | None = None, veri_tipi: str | None = None, taraf: int | None = None, koordinator=None, sessiz: bool = False):
+    def get(self, rov_id: int = None, veri_tipi: str = None, taraf: int = None, koordinator=None, sessiz: bool = False):
         """
         ROV bilgilerini guvenli bir sekilde alir.
 

@@ -426,10 +426,23 @@ class FormationMixin:
             
             return None
 
+    def _sayisal_degerler_gecerli_mi(self, *values) -> bool:
+        for value in values:
+            try:
+                if not math.isfinite(float(value)):
+                    return False
+            except (TypeError, ValueError):
+                return False
+        return True
+
     def _apply_formation_results(self, f_id, aralik, yaw, merkez, pozisyonlar, lider_id, is_3d, dinamik, sessiz, lider_hareket_halinde, g_id=0):
         group_rov_list = self.filo.g_rovs.get(g_id)
         if not group_rov_list:
             if not sessiz: print(f"⚠️ [FORMASYON] Grup-{g_id} bulunamadı veya boş.")
+            return
+        if not self._sayisal_degerler_gecerli_mi(aralik, yaw):
+            if not sessiz:
+                print(f"❌ [FORMASYON] Geçersiz formasyon parametresi: aralık={aralik}, yaw={yaw}")
             return
         target_positions = {}
         if isinstance(pozisyonlar, dict):
@@ -457,6 +470,10 @@ class FormationMixin:
                 sim_x, sim_y, sim_z = pos
             except (TypeError, ValueError):
                 print(f"❌ [HATA] ROV-{r_id} için geçersiz pozisyon verisi: {pos}")
+                continue
+            if not self._sayisal_degerler_gecerli_mi(sim_x, sim_y, sim_z):
+                if not sessiz:
+                    print(f"❌ [FORMASYON] ROV-{r_id} için NaN/inf pozisyon atlandı: {pos}")
                 continue
             final_z = -10.0 if sim_z >= 0 else sim_z
             if r_id != lider_id:

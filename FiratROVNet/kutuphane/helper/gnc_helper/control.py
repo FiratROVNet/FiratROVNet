@@ -1,9 +1,10 @@
 import math
-import numpy as np
-from ursina import Vec3, time
-from FiratROVNet.config import Hidrodinamik, GATLimitleri
-from .mixins.formation import Formasyon
-from panda3d.core import Vec3 as P3Vec
+import numpy as np # type: ignore[import-not-found]
+from typing import cast
+from ursina import Vec3, time # type: ignore[import-not-found]
+from FiratROVNet.config import Hidrodinamik, GATLimitleri # type: ignore[import-not-found]
+from FiratROVNet.kutuphane.helper.gnc_helper.mixins.formation import Formasyon # type: ignore[import-not-found]
+from panda3d.core import Vec3 as P3Vec # type: ignore[import-not-found]
 
 
 
@@ -19,118 +20,143 @@ class TemelGNCHelper:
         self.hareket_vektor_kaynagi = None
         self._koordinator = None
 
-
-    def yaw_uygula(self,hedef_vektor:Vec3=Vec3(0,0,0),guc:float=0.1):
-            V_rov = self.rov.gnc.r_bv
-            V_rov = Vec3(V_rov.x, 0,V_rov.z)
-            hedef_vektor = Vec3(hedef_vektor.x, 0,hedef_vektor.z)
-          
-
-            if V_rov.length()*hedef_vektor.length() == 0:
-                return
+    def _vec3_gecerli_mi(self, vec) -> bool:
+        try:
+            return math.isfinite(float(vec.x)) and math.isfinite(float(vec.y)) and math.isfinite(float(vec.z))
+        except (AttributeError, TypeError, ValueError):
+            return False
 
 
-            scaler_carpim=V_rov.dot(hedef_vektor)
-            radyan=math.acos(scaler_carpim/(V_rov.length()*hedef_vektor.length()))
-            aci=math.degrees(radyan)
-            oran = aci / 360
-            filo = self.filo_ref
-            if filo is not None:
-                filo.yaw(self.rov,oran*guc*0.1)
+    def yaw_uygula(self, hedef_vektor: Vec3 | None = None, guc: float = 0.1):
+        if hedef_vektor is None:
+            hedef_vektor = Vec3(0, 0, 0)
+        V_rov = self.rov.gnc.r_bv
+        if V_rov is None:
+            V_rov = Vec3(0, 0, 0)
+        V_rov = Vec3(V_rov.x, 0, V_rov.z)
+        hedef_vektor = Vec3(hedef_vektor.x, 0, hedef_vektor.z)
+
+        len_rov = V_rov.length()
+        len_hedef = hedef_vektor.length()
+        if len_rov * len_hedef < 1e-9:
+            return
+
+        scaler_carpim = V_rov.dot(hedef_vektor)
+        
+        # Float hassasiyeti nedeniyle domain error almamak için -1.0 ile 1.0 arasına sıkıştır
+        oran_degeri = scaler_carpim / (len_rov * len_hedef)
+        oran_degeri = max(-1.0, min(1.0, oran_degeri))
+        
+        radyan = math.acos(oran_degeri)
+        aci = math.degrees(radyan)
+        oran = aci / 360.0
+        filo = self.filo_ref
+        if filo is not None:
+            filo.yaw(self.rov, oran * guc * 0.1)
 
 
 
     def fizik_uygula(self):
-            physics_node = getattr(self.rov, 'physics_node', None)
-            if physics_node is None: return
+        physics_node = getattr(self.rov, 'physics_node', None)
+        if physics_node is None: return
 
-            # A. LİNEER SÖNÜMLEME
-            mevcut_hiz = physics_node.getLinearVelocity()
-            hiz_buyuklugu = mevcut_hiz.length()
-            f_drag = Vec3(0, 0, 0)
-            if hiz_buyuklugu > 0.001:
-                drag_quadratic = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * Hidrodinamik.ON_YUZEY_ALANI * (hiz_buyuklugu ** 2)
-                drag_linear = hiz_buyuklugu * 2.0 
-                yon_vec = Vec3(-mevcut_hiz.x, -mevcut_hiz.y, -mevcut_hiz.z).normalized()
+        # A. LİNEER SÖNÜMLEME
+        mevcut_hiz = physics_node.getLinearVelocity()
+        if mevcut_hiz is None:
+            mevcut_hiz = Vec3(0, 0, 0)
+        hiz_buyuklugu = mevcut_hiz.length()
+        f_drag = Vec3(0, 0, 0)
+        if hiz_buyuklugu > 0.001:
+            drag_quadratic = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * Hidrodinamik.ON_YUZEY_ALANI * (hiz_buyuklugu ** 2)
+            drag_linear = hiz_buyuklugu * 2.0 
+            yon_vec = Vec3(-mevcut_hiz.x, -mevcut_hiz.y, -mevcut_hiz.z).normalized()
+            if self._vec3_gecerli_mi(yon_vec):
                 f_drag = yon_vec * (drag_quadratic + drag_linear)
 
-            # B. AÇISAL SÖNÜMLEME
-            mevcut_acisal_hiz = physics_node.getAngularVelocity()
-            acisal_hiz_buyuklugu = mevcut_acisal_hiz.length()
+        # B. AÇISAL SÖNÜMLEME (Damping / Anti-Spin)
+        mevcut_acisal_hiz = physics_node.getAngularVelocity()
+        if mevcut_acisal_hiz is None:
+            mevcut_acisal_hiz = Vec3(0, 0, 0)
+            
+        acisal_hiz_buyuklugu = mevcut_acisal_hiz.length()
+        
+        # 🚨 SPİNNİNG-TOP KİLL SWİTCH (Takla Atmayı Anında Durdur!)
+        # Yüksek moment veya osilasyon sebebiyle araç saniyede çılgın hızlara çıkarsa
+        # (Örn: 10 rad/s = saniyede ~1.5 tam tur atması demek, bir denizaltı için imkansızdır)
+        # Tork yerine direkt Bullet physics'in hızını keskiyle sıfırlayıp kurtarıyoruz.
+        if acisal_hiz_buyuklugu > 10.0:
+            physics_node.setAngularVelocity(Vec3(0, 0, 0))
+            mevcut_acisal_hiz = Vec3(0, 0, 0)
+            acisal_hiz_buyuklugu = 0.0
+            
+        t_drag = Vec3(0, 0, 0)
+        # Kuvvetli Doğrusal Sönümleme (Quadratic drag aşırı hızlarda aracı ters yöne taklaya sokar,
+        # bu nedenle linear ve yumuşak bir damping çarpanı kullanıyoruz).
+        if acisal_hiz_buyuklugu > 0.001:
+            damping_factor = 50.0  # Tork etkilerinin görünmesi için frenlemeyi gerçekçi seviyeye indirelim
+            t_drag = Vec3(-mevcut_acisal_hiz.x * damping_factor, 
+                          -mevcut_acisal_hiz.y * damping_factor, 
+                          -mevcut_acisal_hiz.z * damping_factor)
+
+        # C. YERÇEKİMİ VE KALDIRMA KUVVETİ (Merkezi İtme)
+        batma = getattr(self.rov.gnc, 'batma_orani', 1.0) 
+        su_icindeki_hacim = Hidrodinamik.HACIM * batma
+        
+        f_yercekimi = Vec3(0, -Hidrodinamik.KUTLE * Hidrodinamik.YER_CEKIMI, 0)
+        f_kaldirma = Vec3(0, su_icindeki_hacim * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.YER_CEKIMI, 0)
+        f_net_env: Vec3 = f_yercekimi + f_kaldirma + f_drag
+        
+
+        if not self._vec3_gecerli_mi(f_net_env):
+            f_net_env = Vec3(0, 0, 0)
+        if not self._vec3_gecerli_mi(t_drag):
             t_drag = Vec3(0, 0, 0)
-            if acisal_hiz_buyuklugu > 0.001:
-                a_drag_quad = 0.5 * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.DRAG_KATSAYISI_CD * (acisal_hiz_buyuklugu ** 2)
-                a_drag_lin = acisal_hiz_buyuklugu * 5
-                a_yon_vec = Vec3(-mevcut_acisal_hiz.x, -mevcut_acisal_hiz.y, -mevcut_acisal_hiz.z).normalized()
-                t_drag = a_yon_vec * (a_drag_quad + a_drag_lin)
 
-            # C. YERÇEKİMİ VE KALDIRMA KUVVETİ (Merkezi İtme)
-            batma = getattr(self.rov.gnc, 'batma_orani', 1.0) 
-            su_icindeki_hacim = Hidrodinamik.HACIM * batma
-            
-            f_yercekimi = Vec3(0, -Hidrodinamik.KUTLE * Hidrodinamik.YER_CEKIMI, 0)
-            f_kaldirma = Vec3(0, su_icindeki_hacim * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.YER_CEKIMI, 0)
-            f_net_env = f_yercekimi + f_kaldirma + f_drag
-
-            # 🔹 D. YENİ: HACİYATMAZ TORKU (Restoring Moment)
-            # ROV'un o anki "Yukarı" ekseni ile Dünyanın "Yukarı" (0,1,0) eksenini çarpıyoruz.
-            # Bu çarpım, ROV'u her zaman düzeltmeye zorlayan bir tork üretir.
-            rov_up = self.rov.up # ROV'un kendi yerel yukarısı
-            world_up = Vec3(0, 1, 0) # Dünyanın yukarısı
-            
-            # Hacıyatmaz Katsayısı: Bu değer ne kadar büyükse araç o kadar zor devrilir
-            haciyatmaz_katsayisi = 150.0 * batma # Sadece sudayken çalışır
-            t_haciyatmaz = rov_up.cross(world_up) * haciyatmaz_katsayisi
-
-            # E. FİZİK MOTORUNA AKTARIM
-            physics_node.applyCentralForce(P3Vec(f_net_env.x, f_net_env.y, f_net_env.z))
-            
-            # Torkları birleştirip uygula (Sürtünme freni + Hacıyatmaz düzeltmesi)
-            toplam_tork = t_drag + t_haciyatmaz
-            physics_node.applyTorque(P3Vec(toplam_tork.x, toplam_tork.y, toplam_tork.z))
+        # E. FİZİK MOTORUNA AKTARIM
+        f_net_env = cast(Vec3, f_net_env) if f_net_env else Vec3(0, 0, 0)
+        
+        def safe_clamp(v, limit=10000.0):
+            return P3Vec(max(-limit, min(limit, v.x)), 
+                         max(-limit, min(limit, v.y)), 
+                         max(-limit, min(limit, v.z)))
+                         
+        if self._vec3_gecerli_mi(f_net_env) and not (math.isnan(f_net_env.x) or math.isinf(f_net_env.x)):
+            clamped_force = safe_clamp(f_net_env)
+            physics_node.applyCentralForce(clamped_force)
+        
+        toplam_tork: Vec3 = t_drag
+        if not self._vec3_gecerli_mi(toplam_tork):
+            toplam_tork = Vec3(0, 0, 0)
+        toplam_tork = cast(Vec3, toplam_tork) if toplam_tork else Vec3(0, 0, 0)
+        if self._vec3_gecerli_mi(toplam_tork) and not (math.isnan(toplam_tork.x) or math.isinf(toplam_tork.x)):
+            clamped_torque = safe_clamp(toplam_tork)
+            physics_node.applyTorque(clamped_torque)
 
     def vektor_to_motor_sim(self, v_sim_dir: Vec3, guc_orani: float):
-            """
-            APF'den gelen 3B hareket vektörünü BlueROV2 benzeri 6 motor
-            (4 yatay, 2 dikey) için güç komutlarına dönüştürür.
-            """
-            # Güç oranını sınırla
-            guc_orani = max(0.0, min(1.0, guc_orani))
-            v_sim_dir = Vec3(v_sim_dir.x, v_sim_dir.z, v_sim_dir.y)
-            
+        """
+        APF'den gelen 3B hareket vektörünü BlueROV2 benzeri 6 motor
+        (4 yatay, 2 dikey) için güç komutlarına dönüştürür.
+        """
+        # Güç oranını sınırla
+        guc_orani = max(0.0, min(1.0, guc_orani))
+        v_sim_dir = Vec3(v_sim_dir.x, v_sim_dir.z, v_sim_dir.y)
+        
+        if self.rov is None or self.filo_ref is None:
+            return
+        
+        # 2. ÖNCE ÇEVRESEL FİZİĞİ UYGULA (Suyun ve Dünyanın Etkisi)
+        self.fizik_uygula()
 
-            if self.rov is None:
-                return
-            filo = self.filo_ref
-            if filo is None:
-                return
-            
-            # ============================================================
-            # 2. ÖNCE ÇEVRESEL FİZİĞİ UYGULA (Suyun ve Dünyanın Etkisi)
-            # ============================================================
-            self.fizik_uygula()  # Veya 'self.fizik_uygula(self.rov)' şeklinde tanımlıysa ona göre çağırın
+        # 3. MOTOR GÜÇLERİNİ HESAPLA
+        gucler = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id, v_sim_dir, guc_orani)
+        tork_gucleri = self.filo_ref.tork_gucleri_hesapla(self.rov, v_sim_dir, guc_orani)
+        roll_gucleri = self.filo_ref.roll_guclerini_hesapla(self.rov,guc_orani)
+        
+        # Agirliklandir ve listeye donustur
+        g = [p  for t, p, r in zip(tork_gucleri, gucler, roll_gucleri)]
 
-            # ============================================================
-            # 3. MOTOR GÜÇLERİNİ HESAPLA
-            # ============================================================
-
-            
-
-            
-
-
-
-            gucler = filo.tum_motorlarin_guclerini_hesapla(self.rov.id, v_sim_dir, guc_orani)
-            tork_gucleri, fark = filo.tork_gucleri_hesapla(self.rov, v_sim_dir, guc_orani)
-            g=np.array(tork_gucleri)*0.2+np.array(gucler)*0.8
-            g=g.tolist()
-
-
-            # ============================================================
-            # 4. MOTORLARI ÇALIŞTIR VE FİZİKSEL İTKİYİ UYGULA
-            # ============================================================
-            
-            filo.motorlari_calistir(self.rov.id, g)
+        # 4. MOTORLARI ÇALIŞTIR VE FİZİKSEL İTKİYİ UYGULA
+        self.filo_ref.motorlari_calistir(self.rov.id, g)
 
 
     def _guncelle_kontroller(self):
@@ -148,7 +174,7 @@ class TemelGNCHelper:
     def _koordinator_al(self):
         """Koordinator'u lazy import ile alir (circular import onleme)."""
         if self._koordinator is None:
-            from FiratROVNet.gnc import Koordinator
+            from FiratROVNet.gnc import Koordinator # type: ignore[import-not-found]
             self._koordinator = Koordinator
         return self._koordinator
 
@@ -234,7 +260,13 @@ class TemelGNCHelper:
                     hedef = yeni_pozisyonlar[grup_index]
 
         if hedef is not None:
-            filo.hedef((hedef[0], hedef[1], hedef[2]), rov_id=self.rov.id)
+            try:
+                hx, hy, hz = float(hedef[0]), float(hedef[1]), float(hedef[2])
+            except (TypeError, ValueError, IndexError):
+                return
+            if not math.isfinite(hx) or not math.isfinite(hy) or not math.isfinite(hz):
+                return
+            filo.hedef((hx, hy, hz), rov_id=self.rov.id)
 
     def _guncelle_waypoint_takip(self, rov_id: int):
         """
@@ -311,69 +343,109 @@ class TemelGNCHelper:
         engeller = sonuc.get('engeller') or []
         if not engeller:
             return Vec3(0, 0, 0), 0.0, guc0
-        # NumPy ile tek seferde: bilesenler (N,3), mesafe (N,)
-        n = len(engeller)
-        vecs = np.zeros((n, 3), dtype=np.float64)
-        mesafeler = np.zeros(n, dtype=np.float64)
-        for i, e_info in enumerate(engeller):
-            bv = e_info.get('birim_vektor', [0, 0, 0])
-            vecs[i] = (bv[0], bv[1], bv[2]) if len(bv) >= 3 else (bv[0], bv[1], 0.0) if len(bv) >= 2 else (0, 0, 0)
-            mesafeler[i] = float(e_info.get('mesafe', 0.0))
+        
+        toplam_vektor = Vec3(0, 0, 0)
+        max_engel_etkisi = 0.0
         engel_limit = float(GATLimitleri.ENGEL)
-        etki = np.maximum(0.0, 1.0 - mesafeler / engel_limit)
-        agirlikli = vecs * (etki * 0.4)[:, np.newaxis]
-        toplam = agirlikli.sum(axis=0)
-        max_engel_etkisi = float(np.max(etki))
-        guc_vals = 1.0 - self._guc_orani_hesapla_batch(mesafeler, engel_limit)
-        guc1 = float(max(guc0, np.max(guc_vals)) if guc_vals.size else guc0)
-        return Vec3(toplam[0], toplam[1], toplam[2]), max_engel_etkisi, guc1
+        guc1 = guc0
+        
+        for e_info in engeller:
+            bv = e_info.get('birim_vektor', [0, 0, 0])
+            vx = float(bv[0]) if len(bv) > 0 else 0.0
+            vy = float(bv[1]) if len(bv) > 1 else 0.0
+            vz = float(bv[2]) if len(bv) > 2 else 0.0
+            
+            mesafe = float(e_info.get('mesafe', 0.0))
+            if mesafe >= engel_limit:
+                continue
+                
+            etki = max(0.0, 1.0 - float(mesafe) / float(engel_limit))
+            if etki > max_engel_etkisi:
+                max_engel_etkisi = etki
+                
+            carpan = etki * 0.4
+            toplam_vektor.x += vx * carpan
+            toplam_vektor.y += vy * carpan
+            toplam_vektor.z += vz * carpan
+            
+            # Guc orani hesaplama
+            if mesafe >= 2 and mesafe < GATLimitleri.CARPISMA:
+                g_val = np.log((mesafe / engel_limit) * 10 + 1) / np.log(11)
+                g_val = 1.0 - g_val
+                if g_val > guc1:
+                    guc1 = g_val
+            elif mesafe < 2:
+                guc1 = max(guc1, 1.0)
+                
+        return toplam_vektor, max_engel_etkisi, guc1
 
     def _rov_vektoru_isle(self, sonuc, guc0: float):
         rovs = sonuc.get('rovs') or []
         if not rovs:
             return Vec3(0, 0, 0), 0.0, guc0
-        n = len(rovs)
-        vecs = np.zeros((n, 3), dtype=np.float64)
-        mesafeler = np.zeros(n, dtype=np.float64)
-        for i, r_info in enumerate(rovs):
+            
+        toplam_vektor = Vec3(0, 0, 0)
+        max_rov_etkisi = 0.0
+        carpisma_limit = float(GATLimitleri.CARPISMA)
+        guc2 = guc0
+        
+        for r_info in rovs:
             bv = r_info.get('birim_vektor', [0, 0, 0])
-            vecs[i] = (bv[0], bv[1], bv[2]) if len(bv) >= 3 else (bv[0], bv[1], 0.0) if len(bv) >= 2 else (0, 0, 0)
-            mesafeler[i] = float(r_info.get('mesafe', 0.0))
-        carpisma = float(GATLimitleri.CARPISMA)
-        etki = np.maximum(0.0, 1.0 - mesafeler / carpisma)
-        agirlikli = vecs * (etki * 0.35)[:, np.newaxis]
-        toplam = agirlikli.sum(axis=0)
-        max_rov_etkisi = float(np.max(etki))
-        guc_vals = 1.0 - self._guc_orani_hesapla_batch(mesafeler, carpisma)
-        guc2 = float(max(guc0, np.max(guc_vals)) if guc_vals.size else guc0)
-        return Vec3(toplam[0], toplam[1], toplam[2]), max_rov_etkisi, guc2
+            vx = float(bv[0]) if len(bv) > 0 else 0.0
+            vy = float(bv[1]) if len(bv) > 1 else 0.0
+            vz = float(bv[2]) if len(bv) > 2 else 0.0
+            
+            mesafe = float(r_info.get('mesafe', 0.0))
+            if mesafe >= carpisma_limit:
+                continue
+                
+            etki = max(0.0, 1.0 - float(mesafe) / float(carpisma_limit))
+            if etki > max_rov_etkisi:
+                max_rov_etkisi = etki
+                
+            carpan = etki * 0.4
+            toplam_vektor.x += vx * carpan
+            toplam_vektor.y += vy * carpan
+            toplam_vektor.z += vz * carpan
+            
+            # Guc orani hesaplama
+            if mesafe >= 2 and mesafe < carpisma_limit:
+                g_val = np.log((mesafe / carpisma_limit) * 10 + 1) / np.log(11)
+                g_val = 1.0 - g_val
+                if g_val > guc2:
+                    guc2 = g_val
+            elif mesafe < 2:
+                guc2 = max(guc2, 1.0)
+                
+        return toplam_vektor, max_rov_etkisi, guc2
 
     def _hedef_vektoru_isle(self, sonuc, max_engel_etkisi: float, max_rov_etkisi: float):
         h_info = sonuc.get('hedef') or {}
-        h_mesafe = float(h_info.get('mesafe', 0.0))
+        h_mesafe_raw = h_info.get('mesafe', 0.0)
+        try:
+            h_mesafe = float(h_mesafe_raw) # type: ignore
+        except (TypeError, ValueError):
+            h_mesafe = 0.0
         h_birim = Vec3(*h_info.get('birim_vektor', [0, 0, 0]))
 
         guc0 = self._guc_orani_hesapla(h_mesafe)
-        hedef_agirligi = (1.0 - max_engel_etkisi) * 0.125 + (1.0 - max_rov_etkisi) * 0.125
+        hedef_agirligi = (1.0 - max_engel_etkisi) * 0.10 + (1.0 - max_rov_etkisi) * 0.10
         hedef_vektor = h_birim * hedef_agirligi
 
         return hedef_vektor, guc0
 
-    def _bileske_vektor_hesapla(self, sonuc, rov_id: int):
-        hedef_vektor, guc0 = self._hedef_vektoru_isle(sonuc, 0.0, 0.0)
-
+    def _bileske_vektor_hesapla(self, sonuc, rov_id: int) -> tuple[Vec3, float]:
+        # Temel hedef gucunu al
+        h_info = sonuc.get('hedef') or {}
+        guc0 = self._guc_orani_hesapla(float(h_info.get('mesafe', 0.0)))
+        
         engel_vektor, max_engel_etkisi, guc1 = self._engel_vektoru_isle(sonuc, rov_id, guc0)
         rov_vektor, max_rov_etkisi, guc2 = self._rov_vektoru_isle(sonuc, guc0)
 
-        # Hedef agirligini yeni etkilerle tekrar hesapla
-        hedef_vektor, guc0 = self._hedef_vektoru_isle(sonuc, max_engel_etkisi, max_rov_etkisi)
+        # Hedef agirligini yeni etkilerle 1 kere hesapla (kaldirilan cift cagir)
+        hedef_vektor, _ = self._hedef_vektoru_isle(sonuc, max_engel_etkisi, max_rov_etkisi)
 
-        if self.rov.role == 1 and False:
-            print(f"Hedef Vektor: {hedef_vektor}, Guc: {guc0}")
-            print(f"Engel Vektor: {engel_vektor}, Guc: {guc1}")
-            print(f"ROV Vektor: {rov_vektor}, Guc: {guc2}")
-
-        bileske_vektor = engel_vektor + rov_vektor + hedef_vektor
+        bileske_vektor: Vec3 = engel_vektor + rov_vektor + hedef_vektor
         guc = max(guc0, guc1, guc2)
 
         return bileske_vektor, guc
@@ -398,6 +470,8 @@ class TemelGNCHelper:
             return
 
         bileske_vektor, guc = self._bileske_vektor_hesapla(sonuc, rov_id)
+        if bileske_vektor is None:
+            bileske_vektor = Vec3(0, 0, 0)
         final_yon = bileske_vektor.normalized() if bileske_vektor.length() > 0.001 else Vec3(0, 0, 0)
         self.vektor_to_motor_sim(final_yon, guc)
 

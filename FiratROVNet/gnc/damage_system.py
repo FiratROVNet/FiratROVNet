@@ -67,13 +67,12 @@ class DamageSystem:
         """
         from FiratROVNet.config import Hidrodinamik
         
-        filo = self.filo_ref
-        if filo is None or not hasattr(filo, 'ortam_ref') or filo.ortam_ref is None:
+        if not hasattr(self.filo_ref, 'ortam_ref') or not self.filo_ref.ortam_ref:
             return False
-        ortam = filo.ortam_ref
+            
         # Tüm entity'leri içeren tüm nesnelerin listesi (island_entities çakışan nesne ve engelleri içerir)
-        diger_nesneler = ortam.island_entities
-        diger_rovlar = [r for r in ortam.rovs if r and r.id != rov.id]
+        diger_nesneler = self.filo_ref.ortam_ref.island_entities
+        diger_rovlar = [r for r in self.filo_ref.ortam_ref.rovs if r and r.id != rov.id]
         
         # 1. Sabit Engel Çarpışmaları (Adalar, Kayalar)
         for entity in diger_nesneler:
@@ -138,12 +137,11 @@ class DamageSystem:
         Returns:
             bool: ROV ada içinde ise True
         """
-        filo = self.filo_ref
-        if filo is None or not hasattr(filo, 'ortam_ref') or filo.ortam_ref is None:
+        if not hasattr(self.filo_ref, 'ortam_ref') or not self.filo_ref.ortam_ref:
             return False
-        ortam = filo.ortam_ref
-        islands_and_rovs = ortam.island_entities + ortam.rovs
-        target_rov = filo.find_rov_by_id(rov_id)
+            
+        islands_and_rovs = self.filo_ref.ortam_ref.island_entities + self.filo_ref.ortam_ref.rovs
+        target_rov = self.filo_ref.find_rov_by_id(rov_id)
         
         if not target_rov:
             return False
@@ -171,12 +169,9 @@ class DamageSystem:
         
         if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
             return False
-        filo = self.filo_ref
-        if filo is None or filo.ortam_ref is None:
-            return False
-        ortam = filo.ortam_ref
+
         # Çevredeki potansiyel engeller (Adalar ve Diğer ROV'lar)
-        islands_and_rovs = ortam.island_entities + ortam.rovs
+        islands_and_rovs = self.filo_ref.ortam_ref.island_entities + self.filo_ref.ortam_ref.rovs
         
         for entity in islands_and_rovs:
             # Kendisiyle çarpışma kontrolü yapma ve ölü nesneleri atla
@@ -187,12 +182,12 @@ class DamageSystem:
                 
                 if hit_info.hit:
                     # 1. FİZİKSEL VERİLER
-                    m1 = getattr(rov, 'mass', 8.0)
+                    m1 = getattr(rov, 'mass', 12.0)
                     v1 = getattr(rov, 'velocity', Vec3(0, 0, 0))
                     
                     # Çarpılan nesne bir ROV mu yoksa sabit engel mi?
                     is_rov = hasattr(entity, 'gnc')
-                    m2 = getattr(entity, 'mass', 8.0) if is_rov else None
+                    m2 = getattr(entity, 'mass', 12.0) if is_rov else None
                     v2 = getattr(entity, 'velocity', Vec3(0, 0, 0))
                     
                     # 2. ENERJİ HESABI

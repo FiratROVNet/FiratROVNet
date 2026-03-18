@@ -6,9 +6,9 @@
 
 ```python
 >>> from FiratROVNet.gnc import Filo
->>> filo = Filo()   # ortam_ref olmadan rovs bağlı değil
->>> filo.rovs
-AttributeError: ...
+>>> filo = Filo()
+>>> filo.sistemler[0]
+IndexError: list index out of range
 ```
 
 ## 🔍 Sorunun Nedeni
@@ -41,25 +41,24 @@ AttributeError: ...
    ```
 4. Artık konsola yazabilirsiniz!
 
-### 2. **Konsolda Erişilebilir Değişkenler ve Komutlar**
+### 2. **Konsolda Erişilebilir Değişkenler**
 
-Konsola şu fonksiyonlar ve nesneler eklenir:
+Konsola şu değişkenler otomatik eklenir:
 
 ```python
-# Komutlar (konsola_ekle ile)
-git(rov_id, x, z, y=None, ai=True)   # Hedef atama
-move(rov_id, yon, guc=1.0)            # Manuel hareket
-get(rov_id, veri_tipi)                # Veri okuma
-set(rov_id, ayar_adi, deger)          # Ayar değiştirme
-Ada(ada_id, x=None, y=None)           # Ada konumu / listeleme
-ROV(rov_id, x=None, y=None, z=None)  # ROV konumu / listeleme
+# Otomatik eklenenler
+rovs          # ROV listesi
+engeller      # Engel listesi
+app           # Ortam nesnesi
+ursina        # Ursina modülü
+cfg           # Config nesnesi
 
-# Referanslar
-filo          # Filo nesnesi (hedef, formasyon, kamera, nav_queue)
-rovs          # ROV entity listesi
-cfg           # Canlı ayar nesnesi (goster_modem, goster_gnc, goster_sistem)
-nav_queue     # Grup bazlı hedef kuyruğu (minimap tıklama)
-app           # Ortam (Ortam) nesnesi
+# konsola_ekle() ile eklenenler
+git           # filo.git fonksiyonu
+gnc           # filo.sistemler (GNC sistemleri listesi)
+filo          # Filo nesnesi (✅ YENİ EKLENDİ)
+rovs          # ROV listesi
+cfg           # Config nesnesi
 ```
 
 ### 3. **Konsol Kullanımı**
@@ -78,11 +77,9 @@ app           # Ortam (Ortam) nesnesi
    ```
 4. Artık konsola yazabilirsiniz:
    ```python
-   >>> git(0, 50, 60, -5)       # Hedef atama
-   >>> move(0, "ileri", 1.0)   # Manuel hareket
-   >>> get(0, 'gps')           # Pozisyon
-   >>> set(0, 'engel_mesafesi', 50.0)
-   >>> filo.kamera_ayarla(rov_id=1)
+   >>> filo.sistemler[0]  # ✅ Çalışır!
+   >>> filo.git(0, 50, 60, 0)  # ✅ Çalışır!
+   >>> rovs[0].move("ileri", 10)  # ✅ Çalışır!
    ```
 
 #### **Yöntem 2: Konsol Mesajını Kontrol Et**
@@ -106,25 +103,29 @@ Eğer konsol otomatik başlamazsa, manuel olarak başlatabilirsiniz:
 
 ## 🎯 Örnek Kullanım
 
-### Konsolda Kullanım Örnekleri
+### Konsolda `filo` Kullanımı:
 
 ```python
-# Hedef atama (x, z = yatay; y = derinlik, opsiyonel)
->>> git(0, 50, 60, -5)
->>> git(1, 45, 55, -10, ai=False)
+# Konsol açıldıktan sonra:
 
-# Manuel hareket (yon: ileri, geri, sag, sol, cik, bat, dur; guc: 0.0–1.0)
->>> move(0, 'ileri', 1.0)
->>> move(1, 'sag', 0.5)
+# 1. Filo nesnesine eriş
+>>> filo.sistemler[0]  # ✅ Çalışır!
+>>> filo.sistemler[1]  # ✅ Çalışır!
 
-# Veri ve ayar
->>> get(0, 'gps')
->>> set(0, 'rol', 1)
->>> set(0, 'engel_mesafesi', 50.0)
+# 2. ROV'lara hedef ver
+>>> filo.git(0, 50, 60, 0)  # ROV-0 hedefe git
+>>> filo.git(1, 45, 55, -10)  # ROV-1 hedefe git
 
-# Kamera ve filo
->>> filo.kamera_ayarla(rov_id=1)
->>> nav_queue   # Grup bazlı hedef kuyruğu
+# 3. Manuel hareket
+>>> filo.move(0, 'ileri', 5.0)  # ROV-0 manuel ileri
+
+# 4. ROV ayarları
+>>> filo.set(0, 'rol', 1)  # ROV-0'ı lider yap
+>>> filo.get(0, 'gps')  # ROV-0 pozisyonu
+
+# 5. Direkt ROV erişimi
+>>> rovs[0].move("ileri", 10)  # ROV-0 ileri
+>>> rovs[0].color = color.green  # ROV-0 yeşil
 ```
 
 ---
@@ -138,9 +139,12 @@ Eğer konsol otomatik başlamazsa, manuel olarak başlatabilirsiniz:
 - Konsol thread'i başlatılması için 1-2 saniye bekleyin
 - Eğer hala görünmüyorsa, `interaktif=True` parametresini kontrol edin
 
-### Sorun 2: `filo` veya Komutlar Bulunamıyor
+### Sorun 2: `filo` Değişkeni Bulunamıyor
 
-**Çözüm:** `main.py` zaten `filo`, `git`, `move`, `get`, `set`, `Ada`, `ROV`, `rovs`, `cfg`, `nav_queue` ekler. Simülasyonu yeniden başlatın.
+**Çözüm:**
+- ✅ **Düzeltildi:** `app.konsola_ekle("filo", filo)` eklendi
+- `main.py`'yi yeniden çalıştırın
+- Konsolda `filo` değişkeni artık erişilebilir
 
 ### Sorun 3: Konsol Thread'i Başlamıyor
 
@@ -161,12 +165,15 @@ Eğer konsol otomatik başlamazsa, manuel olarak başlatabilirsiniz:
 ## 📝 Özet
 
 | Durum | Konsol Erişimi | Çözüm |
-|-------|----------------|-------|
-| Konsol mesajı görünüyor | ✅ Erişilebilir | `git()`, `move()`, `get()`, `set()`, `filo` kullanın |
-| Konsol mesajı görünmüyor | ❌ Erişilemez | 1–2 saniye bekleyin, terminali kontrol edin |
-| Komut bulunamıyor | ❌ Hata | `main.py` ile simülasyonu yeniden başlatın |
+|-------|---------------|-------|
+| Konsol mesajı görünüyor | ✅ Erişilebilir | `filo.sistemler[0]` kullan |
+| Konsol mesajı görünmüyor | ❌ Erişilemez | 1-2 saniye bekleyin |
+| `filo` bulunamıyor | ❌ Hata | ✅ Düzeltildi: `app.konsola_ekle("filo", filo)` eklendi |
 
-**Önemli:** Konsol açıldıktan sonra `git(rov_id, x, z, y=None, ai=True)`, `move(rov_id, yon, guc=1.0)`, `get(rov_id, veri_tipi)`, `set(rov_id, ayar_adi, deger)` ve `filo` kullanılabilir.
+**Önemli:**
+- Konsol thread'i başlatılması için 1 saniye bekleyin
+- Konsol mesajını terminalde kontrol edin
+- `filo` değişkeni artık konsola eklenmiş durumda ✅
 
 ---
 

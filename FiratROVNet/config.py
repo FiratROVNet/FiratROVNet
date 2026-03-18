@@ -6,38 +6,15 @@ import math
 
 # ==========================================
 class Hidrodinamik:
-    """ROV hidrodinamik ve Bullet fizik sabitleri (kütle, sönümleme, itme, sürükleme)."""
     SU_YOGUNLUGU = 1000.0
     YER_CEKIMI = 9.81
-    KUTLE = 8.0              # ROV kütlesi (kg) — Bullet rigid body ve hesaplarda kullanılır
+    KUTLE = 8.0
     HACIM = 0.0122
-    MAX_ITME_KUVVETI = 200.0  # Motor max itme kuvveti (N) — motor.calistir ölçeklemesi
+    MAX_ITME_KUVVETI = 60.0
     DRAG_KATSAYISI_CD = 0.25
     ON_YUZEY_ALANI = 0.01
-
-    # Bullet sönümleme (ROV stabil hareket; etrafında dönme / kayma azalır)
-    LINEAR_DAMPING = 0 # Doğrusal hız sönümleme
-    ANGULAR_DAMPING = 0  # Açısal hız sönümleme
-
-
-
-
-class HavuzAyarlari:
-    """
-    Havuz ayarları - Eğitim ve kullanımda tutarlı olmalı!
-    HAVUZ_GENISLIK = yarı genişlik (metre), simülasyon ve senaryolarda havuz_genisligi olarak kullanılır.
-    Minimap grid ve havuz sınırları bu ayarlardan okunur.
-    """
-    HAVUZ_GENISLIK = 200.0
-    HAVUZ_TAM_GENISLIK = HAVUZ_GENISLIK * 2  # Tam genişlik (metre), minimap ve şema boyutları için
-    # Minimap: grid adımı (metre); grid_sayisi verilmezse kullanılır
-    MINIMAP_GRID_UNIT = 25.0
-    HAVUZ_DERINLIK = 50.0
-    HAVUZ_YUKSEKLIGI = 10.0
-    HAVUZ_SICAKLIK = 20.0
-    HAVUZ_BASINC = 101325.0
-
-
+    LINEAR_DAMPING = 0  # Su direnci nedeniyle doğrusal sönümleme
+    ANGULAR_DAMPING = 0  # Su direnci nedeniyle açısal sönümleme
 
 class BasitKalmanFiltresi:
     def __init__(self, R=0.1, Q=0.1, baslangic_degeri=0.0):
@@ -154,7 +131,7 @@ class FizikSabitleri:
     """
     Fizik simülasyonu için sabitler - Sadece kullanılan değerler.
     """
-    BATARYA_SOMURME_KATSAYISI = 0.0007    # Batarya sömürme katsayısı (sabit azalma)
+    BATARYA_SOMURME_KATSAYISI = 0.001    # Batarya sömürme katsayısı (sabit azalma)
     BATARYA_HIZ_KATSAYISI = 0.0005       # Hıza göre batarya azalma katsayısı (hız*katsayı*dt)
 
 
@@ -174,3 +151,10 @@ class ROVModelleri:
             'scale': (0.009, 0.009, 0.009),  # FBX 1000x küçültme + %25 büyütme bir rovun boyutu artık 1000*0.009=9 mtre boyunda
         },
     }
+
+
+class HavuzAyarlari:
+    """
+    Havuz (pool) boyutu ve sınırları.
+    """
+    HAVUZ_TAM_GENISLIK = 200  # Havuz genişliği (metre)

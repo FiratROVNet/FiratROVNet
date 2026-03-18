@@ -70,7 +70,13 @@ class HullInformationManager:
                 'rol': int(rov.role),  # 0=normal, 1=lider
                 'yaw': float(rov.rotation_y),
                 'sonar': float(rov.son_sonar_mesafesi),
-                'lidar': dict(rov.son_lidar_mesafeleri) if isinstance(rov.son_lidar_mesafeleri, dict) else {}
+                # 🔹 Merkezi lidar kaynakları: rov.l0, rov.l1, rov.l2, rov.l3 properties kullan
+                'lidar': {
+                    0: float(rov.l0),
+                    1: float(rov.l1),
+                    2: float(rov.l2),
+                    3: float(rov.l3),
+                } if (hasattr(rov, 'l0') and hasattr(rov, 'l1') and hasattr(rov, 'l2') and hasattr(rov, 'l3')) else dict(rov.son_lidar_mesafeleri) if isinstance(rov.son_lidar_mesafeleri, dict) else {}
             }
             
             # GNC sistemi varsa ek bilgiler
