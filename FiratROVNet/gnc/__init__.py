@@ -743,6 +743,44 @@ class Filo:
         except Exception as e:
             print(f"❌ GAT güncelleme hatası: {e}")
 
+    @staticmethod
+    def kuvvet_uygula(rov_entity, yerel_kuvvet, yerel_nokta, ok_boyu=100):
+        """
+        ROV üzerindeki spesifik bir noktaya yerel bir kuvvet uygular ve görselleştirir.
+        
+        :param rov_entity: Kuvvetin uygulanacağı Ursina Entity (physics_node sahibi)
+        :param yerel_kuvvet: ROV'un yerel ekseninde kuvvet vektörü (Ursina Vec3 veya tuple)
+        :param yerel_nokta: ROV merkezine (CoM) göre kuvvetin uygulanacağı yerel koordinat (metre)
+        :param goster: Kuvvetin yönünü kırmızı bir ok ile gösterir (Debug için)
+        """
+        from panda3d.core import Vec3 as P3Vec
+        from ursina import Entity, Vec3, color, destroy, Cylinder, Cone
+        import math
+        
+        # 1. Fizik düğümünü ve Matrisi al (Referans koda sadık kalındı)
+        physics_node = getattr(rov_entity, 'physics_node', None)
+        if physics_node is None:
+            if hasattr(rov_entity, 'physics_np'):
+                physics_node = rov_entity.physics_np.node()
+            else:
+                return 
+
+        physics_node.setActive(True)
+        rov_mat = rov_entity.physics_np.getNetTransform().getMat()
+
+        # 2. Kuvvet Vektörünü Dünya Koordinatına Çevir
+        p3_local_force = P3Vec(yerel_kuvvet[0], yerel_kuvvet[1], yerel_kuvvet[2])
+        world_force = rov_mat.xformVec(p3_local_force)
+        
+        # 3. Uygulama Noktasını (Offset) Dünya Vektörüne Çevir
+        p3_local_pos = P3Vec(-yerel_nokta[0], yerel_nokta[1], yerel_nokta[2])
+        world_offset = rov_mat.xformVec(p3_local_pos)
+
+        # 4. Fizik Uygulama
+        if (math.isfinite(world_force.length()) and math.isfinite(world_offset.length())):
+            physics_node.applyForce(world_force, world_offset)
+
+
     def guncelle_gorseller_ve_renkler(self, tahminler):
         """ROV renkleri ve label'larını GAT koduna göre güncelle."""
         if not self.ortam_ref:
