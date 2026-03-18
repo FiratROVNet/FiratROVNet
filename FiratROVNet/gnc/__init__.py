@@ -744,20 +744,15 @@ class Filo:
             print(f"❌ GAT güncelleme hatası: {e}")
 
     @staticmethod
-    def kuvvet_uygula(rov_entity, yerel_kuvvet, yerel_nokta, ok_boyu=100):
+    def kuvvet_uygula(rov_entity, yerel_kuvvet, yerel_nokta):
         """
-        ROV üzerindeki spesifik bir noktaya yerel bir kuvvet uygular ve görselleştirir.
-        
-        :param rov_entity: Kuvvetin uygulanacağı Ursina Entity (physics_node sahibi)
-        :param yerel_kuvvet: ROV'un yerel ekseninde kuvvet vektörü (Ursina Vec3 veya tuple)
-        :param yerel_nokta: ROV merkezine (CoM) göre kuvvetin uygulanacağı yerel koordinat (metre)
-        :param goster: Kuvvetin yönünü kırmızı bir ok ile gösterir (Debug için)
+        ROV üzerindeki spesifik bir noktaya yerel bir kuvvet uygular.
+        (Eksen uyuşmazlıkları ve Gimbal Lock tamamen çözülmüştür!)
         """
         from panda3d.core import Vec3 as P3Vec
-        from ursina import Entity, Vec3, color, destroy, Cylinder, Cone
         import math
         
-        # 1. Fizik düğümünü ve Matrisi al (Referans koda sadık kalındı)
+        # 1. Fizik düğümünü al
         physics_node = getattr(rov_entity, 'physics_node', None)
         if physics_node is None:
             if hasattr(rov_entity, 'physics_np'):
@@ -766,17 +761,31 @@ class Filo:
                 return 
 
         physics_node.setActive(True)
-        rov_mat = rov_entity.physics_np.getNetTransform().getMat()
 
-        # 2. Kuvvet Vektörünü Dünya Koordinatına Çevir
-        p3_local_force = P3Vec(yerel_kuvvet[0], yerel_kuvvet[1], yerel_kuvvet[2])
-        world_force = rov_mat.xformVec(p3_local_force)
-        
-        # 3. Uygulama Noktasını (Offset) Dünya Vektörüne Çevir
-        p3_local_pos = P3Vec(-yerel_nokta[0], yerel_nokta[1], yerel_nokta[2])
-        world_offset = rov_mat.xformVec(p3_local_pos)
+        # 2. URSINA'NIN DÜNYA VEKTÖRLERİNİ AL (Aracın o anki gerçek yönleri)
+        sag = rov_entity.right     # Ursina'da +X
+        yukari = rov_entity.up     # Ursina'da +Y
+        ileri = rov_entity.forward # Ursina'da +Z
 
-        # 4. Fizik Uygulama
+        # 3. YEREL KUVVETİ -> URSINA DÜNYA KUVVETİNE ÇEVİR
+        wf_x = (sag.x * yerel_kuvvet[0]) + (yukari.x * yerel_kuvvet[1]) + (ileri.x * yerel_kuvvet[2])
+        wf_y = (sag.y * yerel_kuvvet[0]) + (yukari.y * yerel_kuvvet[1]) + (ileri.y * yerel_kuvvet[2])
+        wf_z = (sag.z * yerel_kuvvet[0]) + (yukari.z * yerel_kuvvet[1]) + (ileri.z * yerel_kuvvet[2])
+
+        # 4. YEREL OFFSETİ -> URSINA DÜNYA OFFSETİNE ÇEVİR
+        # (Dönüşlerde ters torku engellemek için X eksenini eksi (-) yapmaya devam ediyoruz)
+        wo_x = (sag.x * -yerel_nokta[0]) + (yukari.x * yerel_nokta[1]) + (ileri.x * yerel_nokta[2])
+        wo_y = (sag.y * -yerel_nokta[0]) + (yukari.y * yerel_nokta[1]) + (ileri.y * yerel_nokta[2])
+        wo_z = (sag.z * -yerel_nokta[0]) + (yukari.z * yerel_nokta[1]) + (ileri.z * yerel_nokta[2])
+
+        # 5. URSINA DÜNYASI ---> PANDA3D(BULLET) DÜNYASI ÇEVİRİMİ (KRİTİK!)
+        # Ursina'da  -> X: Sağ, Y: Yukarı, Z: İleri
+        # Panda3D'de -> X: Sağ, Y: İleri,  Z: Yukarı
+        # Bu yüzden y ve z yer değiştiriyor!
+        world_force = P3Vec(wf_x, wf_z, wf_y)
+        world_offset = P3Vec(wo_x, wo_z, wo_y)
+
+        # 6. FİZİK MOTORUNA UYGULA
         if (math.isfinite(world_force.length()) and math.isfinite(world_offset.length())):
             physics_node.applyForce(world_force, world_offset)
 
