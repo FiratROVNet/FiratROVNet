@@ -192,7 +192,7 @@ class FiloInitMixin:
 
     def _tick_rovler(self, tahminler):
         """ROV başına hasar/sensör/gnc + basit limit/batarya güncellemeleri."""
-        from FiratROVNet.gnc import Profiler
+        from FiratROVNet.kutuphane.moduls.profiler import Profiler
 
         if not self.ortam_ref or not hasattr(self.ortam_ref, "rovs"):
             return
@@ -294,7 +294,7 @@ class FiloInitMixin:
 
     def _tick_sistem_guncellemeleri(self, guncelle_gorseller: bool):
         """Queued commands + sonar/minimap + obstacle cloud."""
-        from FiratROVNet.gnc import Profiler
+        from FiratROVNet.kutuphane.moduls.profiler import Profiler
 
         if not guncelle_gorseller:
             return

@@ -1,3 +1,4 @@
+from FiratROVNet.kutuphane.moduls.profiler import Profiler
 from FiratROVNet.simulasyon import Ortam
 from FiratROVNet.gnc import Filo, TemelGNC
 from FiratROVNet.config import cfg
@@ -253,5 +254,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt: 
         print("\n🛑 Simülasyon durduruldu.")
     finally: 
+        try:
+            Profiler.rapor_ver()
+        except Exception:
+            pass
         os.system('stty sane')
         os._exit(0)
