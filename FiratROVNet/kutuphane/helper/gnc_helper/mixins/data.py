@@ -89,13 +89,35 @@ class DataMixin:
                 else:
                     val = None
 
-            elif veri_tipi == "gps_sinyal":
-                # GNC'den GPS sinyali bilgisi (TemelGNC.gps_sinyal)
+            elif veri_tipi in ("gps_sinyal", "gps_signal"):
+                # Önce yeni sensor paketine bak, yoksa eski GNC alanına dön.
+                sensor = getattr(rov, 'sensor', None)
+                if sensor and hasattr(sensor, 'gps_signal'):
+                    val = sensor.gps_signal
+                else:
+                    val = None
+                if val is not None:
+                    return val
                 gnc = getattr(rov, 'gnc', None)
                 if gnc and hasattr(gnc, 'gps_sinyal'):
                     val = gnc.gps_sinyal
                 else:
                     val = None
+
+            elif veri_tipi == "sensor":
+                val = getattr(rov, 'sensor', None)
+
+            elif veri_tipi == "imu":
+                sensor = getattr(rov, 'sensor', None)
+                val = sensor.imu if sensor and hasattr(sensor, 'imu') else None
+
+            elif veri_tipi == "bar":
+                sensor = getattr(rov, 'sensor', None)
+                val = sensor.bar if sensor and hasattr(sensor, 'bar') else None
+
+            elif veri_tipi == "sicaklik":
+                sensor = getattr(rov, 'sensor', None)
+                val = sensor.sicaklik if sensor and hasattr(sensor, 'sicaklik') else None
 
             else:
                 # Diger standart veriler (batarya, rol, hiz, yaw, sonar...)
@@ -184,4 +206,3 @@ class DataMixin:
             traceback.print_exc()
 
         return obstacles
-
