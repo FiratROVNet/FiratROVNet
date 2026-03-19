@@ -28,6 +28,7 @@ class ROV(Entity):
 
     def __init__(self, rov_id,group_id, loader_ref=None, model_key='submarine', **kwargs):
         super().__init__()
+        self.motorlar = []
         self.id = rov_id
         self.environment_ref = None
         

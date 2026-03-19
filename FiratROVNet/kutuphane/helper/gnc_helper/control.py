@@ -141,11 +141,11 @@ class TemelGNCHelper:
 
         # 3. MOTOR GÜÇLERİNİ HESAPLA
         gucler = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id, v_sim_dir, guc_orani)
-        tork_gucleri, _ = self.filo_ref.tork_gucleri_hesapla(self.rov, v_sim_dir, guc_orani)
+        yaw_gucleri, _ = self.filo_ref.yaw_gucleri_hesapla(self.rov, v_sim_dir, guc_orani)
         roll_gucleri = self.filo_ref.roll_guclerini_hesapla(self.rov,guc_orani)
         
         # Agirliklandir ve listeye donustur
-        g = [p*0.9 + r*0 + t*0 for t, p, r in zip(tork_gucleri, gucler, roll_gucleri)]
+        g = [p*0.8 + r*0 + t*0.2 for t, p, r in zip(yaw_gucleri, gucler, roll_gucleri)]
 
         # 4. MOTORLARI ÇALIŞTIR VE FİZİKSEL İTKİYİ UYGULA
         self.filo_ref.motorlari_calistir(self.rov.id, g)

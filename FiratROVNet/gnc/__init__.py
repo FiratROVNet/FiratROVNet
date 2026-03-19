@@ -347,6 +347,7 @@ class Filo:
             koordinat_metre=Vec3(-2, 0.0, 2),  # METRE cinsinden!
             yon_vec=(90, 45, 0)
         )
+        rov.m0.name="m0"
         self.motorlar[rov.id].append(rov.m0)
 
         # m1: ön-sağ (yatay) - 1.8 metre önde, 1.8 metre sağda
@@ -355,6 +356,7 @@ class Filo:
             koordinat_metre=Vec3(2, 0.0, 2),   # METRE cinsinden!
             yon_vec=(90, -45, 0)
         )
+        rov.m1.name="m1"
         self.motorlar[rov.id].append(rov.m1)
 
         # m2: arka-sol (yatay) - 1.8 metre arkada, 1.8 metre solda
@@ -363,6 +365,7 @@ class Filo:
             koordinat_metre=Vec3(-2, 0.0, -2), # METRE cinsinden!
             yon_vec=(90, 135, 0)
         )
+        rov.m2.name="m2"
         self.motorlar[rov.id].append(rov.m2)
 
         # m3: arka-sağ (yatay) - 1.8 metre arkada, 1.8 metre sağda
@@ -371,6 +374,7 @@ class Filo:
             koordinat_metre=Vec3(2, 0.0, -2),  # METRE cinsinden!
             yon_vec=(90, -135, 0)
         )
+        rov.m3.name="m3"
         self.motorlar[rov.id].append(rov.m3)
 
         # m4: dikey-sol (heave) - 0.9 metre solda
@@ -379,6 +383,7 @@ class Filo:
             koordinat_metre=Vec3(-1.0, 0.0, 0.5),  # METRE cinsinden!
             yon_vec=(0.0, 0, 0.0)
         )
+        rov.m4.name="m4"
         self.motorlar[rov.id].append(rov.m4)
 
         # m5: dikey-sağ (heave) - 0.9 metre sağda
@@ -387,6 +392,7 @@ class Filo:
             koordinat_metre=Vec3(1.0, 0.0, 0.5),   # METRE cinsinden!
             yon_vec=(0.0, 0, 0.0)
         )
+        rov.m5.name="m5"
         self.motorlar[rov.id].append(rov.m5)
 
 
@@ -396,6 +402,7 @@ class Filo:
             koordinat_metre=Vec3(-1.0, 0.0, -0.5),  # METRE cinsinden!
             yon_vec=(0.0, 0, 0.0)
         )
+        rov.m6.name="m6"
         self.motorlar[rov.id].append(rov.m6)
 
         # m5: dikey-sağ (heave) - 0.9 metre sağda
@@ -404,6 +411,7 @@ class Filo:
             koordinat_metre=Vec3(1.0, 0.0, -0.5),   # METRE cinsinden!
             yon_vec=(0.0, 0, 0.0)
         )
+        rov.m7.name="m7"
         self.motorlar[rov.id].append(rov.m7)
 
 
@@ -455,7 +463,9 @@ class Filo:
                 rov_icin_bv_listesi.append(birim_vektor)
                 
                 # 2. TORK BİRİM VEKTÖRÜ - metre_pos KULLANILIR (Sağ/sol el eşleniği sağlanır)
-                tork_vec = motor.metre_pos.cross(birim_vektor)
+                #tork_vec = motor.metre_pos.cross(birim_vektor)
+                metre_pos_flipped = Vec3(-motor.metre_pos.x, motor.metre_pos.y, motor.metre_pos.z)
+                tork_vec = metre_pos_flipped.cross(birim_vektor)
                 if tork_vec.is_nan() or tork_vec.length() <= 1e-6:
                     motor.tork_bv = Vec3(0, 0, 0)
                 else:
@@ -482,18 +492,21 @@ class Filo:
         return Vec3(yerel_x, yerel_y, yerel_z)
 
     def tum_motorlarin_guclerini_hesapla(self, rov_id=0, hedef_vektor_dunya: Vec3 = Vec3(0.0, 0.0, 0.0), guc: float = 0.0):
-        rov = self.find_rov_by_id(rov_id)
-        if not rov:
-            return [0.0] * 6
+            rov = self.find_rov_by_id(rov_id)
+            if not rov:
+                return [0.0] * 6
 
-        # Hedefi yerel eksene çevir
-        hedef_yerel = self.dunya_to_yerel_vektor(hedef_vektor_dunya, rov.rotation)
+            # Yardımcı metot ile hedefi yerel eksene çevir
+            hedef_yerel = self.dunya_to_yerel_vektor(hedef_vektor_dunya, rov.rotation)
+            hedef_yerel = Vec3(-hedef_yerel.x, hedef_yerel.y, hedef_yerel.z)
 
-        # Motorlarla hizalanmaya skaler carpimiyla bak
-        powers = [v.dot(hedef_yerel) * guc for v in self.motorlar_bv[rov_id]]
-        return powers
+            # Motorlarla skaler çarpım (İkisi de artık yerel eksende!)
+            Powers =[v.dot(hedef_yerel) * guc for v in self.motorlar_bv[rov_id]]
+            
+            return Powers
 
-    def tork_gucleri_hesapla(self, rov=None, hedef_vektor_dunya: Vec3 = Vec3(0.0, 0.0, 0.0), guc_orani: float = 0.0):
+
+    def yaw_gucleri_hesapla(self, rov=None, hedef_vektor_dunya: Vec3 = Vec3(0.0, 0.0, 0.0), guc_orani: float = 0.0):
             if rov is None:
                 return [0.0] * 6, 0.0
 
@@ -661,10 +674,9 @@ class Filo:
         motor_listesi = self.motorlar.get(rov_id)
         if not motor_listesi:
             return
-        # Güç listesi motor sayısından kısa olsa bile kalan motorlar 0.0 ile çalışır
-        for i, motor in enumerate(motor_listesi):
-            g = gucler[i] if i < len(gucler) else 0.0
-            motor.calistir(g)
+        n = len(gucler)
+        for i in range(n):
+            motor_listesi[i].calistir(gucler[i])
 
 
     def _basla_gat_modeli(self):
@@ -743,52 +755,50 @@ class Filo:
         except Exception as e:
             print(f"❌ GAT güncelleme hatası: {e}")
 
-    @staticmethod
-    def kuvvet_uygula(rov_entity, yerel_kuvvet, yerel_nokta):
-        """
-        ROV üzerindeki spesifik bir noktaya yerel bir kuvvet uygular.
-        (Eksen uyuşmazlıkları ve Gimbal Lock tamamen çözülmüştür!)
-        """
-        from panda3d.core import Vec3 as P3Vec
-        import math
-        
-        # 1. Fizik düğümünü al
-        physics_node = getattr(rov_entity, 'physics_node', None)
-        if physics_node is None:
-            if hasattr(rov_entity, 'physics_np'):
-                physics_node = rov_entity.physics_np.node()
-            else:
-                return 
+    def kuvvet_uygula(self, rov_entity, yerel_kuvvet, yerel_nokta):
+            """
+            ROV üzerindeki spesifik bir noktaya yerel bir kuvvet uygular.
+            (Panda3D matrisleri YERİNE, Filo'nun kendi _euler_deg_to_direction metodu kullanılır)
+            """
+            from panda3d.core import Vec3 as P3Vec
+            import math
+            
+            # 1. FİZİK DÜĞÜMÜNÜ AL
+            physics_node = getattr(rov_entity, 'physics_node', None)
+            if physics_node is None:
+                if hasattr(rov_entity, 'physics_np'):
+                    physics_node = rov_entity.physics_np.node()
+                else:
+                    return 
 
-        physics_node.setActive(True)
+            physics_node.setActive(True)
 
-        # 2. URSINA'NIN DÜNYA VEKTÖRLERİNİ AL (Aracın o anki gerçek yönleri)
-        sag = rov_entity.right     # Ursina'da +X
-        yukari = rov_entity.up     # Ursina'da +Y
-        ileri = rov_entity.forward # Ursina'da +Z
+            # 2. YEREL KUVVETİ -> DÜNYA KUVVETİNE ÇEVİR (Senin Euler Fonksiyonunla)
+            v_yerel_kuvvet = Vec3(-yerel_kuvvet[0], yerel_kuvvet[1], yerel_kuvvet[2])
+            mag = v_yerel_kuvvet.length()
+            
+            if mag <= 1e-6:
+                return
+                
+            # Sadece yönü döndür ve büyüklükle çarp (Ursina'nın olası Scale bozulmalarını önler)
+            v_yerel_yon = v_yerel_kuvvet.normalized()
+            ursina_dunya_yon = self._euler_deg_to_direction(rov_entity.rotation, v=v_yerel_yon)
+            ursina_dunya_kuvvet = ursina_dunya_yon * mag
 
-        # 3. YEREL KUVVETİ -> URSINA DÜNYA KUVVETİNE ÇEVİR
-        wf_x = (sag.x * yerel_kuvvet[0]) + (yukari.x * yerel_kuvvet[1]) + (ileri.x * yerel_kuvvet[2])
-        wf_y = (sag.y * yerel_kuvvet[0]) + (yukari.y * yerel_kuvvet[1]) + (ileri.y * yerel_kuvvet[2])
-        wf_z = (sag.z * yerel_kuvvet[0]) + (yukari.z * yerel_kuvvet[1]) + (ileri.z * yerel_kuvvet[2])
+            # 3. YEREL UYGULAMA NOKTASINI (OFFSET) -> DÜNYA OFFSETİNE ÇEVİR
+            # Sağ/Sol el tork uyuşmazlığını (Ters dönme sorunu) çözmek için yerel X eksenini eksi (-) alıyoruz
+            v_yerel_nokta = Vec3(-yerel_nokta[0], yerel_nokta[1], yerel_nokta[2])
+            ursina_dunya_offset = self._euler_deg_to_direction(rov_entity.rotation, v=v_yerel_nokta)
 
-        # 4. YEREL OFFSETİ -> URSINA DÜNYA OFFSETİNE ÇEVİR
-        # (Dönüşlerde ters torku engellemek için X eksenini eksi (-) yapmaya devam ediyoruz)
-        wo_x = (sag.x * -yerel_nokta[0]) + (yukari.x * yerel_nokta[1]) + (ileri.x * yerel_nokta[2])
-        wo_y = (sag.y * -yerel_nokta[0]) + (yukari.y * yerel_nokta[1]) + (ileri.y * yerel_nokta[2])
-        wo_z = (sag.z * -yerel_nokta[0]) + (yukari.z * yerel_nokta[1]) + (ileri.z * yerel_nokta[2])
+            # 4. URSINA DÜNYASI -> PANDA3D(BULLET) DÜNYASI ÇEVİRİMİ (KRİTİK!)
+            bullet_force = P3Vec(ursina_dunya_kuvvet.x, ursina_dunya_kuvvet.y, ursina_dunya_kuvvet.z)
+            bullet_offset = P3Vec(ursina_dunya_offset.x, ursina_dunya_offset.y, ursina_dunya_offset.z)
 
-        # 5. URSINA DÜNYASI ---> PANDA3D(BULLET) DÜNYASI ÇEVİRİMİ (KRİTİK!)
-        # Ursina'da  -> X: Sağ, Y: Yukarı, Z: İleri
-        # Panda3D'de -> X: Sağ, Y: İleri,  Z: Yukarı
-        # Bu yüzden y ve z yer değiştiriyor!
-        world_force = P3Vec(wf_x, wf_z, wf_y)
-        world_offset = P3Vec(wo_x, wo_z, wo_y)
-
-        # 6. FİZİK MOTORUNA UYGULA
-        if (math.isfinite(world_force.length()) and math.isfinite(world_offset.length())):
-            physics_node.applyForce(world_force, world_offset)
-
+            # 5. FİZİK MOTORUNA UYGULA
+            if (math.isfinite(bullet_force.x) and math.isfinite(bullet_force.y) and math.isfinite(bullet_force.z) and
+                math.isfinite(bullet_offset.x) and math.isfinite(bullet_offset.y) and math.isfinite(bullet_offset.z)):
+                
+                physics_node.applyForce(bullet_force, bullet_offset)
 
     def guncelle_gorseller_ve_renkler(self, tahminler):
         """ROV renkleri ve label'larını GAT koduna göre güncelle."""

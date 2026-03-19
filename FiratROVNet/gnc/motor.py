@@ -21,17 +21,22 @@ class Motor:
         self.metre_pos: Vec3 | None = None     # Metre cinsinden (fizik için!)
         self.physics_node = None
         self._color = color.white  # Renk cache (motor_entity yokken)
+        self.name: str = ""
         self.tork_bv = Vec3(0, 0, 0)  # Birim tork vektörü
         self.r_bv = Vec3(0, 0, 0)     # Birim itki vektörü
         self.is_vertical = False
+        self.guc = 0.0
 
-    def ekle(self, koordinat_metre: Vec3 = Vec3(0,0,0), yon_vec=(0,0,0)):
+    def ekle(self, koordinat_metre: Vec3 = Vec3(0,0,0), yon_vec=(0,0,0), guc=0.0):
         """
         Motoru metre cinsinden konumlandır!
         koordinat_metre: ROV merkezine göre METRE cinsinden konum (örnek: (1.8, 0, 1.8))
         yon_vec: Motorun yönü (pitch, yaw, roll) derece cinsinden
+        guc: Motorun gücü
         """
         # 1. Metre cinsinden konumu kaydet (fizik için)
+
+        self.guc=guc
         self.metre_pos = Vec3(koordinat_metre) if isinstance(koordinat_metre, Vec3) else Vec3(*koordinat_metre)
         
         # 2. Giriş rotasyonunu Vec3 formatına getir
@@ -128,65 +133,32 @@ class Motor:
         except (AttributeError, TypeError, ValueError):
             return False
 
-    def calistir(self, guc: float):
+    def calistir(self, guc: float,debug=False):
             """
             Motoru çalıştır - applyForce ile GELİŞMİŞ ve FİZİKSEL olarak en doğru yöntem.
             """
-            if abs(guc) < 0.001 or math.isnan(guc) or math.isinf(guc):
-                return
-            
-            guc = max(-1.0, min(1.0, float(guc)))
-
-            if self.physics_node is None or self.metre_pos is None:
-                return
-                
-            self.physics_node.setActive(True)  # type: ignore[union-attr]
             
             if self.yon_vec is None or self.yon_vec.length() <= 1e-6:  # type: ignore[union-attr]
                 return
-
-            # ==========================================
-            # 1. PANDA3D DÜNYA MATRİSİNİ AL (Bullet'in sağ-elli + y-up-left dönüşümü için Kritik!)
-            # ==========================================
-            # Quat() kullanımında Panda3D'nin sol-elli y-up'a uyumlamak için attığı Transform/Scale
-            # (-1 gibi ayna katsayıları) kaybolur! O yüzden matris tabanlı xformVec KULLANILMALIDIR!
-            rov_mat = getattr(self.rov_entity, '_world_mat', None)
-            if rov_mat is None:
-                rov_mat = self.rov_entity.physics_np.getNetTransform().getMat()
-
-            # ==========================================
-            # 2. KUVVET YÖNÜNÜ DÜNYA KOORDİNATINA ÇEVİR
-            # ==========================================
-            local_force_dir = P3Vec(self.yon_vec.x, self.yon_vec.y, self.yon_vec.z)  # type: ignore[union-attr]
-            
-            # xformVec: Matris ile ölçeklendirme/yansıtma dahil vektör/açı hesaplar
-            world_force_dir = rov_mat.xformVec(local_force_dir)
-            world_force_dir.normalize()
-            
-            # Kuvvetin Newton cinsinden büyüklüğü
-            force_magnitude = float(guc) * Hidrodinamik.MAX_ITME_KUVVETI
-            world_force = world_force_dir * force_magnitude
-
-            # ==========================================
-            # 3. UYGULAMA NOKTASINI (OFFSET) HESAPLA -> KRİTİK DÜZELTME!
-            # ==========================================
-            local_pos = P3Vec(self.metre_pos.x, self.metre_pos.y, self.metre_pos.z)  # type: ignore[union-attr]
-            
-            # DİKKAT: applyForce, pozisyon olarak DÜNYA KONUMUNU DEĞİL, 
-            # Ağırlık Merkezine (CoM) olan MESAFEYİ (Offset) bekler!
-            # Quat() yerine xformVec kullanıyoruz ki sağ/sol el uyumsuzluğu Scale -1 ile absorbe edilsin.
-            world_offset = rov_mat.xformVec(local_pos)
             
 
-            # ==========================================
-            # 4. FİZİK MOTORUNA UYGULA
-            # ==========================================
-            if (math.isfinite(world_force.x) and math.isfinite(world_force.y) and math.isfinite(world_force.z) and
-                math.isfinite(world_offset.x) and math.isfinite(world_offset.y) and math.isfinite(world_offset.z)):
-                
-                # Parametreler: (Dünya ekseninde Kuvvet, Dünya ekseninde CoM'den offset)
-                # Tork fizik motoru tarafından (world_offset x world_force) şeklinde OTOMATİK hesaplanır!
-                self.physics_node.applyForce(world_force, world_offset)  # type: ignore[union-attr]
+            filo=self.filo_ref
+            if filo is None:
+                return
+            
+
+            F = self.yon_vec * (guc * float(Hidrodinamik.MAX_ITME_KUVVETI))
+            F_vec3 = Vec3(F.x, F.y, F.z)
+
+            if debug:
+                print(f"Motor calistir: kuvvet={F_vec3}, metre_pos={self.metre_pos}")
+
+
+     
+
+            filo.kuvvet_uygula(self.rov_entity, F_vec3, self.metre_pos)
+
+ 
                 
     def debug_bilgi(self):
         """Motor hakkında debug bilgisi döndürür"""
