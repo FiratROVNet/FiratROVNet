@@ -18,8 +18,8 @@ from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, FizikSa
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon  # type: ignore[import]
 from ..hull import HullManager  # type: ignore[import]
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper  # type: ignore[import]
+from FiratROVNet.kutuphane.moduls import ModulYardimcisi, MotorDuzeni  # type: ignore[import]
 from FiratROVNet.lider_sec import liderlik_secimini_baslat  # type: ignore[import]
-from FiratROVNet.gnc.motor import Motor  # type: ignore[import]
 # Lazy import: FiratAnalizci circular import problemini önlemek için _basla_gat_modeli içinde import edilir
 
 # Modüler yapı - GNC subpackage
@@ -139,6 +139,8 @@ class Filo:
         self._command_queue = queue.Queue()
         self._main_thread_id = threading.get_ident()
         self.helper = FiloHelper(self)
+        self.modul = ModulYardimcisi(self)
+        self.motor_duzeni = MotorDuzeni(self)
         
         # Sorumlu Sistemler (ModülerYapı)
         self.damage_system = DamageSystem(filo_ref=self)
@@ -154,7 +156,6 @@ class Filo:
         
         # Formasyon Yönetimi
         self.aktif_formasyon = {}
-        self.Motor=Motor
         self.motorlar_bv={}
         self.motorlar={}
 
@@ -184,6 +185,7 @@ class Filo:
         self._basla_gat_modeli()
         self.nav_queue: dict = {}               # {g_id: [{'pos': (x,y,z), 'id': n}, ...]}
         self.current_target_id: dict = {}       # {g_id: id}
+        self.grup_hedefleri: dict = {}          # {g_id: (x, y, z)} aktif gorev hedefi
         self.target_counter = 0           # Her tıklamada artan benzersiz ID sayacı
 
         self.mevcut_rov_sayisi=0
@@ -337,82 +339,7 @@ class Filo:
     # ============================================================
 
     def BlueROV2_motor_konfigurasyonu(self, rov):
-        """
-        Motorları METRE cinsinden konumlandır!
-        """
-        
-        # m0: ön-sol (yatay) - 1.8 metre önde, 1.8 metre solda
-        rov.m0 = Motor(rov, filo_ref=self)
-        rov.m0.ekle(
-            koordinat_metre=Vec3(-2, 0.0, 2),  # METRE cinsinden!
-            yon_vec=(90, 45, 0)
-        )
-        rov.m0.name="m0"
-        self.motorlar[rov.id].append(rov.m0)
-
-        # m1: ön-sağ (yatay) - 1.8 metre önde, 1.8 metre sağda
-        rov.m1 = Motor(rov, filo_ref=self)
-        rov.m1.ekle(
-            koordinat_metre=Vec3(2, 0.0, 2),   # METRE cinsinden!
-            yon_vec=(90, -45, 0)
-        )
-        rov.m1.name="m1"
-        self.motorlar[rov.id].append(rov.m1)
-
-        # m2: arka-sol (yatay) - 1.8 metre arkada, 1.8 metre solda
-        rov.m2 = Motor(rov, filo_ref=self)
-        rov.m2.ekle(
-            koordinat_metre=Vec3(-2, 0.0, -2), # METRE cinsinden!
-            yon_vec=(90, 135, 0)
-        )
-        rov.m2.name="m2"
-        self.motorlar[rov.id].append(rov.m2)
-
-        # m3: arka-sağ (yatay) - 1.8 metre arkada, 1.8 metre sağda
-        rov.m3 = Motor(rov, filo_ref=self)
-        rov.m3.ekle(
-            koordinat_metre=Vec3(2, 0.0, -2),  # METRE cinsinden!
-            yon_vec=(90, -135, 0)
-        )
-        rov.m3.name="m3"
-        self.motorlar[rov.id].append(rov.m3)
-
-        # m4: dikey-sol (heave) - 0.9 metre solda
-        rov.m4 = Motor(rov, filo_ref=self)
-        rov.m4.ekle(
-            koordinat_metre=Vec3(-1.0, 0.0, 0.6),  # METRE cinsinden!
-            yon_vec=(0.0, 0, 0.0)
-        )
-        rov.m4.name="m4"
-        self.motorlar[rov.id].append(rov.m4)
-
-        # m5: dikey-sağ (heave) - 0.9 metre sağda
-        rov.m5 = Motor(rov, filo_ref=self)
-        rov.m5.ekle(
-            koordinat_metre=Vec3(1.0, 0.0, 0.6),   # METRE cinsinden!
-            yon_vec=(0.0, 0, 0.0)
-        )
-        rov.m5.name="m5"
-        self.motorlar[rov.id].append(rov.m5)
-
-
-        # m4: dikey-sol (heave) - 0.9 metre solda
-        rov.m6 = Motor(rov, filo_ref=self)
-        rov.m6.ekle(
-            koordinat_metre=Vec3(-1.0, 0.0, -0.6),  # METRE cinsinden!
-            yon_vec=(0.0, 0, 0.0)
-        )
-        rov.m6.name="m6"
-        self.motorlar[rov.id].append(rov.m6)
-
-        # m5: dikey-sağ (heave) - 0.9 metre sağda
-        rov.m7 = Motor(rov, filo_ref=self)
-        rov.m7.ekle(
-            koordinat_metre=Vec3(1.0, 0.0, -0.6),   # METRE cinsinden!
-            yon_vec=(0.0, 0, 0.0)
-        )
-        rov.m7.name="m7"
-        self.motorlar[rov.id].append(rov.m7)
+        return self.motor_duzeni.BlueROV2_motor_konfigurasyonu(rov)
 
 
 
@@ -420,213 +347,43 @@ class Filo:
 
 
     def _euler_deg_to_direction(self, rot_deg: Vec3, v=Vec3(0, 1, 0)):
-        import math
-        rx = math.radians(rot_deg.x)
-        ry = math.radians(rot_deg.y)
-        rz = math.radians(-rot_deg.z) # Hatalı sol/sağ el Z inversion eşitlemesi (Orjinal hal)
-        
-        # Matematiksel Matrix fonksiyonunun numpy olmadan en saf P3Vec hali 
-        cx, sx = math.cos(rx), math.sin(rx)
-        cy, sy = math.cos(ry), math.sin(ry)
-        cz, sz = math.cos(rz), math.sin(rz)
-        
-        # v1 = Rz * v
-        v1x = v.x * cz - v.y * sz
-        v1y = v.x * sz + v.y * cz
-        v1z = v.z
-        
-        # v2 = Rx * v1
-        v2x = v1x
-        v2y = v1y * cx - v1z * sx
-        v2z = v1y * sx + v1z * cx
-        
-        # res = Ry * v2
-        resx = v2x * cy + v2z * sy
-        resy = v2y
-        resz = -v2x * sy + v2z * cy
-        
-        return Vec3(resx, resy, resz)
+        return self.modul._euler_deg_to_direction(rot_deg, v=v)
 
     def dunya_to_yerel_vektor(self, dunya_vektor: Vec3, rotasyon: Vec3) -> Vec3:
-        """
-        Dünya koordinat sistemindeki bir vektörü, verilen dönüş açısına (rotasyon)
-        göre yerel (Local) koordinat sistemine dönüştürür.
-        """
-        rov_ileri  = self._euler_deg_to_direction(rotasyon, v=Vec3(0, 0, 1))
-        rov_sag    = self._euler_deg_to_direction(rotasyon, v=Vec3(1, 0, 0))
-        rov_yukari = self._euler_deg_to_direction(rotasyon, v=Vec3(0, 1, 0))
-
-        yerel_x = dunya_vektor.dot(rov_sag)
-        yerel_y = dunya_vektor.dot(rov_yukari)
-        yerel_z = dunya_vektor.dot(rov_ileri)
-
-        return Vec3(yerel_x, yerel_y, yerel_z)
+        return self.modul.dunya_to_yerel_vektor(dunya_vektor, rotasyon)
 
     def tum_motor_bv_kutuphanelerini_guncelle(self):
-        """Motor birim vektörlerini ve tork vektörlerini GNC tork hesabıyla dengelemek için senkronize güncelle"""
-        self.motorlar_bv = {} 
-        for rov_id, motor_listesi in self.motorlar.items():
-            rov = self.find_rov_by_id(rov_id)
-            if not rov: continue
-            
-            rov_icin_bv_listesi = []
-            for motor in motor_listesi:
-                # 1. İtki Yönü (Birim Vektör) - Matematiksel Ursina'nın yönü
-                rot = motor.motor_entity.rotation if getattr(motor, "motor_entity", None) else Vec3(0,0,0)
-                birim_vektor = self._euler_deg_to_direction(Vec3(rot.x, rot.y, rot.z))
-                motor.r_bv = birim_vektor
-                rov_icin_bv_listesi.append(birim_vektor)
-                
-                # 2. TORK BİRİM VEKTÖRÜ
-                # Burada moment kolunu ters çevirmek yatay motorlarda r ve F'yi paralel hale getirip
-                # yaw torkunu sıfırlıyordu. Motorun fizik motoruna uyguladığı yerel konum ile aynı
-                # metre_pos referansını kullanıyoruz: tork = r x F.
-                tork_vec = motor.metre_pos.cross(birim_vektor)
-                if tork_vec.is_nan() or tork_vec.length() <= 1e-6:
-                    motor.tork_bv = Vec3(0, 0, 0)
-                else:
-                    motor.tork_bv = tork_vec.normalized()
-
-            self.motorlar_bv[rov_id] = rov_icin_bv_listesi
-            rov.motorlar = motor_listesi  # type: ignore[union-attr]
+        return self.motor_duzeni.tum_motor_bv_kutuphanelerini_guncelle()
     def tum_motorlarin_guclerini_hesapla(self, rov_id=0, hedef_vektor_dunya: Vec3 = Vec3(0.0, 0.0, 0.0), guc: float = 0.0):
-            rov = self.find_rov_by_id(rov_id)
-            if not rov:
-                return [0.0] * 6
-
-            # Yardımcı metot ile hedefi yerel eksene çevir
-            hedef_yerel = self.dunya_to_yerel_vektor(hedef_vektor_dunya, rov.rotation)
-            hedef_yerel = Vec3(-hedef_yerel.x, hedef_yerel.y, hedef_yerel.z)
-
-            # Motorlarla skaler çarpım (İkisi de artık yerel eksende!)
-            Powers =[v.dot(hedef_yerel) * guc for v in self.motorlar_bv[rov_id]]
-            
-            return Powers
+            return self.modul.tum_motorlarin_guclerini_hesapla(
+                rov_id=rov_id,
+                hedef_vektor_dunya=hedef_vektor_dunya,
+                guc=guc,
+            )
 
 
     def yaw_gucleri_hesapla(self, rov=None, hedef_vektor_dunya: Vec3 = Vec3(0.0, 0.0, 0.0), guc_orani: float = 0.0):
-            if rov is None:
-                return [0.0] * 6, 0.0
-
-            motorlar = getattr(rov, "motorlar", [])
-            powers = [float(getattr(motor, "guc", 0.0)) for motor in motorlar]
-            yaw_indeksleri = range(min(4, len(motorlar)))
-
-            # 1. Dünya eksenindeki bakış yönü
-            V_rov_dunya = rov.gnc.r_bv
-            
-            # Sadece Yatay (Yaw) dönüşü yapmak için Y (dikey) eksenini sıfırlıyoruz
-            V_rov_yatay = Vec3(V_rov_dunya.x, 0, V_rov_dunya.z)
-            hedef_yatay = Vec3(hedef_vektor_dunya.x, 0, hedef_vektor_dunya.z)
-
-            # Hata payı kontrolü (Eğer hedef sadece aşağı/yukarı ise dönme yapma)
-            if V_rov_yatay.length() < 0.001 or hedef_yatay.length() < 0.001:
-                return powers, 0.0
-
-            # 2. DÜNYA TORK EKSENİ (Vektörel Çarpım)
-            # Hangi dünya ekseni etrafında döneceğimizi buluruz
-            # +X heading ile birlikte doğru yaw işareti için standart çapraz çarpım yönünü kullan.
-            Tork_istenen_dunya = V_rov_yatay.cross(hedef_yatay)
-
-            # 3. YEREL TORK EKSENİNE ÇEVİRME (Yeni Yardımcı Metot!)
-            # Dünya torkunu, ROV'un o anki duruşuna göre kendi iç eksenlerine çeviriyoruz
-            Tork_istenen_yerel = self.dunya_to_yerel_vektor(Tork_istenen_dunya, rov.rotation)
-
-            # 4. MOTORLARI DAĞIT (Yerel tork ihtiyacı ile motorların yerel tork yeteneği çarpılır)
-            for i in yaw_indeksleri:
-                powers[i] = motorlar[i].tork_bv.dot(Tork_istenen_yerel) * guc_orani
-            
-            return powers, 0
+            return self.modul.yaw_gucleri_hesapla(
+                rov=rov,
+                hedef_vektor_dunya=hedef_vektor_dunya,
+                guc_orani=guc_orani,
+            )
 
         
     def roll_guclerini_hesapla(self, rov=None, guc_orani: float = 1.0):
-            if rov is None:
-                return [0.0] * 6, False
-
-            motorlar = getattr(rov, "motorlar", [])
-            powers = [float(getattr(motor, "guc", 0.0)) for motor in motorlar]
-            roll_indeksleri = range(4, min(8, len(motorlar)))
-
-            if len(motorlar) < 8:
-                return powers, False
-
-            gnc = getattr(rov, "gnc", None)
-            if gnc is None:
-                return powers, False
-
-            roll_deg = float(getattr(gnc, "bullet_roll", getattr(rov.rotation, "z", 0.0)))
-            pitch_deg = float(getattr(gnc, "bullet_pitch", getattr(rov.rotation, "x", 0.0)))
-            roll_deadzone_deg = 1.5
-            pitch_deadzone_deg = 1.5
-            roll_normalize_deg = 30.0
-            pitch_normalize_deg = 45.0
-
-            while roll_deg > 180.0:
-                roll_deg -= 360.0
-            while roll_deg < -180.0:
-                roll_deg += 360.0
-            while pitch_deg > 180.0:
-                pitch_deg -= 360.0
-            while pitch_deg < -180.0:
-                pitch_deg += 360.0
-
-            if abs(roll_deg) <= roll_deadzone_deg and abs(pitch_deg) <= pitch_deadzone_deg:
-                for i in roll_indeksleri:
-                    powers[i] = 0.0
-                return powers, False
-
-            etkin_guc = max(0.0, min(1.0, float(guc_orani)))
-            roll_cmd = max(-1.0, min(1.0, roll_deg / roll_normalize_deg)) * etkin_guc
-            pitch_cmd = -max(-1.0, min(1.0, pitch_deg / pitch_normalize_deg)) * etkin_guc
-
-            powers[4] = max(-1.0, min(1.0, pitch_cmd + roll_cmd))
-            powers[5] = max(-1.0, min(1.0, pitch_cmd - roll_cmd))
-            powers[6] = max(-1.0, min(1.0, -pitch_cmd + roll_cmd))
-            powers[7] = max(-1.0, min(1.0, -pitch_cmd - roll_cmd))
-
-            aktif = any(abs(powers[i]) > 0.01 for i in range(4, 8))
-            return powers, aktif
+            return self.modul.roll_guclerini_hesapla(rov=rov, guc_orani=guc_orani)
 
     def yaw(self,rov,guc:float=0.1):
-        motorlar = rov.motorlar
-        m0=motorlar[0]
-        m1=motorlar[1]
-        m2=motorlar[2]
-        m3=motorlar[3]
-        m0.calistir(guc)
-        m1.calistir(-guc)
-        m2.calistir(-guc)
-        m3.calistir(guc)
+        return self.modul.yaw(rov, guc=guc)
 
 
 
     def roll(self,rov,guc:float=0.1):
-        motorlar = rov.motorlar
-        m4 = motorlar[4]
-        m5 = motorlar[5]
-
-        m6 = motorlar[6]
-        m7 = motorlar[7]
-
-
-
-        m4.calistir(guc)
-        m5.calistir(-guc)
-        m6.calistir(guc)
-        m7.calistir(-guc)
+        return self.modul.roll(rov, guc=guc)
 
 
     def pitch(self,rov,guc:float=0.1):
-        motorlar = rov.motorlar
-        m4=motorlar[4]
-        m5=motorlar[5]
-        m6 = motorlar[6]
-        m7 = motorlar[7]
-
-        m4.calistir(guc)
-        m5.calistir(guc)
-        m6.calistir(-guc)
-        m7.calistir(-guc)
+        return self.modul.pitch(rov, guc=guc)
 
 
 
@@ -699,14 +456,7 @@ class Filo:
 
 
     def motorlari_calistir(self, rov_id=0, gucler: list[float] | None = None):
-        if gucler is None:
-            gucler = []
-        motor_listesi = self.motorlar.get(rov_id)
-        if not motor_listesi:
-            return
-        n = len(gucler)
-        for i in range(n):
-            motor_listesi[i].calistir(gucler[i])
+        return self.modul.motorlari_calistir(rov_id=rov_id, gucler=gucler)
 
 
     def _basla_gat_modeli(self):
@@ -724,7 +474,8 @@ class Filo:
     def guncelle_navigasyon_kuyrugu(self):
         """Navigasyon kuyruğu ve varış yönetimi (grup bazlı)."""
         for g_id, grup_rovs in self.g_rovs.items():
-            lider_id, _ = self.find_leader_info(g_id=g_id)
+            lider_bilgi = self.find_leader_info(g_id=g_id)
+            lider_id = lider_bilgi[0] if lider_bilgi else None
             if lider_id is None:
                 continue
 
@@ -736,6 +487,7 @@ class Filo:
                 print(f"✅ [NAV] Grup-{g_id} hedef {mevcut_hedef_id} noktasina varildi.")
                 self.hedef_sil(mevcut_hedef_id)
                 self.current_target_id[g_id] = None
+                self.grup_hedefleri[g_id] = None
 
             # DURUM B: Yeni hedefe basla mi?
             grup_kuyruk = self.nav_queue.get(g_id, [])
@@ -743,6 +495,7 @@ class Filo:
                 next_data = grup_kuyruk.pop(0)
                 target_pos = next_data['pos']
                 self.current_target_id[g_id] = next_data['id']
+                self.grup_hedefleri[g_id] = tuple(target_pos) if isinstance(target_pos, (list, tuple)) else target_pos
 
                 print(f"🚀 [NAV] Grup-{g_id} siradaki hedefe geciliyor: {self.current_target_id[g_id]}")
                 print(target_pos)
@@ -1026,7 +779,7 @@ class Filo:
 
     def _tick_lider_yonetimi(self):
         """Lider seçim + leader manager güncellemesi."""
-        yeni_lider_id, _skor = liderlik_secimini_baslat(self, self.asil_hedef)
+        yeni_lider_id, _skor = liderlik_secimini_baslat(self, self.aktif_liderlik_hedefleri())
         self.leader_manager.guncelle_liderler(yeni_lider_id)
 
     def _tick_rovler(self, tahminler):
@@ -1266,6 +1019,50 @@ class Filo:
 
         return self._hedef_impl(*koordinat, rov_id=rov_id, ciz=ciz)
 
+    def _normalize_hedef_konumu(self, hedef):
+        if not isinstance(hedef, (list, tuple, np.ndarray)) or len(hedef) < 2:
+            return None
+        try:
+            hx = float(hedef[0])
+            hy = float(hedef[1])
+            hz = float(hedef[2]) if len(hedef) >= 3 and hedef[2] is not None else 0.0
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(hx) and math.isfinite(hy) and math.isfinite(hz)):
+            return None
+        return (hx, hy, hz)
+
+    def aktif_grup_hedefi(self, g_id: int):
+        """
+        Lider seçiminde kullanılacak aktif grup hedefini çözer.
+        Öncelik:
+        1. Grup için tutulan aktif görev hedefi
+        2. Kuyruktaki ilk bekleyen hedef
+        3. Eski tekil `asil_hedef` fallback'i
+        """
+        hedef = self._normalize_hedef_konumu(self.grup_hedefleri.get(g_id))
+        if hedef is not None:
+            return hedef
+
+        grup_kuyruk = self.nav_queue.get(g_id, [])
+        if grup_kuyruk:
+            ilk = grup_kuyruk[0]
+            if isinstance(ilk, dict):
+                hedef = self._normalize_hedef_konumu(ilk.get('pos'))
+                if hedef is not None:
+                    return hedef
+
+        if isinstance(self.asil_hedef, dict):
+            return self._normalize_hedef_konumu(self.asil_hedef.get(g_id))
+        return self._normalize_hedef_konumu(self.asil_hedef)
+
+    def aktif_liderlik_hedefleri(self):
+        """Her grup için lider seçiminde kullanılacak hedefleri döndürür."""
+        hedefler = {}
+        for g_id in self.g_rovs.keys():
+            hedefler[g_id] = self.aktif_grup_hedefi(g_id)
+        return hedefler
+
     def _hedef_impl(self, x, y, z, rov_id=None, ciz=True):
         if rov_id is None or not self.ortam_ref: return None
         
@@ -1441,6 +1238,7 @@ class Filo:
 
     def formasyon(self, *args, **kwargs): return self.helper.formasyon(*args, **kwargs)
     def formasyon_sec(self, *args, **kwargs): 
+        kwargs.setdefault('sessiz', False)
         # Worker/Future yolu kapali: formasyon_sec her zaman normal akista calisir.
         if self._is_main_thread():
             return self.helper._formasyon_sec_impl(*args, **kwargs)

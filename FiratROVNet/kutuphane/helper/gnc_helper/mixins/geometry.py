@@ -1,10 +1,46 @@
+from __future__ import annotations
+
 import math
+from typing import Any, Optional, Protocol, cast
+
 from FiratROVNet.config import GATLimitleri
 from ursina import Vec3, raycast, color, Entity, destroy
 
 
+class _FiloLike(Protocol):
+    ortam_ref: Any
+    hull_manager: Any
+    _command_queue: Any
+
+    def find_rov_by_id(self, rov_id: int) -> Any: ...
+    def get(self, rov_id: int, veri: str) -> Any: ...
+    def hedef(self, rov_id: int) -> Any: ...
+    def _is_main_thread(self) -> bool: ...
+    def _guvenlik_hull_olustur_impl(self, offset: float) -> Any: ...
+
+
 class GeometryMixin:
     """Geometri, Hull, APF ve Vektor islemleri."""
+    filo: _FiloLike
+    VEKTOR_RENK_KODLARI: tuple[str, ...]
+    _vektor_renk: str
+    _vektor_reverse: bool
+    _vektor_uzunluk_metre: float
+    _apf_vektor_list: list[dict[str, Any]]
+
+    def find_leader_info(self, sessiz: bool = False, g_id: int = 0) -> Any:
+        """
+        FormationMixin icindeki gerçek implementasyona delegasyon.
+
+        Not:
+        FiloHelper MRO'sunda GeometryMixin, FormationMixin'den once geliyor.
+        Burada bos bir stub birakilirsa `helper.find_leader_info(...)` her zaman
+        None doner ve alttaki gerçek implementasyona hic ulasilamaz.
+        """
+        next_method = getattr(super(), "find_leader_info", None)
+        if callable(next_method):
+            return next_method(sessiz=sessiz, g_id=g_id)
+        return (None, None)
 
     def _engel_radius_al(self, entity, hit_pt_2d):
         """Hit entity veya ortam.island_positions'tan engel yaricapini (metre) dondurur."""
@@ -45,7 +81,13 @@ class GeometryMixin:
         lidar = getattr(rov, 'son_lidar_mesafeleri', None)
         return self._engel_bul_lidar_isle(rov, rov_id, lidar, menzil)
     
-    def _engel_bul_lidar_isle(self, rov, rov_id: int, lidar: dict = None, menzil: float = None) -> list:
+    def _engel_bul_lidar_isle(
+        self,
+        rov,
+        rov_id: int,
+        lidar: Optional[dict[Any, Any]] = None,
+        menzil: Optional[float] = None,
+    ) -> list:
         """
         🔹 Sadece Lidar verilerinden engel listesi oluşturur (Sonar YOK, Raycast YOK!)
         
@@ -145,7 +187,7 @@ class GeometryMixin:
         
         # Lidar 3 (dip/aşağı) - 🔹 Özel origin kullan (ROV'un üstünden başlat)
         if lidar_3 > 0 and lidar_3 <= menzil:
-            pt = origin_l3 + asagi * lidar_3
+            pt = cast(Vec3, origin_l3 + asagi * lidar_3)
             sonuclar.append({
                 'yon': 'asagi_lidar',
                 'mesafe': lidar_3,
@@ -195,7 +237,7 @@ class GeometryMixin:
             })
         return sonuclar
 
-    def engel_bul(self, rov_id: int, menzil: float = None, debug: bool = False) -> list:
+    def engel_bul(self, rov_id: int, menzil: Optional[float] = None, debug: bool = False) -> list:
         """
         🔹 ROV için mevcut lidar verilerinden engel listesi oluşturur.
         
@@ -411,7 +453,7 @@ class GeometryMixin:
             statik = self._statik_engeller_al(rov_id=rov_id, menzil=GATLimitleri.ENGEL)
             for e in tespit_edilenler + statik:
                 target = e.get('koordinat')
-                sensor_mesafesi = float(e.get('mesafe', 0.0))
+                sensor_mesafesi = float(e.get('mesafe') or 0.0)
 
                 if target:
                     res = self.vektor(
@@ -434,7 +476,7 @@ class GeometryMixin:
         if rov:
             for r in self.rov_vektor(rov_id=rov_id, menzil=GATLimitleri.CARPISMA):
                 target = r.get('koordinat')
-                gercek_mesafe = float(r.get('mesafe', 0.0))
+                gercek_mesafe = float(r.get('mesafe') or 0.0)
 
                 if target:
                     res = self.vektor(
@@ -499,7 +541,7 @@ class GeometryMixin:
             ciz=False,
         )
 
-    def rov_vektor(self, rov_id: int, menzil: float = None):
+    def rov_vektor(self, rov_id: int, menzil: Optional[float] = None):
         """
         ROV'un diger ROV'lara olan 3B kacinma vektorlerini dondurur (cizim yapmaz).
         """
@@ -572,7 +614,9 @@ class GeometryMixin:
         Lider ROV etrafinda dairesel bir guvenli alan (Hull) olusturur.
         """
         base_points = []
-        lider_id, lider_gps = self.find_leader_info(sessiz=False, g_id=g_id)
+        lider_bilgi = self.find_leader_info(sessiz=False, g_id=g_id)
+        lider_id = lider_bilgi[0] if lider_bilgi else None
+        lider_gps = lider_bilgi[1] if lider_bilgi else None
         if lider_gps is None:
             print(f"⚠️ [UYARI] Grup-{g_id} icin Lider ROV bulunamadi! Merkez (0,0) kabul ediliyor.")
             lx, ly = 0.0, 0.0

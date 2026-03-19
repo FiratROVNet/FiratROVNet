@@ -185,7 +185,8 @@ def input(key):
                 print(f"📸 Görsel işleme hatası: {e}")
 
     if key == 'p':
-        lider_id, _ = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)
+        lider_bilgi = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)
+        lider_id = lider_bilgi[0] if lider_bilgi else None
         lider_rov = filo.find_rov_by_id(lider_id) if lider_id is not None else None
         if lider_rov:
             filo.entity_patlat(lider_rov)
@@ -208,24 +209,36 @@ def input(key):
             sim_x = local_pos.x * havuz_tam_cap
             sim_y = local_pos.y * havuz_tam_cap
             
-            # Mevcut derinliği grubun liderinden al
-            lider_id, lider_gps = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)
-            mevcut_z = -20 #lider_gps[2] if lider_gps else -10
+            group_id = filo.rovs[bilgi_rov_id].group_id
+            lider_bilgi = filo.find_leader_info(g_id=group_id)
+            lider_id = lider_bilgi[0] if lider_bilgi else None
+            lider_gps = lider_bilgi[1] if lider_bilgi else None
+            if lider_id is None:
+                print(f"⚠️ [NAV] Grup-{group_id} icin aktif lider bulunamadi.")
+                return
+
+            mevcut_z = lider_gps[2] if lider_gps else -10.0
             
             # Benzersiz ID oluştur ve hedefi kaydet
             filo.target_counter += 1
             new_id = filo.target_counter
             new_target_pos = (sim_x, sim_y, mevcut_z)
+            aktif_rota = bool(filo._git_nokta_listesi.get(lider_id))
+            aktif_hedef = filo.hedef(rov_id=lider_id)
 
-            # Kuyruğa paket olarak ekle (grup bazli)
-            filo.nav_queue.setdefault(filo.rovs[bilgi_rov_id].group_id, []).append({'pos': new_target_pos, 'id': new_id})
-            filo.current_target_id.setdefault(filo.rovs[bilgi_rov_id].group_id, None)
-            
             # Görseli oluştur
             filo._hedef_gorsel_olustur(sim_x, sim_y, mevcut_z, id=new_id, debug=False)
-            
-            bekleyen = len(filo.nav_queue.get(filo.rovs[bilgi_rov_id].group_id, []))
-            print(f"📥 [KUYRUK] Grup-{filo.rovs[bilgi_rov_id].group_id} hedef {new_id} eklendi | Bekleyen: {bekleyen}")
+
+            # Grup bosta ise hedefi dogrudan liderde baslat; mesgulse kuyruga ekle.
+            if not aktif_rota and aktif_hedef is None:
+                filo.current_target_id[group_id] = new_id
+                print(f"🚀 [NAV] Grup-{group_id} hedef {new_id} dogrudan baslatiliyor")
+                filo.git_path(lider_id, new_target_pos, isaret=True)
+            else:
+                filo.nav_queue.setdefault(group_id, []).append({'pos': new_target_pos, 'id': new_id})
+                filo.current_target_id.setdefault(group_id, None)
+                bekleyen = len(filo.nav_queue.get(group_id, []))
+                print(f"📥 [KUYRUK] Grup-{group_id} hedef {new_id} eklendi | Bekleyen: {bekleyen}")
 
 # ==========================================
 # 4. ÇALIŞTIRMA

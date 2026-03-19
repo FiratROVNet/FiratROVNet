@@ -216,6 +216,14 @@ class NavigationMixin:
             print(f"❌ [FILO] Hedef formati hatali: {hedef}")
             return
 
+        if not hasattr(self.filo, 'grup_hedefleri'):
+            self.filo.grup_hedefleri = {}
+        self.filo.grup_hedefleri[getattr(rov, 'group_id', 0)] = (
+            float(goal_2d[0]),
+            float(goal_2d[1]),
+            float(target_z),
+        )
+
         # 4. A* yol planlama
         yol_noktalari = self._a_star_path_planla(start_2d, goal_2d)
 

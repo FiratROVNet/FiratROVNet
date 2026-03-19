@@ -412,12 +412,12 @@ class TemelGNCHelper:
             toplam_vektor.z += vz * carpan
             
             # Guc orani hesaplama
-            if mesafe >= 2 and mesafe < GATLimitleri.CARPISMA:
+            if mesafe >= 5 and mesafe < GATLimitleri.CARPISMA:
                 g_val = np.log((mesafe / engel_limit) * 10 + 1) / np.log(11)
                 g_val = 1.0 - g_val
                 if g_val > guc1:
                     guc1 = g_val
-            elif mesafe < 2:
+            elif mesafe < 5:
                 guc1 = max(guc1, 1.0)
                 
         return toplam_vektor, max_engel_etkisi, guc1
