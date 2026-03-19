@@ -1,6 +1,39 @@
 class NavigationMixin:
     """Navigasyon fonksiyonlari."""
 
+    def _hedef_impl(self, x, y, z, rov_id=None, ciz=True):
+        if rov_id is None or not self.filo.ortam_ref:
+            return None
+
+        try:
+            rov = self.filo.find_rov_by_id(rov_id)
+            if not rov:
+                return None
+        except Exception as e:
+            from FiratROVNet.gnc.logs import LogSystem
+
+            LogSystem.log_exception(e)
+            return None
+
+        self.filo._rov_hedefleri[rov_id] = (x, y, z)
+        self.filo.git(rov_id, x, y, z, ai=True)
+
+        rov = self.filo.find_rov_by_id(rov_id)
+        if not rov:
+            return None
+
+        if rov.role == 1:
+            self.filo.hedef_pozisyon = (x, y, z)
+            if ciz:
+                self.hedef_gorsel_olustur(x, y, z)
+            elif self.filo.hedef_gorsel:
+                from ursina import destroy
+
+                destroy(self.filo.hedef_gorsel)
+                self.filo.hedef_gorsel = None
+
+        return (x, y, z)
+
     def _git_impl(self, rov_id: int, x: float, y: float, z: float = None, ai: bool = True, sessiz: bool = True) -> None:
         """
         git() fonksiyonunun yeni mimariye (rov.gnc) uyarlanmis implementasyonu.
@@ -54,7 +87,6 @@ class NavigationMixin:
         # 4. Hedef atama ve ayarlar
         try:
             rov.gnc.manuel_kontrol = False
-            rov.gnc.ai_aktif = ai
             rov.gnc.hedef_atama(x, y, z)
 
             # Filo hafizasina kaydet (ROV objesi ile bagli)
