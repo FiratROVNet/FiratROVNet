@@ -20,16 +20,43 @@ class BasitKalmanFiltresi:
     def __init__(self, R=0.1, Q=0.1, baslangic_degeri=0.0):
         self.R = R
         self.Q = Q
+        self.baslangic_degeri = baslangic_degeri
         self.P = 1.0
         self.x = baslangic_degeri
+        self.hazir = False
 
     def guncelle(self, olcum):
+        if not self.hazir:
+            self.x = olcum
+            self.hazir = True
+            return self.x
         x_pred = self.x
         p_pred = self.P + self.Q
         K = p_pred / (p_pred + self.R)
         self.x = x_pred + K * (olcum - x_pred)
         self.P = (1 - K) * p_pred
         return self.x
+
+    def sifirla(self, baslangic_degeri=None):
+        if baslangic_degeri is None:
+            baslangic_degeri = self.baslangic_degeri
+        self.x = baslangic_degeri
+        self.P = 1.0
+        self.hazir = False
+
+    def ayarla(self, R=None, Q=None):
+        if R is not None:
+            self.R = float(R)
+        if Q is not None:
+            self.Q = float(Q)
+
+
+class KalmanAyarlari:
+    MOTOR_R = 0.18
+    MOTOR_Q = 0.035
+    UI_AKTIF = True
+    IZLENEN_ROV_ID = 0
+
 
 # ==========================================
 # SİSTEM AYARLARI

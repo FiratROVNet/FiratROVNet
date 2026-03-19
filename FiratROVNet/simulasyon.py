@@ -177,7 +177,7 @@ class ROV(Entity):
     def _guncelle_sensorler(self):
 
             menzil = GATLimitleri.ENGEL
-            base_origin = self.world_position + Vec3(0, 0.5, 0)
+            base_origin = self.world_position + Vec3(0, 0, 0)
 
             # 🔹 MERKEZI IGNORE TUPLE: Filo frame başında guncelle_hepsi() içinde _build_ignore_tuple() 
             # çağrıyor, ortam_ref.ignore_tuple otomatik güncelleniyor. Burada sadece kullan.

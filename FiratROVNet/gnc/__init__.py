@@ -380,7 +380,7 @@ class Filo:
         # m4: dikey-sol (heave) - 0.9 metre solda
         rov.m4 = Motor(rov, filo_ref=self)
         rov.m4.ekle(
-            koordinat_metre=Vec3(-1.0, 0.0, 0.5),  # METRE cinsinden!
+            koordinat_metre=Vec3(-1.0, 0.0, 0.6),  # METRE cinsinden!
             yon_vec=(0.0, 0, 0.0)
         )
         rov.m4.name="m4"
@@ -389,7 +389,7 @@ class Filo:
         # m5: dikey-sağ (heave) - 0.9 metre sağda
         rov.m5 = Motor(rov, filo_ref=self)
         rov.m5.ekle(
-            koordinat_metre=Vec3(1.0, 0.0, 0.5),   # METRE cinsinden!
+            koordinat_metre=Vec3(1.0, 0.0, 0.6),   # METRE cinsinden!
             yon_vec=(0.0, 0, 0.0)
         )
         rov.m5.name="m5"
@@ -399,7 +399,7 @@ class Filo:
         # m4: dikey-sol (heave) - 0.9 metre solda
         rov.m6 = Motor(rov, filo_ref=self)
         rov.m6.ekle(
-            koordinat_metre=Vec3(-1.0, 0.0, -0.5),  # METRE cinsinden!
+            koordinat_metre=Vec3(-1.0, 0.0, -0.6),  # METRE cinsinden!
             yon_vec=(0.0, 0, 0.0)
         )
         rov.m6.name="m6"
@@ -408,7 +408,7 @@ class Filo:
         # m5: dikey-sağ (heave) - 0.9 metre sağda
         rov.m7 = Motor(rov, filo_ref=self)
         rov.m7.ekle(
-            koordinat_metre=Vec3(1.0, 0.0, -0.5),   # METRE cinsinden!
+            koordinat_metre=Vec3(1.0, 0.0, -0.6),   # METRE cinsinden!
             yon_vec=(0.0, 0, 0.0)
         )
         rov.m7.name="m7"
@@ -447,6 +447,21 @@ class Filo:
         
         return Vec3(resx, resy, resz)
 
+    def dunya_to_yerel_vektor(self, dunya_vektor: Vec3, rotasyon: Vec3) -> Vec3:
+        """
+        Dünya koordinat sistemindeki bir vektörü, verilen dönüş açısına (rotasyon)
+        göre yerel (Local) koordinat sistemine dönüştürür.
+        """
+        rov_ileri  = self._euler_deg_to_direction(rotasyon, v=Vec3(0, 0, 1))
+        rov_sag    = self._euler_deg_to_direction(rotasyon, v=Vec3(1, 0, 0))
+        rov_yukari = self._euler_deg_to_direction(rotasyon, v=Vec3(0, 1, 0))
+
+        yerel_x = dunya_vektor.dot(rov_sag)
+        yerel_y = dunya_vektor.dot(rov_yukari)
+        yerel_z = dunya_vektor.dot(rov_ileri)
+
+        return Vec3(yerel_x, yerel_y, yerel_z)
+
     def tum_motor_bv_kutuphanelerini_guncelle(self):
         """Motor birim vektörlerini ve tork vektörlerini GNC tork hesabıyla dengelemek için senkronize güncelle"""
         self.motorlar_bv = {} 
@@ -462,10 +477,11 @@ class Filo:
                 motor.r_bv = birim_vektor
                 rov_icin_bv_listesi.append(birim_vektor)
                 
-                # 2. TORK BİRİM VEKTÖRÜ - metre_pos KULLANILIR (Sağ/sol el eşleniği sağlanır)
-                #tork_vec = motor.metre_pos.cross(birim_vektor)
-                metre_pos_flipped = Vec3(-motor.metre_pos.x, motor.metre_pos.y, motor.metre_pos.z)
-                tork_vec = metre_pos_flipped.cross(birim_vektor)
+                # 2. TORK BİRİM VEKTÖRÜ
+                # Burada moment kolunu ters çevirmek yatay motorlarda r ve F'yi paralel hale getirip
+                # yaw torkunu sıfırlıyordu. Motorun fizik motoruna uyguladığı yerel konum ile aynı
+                # metre_pos referansını kullanıyoruz: tork = r x F.
+                tork_vec = motor.metre_pos.cross(birim_vektor)
                 if tork_vec.is_nan() or tork_vec.length() <= 1e-6:
                     motor.tork_bv = Vec3(0, 0, 0)
                 else:
@@ -473,24 +489,6 @@ class Filo:
 
             self.motorlar_bv[rov_id] = rov_icin_bv_listesi
             rov.motorlar = motor_listesi  # type: ignore[union-attr]
-
-    def dunya_to_yerel_vektor(self, dunya_vektor: Vec3, rotasyon: Vec3) -> Vec3:
-        """
-        Dünya koordinat sistemindeki bir vektörü, verilen dönüş açısına (rotasyon)
-        göre yerel (Local) koordinat sistemine dönüştürür.
-        """
-        # ROV'un dünya eksenindeki yönlerini Euler fonksiyonumuzla buluyoruz. Orjinal Sol elli matrix
-        rov_ileri  = self._euler_deg_to_direction(rotasyon, v=Vec3(0, 0, 1)) # Z
-        rov_sag    = self._euler_deg_to_direction(rotasyon, v=Vec3(1, 0, 0)) # X
-        rov_yukari = self._euler_deg_to_direction(rotasyon, v=Vec3(0, 1, 0)) # Y
-
-        # Dünya vektörünün bu eksenlerdeki izdüşümlerini alıyoruz (Dot Product)
-        yerel_x = dunya_vektor.dot(rov_sag)
-        yerel_y = dunya_vektor.dot(rov_yukari)
-        yerel_z = dunya_vektor.dot(rov_ileri)
-
-        return Vec3(yerel_x, yerel_y, yerel_z)
-
     def tum_motorlarin_guclerini_hesapla(self, rov_id=0, hedef_vektor_dunya: Vec3 = Vec3(0.0, 0.0, 0.0), guc: float = 0.0):
             rov = self.find_rov_by_id(rov_id)
             if not rov:
@@ -510,6 +508,10 @@ class Filo:
             if rov is None:
                 return [0.0] * 6, 0.0
 
+            motorlar = getattr(rov, "motorlar", [])
+            powers = [float(getattr(motor, "guc", 0.0)) for motor in motorlar]
+            yaw_indeksleri = range(min(4, len(motorlar)))
+
             # 1. Dünya eksenindeki bakış yönü
             V_rov_dunya = rov.gnc.r_bv
             
@@ -519,10 +521,11 @@ class Filo:
 
             # Hata payı kontrolü (Eğer hedef sadece aşağı/yukarı ise dönme yapma)
             if V_rov_yatay.length() < 0.001 or hedef_yatay.length() < 0.001:
-                return [0.0] * len(rov.motorlar), 0.0
+                return powers, 0.0
 
             # 2. DÜNYA TORK EKSENİ (Vektörel Çarpım)
             # Hangi dünya ekseni etrafında döneceğimizi buluruz
+            # +X heading ile birlikte doğru yaw işareti için standart çapraz çarpım yönünü kullan.
             Tork_istenen_dunya = V_rov_yatay.cross(hedef_yatay)
 
             # 3. YEREL TORK EKSENİNE ÇEVİRME (Yeni Yardımcı Metot!)
@@ -530,32 +533,59 @@ class Filo:
             Tork_istenen_yerel = self.dunya_to_yerel_vektor(Tork_istenen_dunya, rov.rotation)
 
             # 4. MOTORLARI DAĞIT (Yerel tork ihtiyacı ile motorların yerel tork yeteneği çarpılır)
-            Powers =[m.tork_bv.dot(Tork_istenen_yerel) * guc_orani for m in rov.motorlar]
+            for i in yaw_indeksleri:
+                powers[i] = motorlar[i].tork_bv.dot(Tork_istenen_yerel) * guc_orani
             
-            return Powers, 0
+            return powers, 0
 
         
     def roll_guclerini_hesapla(self, rov=None, guc_orani: float = 1.0):
             if rov is None:
-                return [0.0] * 6
+                return [0.0] * 6, False
 
-            # 1. Aracın o anki tavan vektörünü (Local Up) dünya koordinatlarında bul
-            V_up_mevcut = self._euler_deg_to_direction(rov.rotation, v=Vec3(0, 1, 0)) # Y ekseni yukarı olsun
-            if rov.role==1 and rov.group_id==0 and False:
-                print(V_up_mevcut)
+            motorlar = getattr(rov, "motorlar", [])
+            powers = [float(getattr(motor, "guc", 0.0)) for motor in motorlar]
+            roll_indeksleri = range(4, min(8, len(motorlar)))
 
-            # 2. Hedefimiz her zaman Dünya'nın tam yukarısı (0, 1, 0)
-            V_up_hedef = Vec3(0, 1, 0)
+            if len(motorlar) < 8:
+                return powers, False
 
-            # 3. İkisi arasındaki farkı kapatacak Tork (Cross Product)
-            # Bu tork hem Roll hem Pitch hatalarını aynı anda düzeltir!
-            Tork_istenen_dunya = V_up_mevcut.cross(V_up_hedef)
+            gnc = getattr(rov, "gnc", None)
+            if gnc is None:
+                return powers, False
 
-            # 4. Yerel eksene çevir ve motorlara dağıt (Sizin mevcut kodunuzun devamı)
-            Tork_istenen_yerel = self.dunya_to_yerel_vektor(Tork_istenen_dunya, rov.rotation)
-            Powers = [m.tork_bv.dot(Tork_istenen_yerel) * guc_orani for m in rov.motorlar]
-            
-            return Powers
+            roll_deg = float(getattr(gnc, "bullet_roll", getattr(rov.rotation, "z", 0.0)))
+            pitch_deg = float(getattr(gnc, "bullet_pitch", getattr(rov.rotation, "x", 0.0)))
+            roll_deadzone_deg = 1.5
+            pitch_deadzone_deg = 1.5
+            roll_normalize_deg = 30.0
+            pitch_normalize_deg = 45.0
+
+            while roll_deg > 180.0:
+                roll_deg -= 360.0
+            while roll_deg < -180.0:
+                roll_deg += 360.0
+            while pitch_deg > 180.0:
+                pitch_deg -= 360.0
+            while pitch_deg < -180.0:
+                pitch_deg += 360.0
+
+            if abs(roll_deg) <= roll_deadzone_deg and abs(pitch_deg) <= pitch_deadzone_deg:
+                for i in roll_indeksleri:
+                    powers[i] = 0.0
+                return powers, False
+
+            etkin_guc = max(0.0, min(1.0, float(guc_orani)))
+            roll_cmd = max(-1.0, min(1.0, roll_deg / roll_normalize_deg)) * etkin_guc
+            pitch_cmd = -max(-1.0, min(1.0, pitch_deg / pitch_normalize_deg)) * etkin_guc
+
+            powers[4] = max(-1.0, min(1.0, pitch_cmd + roll_cmd))
+            powers[5] = max(-1.0, min(1.0, pitch_cmd - roll_cmd))
+            powers[6] = max(-1.0, min(1.0, -pitch_cmd + roll_cmd))
+            powers[7] = max(-1.0, min(1.0, -pitch_cmd - roll_cmd))
+
+            aktif = any(abs(powers[i]) > 0.01 for i in range(4, 8))
+            return powers, aktif
 
     def yaw(self,rov,guc:float=0.1):
         motorlar = rov.motorlar
@@ -1550,7 +1580,6 @@ class TemelGNC:
         self.mod = 1
         self.batma_orani = 0
         self.r_bv = Vec3(0,0,0)
-
     @property
     def gps(self):
         """ROV'un guncel GPS koordinatini (sim koordinat sisteminde) doner: (x, y, z)"""
@@ -1570,16 +1599,7 @@ class TemelGNC:
             # Bullet quaternion ile bakış yönünü hesapla (NumPy matris yerine → daha hızlı, gimbal lock yok)
             # Panda3D getQuat() → ROV'un dünya quaternion'ı
             # xform(local_vec) → vektörü dünya koordinatına dönüştür
-            try:
-                from panda3d.core import Vec3 as P3Vec  # type: ignore[import]
-                quat = self.rov.physics_np.getQuat()
-                # ROV'un yerel Z ekseni ileri yönü (BlueROV2 convention)
-                forward_local = P3Vec(0, 0, 1)
-                world_forward = quat.xform(forward_local)
-                self.r_bv = Vec3(world_forward.x, world_forward.y, world_forward.z)
-            except Exception:
-                # Fallback: physics_np yoksa eski yöntem
-                self.r_bv = filo._euler_deg_to_direction(rot_deg=self.rov.rotation, v=Vec3(0, 0, 1))
+            self.r_bv = filo._euler_deg_to_direction(rot_deg=self.rov.rotation, v=Vec3(0, 0, 1))
 
             if filo.get(self.rov.id, 'gps')[2] < -5.0:
                 self.gps_sinyal = 0

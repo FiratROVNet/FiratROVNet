@@ -137,6 +137,7 @@ class Motor:
             """
             Motoru çalıştır - applyForce ile GELİŞMİŞ ve FİZİKSEL olarak en doğru yöntem.
             """
+            self.guc = guc
             
             if self.yon_vec is None or self.yon_vec.length() <= 1e-6:  # type: ignore[union-attr]
                 return

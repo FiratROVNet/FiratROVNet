@@ -2,7 +2,7 @@ import math
 import numpy as np # type: ignore[import-not-found]
 from typing import cast
 from ursina import Vec3, time # type: ignore[import-not-found]
-from FiratROVNet.config import Hidrodinamik, GATLimitleri # type: ignore[import-not-found]
+from FiratROVNet.config import Hidrodinamik, GATLimitleri, BasitKalmanFiltresi, KalmanAyarlari # type: ignore[import-not-found]
 from FiratROVNet.kutuphane.helper.gnc_helper.mixins.formation import Formasyon # type: ignore[import-not-found]
 from panda3d.core import Vec3 as P3Vec # type: ignore[import-not-found]
 
@@ -19,6 +19,7 @@ class TemelGNCHelper:
         # Opsiyonel: APF yerine alternatif vektor kaynagi icin callable.
         self.hareket_vektor_kaynagi = None
         self._koordinator = None
+        self._motor_kalman_filtreleri: list[BasitKalmanFiltresi] = []
 
     def _vec3_gecerli_mi(self, vec) -> bool:
         try:
@@ -90,7 +91,7 @@ class TemelGNCHelper:
             
         t_drag = Vec3(0, 0, 0)
         if acisal_hiz_buyuklugu > 0.001:
-            damping_factor = 5.0  # 10.0 yerine 5.0 - daha da düşük
+            damping_factor = 30.0  # 10.0 yerine 5.0 - daha da düşük
             t_drag = Vec3(-mevcut_acisal_hiz.x * damping_factor, 
                         -mevcut_acisal_hiz.y * damping_factor, 
                         -mevcut_acisal_hiz.z * damping_factor)
@@ -138,18 +139,68 @@ class TemelGNCHelper:
         
         # 2. ÖNCE ÇEVRESEL FİZİĞİ UYGULA (Suyun ve Dünyanın Etkisi)
         self.fizik_uygula()
+        # 3. MOTOR GÜÇLERİNİ HESAPLA VE UYGULA
+        self.filo_ref.motorlari_calistir(self.rov.id, self.gucler(v_sim_dir, guc_orani))
 
-        # 3. MOTOR GÜÇLERİNİ HESAPLA
-        gucler = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id, v_sim_dir, guc_orani)
+    def gucler(self, v_sim_dir: Vec3, guc_orani: float) -> list[float]:
+        """
+        Motor komutlarını seçici biçimde birleştirir.
+        Yaw sadece m0-m3, roll sadece m4-m7 üzerinde yeni değer üretir;
+        diğer motorlar motor.guc cache'inden korunur.
+        """
+        if self.rov is None or self.filo_ref is None:
+            return []
+
+        motorlar = getattr(self.rov, "motorlar", [])
+        birlesik = [float(getattr(motor, "guc", 0.0)) for motor in motorlar]
+        if not motorlar:
+            return birlesik
+
+        hareket_gucleri = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id, v_sim_dir, guc_orani)
         yaw_gucleri, _ = self.filo_ref.yaw_gucleri_hesapla(self.rov, v_sim_dir, guc_orani)
-        roll_gucleri = self.filo_ref.roll_guclerini_hesapla(self.rov,guc_orani)
-        
-        # Agirliklandir ve listeye donustur
-        g = [p*0.8 + r*0 + t*0.2 for t, p, r in zip(yaw_gucleri, gucler, roll_gucleri)]
+        roll_gucleri, bayrak = self.filo_ref.roll_guclerini_hesapla(self.rov, guc_orani)
+        h = 0.85
+        y = 0.05
+        r = 0.1
+        if bayrak:
+            h = 0.7
+            r = 0.2
 
-        # 4. MOTORLARI ÇALIŞTIR VE FİZİKSEL İTKİYİ UYGULA
-        self.filo_ref.motorlari_calistir(self.rov.id, g)
+        for i, _motor in enumerate(motorlar):
+            hareket = hareket_gucleri[i] if i < len(hareket_gucleri) else birlesik[i]
+            yaw = yaw_gucleri[i] if i < len(yaw_gucleri) else birlesik[i]
+            roll = roll_gucleri[i] if i < len(roll_gucleri) else birlesik[i]
+            
+            birlesik[i] = hareket * h + yaw * y + roll * r
 
+        return self._motor_guclerini_kalman_filtrele(birlesik)
+
+    def _motor_kalman_filtrelerini_hazirla(self, motor_sayisi: int):
+        if motor_sayisi <= 0:
+            self._motor_kalman_filtreleri = []
+            return
+        if len(self._motor_kalman_filtreleri) == motor_sayisi:
+            return
+
+        self._motor_kalman_filtreleri = [
+            BasitKalmanFiltresi(
+                R=KalmanAyarlari.MOTOR_R,
+                Q=KalmanAyarlari.MOTOR_Q,
+                baslangic_degeri=0.0,
+            )
+            for _ in range(motor_sayisi)
+        ]
+
+    def _motor_guclerini_kalman_filtrele(self, gucler: list[float]) -> list[float]:
+        if not gucler:
+            return []
+
+        self._motor_kalman_filtrelerini_hazirla(len(gucler))
+        filtrelenmis: list[float] = []
+        for filtre, guc in zip(self._motor_kalman_filtreleri, gucler):
+            filtre.ayarla(R=KalmanAyarlari.MOTOR_R, Q=KalmanAyarlari.MOTOR_Q)
+            filtrelenmis.append(float(filtre.guncelle(float(guc))))
+        return filtrelenmis
 
     def _guncelle_kontroller(self):
         """
@@ -355,7 +406,7 @@ class TemelGNCHelper:
             if etki > max_engel_etkisi:
                 max_engel_etkisi = etki
                 
-            carpan = etki * 0.4
+            carpan = etki * 0.3
             toplam_vektor.x += vx * carpan
             toplam_vektor.y += vy * carpan
             toplam_vektor.z += vz * carpan
@@ -395,7 +446,7 @@ class TemelGNCHelper:
             if etki > max_rov_etkisi:
                 max_rov_etkisi = etki
                 
-            carpan = etki * 0.4
+            carpan = etki * 0.25
             toplam_vektor.x += vx * carpan
             toplam_vektor.y += vy * carpan
             toplam_vektor.z += vz * carpan
@@ -421,7 +472,7 @@ class TemelGNCHelper:
         h_birim = Vec3(*h_info.get('birim_vektor', [0, 0, 0]))
 
         guc0 = self._guc_orani_hesapla(h_mesafe)
-        hedef_agirligi = (1.0 - max_engel_etkisi) * 0.10 + (1.0 - max_rov_etkisi) * 0.10
+        hedef_agirligi = (1.0 - max_engel_etkisi) * 0.225 + (1.0 - max_rov_etkisi) * 0.225
         hedef_vektor = h_birim * hedef_agirligi
 
         return hedef_vektor, guc0
