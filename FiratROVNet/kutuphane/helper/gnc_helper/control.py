@@ -406,7 +406,7 @@ class TemelGNCHelper:
             if etki > max_engel_etkisi:
                 max_engel_etkisi = etki
                 
-            carpan = etki * 0.3
+            carpan = etki * 0.4
             toplam_vektor.x += vx * carpan
             toplam_vektor.y += vy * carpan
             toplam_vektor.z += vz * carpan
@@ -446,7 +446,7 @@ class TemelGNCHelper:
             if etki > max_rov_etkisi:
                 max_rov_etkisi = etki
                 
-            carpan = etki * 0.25
+            carpan = etki * 0.4
             toplam_vektor.x += vx * carpan
             toplam_vektor.y += vy * carpan
             toplam_vektor.z += vz * carpan
@@ -472,7 +472,7 @@ class TemelGNCHelper:
         h_birim = Vec3(*h_info.get('birim_vektor', [0, 0, 0]))
 
         guc0 = self._guc_orani_hesapla(h_mesafe)
-        hedef_agirligi = (1.0 - max_engel_etkisi) * 0.225 + (1.0 - max_rov_etkisi) * 0.225
+        hedef_agirligi = (1.0 - max_engel_etkisi) * 0.1 + (1.0 - max_rov_etkisi) * 0.1
         hedef_vektor = h_birim * hedef_agirligi
 
         return hedef_vektor, guc0
