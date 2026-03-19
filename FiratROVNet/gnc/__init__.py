@@ -10,19 +10,19 @@ import math
 import random
 import numpy as np  # type: ignore[import]
 from ursina import *  # type: ignore[import]
-from ursina import Vec3, color, time, destroy, window, camera  # type: ignore[import]
+from ursina import Vec3, color, time, window, camera  # type: ignore[import]
 from panda3d.bullet import BulletWorld  # type: ignore[import]
 
 # Yerel modül importları
-from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, FizikSabitleri, Hidrodinamik, BasitKalmanFiltresi, HavuzAyarlari  # type: ignore[import]
+from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, BasitKalmanFiltresi, HavuzAyarlari  # type: ignore[import]
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon  # type: ignore[import]
 from ..hull import HullManager  # type: ignore[import]
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper  # type: ignore[import]
 from FiratROVNet.kutuphane.moduls import ModulYardimcisi, MotorDuzeni  # type: ignore[import]
-from FiratROVNet.lider_sec import liderlik_secimini_baslat  # type: ignore[import]
 # Lazy import: FiratAnalizci circular import problemini önlemek için _basla_gat_modeli içinde import edilir
 
 # Modüler yapı - GNC subpackage
+from .init import FiloInitMixin  # type: ignore[import]
 from .koordinator import Koordinator, SafeDict  # type: ignore[import]
 from .damage_system import DamageSystem  # type: ignore[import]
 from .logs import LogSystem  # type: ignore[import]
@@ -33,7 +33,6 @@ from ..lider_sec import LeaderManager  # type: ignore[import]
 
 import inspect
 import os
-import logging
 
 
 
@@ -131,7 +130,7 @@ class Profiler:
 # ==========================================
 # 1. FİLO (ROV FİLO YÖNETİCİSİ)
 # ==========================================
-class Filo:
+class Filo(FiloInitMixin):
     def __init__(self, ortam_ref=None):
         # Temel Referanslar
         self.ortam_ref = ortam_ref
@@ -204,134 +203,19 @@ class Filo:
             ortam.filo = self
             self._baslatma_tamamla()
     
-
-
-
-        # 🔹 IGNORE TUPLE CACHE OPTIMIZASYON
+    # 🔹 IGNORE TUPLE CACHE OPTIMIZASYON
     def _build_ignore_tuple(self):
-        """
-        🔹 Frame başında bir kere bütün ROV ve parçalarını raycast ignore listesine ekle.
-        Böylece her ROV sensörü bağımsız olarak liste inşa etmek yerine, merkezi cache'den okur.
-        FPS kazancı: Raycast ignore listesi hesaplaması O(rovs * children) → O(rovs) + O(children) per frame.
-        """
-        if not self.ortam_ref:
-            return
-        
-        ortam_rovs = [r for r in self.ortam_ref.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]  # type: ignore[union-attr]
-        mevcut_count = len(ortam_rovs)
-        
-        # Eğer ROV sayısı değişmediyse cache'i yeniden inşa etme
-        if mevcut_count == self._ignore_tuple_last_rov_count and self._ignore_tuple_cache:
-            self.ortam_ref.ignore_tuple = self._ignore_tuple_cache
-            return
-        
-        # ROV sayısı değişti → cache'i yeniden inşa et
-        ignores = []
-        for r in ortam_rovs:
-            ignores.append(r)
-            for child in getattr(r, 'children', []):
-                ignores.append(child)
-                ignores.extend(getattr(child, 'children', []))
-        
-        self._ignore_tuple_cache = tuple(ignores)  # type: ignore[assignment]
-        self._ignore_tuple_last_rov_count = mevcut_count
-        self.ortam_ref.ignore_tuple = self._ignore_tuple_cache
+        return super()._build_ignore_tuple()
 
-        # Filo sınıfı içinde bir metod olarak düşünelim:
-    def _hazirla_global_ignore_listesi(self,rov_sayisi):
-        """Sistemdeki tüm ROV'ları ve parçalarını tek bir tuple'da toplar."""
-        # Sadece aktif (is_destroyed olmayan) ROV'ları al
-        if rov_sayisi != self.mevcut_rov_sayisi:
-            self.mevcut_rov_sayisi=rov_sayisi
-            ortam=self.ortam_ref
-            if ortam is None:
-                return
-
-            ortam_rovs = [r for r in ortam.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]  # type: ignore[union-attr]
-            
-            ignores = []
-            for r in ortam_rovs:
-                ignores.append(r)
-                if hasattr(r, 'children'):
-                    for child in r.children:  # type: ignore[union-attr]
-                        ignores.append(child)
-                        if hasattr(child, 'children'):
-                            ignores.extend(child.children)  # type: ignore[union-attr]
-            
-            ortam.ignore_tuple= tuple(ignores)
+    def _hazirla_global_ignore_listesi(self, rov_sayisi):
+        return super()._hazirla_global_ignore_listesi(rov_sayisi)
 
     # ============================================================
     # KURULUM VE SİSTEM YÖNETİMİ (SADELEŞTİRİLMİŞ)
     # ============================================================
     
     def _baslatma_tamamla(self):
-            """ROV'lar için fiziksel gövdeleri ve motorları kurar."""
-            from panda3d.bullet import BulletRigidBodyNode, BulletBoxShape  # type: ignore[import]
-            from panda3d.core import Vec3  # type: ignore[import]
-
-            ortam = self.ortam_ref
-            if ortam is None:
-                return
-            render = getattr(ortam, 'app', None) and getattr(ortam.app, 'render', None)
-            self.mevcut_rov_sayisi=len(ortam.rovs)
-            
-            if render is None:
-                render = globals().get('render')
-            if render is None:
-                return
-            for rov in ortam.rovs:
-                if rov is None:
-                    continue
-                rov.gnc = TemelGNC(rov, self)  # type: ignore[union-attr]
-
-                if self.motorlar.get(rov.id) is None:  # type: ignore[union-attr]
-                    self.motorlar[rov.id] = []  # type: ignore[index]
-                
-                # A. Fiziksel Düğüm (RigidBody) — kütle ve sönümleme: config.Hidrodinamik
-                node = BulletRigidBodyNode(f"ROV_{rov.id}")  # type: ignore[union-attr]
-                node.setMass(Hidrodinamik.KUTLE)
-                node.setLinearDamping(Hidrodinamik.LINEAR_DAMPING)
-                node.setAngularDamping(Hidrodinamik.ANGULAR_DAMPING) 
-                
-                # Çarpışma Şekli (ROV boyutlarına göre)
-                shape = BulletBoxShape(Vec3(1.5, 1.5, 1.5)) # Submarine boyutuna uygun gerçekçi fizik
-                node.addShape(shape)
-                
-                # Panda3D'ye ekle
-                rov_np = render.attachNewNode(node)
-                rov_np.setPos(rov.position)  # type: ignore[union-attr]
-                self.world.attachRigidBody(node)
-                #node.setGravity(Vec3(0, 0, 0)) # Bu ROV için yerçekimini sıfırla
-                
-                # B. Referansları Kaydet
-                rov.physics_node = node  # type: ignore[union-attr]
-                rov.physics_np = rov_np  # type: ignore[union-attr]
-                
-
-                # C. BlueROV2 benzeri 6 itki motoru (4 yatay, 2 dikey)
-                #    ROV modelinde ileri yön -Z (Ursina/loader convention).
-                #      - İleri:  -Z
-                #      - Sağ:    +X
-                #      - Yukarı: +Y
-                #
-                #    4 yatay motor: ROV önü (-Z) = 0°, 45° dışa (sol: -X, sağ: +X) + ileri (-Z).
-                #      - Sol taraf: (-cos45, 0, -cos45)
-                #      - Sağ taraf: (+cos45, 0, -cos45)
-                #    Konumlar: ön z>0, arka z<0 (modelde ön -Z yönünde olduğu için ön motorlar z=+200).
-                #
-                #    2 dikey motor: m4, m5
-                #    Motor ID: m0=ön-sol, m1=ön-sağ, m2=arka-sol, m3=arka-sağ, m4=dikey-sol, m5=dikey-sağ
-                try:
-                    self.BlueROV2_motor_konfigurasyonu(rov)
-                    
-
-                except Exception as e:
-                    logging.warning(f"[Filo] ROV-{getattr(rov, 'id', '?')} için motor oluşturulamadı: {e}")
-
-            self.minimap(scale=1.0)
-            self.motor_sema_kaydet()
-            self.tum_motor_bv_kutuphanelerini_guncelle()
-            self.kamera_ayarla()
+        return super()._baslatma_tamamla()
             
 
     # ============================================================
@@ -739,186 +623,19 @@ class Filo:
     # MERKEZI TICK PARCALARI (MODULER)
     # ============================================================
     def _tick_sistem_hazirligi(self):
-        """Command queue + physics step."""
-        self._process_command_queue()
-        dt = time.dt  # type: ignore[attr-defined]
-        
-        # --- HATA AYIKLAMA (DEBUG) KONTROLÜ BAŞLANGICI ---
-        from math import isnan
-        from panda3d.core import Vec3  # type: ignore[import]
-        if self.ortam_ref and hasattr(self.ortam_ref, 'rovs'):
-            for rov in self.ortam_ref.rovs:
-                if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):  # type: ignore[union-attr]
-                    continue
-                if getattr(rov, 'physics_node', None) and getattr(rov, 'physics_np', None):
-                    p = rov.physics_np.getPos()  # type: ignore[union-attr]
-                    v = rov.physics_node.getLinearVelocity()  # type: ignore[union-attr]
-                    # Eğer fizik hesabında bir anormallik (NaN/Inf) varsa yakala
-                    if (isnan(p.x) or isnan(p.y) or isnan(p.z) or isnan(v.x) or 
-                        math.isinf(p.x) or math.isinf(p.y) or math.isinf(p.z) or math.isinf(v.x) or
-                        abs(p.x) > 1e6 or abs(p.y) > 1e6 or abs(p.z) > 1e6 or abs(v.x) > 1e6):
-                        print(f"🚨 [HATA YAKALANDI] ROV-{getattr(rov, 'id', '?')} değerleri çöktü!")
-                        print(f"   Bozuk Pozisyon: {p}")
-                        print(f"   Bozuk Hız: {v}")
-                        # ROV'un hızını ve kuvvetlerini zorla sıfırlayarak motorun çökmesini önle
-                        try:
-                            rov.physics_np.setPos(0, 0, 0)  # type: ignore[union-attr]
-                            rov.physics_node.setLinearVelocity(Vec3(0, 0, 0))  # type: ignore[union-attr]
-                            rov.physics_node.setAngularVelocity(Vec3(0, 0, 0))  # type: ignore[union-attr]
-                            rov.physics_node.clearForces()  # type: ignore[union-attr]
-                        except Exception as e:
-                            pass
-        # --- HATA AYIKLAMA (DEBUG) KONTROLÜ BİTİŞİ ---
-
-        self.world.doPhysics(dt, 10, 1.0/60.0)
+        return super()._tick_sistem_hazirligi()
 
     def _tick_navigasyon_ve_gorseller(self, tahminler):
-        """Grup bazlı hedef yönetimi + renk/gorsel state."""
-        self.guncelle_navigasyon_kuyrugu()
-        self.guncelle_gorseller_ve_renkler(tahminler)
+        return super()._tick_navigasyon_ve_gorseller(tahminler)
 
     def _tick_lider_yonetimi(self):
-        """Lider seçim + leader manager güncellemesi."""
-        yeni_lider_id, _skor = liderlik_secimini_baslat(self, self.aktif_liderlik_hedefleri())
-        self.leader_manager.guncelle_liderler(yeni_lider_id)
+        return super()._tick_lider_yonetimi()
 
     def _tick_rovler(self, tahminler):
-        """ROV başına hasar/sensör/gnc + basit limit/batarya güncellemeleri."""
-        if not self.ortam_ref or not hasattr(self.ortam_ref, 'rovs'):
-            return
-
-        sea_floor_y = getattr(self.ortam_ref, 'SEA_FLOOR_Y', -50.0)
-        ortam_rovs = self.ortam_ref.rovs
-        tahmin_len = len(tahminler) if tahminler is not None else 0
-        dt = time.dt  # type: ignore[attr-defined]
-
-
-        Profiler.start("13_rov._guncelle_sensorler()")
-        self._hazirla_global_ignore_listesi(len(ortam_rovs))
-        Profiler.end("13_rov._guncelle_sensorler()")
-        
-
-        # Tek geciste (O(n)): idx -> tahminler esleme + ROV tick
-        for idx, rov in enumerate(ortam_rovs):
-            if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
-                continue
-
-            # Tahminler bounds check
-            gat_kodu = int(tahminler[idx]) if idx < tahmin_len else 0  # type: ignore[index]
-
-            # --- Physics sync (Panda3D -> Ursina transform/velocity) ---
-            try:
-                p = rov.physics_np.getPos()
-                import math
-                
-                # Toplu gecerlilik kontrolu (Pos)
-                if not (math.isfinite(p.x) and math.isfinite(p.y) and math.isfinite(p.z) and abs(p.x) < 1e6 and abs(p.y) < 1e6 and abs(p.z) < 1e6):
-                    print(f"🚨 [CRITICAL_NAN_CAUGHT] ROV-{getattr(rov, 'id', '?')} physics_np returned NaN/Inf Position: {p}. Forcing Zero.")
-                    rov.physics_np.setPos(0, 0, 0)
-                    rov.physics_node.setLinearVelocity(Vec3(0, 0, 0))
-                    rov.physics_node.setAngularVelocity(Vec3(0, 0, 0))
-                    rov.physics_node.clearForces()
-                    p = rov.physics_np.getPos()
-
-                h, pr, r = rov.physics_np.getHpr()
-                # Toplu gecerlilik kontrolu (Rot)
-                if not (math.isfinite(h) and math.isfinite(pr) and math.isfinite(r)):
-                    print(f"🚨 [CRITICAL_NAN_CAUGHT] ROV-{getattr(rov, 'id', '?')} physics_np returned NaN/Inf Hpr: {h, pr, r}. Forcing Zero.")
-                    rov.physics_np.setHpr(0, 0, 0)
-                    h, pr, r = 0.0, 0.0, 0.0
-
-                rov.position = Vec3(p.x, p.y, p.z)
-                rov.rotation = Vec3(pr, h, r)
-
-                # --- Bullet rotasyon bilgisini GNC'de sakla (yaw/pitch/roll) ---
-                # h = Heading (Yaw), pr = Pitch, r = Roll  (Panda3D HPR sırası)
-                if hasattr(rov, 'gnc') and rov.gnc is not None:
-                    rov.gnc.bullet_yaw   = h    # Dünya yaw (heading) açısı (derece)
-                    rov.gnc.bullet_pitch = pr   # Pitch açısı (derece)
-                    rov.gnc.bullet_roll  = r    # Roll açısı (derece)
-
-                # --- World matrix cache: Motor başına tekrar hesaplamayı önler ---
-                # Panda3D'nin Ursina (Y-Up-Left) taraflı uyguladığı dönüşümleri kayıp yaşamamak için Quat/Quaternion yerine her zaman NetTransform kullanıyoruz.
-                rov._world_mat = rov.physics_np.getNetTransform().getMat()
-
-                if hasattr(rov, 'velocity'):
-                    v = rov.physics_node.getLinearVelocity()
-                    # Toplu gecerlilik kontrolu (Vel)
-                    if not (math.isfinite(v.x) and math.isfinite(v.y) and math.isfinite(v.z) and abs(v.x) < 1e6 and abs(v.y) < 1e6 and abs(v.z) < 1e6):
-                        print(f"🚨 [CRITICAL_NAN_CAUGHT] ROV-{getattr(rov, 'id', '?')} getLinearVelocity returned NaN/Inf: {v}. Forcing Zero.")
-                        rov.physics_node.setLinearVelocity(Vec3(0, 0, 0))
-                        v = Vec3(0, 0, 0)
-                    rov.velocity = Vec3(v.x, v.y, v.z)
-            except Exception:
-                # physics node yoksa bu rov'u atla
-                continue
-
-            # --- 4B. Hasar Kontrol (Öncelikli - Patlama Check) ---
-            joule_esigi = 120.0
-        
-            state=self.damage_system.rov_hasar_kontrol_direct(rov, joule_esigi=joule_esigi)
-            if state:
-                self.entity_patlat(rov, parca_sayisi=80)
-                continue
-
-            # --- 4C. Sensör Güncelleme (central_update modunda zorunlu) ---
-            try:
-                if hasattr(rov, '_guncelle_sensorler'):
-                    rov._guncelle_sensorler()
-            except Exception as e:
-                if "!is_empty()" not in str(e):
-                    print(f"⚠️ [FİLO] ROV-{rov.id} Sensör Hatası: {e}")
-
-
-            # --- 4C.1 Batarya + derinlik limitleri (ROV.update devre dışı iken burada) ---
-            try:
-                if hasattr(rov, 'velocity') and rov.velocity and rov.velocity.length() > 0.01:
-                    rov.battery -= FizikSabitleri.BATARYA_SOMURME_KATSAYISI * dt
-            except Exception:
-                pass
-
-            try:
-                if rov.y > 0:
-                    rov.y = 0
-                if rov.y < sea_floor_y:
-                    rov.y = sea_floor_y
-            except Exception:
-                pass
-
-            # --- 4D. GNC Sistem Güncelleme ---
-            try:
-                if hasattr(rov, 'gnc') and rov.gnc:
-                    Profiler.start("14_rov.gnc.guncelle(gat_kodu=gat_kodu)")
-                    rov.gnc.guncelle(gat_kodu=gat_kodu)
-                    Profiler.end("14_rov.gnc.guncelle(gat_kodu=gat_kodu)")
-            except Exception as e:
-                if "!is_empty()" not in str(e):
-                    print(f"⚠️ [FİLO] ROV-{rov.id} GNC Hatası: {e}")
-                LogSystem.log_exception(e)
+        return super()._tick_rovler(tahminler)
 
     def _tick_sistem_guncellemeleri(self, guncelle_gorseller: bool):
-        """Queued commands + sonar/minimap + obstacle cloud."""
-        # Komut kuyruğu frame başında (_tick_sistem_hazirligi) işlenir.
-        # Burada tekrar işlemek aynı frame içinde çift çağrıya sebep olur.
-        if not guncelle_gorseller:
-            return
-
-        if self.ortam_ref:
-
-            Profiler.start("15_self.ortam_ref.guncelle_sonar_cizgileri()")
-            try:
-                self.ortam_ref.guncelle_sonar_cizgileri()
-            except Exception as e:
-                LogSystem.log_exception(e)
-            Profiler.end("15_self.ortam_ref.guncelle_sonar_cizgileri()")
-
-        if self.ortam_ref and getattr(self.ortam_ref, 'minimap', None):
-            try:
-                Profiler.start("17_self.ortam_ref.minimap.gorsel_guncelle()")
-                self.ortam_ref.minimap.gorsel_guncelle()
-                Profiler.end("17_self.ortam_ref.minimap.gorsel_guncelle()")
-            except Exception as e:
-                LogSystem.log_exception(e)
+        return super()._tick_sistem_guncellemeleri(guncelle_gorseller)
             
     def guncelle_hepsi(self, tahminler, guncelle_gorseller=True):
         """
@@ -1064,32 +781,7 @@ class Filo:
         return hedefler
 
     def _hedef_impl(self, x, y, z, rov_id=None, ciz=True):
-        if rov_id is None or not self.ortam_ref: return None
-        
-        # Güvenli Erişim
-        try:
-            rov = self.find_rov_by_id(rov_id)
-            if not rov:
-                return None
-        except Exception as e:
-            LogSystem.log_exception(e)
-            return None
-
-        self._rov_hedefleri[rov_id] = (x, y, z)
-        self.git(rov_id, x, y, z, ai=True)
-        
-        # Görselleştirme (Sadece Lider için veya debug modunda)
-        rov = self.find_rov_by_id(rov_id)
-        if not rov:
-            return None
-        if rov.role == 1:
-            self.hedef_pozisyon = (x, y, z)
-            if ciz: self._hedef_gorsel_olustur(x, y, z)
-            elif self.hedef_gorsel:
-                destroy(self.hedef_gorsel)
-                self.hedef_gorsel = None
-                
-        return (x, y, z)
+        return self.helper._hedef_impl(x, y, z, rov_id=rov_id, ciz=ciz)
 
     # ============================================================
     # VERİ ERİŞİMİ VE AYARLAR (GET/SET)
@@ -1298,11 +990,7 @@ class Filo:
         Returns:
             [[x1,y1], [x2,y2], ...] (100 nokta) veya None
         """
-        result = self.hull_info_manager.get_hull_100_samples(hull_output, sample_count)
-        if result is not None:
-            return result
-        else:
-            return None
+        return self.hull_info_manager.get_hull_100_samples(hull_output, sample_count)
 
     def get_hull_information(self, sample_count=50, g_id=0, kayit=False, sessiz=True, offset_threshold=20.0):
         """
@@ -1340,20 +1028,13 @@ class Filo:
         Returns:
             Dict: Tüm bilgileri içeren JSON-serializable sonuç veya None
         """
-        result = self.hull_info_manager.get_hull_information(sample_count=sample_count, g_id=g_id, sessiz=sessiz, offset_threshold=offset_threshold)
-        if result:
-            
-            # 🔹 Eğer kayit=True ise, sonucu JSON dosyasına kaydet (append mode)
-            if kayit:
-                success = self.hull_info_manager.save_hull_information('hull_information.json', result, sessiz=sessiz)
-                if not success:
-                    print("⚠️ Hull information kaydedilemedi")
-            
-            return result
-        else:
-            if not sessiz:
-                print("⚠️ get_hull_information: result None")
-            return None
+        return self.hull_info_manager.get_hull_information(
+            sample_count=sample_count,
+            g_id=g_id,
+            kayit=kayit,
+            sessiz=sessiz,
+            offset_threshold=offset_threshold,
+        )
     
 
 
@@ -1366,11 +1047,10 @@ class TemelGNC:
     def __init__(self, rov_entity, filo_ref=None):
         self.rov = rov_entity
         self.filo_ref = filo_ref
+        self.sensor = None
         
         self.hedef = None 
-        self.hiz_limiti = 100.0 
         self.manuel_kontrol = False
-        self.ai_aktif = True 
         self.gps_sinyal = 1  # GPS sinyali varsayilan aktif
         
         self.temel_gnc_helper = TemelGNCHelper(rov_entity, filo_ref, self)
@@ -1378,12 +1058,120 @@ class TemelGNC:
         self.mod = 1
         self.batma_orani = 0
         self.r_bv = Vec3(0,0,0)
+        self.bullet_yaw = 0.0
+        self.bullet_pitch = 0.0
+        self.bullet_roll = 0.0
+        self._onceki_hiz: Vec3 = Vec3(0, 0, 0)
+        self._onceki_bullet_yaw = 0.0
+        self._onceki_bullet_pitch = 0.0
+        self._onceki_bullet_roll = 0.0
+        self._imu_hazir = False
+
     @property
     def gps(self):
         """ROV'un guncel GPS koordinatini (sim koordinat sisteminde) doner: (x, y, z)"""
         if self.rov is None:
             return None
         return Koordinator.ursina_to_sim(self.rov.x, self.rov.y, self.rov.z)
+
+    def _sensor_ref_al(self):
+        if self.rov is None:
+            return None
+        sensor = getattr(self.rov, "sensor", None)
+        if sensor is not None:
+            self.sensor = sensor
+        return self.sensor
+
+    def gps_sinyal_hesapla(self) -> int:
+        gps = self.gps
+        if gps is None or len(gps) < 3:
+            return 0
+        return 0 if float(gps[2]) < -5.0 else 1
+
+    def sicaklik_hesapla(self):
+        return None
+
+    def _aci_farki_deg(self, yeni: float, eski: float) -> float:
+        return (float(yeni) - float(eski) + 180.0) % 360.0 - 180.0
+
+    def _vec3e_cevir(self, deger) -> Vec3:
+        if isinstance(deger, Vec3):
+            return Vec3(float(deger.x), float(deger.y), float(deger.z))
+        if hasattr(deger, "x") and hasattr(deger, "y") and hasattr(deger, "z"):
+            try:
+                return Vec3(float(deger.x), float(deger.y), float(deger.z))
+            except (TypeError, ValueError):
+                return Vec3(0, 0, 0)
+        return Vec3(0, 0, 0)
+
+    def imu_verisi_hesapla(self) -> dict:
+        raw_hiz = getattr(self.rov, "velocity", None) if self.rov is not None else None
+        hiz = self._vec3e_cevir(raw_hiz)
+        onceki_hiz = self._vec3e_cevir(self._onceki_hiz)
+
+        dt = getattr(time, "dt", 0.0) or 0.0
+        yaw_deg = float(getattr(self, "bullet_yaw", 0.0))
+        pitch_deg = float(getattr(self, "bullet_pitch", 0.0))
+        roll_deg = float(getattr(self, "bullet_roll", 0.0))
+
+        if self._imu_hazir and dt > 1e-6:
+            accel = {
+                "x": (float(hiz.x) - float(onceki_hiz.x)) / dt,
+                "y": (float(hiz.y) - float(onceki_hiz.y)) / dt,
+                "z": (float(hiz.z) - float(onceki_hiz.z)) / dt,
+            }
+            gyro = {
+                "x": self._aci_farki_deg(roll_deg, self._onceki_bullet_roll) / dt,
+                "y": self._aci_farki_deg(pitch_deg, self._onceki_bullet_pitch) / dt,
+                "z": self._aci_farki_deg(yaw_deg, self._onceki_bullet_yaw) / dt,
+            }
+        else:
+            accel = {"x": 0.0, "y": 0.0, "z": 0.0}
+            gyro = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+        yaw_rad = math.radians(yaw_deg)
+        pitch_rad = math.radians(pitch_deg)
+        mag = {
+            "x": math.cos(yaw_rad) * math.cos(pitch_rad),
+            "y": math.sin(yaw_rad) * math.cos(pitch_rad),
+            "z": math.sin(pitch_rad),
+        }
+        orientation = {"yaw": yaw_deg, "pitch": pitch_deg, "roll": roll_deg}
+
+        self._onceki_hiz = Vec3(float(hiz.x), float(hiz.y), float(hiz.z))
+        self._onceki_bullet_yaw = yaw_deg
+        self._onceki_bullet_pitch = pitch_deg
+        self._onceki_bullet_roll = roll_deg
+        self._imu_hazir = True
+
+        return {
+            "accel": accel,
+            "gyro": gyro,
+            "mag": mag,
+            "orientation": orientation,
+        }
+
+    def bar_verisi_hesapla(self) -> dict:
+        gps = self.gps
+        derinlik_m = max(0.0, -float(gps[2])) if gps is not None and len(gps) >= 3 else 0.0
+        basinc_bar = 1.0 + (derinlik_m / 10.0)
+        return {
+            "basinc_bar": basinc_bar,
+            "derinlik_m": derinlik_m,
+        }
+
+    def sensor_verilerini_guncelle(self):
+        sensor = self._sensor_ref_al()
+        gps_signal = self.gps_sinyal_hesapla()
+        self.gps_sinyal = gps_signal
+        if sensor is None:
+            return
+        sensor.guncelle(
+            gps_signal=gps_signal,
+            sicaklik=self.sicaklik_hesapla(),
+            imu=self.imu_verisi_hesapla(),
+            bar=self.bar_verisi_hesapla(),
+        )
 
     def hedef_atama(self, x, y, z):
         self.hedef = Vec3(x, y, z)
@@ -1398,11 +1186,7 @@ class TemelGNC:
             # Panda3D getQuat() → ROV'un dünya quaternion'ı
             # xform(local_vec) → vektörü dünya koordinatına dönüştür
             self.r_bv = filo._euler_deg_to_direction(rot_deg=self.rov.rotation, v=Vec3(0, 0, 1))
-
-            if filo.get(self.rov.id, 'gps')[2] < -5.0:
-                self.gps_sinyal = 0
-            else:
-                self.gps_sinyal = 1
+            self.sensor_verilerini_guncelle()
             Profiler.end("9_r_bv_hesapla")
 
         if self.temel_gnc_helper:
@@ -1442,7 +1226,6 @@ class TemelGNC:
         # Rota bitti
         self.hedef = None
         self.rov.velocity = Vec3(0, 0, 0)
-        self.ai_aktif = False
 
     def _siradaki_noktaya_gec(self):
         filo = self.filo_ref
@@ -1482,5 +1265,32 @@ class TemelGNC:
 
 
 
+class Sensor:
+    """ROV'a bağlı sade sensör paketi."""
+
+    def __init__(self, rov_entity, filo_ref=None, gnc_ref=None):
+        self.rov = rov_entity
+        self.filo_ref = filo_ref
+        self.gnc_ref = gnc_ref
+        self.sicaklik = None
+        self.gps_signal = 1
+        self.imu = {
+            "accel": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "gyro": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "mag": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "orientation": {"yaw": 0.0, "pitch": 0.0, "roll": 0.0},
+        }
+        self.bar = {"basinc_bar": 1.0, "derinlik_m": 0.0}
+
+    def guncelle(self, gps_signal=None, sicaklik=None, imu=None, bar=None):
+        if gps_signal is not None:
+            self.gps_signal = gps_signal
+        self.sicaklik = sicaklik
+        if imu is not None:
+            self.imu = imu
+        if bar is not None:
+            self.bar = bar
+
+
 # Export sınıfları
-__all__ = ['Filo', 'TemelGNC', 'Koordinator', 'SafeDict', 'DamageSystem']
+__all__ = ['Filo', 'TemelGNC', 'Sensor', 'Koordinator', 'SafeDict', 'DamageSystem']
