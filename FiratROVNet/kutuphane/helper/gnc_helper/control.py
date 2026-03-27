@@ -140,6 +140,8 @@ class TemelGNCHelper:
         # 2. ÖNCE ÇEVRESEL FİZİĞİ UYGULA (Suyun ve Dünyanın Etkisi)
         self.fizik_uygula()
         # 3. MOTOR GÜÇLERİNİ HESAPLA VE UYGULA
+        self.filo_ref.roll_koru(self.rov, guc_orani)
+        self.filo_ref.pitch_koru(self.rov, guc_orani)
         self.filo_ref.motorlari_calistir(self.rov.id, self.gucler(v_sim_dir, guc_orani))
 
     def gucler(self, v_sim_dir: Vec3, guc_orani: float) -> list[float]:
@@ -158,20 +160,16 @@ class TemelGNCHelper:
 
         hareket_gucleri = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id, v_sim_dir, guc_orani)
         yaw_gucleri, _ = self.filo_ref.yaw_gucleri_hesapla(self.rov, v_sim_dir, guc_orani)
-        roll_gucleri, bayrak = self.filo_ref.roll_guclerini_hesapla(self.rov, guc_orani)
+        #roll_gucleri = self.filo_ref.roll_guclerini_hesapla(self.rov, guc_orani)
         h = 0.85
         y = 0.05
         r = 0.1
-        if bayrak:
-            h = 0.7
-            r = 0.2
-
         for i, _motor in enumerate(motorlar):
             hareket = hareket_gucleri[i] if i < len(hareket_gucleri) else birlesik[i]
             yaw = yaw_gucleri[i] if i < len(yaw_gucleri) else birlesik[i]
-            roll = roll_gucleri[i] if i < len(roll_gucleri) else birlesik[i]
+            #roll = roll_gucleri[i] if i < len(roll_gucleri) else birlesik[i]
             
-            birlesik[i] = hareket * h + yaw * y + roll * r
+            birlesik[i] = hareket * h + yaw * y #+ roll * r
 
         return self._motor_guclerini_kalman_filtrele(birlesik)
 

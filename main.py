@@ -218,7 +218,7 @@ def input(key):
                 print(f"⚠️ [NAV] Grup-{group_id} icin aktif lider bulunamadi.")
                 return
 
-            mevcut_z = lider_gps[2] if lider_gps else -10.0
+            mevcut_z = -20 #lider_gps[2] if lider_gps else -10.0
             
             # Benzersiz ID oluştur ve hedefi kaydet
             filo.target_counter += 1

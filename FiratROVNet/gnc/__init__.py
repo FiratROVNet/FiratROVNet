@@ -18,7 +18,7 @@ from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, BasitKa
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon  # type: ignore[import]
 from ..hull import HullManager  # type: ignore[import]
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper  # type: ignore[import]
-from FiratROVNet.kutuphane.moduls import ModulYardimcisi, MotorDuzeni  # type: ignore[import]
+from FiratROVNet.kutuphane.moduls import ModulYardimcisi, MotorDuzeni, PID, BARUI  # type: ignore[import]
 # Lazy import: FiratAnalizci circular import problemini önlemek için _basla_gat_modeli içinde import edilir
 
 # Modüler yapı - GNC subpackage
@@ -37,6 +37,8 @@ import os
 
 
 
+
+
 from FiratROVNet.kutuphane.moduls.profiler import Profiler
 # ==========================================
 # 1. FİLO (ROV FİLO YÖNETİCİSİ)
@@ -51,7 +53,11 @@ class Filo(FiloInitMixin):
         self.helper = FiloHelper(self)
         self.modul = ModulYardimcisi(self)
         self.motor_duzeni = MotorDuzeni(self)
-        
+        self.pid = PID()
+        # PID barlarinin acilis degerleri (burayi degistirerek varsayilan baslangici ayarlayabilirsin)
+        self.pid_default_params = {"Kp": 0.0, "Ki": 0.0, "Kd": 0.0}
+        self.pid_params = dict(self.pid_default_params)
+        self.pid_ui = BARUI()
         # Sorumlu Sistemler (ModülerYapı)
         self.damage_system = DamageSystem(filo_ref=self)
         self.camera_manager = CameraManager(filo_ref=self)
@@ -126,7 +132,10 @@ class Filo(FiloInitMixin):
     # ============================================================
     
     def _baslatma_tamamla(self):
-        return super()._baslatma_tamamla()
+        sonuc = super()._baslatma_tamamla()
+        self._init_pid_ui()
+        self.toggle_pid_ui(True)
+        return sonuc
             
 
     # ============================================================
@@ -165,8 +174,11 @@ class Filo(FiloInitMixin):
             )
 
         
-    def roll_guclerini_hesapla(self, rov=None, guc_orani: float = 1.0):
-            return self.modul.roll_guclerini_hesapla(rov=rov, guc_orani=guc_orani)
+    def roll_koru(self, rov=None, guc_orani: float = 1.0):
+            return self.modul.roll_koru(rov=rov, guc_orani=guc_orani)
+
+    def pitch_koru(self, rov=None, guc_orani: float = 1.0):
+            return self.modul.pitch_koru(rov=rov, guc_orani=guc_orani)
 
     def yaw(self,rov,guc:float=0.1):
         return self.modul.yaw(rov, guc=guc)
@@ -181,7 +193,102 @@ class Filo(FiloInitMixin):
         return self.modul.pitch(rov, guc=guc)
 
 
+    def _on_pid_bar_change(self, name: str, value: float):
+        if name not in self.pid_params:
+            return
+        self.pid_params[name] = float(value)
+        # Canli konsolda filo.pid.Kp/Ki/Kd degerlerinin anlik gorunmesi icin
+        # sozlukten PID nesnesine hemen senkronla.
+        setattr(self.pid, name, self.pid_params[name])
 
+    def _init_pid_ui(self):
+        self.pid_params['Kp'] = float(self.pid_default_params.get('Kp', 0.0))
+        self.pid_params['Ki'] = float(self.pid_default_params.get('Ki', 0.0))
+        self.pid_params['Kd'] = float(self.pid_default_params.get('Kd', 0.0))
+        self.pid.Kp = self.pid_params['Kp']
+        self.pid.Ki = self.pid_params['Ki']
+        self.pid.Kd = self.pid_params['Kd']
+
+        if not self.pid_ui.sliders:
+            self.pid_ui.create_bar(
+                name='Kp',
+                min_value=0,
+                max_value=0.1,
+                default=self.pid_default_params['Kp'],
+                position=(0.0, 0.07),
+                callback=lambda v: self._on_pid_bar_change('Kp', v),
+            )
+            self.pid_ui.create_bar(
+                name='Ki',
+                min_value=0,
+                max_value=0.1,
+                default=self.pid_default_params['Ki'],
+                position=(0.0, -0.015),
+                callback=lambda v: self._on_pid_bar_change('Ki', v),
+            )
+            self.pid_ui.create_bar(
+                name='Kd',
+                min_value=0,
+                max_value=0.1,
+                default=self.pid_default_params['Kd'],
+                position=(0.0, -0.10),
+                callback=lambda v: self._on_pid_bar_change('Kd', v),
+            )
+
+            # Baslangicta bar konumlarini default degerlere zorla uygula.
+            self.pid_ui.set_value('Kp', self.pid_default_params['Kp'])
+            self.pid_ui.set_value('Ki', self.pid_default_params['Ki'])
+            self.pid_ui.set_value('Kd', self.pid_default_params['Kd'])
+
+    def set_pid_value(self, name: str, value: float):
+        if name not in self.pid_params:
+            return
+        self.pid_params[name] = float(value)
+        setattr(self.pid, name, self.pid_params[name])
+        self.pid_ui.set_value(name, float(value))
+
+    def toggle_pid_ui(self, force: bool | None = None):
+        self._init_pid_ui()
+        self.pid_ui.toggle_ui(force)
+
+
+
+
+    # pid_hesapla fonksiyonu için düzeltilmiş versiyon
+    def pid_hesapla(self, rov, yon):
+        # PID parametrelerini güncelle
+        self.pid.Kp = self.pid_params["Kp"]
+        self.pid.Ki = self.pid_params["Ki"]
+        self.pid.Kd = self.pid_params["Kd"]
+        
+        # dt'yi güvenli şekilde al
+        dt = getattr(rov, "dt", 0.03)
+        if dt <= 0 or dt > 1.0:  # Geçersiz dt değerlerini kontrol et
+            dt = 0.03
+        
+        # Hedef ve durum değerlerini al
+        if yon == "yaw":
+            orientation = rov.sensor.imu.get("orientation", {})
+            durum = orientation.get("yaw", 0)
+            hedef = 0
+            
+        elif yon == "roll":
+            orientation = rov.sensor.imu.get("orientation", {})
+            durum = orientation.get("roll", 0)
+            hedef = 0
+            
+        elif yon == "pitch":
+            orientation = rov.sensor.imu.get("orientation", {})
+            durum = orientation.get("pitch", 0)
+            hedef = 0
+        else:
+            return 0  # Geçersiz yon
+        
+        # PID hesapla
+        toplam = self.pid.compute(hedef=hedef, durum=durum, dt=dt, normalize=True)
+        
+        return toplam
+                
 
 
 
@@ -352,7 +459,7 @@ class Filo(FiloInitMixin):
             physics_node.setActive(True)
 
             # 2. YEREL KUVVETİ -> DÜNYA KUVVETİNE ÇEVİR (Senin Euler Fonksiyonunla)
-            v_yerel_kuvvet = Vec3(-yerel_kuvvet[0], yerel_kuvvet[1], yerel_kuvvet[2])
+            v_yerel_kuvvet = Vec3(-yerel_kuvvet[0], -yerel_kuvvet[1], yerel_kuvvet[2])
             mag = v_yerel_kuvvet.length()
             
             if mag <= 1e-6:
@@ -561,6 +668,7 @@ class Filo(FiloInitMixin):
         """
         # 🔹 IGNORE TUPLE CACHE GÜNCELLE (Frame başında bir kere)
         self._build_ignore_tuple()
+        self.pid_ui.update()
         
         Profiler.start("1_sistem_hazirligi")
         self._tick_sistem_hazirligi()

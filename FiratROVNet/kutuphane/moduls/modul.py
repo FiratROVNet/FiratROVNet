@@ -90,51 +90,26 @@ class ModulYardimcisi:
             powers[i] = motorlar[i].tork_bv.dot(tork_istenen_yerel) * guc_orani
         return powers, 0
 
-    def roll_guclerini_hesapla(self, rov=None, guc_orani: float = 1.0):
+    def roll_koru(self, rov=None, guc_orani: float = 1.0):
         if rov is None:
             return [0.0] * 6, False
 
-        motorlar = getattr(rov, "motorlar", [])
-        powers = [float(getattr(motor, "guc", 0.0)) for motor in motorlar]
-        roll_indeksleri = range(4, min(8, len(motorlar)))
-        if len(motorlar) < 8:
-            return powers, False
+        guc = self.filo.pid_hesapla(rov,"roll")
 
-        gnc = getattr(rov, "gnc", None)
-        if gnc is None:
-            return powers, False
+        self.filo.roll(rov, guc)
 
-        roll_deg = float(getattr(gnc, "bullet_roll", getattr(rov.rotation, "z", 0.0)))
-        pitch_deg = float(getattr(gnc, "bullet_pitch", getattr(rov.rotation, "x", 0.0)))
-        roll_deadzone_deg = 1.5
-        pitch_deadzone_deg = 1.5
-        roll_normalize_deg = 30.0
-        pitch_normalize_deg = 45.0
+    def pitch_koru(self, rov=None, guc_orani: float = 1.0):
+        if rov is None:
+            return [0.0] * 6, False
 
-        while roll_deg > 180.0:
-            roll_deg -= 360.0
-        while roll_deg < -180.0:
-            roll_deg += 360.0
-        while pitch_deg > 180.0:
-            pitch_deg -= 360.0
-        while pitch_deg < -180.0:
-            pitch_deg += 360.0
+        guc = self.filo.pid_hesapla(rov,"pitch")
 
-        if abs(roll_deg) <= roll_deadzone_deg and abs(pitch_deg) <= pitch_deadzone_deg:
-            for i in roll_indeksleri:
-                powers[i] = 0.0
-            return powers, False
+        self.filo.pitch(rov, -guc)
 
-        etkin_guc = max(0.0, min(1.0, float(guc_orani)))
-        roll_cmd = max(-1.0, min(1.0, roll_deg / roll_normalize_deg)) * etkin_guc
-        pitch_cmd = -max(-1.0, min(1.0, pitch_deg / pitch_normalize_deg)) * etkin_guc
 
-        powers[4] = max(-1.0, min(1.0, pitch_cmd + roll_cmd))
-        powers[5] = max(-1.0, min(1.0, pitch_cmd - roll_cmd))
-        powers[6] = max(-1.0, min(1.0, -pitch_cmd + roll_cmd))
-        powers[7] = max(-1.0, min(1.0, -pitch_cmd - roll_cmd))
-        aktif = any(abs(powers[i]) > 0.01 for i in range(4, 8))
-        return powers, aktif
+        
+
+        
 
     def yaw(self, rov, guc: float = 0.1):
         motorlar = rov.motorlar

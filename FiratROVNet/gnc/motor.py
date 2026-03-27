@@ -97,17 +97,21 @@ class Motor:
 
     @property
     def color(self):
-        """Görsel silindirin rengi (motor_entity.color)."""
+        """Motorun renk durumu: önce visual_entity, sonra motor_entity, son olarak cache."""
+        if self.visual_entity is not None:
+            return self.visual_entity.color
         if self.motor_entity is not None:
             return self.motor_entity.color
         return getattr(self, "_color", color.white)
 
     @color.setter  # type: ignore[attr-defined]
     def color(self, value):
+        # Cache her durumda güncelleniyor, böylece motor_entity henüz yoksa da saklanır.
+        self._color = value
         if self.motor_entity is not None:
             self.motor_entity.color = value
-        else:
-            self._color = value
+        if self.visual_entity is not None:
+            self.visual_entity.color = value
 
     def _find_physics_node(self):
         """Fizik düğümünü hiyerarşide bulur."""
@@ -146,6 +150,7 @@ class Motor:
             filo=self.filo_ref
             if filo is None:
                 return
+
             
 
             F = self.yon_vec * (guc * float(Hidrodinamik.MAX_ITME_KUVVETI))
