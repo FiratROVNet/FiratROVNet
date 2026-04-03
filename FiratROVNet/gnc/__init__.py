@@ -728,15 +728,45 @@ class Filo(FiloInitMixin):
 
 
         
+    def bat_gps(self, rov_id,z):
+        gps=self.get(rov_id, 'gps')
+        if gps is None:
+            return None
+        
+        x,y=gps[0],gps[1]
+        return self.helper.git(rov_id=rov_id, x=x, y=y, z=z)
+
+    def bat(self, rov_id,guc):
+        rov = self.find_rov_by_id(rov_id)
+        if rov is None:
+            return None
+
+        m4=getattr(rov, 'm4', None)
+        m5=getattr(rov, 'm5', None)
+        m6=getattr(rov, 'm6', None)
+        m7=getattr(rov, 'm7', None)
+
+        if m4 is None or m5 is None or m6 is None or m7 is None:
+            return None
+
+        m4.calistir(guc)
+        m5.calistir(guc)
+        m6.calistir(guc)
+        m7.calistir(guc)
+
+        menzil = GATLimitleri.ENGEL
+        l3 = rov.l3
+        if l3 !=-1:
+            print(l3)
+
+
 
     # ============================================================
     # HEDEF VE HAREKET YÖNETİMİ
     # ============================================================
 
     def git(self, rov_id: int, x, y: float | None = None, z: float | None = None, ai: bool = True, sessiz: bool = True):
-        y_val = y if y is not None else 0.0
-        z_val = z if z is not None else 0.0
-        return self.helper.git(rov_id=rov_id, x=x, y=y_val, z=z_val, ai=ai, sessiz=sessiz)
+        return self.helper.git(rov_id=rov_id, x=x, y=y, z=z, ai=ai, sessiz=sessiz)  # type: ignore[arg-type]
 
     def git_path(self, rov_id, hedef, ai=True, isaret=False):
         return self.helper.git_path(rov_id, hedef, ai=ai, isaret=isaret)
@@ -1176,7 +1206,8 @@ class TemelGNC:
         basinc_bar = 1.0 + (derinlik_m / 10.0)
         return {
             "basinc_bar": basinc_bar,
-            "derinlik_m": derinlik_m,
+            "derinlik": -derinlik_m,
+            "derinlik_m": -derinlik_m,
         }
 
     def sensor_verilerini_guncelle(self):
@@ -1299,7 +1330,7 @@ class Sensor:
             "mag": {"x": 0.0, "y": 0.0, "z": 0.0},
             "orientation": {"yaw": 0.0, "pitch": 0.0, "roll": 0.0},
         }
-        self.bar = {"basinc_bar": 1.0, "derinlik_m": 0.0}
+        self.bar = {"basinc_bar": 1.0, "derinlik": 0.0, "derinlik_m": 0.0}
 
     def guncelle(self, gps_signal=None, sicaklik=None, imu=None, bar=None):
         if gps_signal is not None:

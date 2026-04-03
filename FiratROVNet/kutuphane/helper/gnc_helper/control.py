@@ -132,7 +132,10 @@ class TemelGNCHelper:
         # Güç oranını sınırla
         guc_orani = max(0.0, min(1.0, guc_orani))
     
-        v_sim_dir = Vec3(v_sim_dir.x, v_sim_dir.z, v_sim_dir.y)
+        v_sim_dir = Vec3(v_sim_dir.x, -v_sim_dir.z, v_sim_dir.y)
+
+        if self.rov.role == 1 and self.rov.group_id == 0 and False:
+            print(v_sim_dir,v_sim_dir.y)
         
         if self.rov is None or self.filo_ref is None:
             return
@@ -380,6 +383,16 @@ class TemelGNCHelper:
             rov=True,
         )
 
+    def _log_mesafe_etkisi_hesapla(self, mesafe: float, limit: float) -> float:
+        """Mesafeye gore logaritmik etki katsayisi hesaplar (0.0-1.0)."""
+        if limit < 1.0:
+            limit = 1.0
+        if mesafe >= limit:
+            return 0.0
+        guvenli_mesafe = max(1.0, mesafe)
+        guvenli_limit = max(1.000001, limit)
+        return max(0.0, 1.0 - float(np.log(guvenli_mesafe)) / float(np.log(guvenli_limit)))
+
     def _engel_vektoru_isle(self, sonuc, rov_id: int, guc0: float):
         engeller = sonuc.get('engeller') or []
         if not engeller:
@@ -399,8 +412,8 @@ class TemelGNCHelper:
             mesafe = float(e_info.get('mesafe', 0.0))
             if mesafe >= engel_limit:
                 continue
-                
-            etki = max(0.0, 1.0 - float(mesafe) / float(engel_limit))
+
+            etki = self._log_mesafe_etkisi_hesapla(mesafe, engel_limit)
             if etki > max_engel_etkisi:
                 max_engel_etkisi = etki
                 
@@ -423,12 +436,11 @@ class TemelGNCHelper:
     def _rov_vektoru_isle(self, sonuc, guc0: float):
         rovs = sonuc.get('rovs') or []
         if not rovs:
-            return Vec3(0, 0, 0), 0.0, guc0
+            return Vec3(0, 0, 0), 0.0
             
         toplam_vektor = Vec3(0, 0, 0)
-        max_rov_etkisi = 0.0
         carpisma_limit = float(GATLimitleri.CARPISMA)
-        guc2 = guc0
+        son_carpan = 0.0
         
         for r_info in rovs:
             bv = r_info.get('birim_vektor', [0, 0, 0])
@@ -439,28 +451,18 @@ class TemelGNCHelper:
             mesafe = float(r_info.get('mesafe', 0.0))
             if mesafe >= carpisma_limit:
                 continue
-                
-            etki = max(0.0, 1.0 - float(mesafe) / float(carpisma_limit))
-            if etki > max_rov_etkisi:
-                max_rov_etkisi = etki
+
+            etki = self._log_mesafe_etkisi_hesapla(mesafe, carpisma_limit)
                 
             carpan = etki * 0.4
+            son_carpan = carpan
             toplam_vektor.x += vx * carpan
             toplam_vektor.y += vy * carpan
             toplam_vektor.z += vz * carpan
             
-            # Guc orani hesaplama
-            if mesafe >= 2 and mesafe < carpisma_limit:
-                g_val = np.log((mesafe / carpisma_limit) * 10 + 1) / np.log(11)
-                g_val = 1.0 - g_val
-                if g_val > guc2:
-                    guc2 = g_val
-            elif mesafe < 2:
-                guc2 = max(guc2, 1.0)
-                
-        return toplam_vektor, max_rov_etkisi, guc2
+        return toplam_vektor, son_carpan
 
-    def _hedef_vektoru_isle(self, sonuc, max_engel_etkisi: float, max_rov_etkisi: float):
+    def _hedef_vektoru_isle(self, sonuc, max_engel_etkisi: float):
         h_info = sonuc.get('hedef') or {}
         h_mesafe_raw = h_info.get('mesafe', 0.0)
         try:
@@ -470,7 +472,7 @@ class TemelGNCHelper:
         h_birim = Vec3(*h_info.get('birim_vektor', [0, 0, 0]))
 
         guc0 = self._guc_orani_hesapla(h_mesafe)
-        hedef_agirligi = (1.0 - max_engel_etkisi) * 0.1 + (1.0 - max_rov_etkisi) * 0.1
+        hedef_agirligi = (1.0 - max_engel_etkisi) * 0.2
         hedef_vektor = h_birim * hedef_agirligi
 
         return hedef_vektor, guc0
@@ -481,13 +483,13 @@ class TemelGNCHelper:
         guc0 = self._guc_orani_hesapla(float(h_info.get('mesafe', 0.0)))
         
         engel_vektor, max_engel_etkisi, guc1 = self._engel_vektoru_isle(sonuc, rov_id, guc0)
-        rov_vektor, max_rov_etkisi, guc2 = self._rov_vektoru_isle(sonuc, guc0)
+        rov_vektor, rov_carpan = self._rov_vektoru_isle(sonuc, guc0)
 
         # Hedef agirligini yeni etkilerle 1 kere hesapla (kaldirilan cift cagir)
-        hedef_vektor, _ = self._hedef_vektoru_isle(sonuc, max_engel_etkisi, max_rov_etkisi)
+        hedef_vektor, _ = self._hedef_vektoru_isle(sonuc, max_engel_etkisi)
 
         bileske_vektor: Vec3 = engel_vektor + rov_vektor + hedef_vektor
-        guc = max(guc0, guc1, guc2)
+        guc = max(guc0, guc1, rov_carpan)
 
         return bileske_vektor, guc
 

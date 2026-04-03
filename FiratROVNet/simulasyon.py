@@ -177,7 +177,8 @@ class ROV(Entity):
     def _guncelle_sensorler(self):
 
             menzil = GATLimitleri.ENGEL
-            base_origin = self.world_position + Vec3(0, 0, 0)
+            origin = self.world_position + Vec3(0, 0.5, 0)
+            origin_l3 = self.world_position + Vec3(0, -8, 0)
 
             # 🔹 MERKEZI IGNORE TUPLE: Filo frame başında guncelle_hepsi() içinde _build_ignore_tuple() 
             # çağrıyor, ortam_ref.ignore_tuple otomatik güncelleniyor. Burada sadece kullan.
@@ -234,7 +235,7 @@ class ROV(Entity):
                 return raycast(safe_start, direction, distance=ray_dist, ignore=ignore_list, debug=False)
 
             # SONAR (L0)
-            hit_sonar = safe_raycast(base_origin, self.forward, menzil, ignore_tuple)
+            hit_sonar = safe_raycast(origin, self.forward, menzil, ignore_tuple)
             if hit_sonar.hit:
                 self.engel_mesafesi = hit_sonar.distance + 1.5
                 self.son_sonar_mesafesi = self.engel_mesafesi
@@ -256,7 +257,8 @@ class ROV(Entity):
             for idx, dir_vec, clr in directions:
                 if isinstance(getattr(self, 'son_lidar_noktalari', None), dict):
                     self.son_lidar_noktalari[idx] = None
-                hit = safe_raycast(base_origin, dir_vec, menzil, ignore_tuple)
+                ray_origin = origin_l3 if idx == 3 else origin
+                hit = safe_raycast(ray_origin, dir_vec, menzil, ignore_tuple)
                 if hit.hit:
                     dist = hit.distance + 1.5
                     self.son_lidar_mesafeleri[idx] = dist

@@ -1,10 +1,20 @@
 import math
 import numpy as np
+from typing import Any, Optional
 
 class DataMixin:
     """Veri erisim fonksiyonlari."""
 
-    def get(self, rov_id: int = None, veri_tipi: str = None, taraf: int = None, koordinator=None, sessiz: bool = False):
+    filo: Any
+
+    def get(
+        self,
+        rov_id: Optional[int] = None,
+        veri_tipi: Optional[str] = None,
+        taraf: Optional[int] = None,
+        koordinator=None,
+        sessiz: bool = False,
+    ):
         """
         ROV bilgilerini guvenli bir sekilde alir.
 

@@ -1,5 +1,23 @@
+from typing import Any, Optional
+
+
 class NavigationMixin:
     """Navigasyon fonksiyonlari."""
+    filo: Any
+    hedef_gorsel_olustur: Any
+
+    def _bar_derinlik_al(self, rov) -> Optional[float]:
+        sensor = getattr(rov, 'sensor', None)
+        bar = getattr(sensor, 'bar', None)
+        if not isinstance(bar, dict):
+            return None
+        derinlik = bar.get("derinlik")
+        if derinlik is None:
+            derinlik = bar.get("derinlik_m")
+        try:
+            return float(derinlik) if derinlik is not None else None
+        except (TypeError, ValueError):
+            return None
 
     def _hedef_impl(self, x, y, z, rov_id=None, ciz=True):
         if rov_id is None or not self.filo.ortam_ref:
@@ -34,7 +52,7 @@ class NavigationMixin:
 
         return (x, y, z)
 
-    def _git_impl(self, rov_id: int, x: float, y: float, z: float = None, ai: bool = True, sessiz: bool = True) -> None:
+    def _git_impl(self, rov_id: int, x: float, y: float, z: Optional[float] = None, ai: bool = True, sessiz: bool = True) -> None:
         """
         git() fonksiyonunun yeni mimariye (rov.gnc) uyarlanmis implementasyonu.
         ROV objesinden rov.id ile ID tutarliligi saglanir.
@@ -80,9 +98,11 @@ class NavigationMixin:
 
         # 3. Manuel derinlik hesapla (Z verilmemisse)
         if z is None:
-            from FiratROVNet.gnc import Koordinator
-            mevcut_sim_pos = Koordinator.ursina_to_sim(rov.x, rov.y, rov.z)
-            z = mevcut_sim_pos[2]
+            z = self._bar_derinlik_al(rov)
+            if z is None:
+                from FiratROVNet.gnc import Koordinator
+                mevcut_sim_pos = Koordinator.ursina_to_sim(rov.x, rov.y, rov.z)
+                z = mevcut_sim_pos[2]
 
         # 4. Hedef atama ve ayarlar
         try:
@@ -101,7 +121,7 @@ class NavigationMixin:
             if not sessiz:
                 print(f"❌ [HATA] Hedef atanamadi: {e}")
 
-    def git(self, rov_id: int, x, y: float = None, z: float = None, ai: bool = True, sessiz: bool = False) -> None:
+    def git(self, rov_id: int, x, y: Optional[float] = None, z: Optional[float] = None, ai: bool = True, sessiz: bool = False) -> None:
         """
         ROV'a hedef koordinati atayan genel fonksiyon.
         Koordinat Formati: (X: Sag-Sol, Y: Ileri-Geri, Z: Derinlik)
@@ -130,7 +150,8 @@ class NavigationMixin:
                 print(f"❌ [FILO] ROV bulunamadi: {rov_id}")
             return
         
-        target_x, target_y, target_z = 0.0, 0.0, z
+        default_z = self._bar_derinlik_al(rov)
+        target_x, target_y, target_z = 0.0, 0.0, (float(z) if z is not None else default_z)
 
         # 1. Girdi ayrisma (nokta listesi, liste veya float)
         if isinstance(x, (list, tuple)):
@@ -145,7 +166,7 @@ class NavigationMixin:
                 # Hedef derinligi tum rota icin sakla
                 if not hasattr(self.filo, '_git_hedef_derinligi'):
                     self.filo._git_hedef_derinligi = {}
-                self.filo._git_hedef_derinligi[rov.id] = z if z is not None else None
+                self.filo._git_hedef_derinligi[rov.id] = target_z
 
                 # Ilk noktayi hedef olarak al
                 ilk_nokta = self.filo._git_nokta_listesi[rov.id][0]
@@ -233,11 +254,13 @@ class NavigationMixin:
         pos = self.filo.get(rov.id, "gps")  # rov.id kullan
         current_x, current_y, current_z = pos[0], pos[1], pos[2]
 
+        current_bar_z = self._bar_derinlik_al(rov)
+
         # 2. Hedef derinligi belirle (hedefte belirtilmisse onu kullan)
         if isinstance(hedef, (tuple, list)) and len(hedef) >= 3:
             target_z = float(hedef[2])  # Kullanici derinlik belirtmis
         else:
-            target_z = current_z  # Mevcut derinligi koru
+            target_z = current_bar_z if current_bar_z is not None else current_z
 
         # 3. A* icin 2D baslangic ve hedef (x, y)
         start_2d = (current_x, current_y)
