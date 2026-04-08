@@ -36,6 +36,93 @@ import inspect
 import os
 import logging
 
+
+
+
+import time as pytime
+from collections import deque
+import re
+
+class Profiler:
+    # history = { "görev_adı": {"samples": deque, "parent": str or None} }
+    _history = {}
+    _starts = {}
+    _stack = []  # Hiyerarşiyi takip eden yığın
+
+    @staticmethod
+    def start(name):
+        # Eğer stack'te biri varsa, o şu anki fonksiyonun ebeveynidir
+        parent_name = Profiler._stack[-1] if Profiler._stack else None
+        
+        # Görevi stack'e ekle
+        Profiler._stack.append(name)
+        
+        # İlk defa karşılaşıyorsak hiyerarşiyi kaydet
+        if name not in Profiler._history:
+            Profiler._history[name] = {
+                "samples": deque(maxlen=10),
+                "parent": parent_name
+            }
+        
+        Profiler._starts[name] = pytime.perf_counter()
+
+    @staticmethod
+    def end(name):
+        if name in Profiler._starts:
+            dt = pytime.perf_counter() - Profiler._starts[name]
+            Profiler._history[name]["samples"].append(dt)
+            
+            # Görev bittiği için stack'ten çıkar (en üstteki olması gerekir)
+            if Profiler._stack and Profiler._stack[-1] == name:
+                Profiler._stack.pop()
+            
+            # Güvenlik: Eğer yanlış end çağrılırsa temizle (opsiyonel)
+            elif name in Profiler._stack:
+                Profiler._stack.remove(name)
+
+    @staticmethod
+    def _natural_sort_key(s):
+        return [int(text) if text.isdigit() else text.lower()
+                for text in re.split('([0-9]+)', s)]
+
+    @staticmethod
+    def rapor_ver():
+        print("\n" + "="*60)
+        print("📊 OTOMATİK HİYERARŞİK PERFORMANS RAPORU (ms)")
+        print("-"*60)
+        
+        toplam_sure_ms = 0
+        # Tüm anahtarları doğal sıralamaya göre al
+        all_keys = sorted(Profiler._history.keys(), key=Profiler._natural_sort_key)
+        
+        # 1. Kök görevleri (ebeveyni olmayanlar) belirle
+        roots = [k for k in all_keys if Profiler._history[k]["parent"] is None]
+        
+        for root in roots:
+            data = Profiler._history[root]
+            if not data["samples"]: continue
+            
+            avg_ms = (sum(data["samples"]) / len(data["samples"])) * 1000
+            print(f"{root.ljust(40)}: {avg_ms:8.4f} ms")
+            toplam_sure_ms += avg_ms
+            
+            # 2. Bu köke ait alt görevleri (çocukları) bul ve yazdır
+            for sub in all_keys:
+                sub_data = Profiler._history[sub]
+                if sub_data["parent"] == root:
+                    if not sub_data["samples"]: continue
+                    sub_avg_ms = (sum(sub_data["samples"]) / len(sub_data["samples"])) * 1000
+                    print(f"    ↳ {sub.ljust(36)}: {sub_avg_ms:8.4f} ms")
+                    
+                    # 3. Torunları desteklemek istersen (opsiyonel 3. seviye)
+                    for grand in all_keys:
+                        if Profiler._history[grand]["parent"] == sub:
+                            g_avg = (sum(Profiler._history[grand]["samples"]) / len(Profiler._history[grand]["samples"])) * 1000
+                            print(f"        ↳ {grand.ljust(32)}: {g_avg:8.4f} ms")
+            
+        print("-" * 60)
+        print(f"{'HESAPLANAN TOPLAM (Ana İşlemler)'.ljust(40)}: {toplam_sure_ms:8.4f} ms")
+        print("="*60 + "\n")
 # ==========================================
 # 1. FİLO (ROV FİLO YÖNETİCİSİ)
 # ==========================================
@@ -90,6 +177,8 @@ class Filo:
         self.nav_queue = {}               # {g_id: [{'pos': (x,y,z), 'id': n}, ...]}
         self.current_target_id = {}       # {g_id: id}
         self.target_counter = 0           # Her tıklamada artan benzersiz ID sayacı
+
+        self.mevcut_rov_sayisi=0
         
         # Ortam referansını ayarla ve başlat
         self.world = BulletWorld()
@@ -106,6 +195,31 @@ class Filo:
             self._baslatma_tamamla()
     
 
+
+
+        # Filo sınıfı içinde bir metod olarak düşünelim:
+    def _hazirla_global_ignore_listesi(self,rov_sayisi):
+        """Sistemdeki tüm ROV'ları ve parçalarını tek bir tuple'da toplar."""
+        # Sadece aktif (is_destroyed olmayan) ROV'ları al
+        if rov_sayisi != self.mevcut_rov_sayisi:
+            self.mevcut_rov_sayisi=rov_sayisi
+            ortam=self.ortam_ref
+            if ortam is None:
+                return
+
+            ortam_rovs = [r for r in ortam.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
+            
+            ignores = []
+            for r in ortam_rovs:
+                ignores.append(r)
+                if hasattr(r, 'children'):
+                    for child in r.children:
+                        ignores.append(child)
+                        if hasattr(child, 'children'):
+                            ignores.extend(child.children)
+            
+            ortam.ignore_tuple= tuple(ignores)
+
     # ============================================================
     # KURULUM VE SİSTEM YÖNETİMİ (SADELEŞTİRİLMİŞ)
     # ============================================================
@@ -119,6 +233,8 @@ class Filo:
             if ortam is None:
                 return
             render = getattr(ortam, 'app', None) and getattr(ortam.app, 'render', None)
+            self.mevcut_rov_sayisi=len(ortam.rovs)
+            
             if render is None:
                 render = globals().get('render')
             if render is None:
@@ -138,7 +254,7 @@ class Filo:
                 node.setAngularDamping(Hidrodinamik.ANGULAR_DAMPING) 
                 
                 # Çarpışma Şekli (ROV boyutlarına göre)
-                shape = BulletBoxShape(Vec3(1.5, 1.0, 4.5)) # Submarine boyutuna uygun gerçekçi fizik
+                shape = BulletBoxShape(Vec3(1.5, 1.5, 1.5)) # Submarine boyutuna uygun gerçekçi fizik
                 node.addShape(shape)
                 
                 # Panda3D'ye ekle
@@ -212,6 +328,11 @@ class Filo:
                     rov.m5 = Motor(rov, filo_ref=self)
                     rov.m5.ekle(koordinat=Vec3(100, 0.0, 0.0), yon_vec=(0.0, 0, 0.0))
                     self.motorlar[rov.id].append(rov.m5)
+
+                    
+
+
+
 
 
 
@@ -337,6 +458,28 @@ class Filo:
             Powers =[m.tork_bv.dot(Tork_istenen_yerel) * guc_orani for m in rov.motorlar]
             
             return Powers, 0
+
+    def roll_guclerini_hesapla(self, rov=None, guc_orani: float = 1.0):
+            if rov is None:
+                return [0.0] * 6
+
+            # 1. Aracın o anki tavan vektörünü (Local Up) dünya koordinatlarında bul
+            V_up_mevcut = self._euler_deg_to_direction(rov.rotation, v=Vec3(0, 1, 0)) # Y ekseni yukarı olsun
+            if rov.role==1 and rov.group_id==0 and False:
+                print(V_up_mevcut)
+
+            # 2. Hedefimiz her zaman Dünya'nın tam yukarısı (0, 1, 0)
+            V_up_hedef = Vec3(0, 1, 0)
+
+            # 3. İkisi arasındaki farkı kapatacak Tork (Cross Product)
+            # Bu tork hem Roll hem Pitch hatalarını aynı anda düzeltir!
+            Tork_istenen_dunya = V_up_mevcut.cross(V_up_hedef)
+
+            # 4. Yerel eksene çevir ve motorlara dağıt (Sizin mevcut kodunuzun devamı)
+            Tork_istenen_yerel = self.dunya_to_yerel_vektor(Tork_istenen_dunya, rov.rotation)
+            Powers = [m.tork_bv.dot(Tork_istenen_yerel) * guc_orani for m in rov.motorlar]
+            
+            return Powers
 
     def yaw(self,rov,guc:float=0.1):
         motorlar = rov.motorlar
@@ -628,12 +771,17 @@ class Filo:
                 float(yuzey_pos.z - cam_pos.z),
             )
 
-            yuzey_rot = getattr(yuzey, "world_rotation", getattr(yuzey, "rotation", Vec3(0, 0, 0)))
-            cam_rot = getattr(kamera, "world_rotation", getattr(kamera, "rotation", Vec3(0, 0, 0)))
-            if not hasattr(yuzey_rot, "x"):
-                yuzey_rot = Vec3(yuzey_rot[0], yuzey_rot[1], yuzey_rot[2])
-            if not hasattr(cam_rot, "x"):
-                cam_rot = Vec3(cam_rot[0], cam_rot[1], cam_rot[2])
+            def _vec3_guvenli(v):
+                if isinstance(v, Vec3):
+                    return v
+                if isinstance(v, (list, tuple)) and len(v) >= 3:
+                    return Vec3(float(v[0]), float(v[1]), float(v[2]))
+                if hasattr(v, "x") and hasattr(v, "y") and hasattr(v, "z"):
+                    return Vec3(float(getattr(v, "x")), float(getattr(v, "y")), float(getattr(v, "z")))
+                return Vec3(0, 0, 0)
+
+            yuzey_rot = _vec3_guvenli(getattr(yuzey, "world_rotation", getattr(yuzey, "rotation", Vec3(0, 0, 0))))
+            cam_rot = _vec3_guvenli(getattr(kamera, "world_rotation", getattr(kamera, "rotation", Vec3(0, 0, 0))))
             bagil_rotasyon = (
                 yuzey_rot.x - cam_rot.x,
                 yuzey_rot.y - cam_rot.y,
@@ -656,7 +804,7 @@ class Filo:
     def _tick_sistem_hazirligi(self):
         """Command queue + physics step."""
         self._process_command_queue()
-        dt = time.dt
+        dt = time.dt  # type: ignore[attr-defined]
         self.world.doPhysics(dt, 10, 1.0/60.0)
 
     def _tick_navigasyon_ve_gorseller(self, tahminler):
@@ -677,7 +825,13 @@ class Filo:
         sea_floor_y = getattr(self.ortam_ref, 'SEA_FLOOR_Y', -50.0)
         ortam_rovs = self.ortam_ref.rovs
         tahmin_len = len(tahminler) if tahminler is not None else 0
-        dt = time.dt
+        dt = time.dt  # type: ignore[attr-defined]
+
+
+        Profiler.start("13_rov._guncelle_sensorler()")
+        self._hazirla_global_ignore_listesi(len(ortam_rovs))
+        Profiler.end("13_rov._guncelle_sensorler()")
+        
 
         # Tek geciste (O(n)): idx -> tahminler esleme + ROV tick
         for idx, rov in enumerate(ortam_rovs):
@@ -702,17 +856,20 @@ class Filo:
 
             # --- 4B. Hasar Kontrol (Öncelikli - Patlama Check) ---
             joule_esigi = 120.0
-            if self.damage_system.rov_hasar_kontrol_direct(rov, joule_esigi=joule_esigi):
+        
+            state=self.damage_system.rov_hasar_kontrol_direct(rov, joule_esigi=joule_esigi)
+            if state:
                 self.entity_patlat(rov, parca_sayisi=80)
                 continue
 
-            # --- 4C. Sensör Güncelleme (tek merkez) ---
+            # --- 4C. Sensör Güncelleme (central_update modunda zorunlu) ---
             try:
                 if hasattr(rov, '_guncelle_sensorler'):
                     rov._guncelle_sensorler()
             except Exception as e:
                 if "!is_empty()" not in str(e):
                     print(f"⚠️ [FİLO] ROV-{rov.id} Sensör Hatası: {e}")
+
 
             # --- 4C.1 Batarya + derinlik limitleri (ROV.update devre dışı iken burada) ---
             try:
@@ -732,7 +889,9 @@ class Filo:
             # --- 4D. GNC Sistem Güncelleme ---
             try:
                 if hasattr(rov, 'gnc') and rov.gnc:
+                    Profiler.start("14_rov.gnc.guncelle(gat_kodu=gat_kodu)")
                     rov.gnc.guncelle(gat_kodu=gat_kodu)
+                    Profiler.end("14_rov.gnc.guncelle(gat_kodu=gat_kodu)")
             except Exception as e:
                 if "!is_empty()" not in str(e):
                     print(f"⚠️ [FİLO] ROV-{rov.id} GNC Hatası: {e}")
@@ -746,18 +905,25 @@ class Filo:
             return
 
         if self.ortam_ref:
+
+            Profiler.start("15_self.ortam_ref.guncelle_sonar_cizgileri()")
             try:
                 self.ortam_ref.guncelle_sonar_cizgileri()
             except Exception as e:
                 LogSystem.log_exception(e)
+            Profiler.end("15_self.ortam_ref.guncelle_sonar_cizgileri()")
 
         if self.ortam_ref and getattr(self.ortam_ref, 'minimap', None):
             try:
+                Profiler.start("16_self.ortam_ref.minimap._engel_bulutu_guncelle()")
                 self.ortam_ref.minimap._engel_bulutu_guncelle()
+                Profiler.end("16_self.ortam_ref.minimap._engel_bulutu_guncelle()")
             except Exception as e:
                 LogSystem.log_exception(e)
             try:
+                Profiler.start("17_self.ortam_ref.minimap.gorsel_guncelle()")
                 self.ortam_ref.minimap.gorsel_guncelle()
+                Profiler.end("17_self.ortam_ref.minimap.gorsel_guncelle()")
             except Exception as e:
                 LogSystem.log_exception(e)
             
@@ -772,13 +938,29 @@ class Filo:
         4. ROV Başına İşlemler   → Hasar, GNC, Motor komutları
         5. Sistem Güncellemeleri → Sonar, Minimap, engel bulut (guncelle_gorseller=True ise)
         """
+        Profiler.start("1_sistem_hazirligi")
         self._tick_sistem_hazirligi()
+        Profiler.end("1_sistem_hazirligi")
+
         if not self.ortam_ref:
             return
+
+        Profiler.start("2_navigasyon")
         self._tick_navigasyon_ve_gorseller(tahminler)
+        Profiler.end("2_navigasyon")
+
+        Profiler.start("3_lider_yonetimi")
         self._tick_lider_yonetimi()
+        Profiler.end("3_lider_yonetimi")
+
+        Profiler.start("4_rovlar")
         self._tick_rovler(tahminler)
+        Profiler.end("4_rovlar")
+
+
+        Profiler.start("5_sistem_guncellemeleri")
         self._tick_sistem_guncellemeleri(guncelle_gorseller)
+        Profiler.end("5_sistem_guncellemeleri")
 
     def carpisma_enerjisi_hesapla(self, *args, **kwargs):
         """Hasar hesaplamalarını damage_system'a yönlendir."""
@@ -1137,15 +1319,25 @@ class TemelGNC:
         # GPS sinyal kontrolu: ROV'un en ust noktasi su yuzeyinden 5m+ asagidaysa sinyal=0
         if self.rov and filo is not None:
 
+            Profiler.start("9_eular_hesapla")
             self.r_bv = filo._euler_deg_to_direction(rot_deg=self.rov.rotation, v=Vec3(0, 0, 1))
+
+
             if filo.get(self.rov.id, 'gps')[2] < -5.0:
                 self.gps_sinyal = 0
             else:
                 self.gps_sinyal = 1
-        
+            Profiler.end("9_eular_hesapla")
+
         if self.temel_gnc_helper:
+            Profiler.start("10_batma_orani_hesapla")
             self.batma_orani = self.batma_orani_hesapla()
-            return self.temel_gnc_helper.guncelle(gat_kodu=gat_kodu)
+            Profiler.end("10_batma_orani_hesapla")
+
+            Profiler.start("11_temel_gnc_helper.guncelle")
+            g=self.temel_gnc_helper.guncelle(gat_kodu=gat_kodu)
+            Profiler.end("11_temel_gnc_helper.guncelle")
+            return g
         
         
             
