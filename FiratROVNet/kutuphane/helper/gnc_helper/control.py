@@ -124,15 +124,23 @@ class TemelGNCHelper:
             )
             physics_node.applyTorque(clamped_torque)
 
-    def vektor_to_motor_sim(self, v_sim_dir: Vec3, guc_orani: float):
+    def vektor_to_motor_sim(self, veriler: dict[str, Vec3 | float]):
         """
         APF'den gelen 3B hareket vektörünü BlueROV2 benzeri 6 motor
         (4 yatay, 2 dikey) için güç komutlarına dönüştürür.
         """
         # Güç oranını sınırla
+        try:
+            guc_orani = float(veriler.get('guc_orani', 0.0))
+        except (TypeError, ValueError):
+            guc_orani = 0.0
         guc_orani = max(0.0, min(1.0, guc_orani))
-    
-        v_sim_dir = Vec3(v_sim_dir.x, -v_sim_dir.z, v_sim_dir.y)
+
+        bileske_vektor = veriler.get('bileske_vektor', Vec3(0, 0, 0))
+        if not isinstance(bileske_vektor, Vec3):
+            bileske_vektor = Vec3(0, 0, 0)
+        final_yon = bileske_vektor.normalized() if bileske_vektor.length() > 0.001 else Vec3(0, 0, 0)
+        v_sim_dir = Vec3(final_yon.x, -final_yon.z, final_yon.y)
 
         if self.rov.role == 1 and self.rov.group_id == 0 and False:
             print(v_sim_dir,v_sim_dir.y)
@@ -145,28 +153,16 @@ class TemelGNCHelper:
         # 3. MOTOR GÜÇLERİNİ HESAPLA VE UYGULA
         self.filo_ref.roll_koru(self.rov, guc_orani)
         self.filo_ref.pitch_koru(self.rov, guc_orani)
-        self.filo_ref.motorlari_calistir(self.rov.id, self.gucler(v_sim_dir, guc_orani))
-
-    def gucler(self, v_sim_dir: Vec3, guc_orani: float) -> list[float]:
-        """
-        Motor komutlarını seçici biçimde birleştirir.
-        Yaw sadece m0-m3, roll sadece m4-m7 üzerinde yeni değer üretir;
-        diğer motorlar motor.guc cache'inden korunur.
-        """
-        if self.rov is None or self.filo_ref is None:
-            return []
-
         motorlar = getattr(self.rov, "motorlar", [])
         birlesik = [float(getattr(motor, "guc", 0.0)) for motor in motorlar]
         if not motorlar:
-            return birlesik
+            return
 
         hareket_gucleri = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id, v_sim_dir, guc_orani)
         yaw_gucleri, _ = self.filo_ref.yaw_gucleri_hesapla(self.rov, v_sim_dir, guc_orani)
         #roll_gucleri = self.filo_ref.roll_guclerini_hesapla(self.rov, guc_orani)
         h = 0.85
         y = 0.05
-        r = 0.1
         for i, _motor in enumerate(motorlar):
             hareket = hareket_gucleri[i] if i < len(hareket_gucleri) else birlesik[i]
             yaw = yaw_gucleri[i] if i < len(yaw_gucleri) else birlesik[i]
@@ -174,7 +170,8 @@ class TemelGNCHelper:
             
             birlesik[i] = hareket * h + yaw * y #+ roll * r
 
-        return self._motor_guclerini_kalman_filtrele(birlesik)
+        filtrelenmis_gucler = self._motor_guclerini_kalman_filtrele(birlesik)
+        self.filo_ref.motorlari_calistir(self.rov.id, filtrelenmis_gucler)
 
     def _motor_kalman_filtrelerini_hazirla(self, motor_sayisi: int):
         if motor_sayisi <= 0:
@@ -231,22 +228,6 @@ class TemelGNCHelper:
         else:
             guc = 1.0
         return guc
-
-    def _guc_orani_hesapla_batch(self, mesafeler: np.ndarray, limit: float):
-        """Toplu mesafe icin guc orani (NumPy; dongu yok)."""
-        if mesafeler.size == 0:
-            return np.array([], dtype=np.float64)
-        out = np.zeros_like(mesafeler, dtype=np.float64)
-        mask_ge2 = mesafeler >= 2
-        mask_c = mesafeler < GATLimitleri.CARPISMA
-        out[~mask_ge2] = 0.0
-        valid = mask_ge2 & mask_c
-        if np.any(valid):
-            guc = np.clip(mesafeler[valid] / limit * 10 + 1, 1e-9, None)
-            out[valid] = np.log(guc) / np.log(11)
-        out[mask_ge2 & ~mask_c] = 1.0
-        return out
-
     def _formasyon_dinamik_guncelle(self, rov_id: int):
         """
         Eger aktif bir formasyon varsa, takipcilerin hedeflerini
@@ -393,15 +374,14 @@ class TemelGNCHelper:
         guvenli_limit = max(1.000001, limit)
         return max(0.0, 1.0 - float(np.log(guvenli_mesafe)) / float(np.log(guvenli_limit)))
 
-    def _engel_vektoru_isle(self, sonuc, rov_id: int, guc0: float):
+    def _engel_vektoru_isle(self, sonuc):
         engeller = sonuc.get('engeller') or []
         if not engeller:
-            return Vec3(0, 0, 0), 0.0, guc0
+            return Vec3(0, 0, 0), 0.0
         
         toplam_vektor = Vec3(0, 0, 0)
         max_engel_etkisi = 0.0
         engel_limit = float(GATLimitleri.ENGEL)
-        guc1 = guc0
         
         for e_info in engeller:
             bv = e_info.get('birim_vektor', [0, 0, 0])
@@ -417,30 +397,22 @@ class TemelGNCHelper:
             if etki > max_engel_etkisi:
                 max_engel_etkisi = etki
                 
-            carpan = etki * 0.4
+            carpan = etki
             toplam_vektor.x += vx * carpan
             toplam_vektor.y += vy * carpan
             toplam_vektor.z += vz * carpan
             
-            # Guc orani hesaplama
-            if mesafe >= 5 and mesafe < GATLimitleri.CARPISMA:
-                g_val = np.log((mesafe / engel_limit) * 10 + 1) / np.log(11)
-                g_val = 1.0 - g_val
-                if g_val > guc1:
-                    guc1 = g_val
-            elif mesafe < 5:
-                guc1 = max(guc1, 1.0)
                 
-        return toplam_vektor, max_engel_etkisi, guc1
+        return toplam_vektor, max_engel_etkisi
 
-    def _rov_vektoru_isle(self, sonuc, guc0: float):
+    def _rov_vektoru_isle(self, sonuc):
         rovs = sonuc.get('rovs') or []
         if not rovs:
             return Vec3(0, 0, 0), 0.0
             
         toplam_vektor = Vec3(0, 0, 0)
         carpisma_limit = float(GATLimitleri.CARPISMA)
-        son_carpan = 0.0
+        max_carpan = 0.0
         
         for r_info in rovs:
             bv = r_info.get('birim_vektor', [0, 0, 0])
@@ -454,13 +426,14 @@ class TemelGNCHelper:
 
             etki = self._log_mesafe_etkisi_hesapla(mesafe, carpisma_limit)
                 
-            carpan = etki * 0.4
-            son_carpan = carpan
+            carpan = etki
+            if carpan > max_carpan:
+                max_carpan = carpan
             toplam_vektor.x += vx * carpan
             toplam_vektor.y += vy * carpan
             toplam_vektor.z += vz * carpan
             
-        return toplam_vektor, son_carpan
+        return toplam_vektor, max_carpan
 
     def _hedef_vektoru_isle(self, sonuc, max_engel_etkisi: float):
         h_info = sonuc.get('hedef') or {}
@@ -472,26 +445,39 @@ class TemelGNCHelper:
         h_birim = Vec3(*h_info.get('birim_vektor', [0, 0, 0]))
 
         guc0 = self._guc_orani_hesapla(h_mesafe)
-        hedef_agirligi = (1.0 - max_engel_etkisi) * 0.2
+        hedef_agirligi = (1.0 - max_engel_etkisi)
         hedef_vektor = h_birim * hedef_agirligi
 
         return hedef_vektor, guc0
 
-    def _bileske_vektor_hesapla(self, sonuc, rov_id: int) -> tuple[Vec3, float]:
+    def _bileske_vektor_hesapla(self, sonuc, rov_id: int) -> dict[str, Vec3 | float]:
         # Temel hedef gucunu al
         h_info = sonuc.get('hedef') or {}
         guc0 = self._guc_orani_hesapla(float(h_info.get('mesafe', 0.0)))
         
-        engel_vektor, max_engel_etkisi, guc1 = self._engel_vektoru_isle(sonuc, rov_id, guc0)
-        rov_vektor, rov_carpan = self._rov_vektoru_isle(sonuc, guc0)
+        engel_vektor, max_engel_etkisi = self._engel_vektoru_isle(sonuc)
+        rov_vektor, rov_carpan = self._rov_vektoru_isle(sonuc)
 
         # Hedef agirligini yeni etkilerle 1 kere hesapla (kaldirilan cift cagir)
-        hedef_vektor, _ = self._hedef_vektoru_isle(sonuc, max_engel_etkisi)
+        hedef_vektor, guc1 = self._hedef_vektoru_isle(sonuc, max_engel_etkisi)
 
-        bileske_vektor: Vec3 = engel_vektor + rov_vektor + hedef_vektor
+        engel_vektor_agirlikli = engel_vektor * 0.4
+        rov_vektor_agirlikli = rov_vektor * 0.4
+        hedef_vektor_agirlikli = hedef_vektor * 0.2
+
+        bileske_vektor: Vec3 = engel_vektor_agirlikli + rov_vektor_agirlikli + hedef_vektor_agirlikli
         guc = max(guc0, guc1, rov_carpan)
 
-        return bileske_vektor, guc
+        return {
+            'hedef_vektor': hedef_vektor_agirlikli,
+            'engel_vektor': engel_vektor_agirlikli,
+            'rov_vektor': rov_vektor_agirlikli,
+            'hedef_gucu': guc1,
+            'engel_gucu': max_engel_etkisi,
+            'rov_gucu': rov_carpan,
+            'bileske_vektor': bileske_vektor,
+            'guc_orani': guc,
+        }
 
     def _guncelle_hareket_uygula(self, rov_id: int):
         """
@@ -512,11 +498,8 @@ class TemelGNCHelper:
         if not sonuc:
             return
 
-        bileske_vektor, guc = self._bileske_vektor_hesapla(sonuc, rov_id)
-        if bileske_vektor is None:
-            bileske_vektor = Vec3(0, 0, 0)
-        final_yon = bileske_vektor.normalized() if bileske_vektor.length() > 0.001 else Vec3(0, 0, 0)
-        self.vektor_to_motor_sim(final_yon, guc)
+        veriler = self._bileske_vektor_hesapla(sonuc, rov_id)
+        self.vektor_to_motor_sim(veriler)
 
     def guncelle(self, gat_kodu=None):
         """
