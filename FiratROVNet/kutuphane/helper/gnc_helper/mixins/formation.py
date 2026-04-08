@@ -298,23 +298,45 @@ class FormationMixin:
         initial_margin = margin if margin is not None else HareketAyarlari.FORMASYON_OFFSET-10
         min_aralik = HareketAyarlari.FORMASYON_MIN_ARALIK
         offset = offset if offset is not None else HareketAyarlari.FORMASYON_OFFSET-10
+        lider_id = None
+        lider_gps = None
+        lider_hareket_halinde = False
         try:
             self.filo._formasyon_hedefleri.clear()
-            lider_id, lider_gps = self.find_leader_info(sessiz=sessiz,g_id=g_id)
-            if lider_id is None: return None
+            lider_bilgi = self.find_leader_info(sessiz=sessiz, g_id=g_id)
+            lider_id = lider_bilgi[0] if lider_bilgi else None
+            lider_gps = lider_bilgi[1] if lider_bilgi else None
+            if lider_id is None:
+                if not sessiz:
+                    print(f"❌ [FORMASYON] Grup-{g_id} icin lider bulunamadi.")
+                self.cache_formasyon_result(None)
+                return None
 
             lider_mevcut_hedef = self.filo.hedef(rov_id=lider_id)
             lider_hareket_halinde = lider_mevcut_hedef is not None
 
             yasakli_noktalar = self.filo.ada_cevre()
             if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'engel_bulutu'):
-                dinamik_engeller = [[float(p[0]), float(p[1])] for p in self.filo.ortam_ref.engel_bulutu]
+                engel_bulutu = getattr(self.filo.ortam_ref, 'engel_bulutu', None) or []
+                dinamik_engeller = [[float(p[0]), float(p[1])] for p in engel_bulutu if p is not None and len(p) >= 2]
                 yasakli_noktalar.extend(dinamik_engeller)
 
-            hull_data = self.yeni_hull(yasakli_noktalar=yasakli_noktalar, offset=offset,g_id=g_id)
-            hull_obj = hull_data.get("hull")
-            hull_merkez = hull_data.get("center")
-            if not hull_obj: return None
+            hull_data = self.yeni_hull(yasakli_noktalar=yasakli_noktalar, offset=offset,g_id=g_id) or {}
+            hull_obj = hull_data.get("hull") if isinstance(hull_data, dict) else None
+            hull_merkez = hull_data.get("center") if isinstance(hull_data, dict) else None
+            if not hull_obj or not hull_merkez:
+                if not sessiz:
+                    print(f"⚠️ [FORMASYON] Grup-{g_id} icin hull olusturulamadi, lider merkezli fallback uygulanacak.")
+                return self._uygula_fallback_formasyon(
+                    lider_id=lider_id,
+                    lider_gps=lider_gps,
+                    lider_hareket_halinde=lider_hareket_halinde,
+                    is_3d=is_3d,
+                    dinamik=dinamik,
+                    sessiz=sessiz,
+                    g_id=g_id,
+                    sebep="Hull olusturulamadi",
+                )
 
             if self.filo.ortam_ref and hasattr(self.filo.ortam_ref, 'minimap'):
                 m_ui = self.filo.ortam_ref.minimap
@@ -415,21 +437,125 @@ class FormationMixin:
             
 
             
+            # Hull-uyumlu en iyi formasyon bulunamazsa, lider etrafinda
+            # temel bir formasyon fallback'i uygula ki komut bosa gitmesin.
+            fallback_result = self._uygula_fallback_formasyon(
+                lider_id=lider_id,
+                lider_gps=lider_gps,
+                lider_hareket_halinde=lider_hareket_halinde,
+                is_3d=is_3d,
+                dinamik=dinamik,
+                sessiz=sessiz,
+                g_id=g_id,
+                sebep="Optimum secim bulunamadi",
+            )
+            if fallback_result is not None:
+                return fallback_result
+
             # 🔹 BAŞARISIZ SONUCU DA CACHE'E KAY
             self.cache_formasyon_result(None)
+            if not sessiz:
+                print(f"❌ [FORMASYON] Grup-{g_id} icin uygulanabilir formasyon bulunamadi.")
             return None
         except Exception as e:
             self.filo.ds=e
+            if not sessiz:
+                print(f"❌ [FORMASYON] Grup-{g_id} secimi sirasinda hata: {e}")
+            fallback_result = self._uygula_fallback_formasyon(
+                lider_id=lider_id,
+                lider_gps=lider_gps,
+                lider_hareket_halinde=lider_hareket_halinde,
+                is_3d=is_3d,
+                dinamik=dinamik,
+                sessiz=sessiz,
+                g_id=g_id,
+                sebep="Hata nedeniyle fallback",
+            )
+            if fallback_result is not None:
+                return fallback_result
             self.cache_formasyon_result(None)  # 🔹 HATA DURUMUNDA DA CACHE'E YAZ
-            
-
-            
             return None
+
+    def _sayisal_degerler_gecerli_mi(self, *values) -> bool:
+        for value in values:
+            try:
+                if not math.isfinite(float(value)):
+                    return False
+            except (TypeError, ValueError):
+                return False
+        return True
+
+    def _uygula_fallback_formasyon(
+        self,
+        lider_id,
+        lider_gps,
+        lider_hareket_halinde,
+        is_3d,
+        dinamik,
+        sessiz,
+        g_id=0,
+        sebep="Fallback",
+    ):
+        if lider_id is None:
+            self.cache_formasyon_result(None)
+            return None
+
+        fallback_yaw = self.filo.get(lider_id, "yaw") or 0.0
+        fallback_merkez = lider_gps if lider_gps else (0.0, 0.0, -10.0)
+        fallback_aralik = max(
+            float(HareketAyarlari.FORMASYON_MIN_ARALIK),
+            float(HareketAyarlari.FORMASYON_VARSAYILAN_ARALIK),
+        )
+        fallback_f_id = 0  # LINE
+        fallback_pozisyonlar = Formasyon(self.filo).pozisyonlar(
+            fallback_f_id,
+            fallback_aralik,
+            is_3d,
+            fallback_merkez,
+            fallback_yaw,
+            g_id,
+        )
+
+        if not fallback_pozisyonlar:
+            self.cache_formasyon_result(None)
+            if not sessiz:
+                print(f"❌ [FORMASYON] Grup-{g_id} icin fallback da uygulanamadi.")
+            return None
+
+        self._apply_formation_results(
+            fallback_f_id,
+            fallback_aralik,
+            fallback_yaw,
+            fallback_merkez,
+            fallback_pozisyonlar,
+            lider_id,
+            is_3d,
+            dinamik,
+            sessiz,
+            lider_hareket_halinde,
+            g_id,
+        )
+        result = {
+            'f_id': int(fallback_f_id),
+            'aralik': round(float(fallback_aralik), 1),
+            'merkez': (round(float(fallback_merkez[0]), 2), round(float(fallback_merkez[1]), 2)),
+            'yaw': float(fallback_yaw),
+            'fallback': True,
+            'sebep': sebep,
+        }
+        self.cache_formasyon_result(result)
+        if not sessiz:
+            print(f"⚠️ [FORMASYON] {sebep}, fallback LINE uygulandi (Grup-{g_id}).")
+        return result
 
     def _apply_formation_results(self, f_id, aralik, yaw, merkez, pozisyonlar, lider_id, is_3d, dinamik, sessiz, lider_hareket_halinde, g_id=0):
         group_rov_list = self.filo.g_rovs.get(g_id)
         if not group_rov_list:
             if not sessiz: print(f"⚠️ [FORMASYON] Grup-{g_id} bulunamadı veya boş.")
+            return
+        if not self._sayisal_degerler_gecerli_mi(aralik, yaw):
+            if not sessiz:
+                print(f"❌ [FORMASYON] Geçersiz formasyon parametresi: aralık={aralik}, yaw={yaw}")
             return
         target_positions = {}
         if isinstance(pozisyonlar, dict):
@@ -458,6 +584,10 @@ class FormationMixin:
             except (TypeError, ValueError):
                 print(f"❌ [HATA] ROV-{r_id} için geçersiz pozisyon verisi: {pos}")
                 continue
+            if not self._sayisal_degerler_gecerli_mi(sim_x, sim_y, sim_z):
+                if not sessiz:
+                    print(f"❌ [FORMASYON] ROV-{r_id} için NaN/inf pozisyon atlandı: {pos}")
+                continue
             final_z = -10.0 if sim_z >= 0 else sim_z
             if r_id != lider_id:
                 if hasattr(self.filo, '_formasyon_hedefleri'):
@@ -474,40 +604,69 @@ class FormationMixin:
             self.filo.git(r_id, sim_x, sim_y, final_z, ai=True, sessiz=sessiz)
 
     def find_leader_info(self, sessiz: bool = False, g_id: int = 0) -> tuple:
-        lider_rov_id = None
-        lider_gps = None
+        def _gps_al(rov):
+            gps = None
+            if hasattr(self.filo, 'get'):
+                gps = self.filo.get(rov.id, "gps")
+            elif hasattr(rov, 'gps'):
+                gps = rov.gps
+            if gps is None:
+                return None
+            try:
+                return (float(gps[0]), float(gps[1]), float(gps[2]))
+            except (IndexError, TypeError, ValueError):
+                if not sessiz:
+                    print(f"⚠️ [UYARI] Lider ROV-{rov.id} GPS verisi bozuk: {gps}")
+                return (0.0, 0.0, 0.0)
+
         rov_listesi = self.filo.g_rovs.get(g_id)
         if not rov_listesi:
-            if not sessiz: print(f"⚠️ [FORMASYON] Grup-{g_id} listesi boş veya bulunamadı!")
+            if not sessiz:
+                print(f"⚠️ [FORMASYON] Grup-{g_id} listesi boş veya bulunamadı!")
             return None, None
+
+        # Lider bilgisini once leader_manager cache'inden çöz.
+        # Rol alanı senkron dışı kaldığında formasyon tarafı buradan kopuyordu.
+        leader_manager = getattr(self.filo, 'leader_manager', None)
+        if leader_manager is not None:
+            mevcut_liderler = getattr(leader_manager, 'mevcut_lider_id', {})
+            aday_lider_id = mevcut_liderler.get(g_id)
+            if isinstance(aday_lider_id, int) and aday_lider_id >= 0:
+                for rov in rov_listesi:
+                    if rov is None or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                        continue
+                    if getattr(rov, 'id', None) == aday_lider_id:
+                        lider_gps = _gps_al(rov)
+                        if lider_gps is None:
+                            if not sessiz:
+                                print(f"⚠️ [UYARI] Lider ROV-{aday_lider_id} GPS verisi yok!")
+                            return aday_lider_id, None
+                        return aday_lider_id, lider_gps
+
+        lider_rov_id = None
+        lider_gps = None
         for rov in rov_listesi:
-            if rov is None: continue
+            if rov is None:
+                continue
             rol = -1
-            if hasattr(rov, 'rol'):
-                rol = rov.rol
-            elif hasattr(rov, 'role'):
+            if hasattr(rov, 'role'):
                 rol = rov.role
+            elif hasattr(rov, 'rol'):
+                rol = rov.rol
             elif hasattr(rov, 'get'):
                 rol = rov.get("rol")
             elif hasattr(rov, 'gnc') and hasattr(rov.gnc, 'rol'):
                 rol = rov.gnc.rol
             if rol == 1:
                 lider_rov_id = rov.id
-                gps = None
-                if hasattr(self.filo, 'get'):
-                    gps = self.filo.get(rov.id, "gps")
-                elif hasattr(rov, 'gps'):
-                    gps = rov.gps
-                if gps:
-                    try:
-                        lider_gps = (float(gps[0]), float(gps[1]), float(gps[2]))
-                    except (IndexError, TypeError, ValueError):
-                        if not sessiz: print(f"⚠️ [UYARI] Lider ROV-{rov.id} GPS verisi bozuk: {gps}")
-                        lider_gps = (0.0, 0.0, 0.0)
-                else:
-                     if not sessiz: print(f"⚠️ [UYARI] Lider ROV-{rov.id} GPS verisi yok!")
+                lider_gps = _gps_al(rov)
+                if lider_gps is None and not sessiz:
+                    print(f"⚠️ [UYARI] Lider ROV-{rov.id} GPS verisi yok!")
+                if leader_manager is not None and hasattr(leader_manager, 'mevcut_lider_id'):
+                    leader_manager.mevcut_lider_id[g_id] = lider_rov_id
                 break
-        if lider_gps is None and not sessiz:
+
+        if lider_rov_id is None and not sessiz:
             if hasattr(self.filo, 'ds') and self.filo.ds:
                 print(f"Debug Info: {self.filo.ds}")
             print(f"❌ [HATA] Grup-{g_id} içinde Lider ROV tespit edilemedi.")

@@ -70,7 +70,13 @@ class HullInformationManager:
                 'rol': int(rov.role),  # 0=normal, 1=lider
                 'yaw': float(rov.rotation_y),
                 'sonar': float(rov.son_sonar_mesafesi),
-                'lidar': dict(rov.son_lidar_mesafeleri) if isinstance(rov.son_lidar_mesafeleri, dict) else {}
+                # 🔹 Merkezi lidar kaynakları: rov.l0, rov.l1, rov.l2, rov.l3 properties kullan
+                'lidar': {
+                    0: float(rov.l0),
+                    1: float(rov.l1),
+                    2: float(rov.l2),
+                    3: float(rov.l3),
+                } if (hasattr(rov, 'l0') and hasattr(rov, 'l1') and hasattr(rov, 'l2') and hasattr(rov, 'l3')) else dict(rov.son_lidar_mesafeleri) if isinstance(rov.son_lidar_mesafeleri, dict) else {}
             }
             
             # GNC sistemi varsa ek bilgiler
@@ -159,7 +165,7 @@ class HullInformationManager:
                 fallback[rov_id] = [float(formasyon_merkez[0]), float(formasyon_merkez[1])]
             return fallback
     
-    def get_hull_information(self, sample_count=50, g_id=0, hull_output=None, sessiz=True, offset_threshold=25.0):
+    def get_hull_information(self, sample_count=50, g_id=0, kayit=False, hull_output=None, sessiz=True, offset_threshold=25.0):
         """
         🎯 Kapsamlı hull bilgisi: hull merkezi, sampled points, formasyon & grup detayları
         
@@ -174,6 +180,7 @@ class HullInformationManager:
         Args:
             sample_count: İstenen örnek nokta sayısı (default 50)
             g_id: Grup ID'si (default 0)
+            kayit: True ise sonucu JSON dosyasına kaydet (append mode)
             hull_output: Özel hull dict (None ise otomatik calc)
             sessiz: True ise verbose log yazma
             offset_threshold: Hull merkez değişim eşiği (metres) - altında ise hiçbir şey yapma (default 25m)
@@ -219,6 +226,7 @@ class HullInformationManager:
                 if not hull_output:
                     if not sessiz:
                         print("❌ Hull calculation başarısız")
+                        print("⚠️ get_hull_information: result None")
                     return None
                 
                 hull_center = hull_output.get('center', (0, 0))
@@ -238,6 +246,7 @@ class HullInformationManager:
                     # Hull merkez az değişti - KAYDETME!
                     if not sessiz:
                         print(f"⊙ Hull merkez az değişti ({distance:.2f}m < {offset_threshold}m) - Veri kaydedilmedi")
+                        print("⚠️ get_hull_information: result None")
                     return None
             
             # Hull'dan sample'lar al
@@ -312,12 +321,18 @@ class HullInformationManager:
             self.last_hull_information = result
             self.hull_information_timestamp = datetime.now()
             self.last_hull_center = hull_center  # 🔹 Önceki merkez güncelle (sonraki karşılaştırma için)
+
+            if kayit:
+                success = self.save_hull_information('hull_information.json', result, sessiz=sessiz)
+                if not success:
+                    print("⚠️ Hull information kaydedilemedi")
             
             return result
             
         except Exception as e:
             if not sessiz:
                 print(f"❌ get_hull_information hatası: {e}")
+                print("⚠️ get_hull_information: result None")
                 import traceback
                 traceback.print_exc()
             return None

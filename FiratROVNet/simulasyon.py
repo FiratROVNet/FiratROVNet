@@ -2,8 +2,8 @@ import math
 import random
 import threading
 import code
-import numpy as np
-from ursina import *  # type: ignore[reportMissingImports]
+import numpy as np  # type: ignore[import-not-found]
+from ursina import *  # type: ignore[import-not-found]
 from ursina import (  # type: ignore[reportMissingImports]
     Entity, Vec3, destroy, raycast, Text, color, time,
     camera, Mesh, window, application, mouse, Ursina, EditorCamera,
@@ -11,14 +11,13 @@ from ursina import (  # type: ignore[reportMissingImports]
 )
 
 # Yerel modül importları
-from .config import (
-    SensorAyarlari, GATLimitleri, HareketAyarlari,
-    HavuzAyarlari,
+from FiratROVNet.config import (  # type: ignore[import-not-found]
+    SensorAyarlari, GATLimitleri, HareketAyarlari, 
     FizikSabitleri, ROVModelleri
 )
-from .utils import sim_to_ursina, ursina_to_sim
-from .kutuphane.helper.EntityLoader import EntityLoader
-from .kutuphane.helper.simulasyon_helper import OrtamHelper
+from FiratROVNet.utils import sim_to_ursina, ursina_to_sim  # type: ignore[import-not-found]
+from FiratROVNet.kutuphane.helper.EntityLoader import EntityLoader  # type: ignore[import-not-found]
+from FiratROVNet.kutuphane.helper.simulasyon_helper import OrtamHelper  # type: ignore[import-not-found]
 
 # ============================================================
 # 1. ROV SINIFI (Mantık ve Fizik)
@@ -29,19 +28,21 @@ class ROV(Entity):
 
     def __init__(self, rov_id,group_id, loader_ref=None, model_key='submarine', **kwargs):
         super().__init__()
+        self.motorlar = []
         self.id = rov_id
         self.environment_ref = None
         
         # Fiziksel ve Durumsal Durum
         self.velocity = Vec3(0, 0, 0)
         self.battery, self.role, self.gat_kodu = 1.0, 0, 0
-        self.rotation_y = 0
+        self.rotation_y = 0.0
         
         # Sensör Verileri
         self.sensor_config = SensorAyarlari.VARSAYILAN.copy()
         self.sensor_config['engel_mesafesi'] = GATLimitleri.ENGEL  # GATLimitleri'ne göre sabitle (20.0m)
-        self.son_sonar_mesafesi = -1
+        self.son_sonar_mesafesi = -1.0
         self.son_lidar_mesafeleri: dict[int, float] = {0: -1.0, 1: -1.0, 2: -1.0, 3: -1.0}  # L0: İleri, L1: Sağ, L2: Sol, L3: Dip
+        self.son_lidar_noktalari: dict[int, tuple[float, float, float, str] | None] = {0: None, 1: None, 2: None, 3: None}
         self.engel_mesafesi = 999.0
         
         # Görsel Referanslar
@@ -70,9 +71,10 @@ class ROV(Entity):
         if not hasattr(ortam_ref, 'rovs'): ortam_ref.rovs = []
         
         # ID'yi mevcut maksimumdan bir ileri ata (yeniden numaralandirma yok)
-        mevcut_ids = [r.id for r in ortam_ref.rovs if r is not None and hasattr(r, 'id')]
+        mevcut_ids = [getattr(r, 'id') for r in getattr(ortam_ref, 'rovs', []) if r is not None and hasattr(r, 'id')]
         self.id = (max(mevcut_ids) + 1) if mevcut_ids else 0
-        ortam_ref.rovs.append(self)
+        if hasattr(ortam_ref, 'rovs') and isinstance(ortam_ref.rovs, list):
+            ortam_ref.rovs.append(self)
         
         self._etiket_guncelle()
         return True
@@ -85,31 +87,36 @@ class ROV(Entity):
             silinen_id = self.id
 
             # --- YENİ: Filo verilerini temizle ---
-            if hasattr(ortam, 'filo') and ortam.filo:
-                ortam.filo.rov_verilerini_temizle(silinen_id)
+            filo_attr = getattr(ortam, 'filo', None)
+            if filo_attr is not None:
+                filo_attr.rov_verilerini_temizle(silinen_id)
 
             # --- YENİ: Sonar çizgilerini (İletişim okları) temizle ---
-            if hasattr(ortam, 'sonar_cizgiler'):
-                for pair in list(ortam.sonar_cizgiler.keys()):
+            sonar_dict = getattr(ortam, 'sonar_cizgiler', None)
+            if isinstance(sonar_dict, dict):
+                for pair in list(sonar_dict.keys()):
                     if silinen_id in pair:
-                        data = ortam.sonar_cizgiler[pair]
+                        data = sonar_dict[pair]
                         if isinstance(data, tuple):
                             destroy(data[0])
                         else:
                             destroy(data)
-                        del ortam.sonar_cizgiler[pair]
+                        sonar_dict.pop(pair, None)
 
             # --- YENI: Grup listesinden temizle ---
-            if hasattr(ortam, 'g_rovs') and isinstance(ortam.g_rovs, dict):
-                grup = ortam.g_rovs.get(self.group_id)
+            g_rovs = getattr(ortam, 'g_rovs', None)
+            if isinstance(g_rovs, dict):
+                grup = g_rovs.get(self.group_id)
                 if grup:
-                    ortam.g_rovs[self.group_id] = [r for r in grup if r and r.id != silinen_id]
+                    g_rovs[self.group_id] = [r for r in grup if r and getattr(r, 'id', None) != silinen_id]
 
             # 1. Referansi None yap (id korunur)
-            for idx, r in enumerate(ortam.rovs):
-                if r and getattr(r, 'id', None) == silinen_id:
-                    ortam.rovs[idx] = None
-                    break
+            rovs = getattr(ortam, 'rovs', None)
+            if isinstance(rovs, list):
+                for idx, r in enumerate(rovs):
+                    if r and getattr(r, 'id', None) == silinen_id:
+                        rovs[idx] = None
+                        break
 
             # 2. Görselleri temizle (havuz konteynerleri)
             if hasattr(self, 'label') and self.label: destroy(self.label)
@@ -126,15 +133,15 @@ class ROV(Entity):
     def _etiket_guncelle(self):
         """ID/rol degistiginde etiketi gunceller. Create-once: label sadece yoksa olusturulur, sonra sadece .text guncellenir."""
         metin = f"{'LIDER' if self.role == 1 else 'ROV'}-{self.id}"
-        if self.label:
-            self.label.text = metin
+        if getattr(self, 'label', None):
+            self.label.text = metin  # type: ignore
         else:
             self.label = Text(text=metin, parent=self, y=1.5, scale=15, origin=(0,0), color=color.white)
 
     # --- get metodunu bu 'Güvenli' haliyle DEĞİŞTİR ---
     def get(self, veri):
         # Obje silinmişse Panda3D koordinat hatası (AssertionError) vermemesi için kontrol
-        if not self or (hasattr(self, 'is_destroyed') and self.is_destroyed):
+        if not self or (hasattr(self, 'is_destroyed') and getattr(self, 'is_destroyed')):
             return None
         try:
             d = {"gps": [self.x, self.y, self.z], 
@@ -146,61 +153,81 @@ class ROV(Entity):
         except:
             return None
 
-
-    def update(self):
-        """
-        Ursina Entity.update().
-        Central-update modunda (ortam.central_update=True) per-entity update devre disidir;
-        tum sensor/limit/batarya islemleri Filo.guncelle_hepsi icinden tek sefer yapilir.
-        """
-        if not self.environment_ref or getattr(self.environment_ref, 'central_update', False):
-            return
-
-        # Merkezi loop kullanılmıyorsa: sensör+batarya+limitleri burada sürdür.
-        print("güncelle sensörler")
-        self._guncelle_sensorler()
-        if self.velocity.length() > 0.01:
-            self.battery -= FizikSabitleri.BATARYA_SOMURME_KATSAYISI * time.dt * self.velocity.length()  # type: ignore[attr-defined]
-
-        # Derinlik limitleri
-        if self.y > 0:
-            self.y = 0
-        sea_floor_y = getattr(self.environment_ref, 'SEA_FLOOR_Y', -50.0)
-        if self.y < sea_floor_y:
-            self.y = sea_floor_y
+    # 🔹 MERKEZI LIDAR PROPERTIES — Her çağrıldığında önbellek değeri döner
+    @property
+    def l0(self) -> float:
+        """L0 (İleri lidar) mesafesi. Döner: float (>0 hit, -1 miss)"""
+        return self.son_lidar_mesafeleri.get(0, -1.0)
+    
+    @property
+    def l1(self) -> float:
+        """L1 (Sağ lidar) mesafesi. Döner: float (>0 hit, -1 miss)"""
+        return self.son_lidar_mesafeleri.get(1, -1.0)
+    
+    @property
+    def l2(self) -> float:
+        """L2 (Sol lidar) mesafesi. Döner: float (>0 hit, -1 miss)"""
+        return self.son_lidar_mesafeleri.get(2, -1.0)
+    
+    @property
+    def l3(self) -> float:
+        """L3 (Dip lidar) mesafesi. Döner: float (>0 hit, -1 miss)"""
+        return self.son_lidar_mesafeleri.get(3, -1.0)
 
     def _guncelle_sensorler(self):
-            menzil = GATLimitleri.ENGEL
-            base_origin = self.world_position + Vec3(0, 0.5, 0)
 
-            # Filo frame-basinda hazirlanan global ignore tuple varsa onu kullan.
+            menzil = GATLimitleri.ENGEL
+            origin = self.world_position + Vec3(0, 0.5, 0)
+            origin_l3 = self.world_position + Vec3(0, -8, 0)
+
+            # 🔹 MERKEZI IGNORE TUPLE: Filo frame başında guncelle_hepsi() içinde _build_ignore_tuple() 
+            # çağrıyor, ortam_ref.ignore_tuple otomatik güncelleniyor. Burada sadece kullan.
             ignore_tuple = ()
             if self.environment_ref:
                 ignore_tuple = getattr(self.environment_ref, 'ignore_tuple', ())
-
-            if not ignore_tuple and self.environment_ref and hasattr(self.environment_ref, 'rovs'):
-                ignores = []
-                for r in self.environment_ref.rovs:
-                    if not r:
-                        continue
-                    ignores.append(r)
-                    for child in getattr(r, 'children', []):
-                        ignores.append(child)
-                        ignores.extend(getattr(child, 'children', []))
-                ignore_tuple = tuple(ignores)
 
             def buluta_ekle(hit_point, lidar_idx):
                 ortam = self.environment_ref
                 if not ortam or not hasattr(ortam, 'engel_bulutu'):
                     return
-                ortam.engel_bulutu.append((
-                    float(hit_point.x),
-                    float(hit_point.z),
-                    float(hit_point.y),
+                try:
+                    hit_x = float(hit_point.x)
+                    hit_z = float(hit_point.z)
+                    hit_y = float(hit_point.y)
+                except (AttributeError, TypeError, ValueError):
+                    return
+                if not math.isfinite(hit_x) or not math.isfinite(hit_y) or not math.isfinite(hit_z):
+                    return
+                surface_y = float(getattr(ortam, 'WATER_SURFACE_Y_BASE', 0.0))
+                sea_floor_y = float(getattr(ortam, 'SEA_FLOOR_Y', -50.0))
+                # Su yuzeyine yakin isabetleri (L0/L1/L2 sensorleri) filtrele.
+                # Bu noktalari buluta yazmak minimapte yalanci engel olusturuyor.
+                if lidar_idx in (0, 1, 2) and hit_y >= surface_y - 1.0:
+                    return
+                # Dip lidarinin taban vuruslarini 2D engel bulutuna yazmak,
+                # top-down minimapte gercek engel degilken kare bloklar olusturur.
+                if lidar_idx == 3 and hit_y <= sea_floor_y + 1.0:
+                    return
+                hit_data = (
+                    hit_x,
+                    hit_z,
+                    hit_y,
                     f"L{lidar_idx}",
-                ))
-                if len(ortam.engel_bulutu) > 12000:
-                    del ortam.engel_bulutu[:2000]
+                )
+
+                # Canli minimap icin her lidar/sensor noktasi tekil olarak tutulur.
+                lidar_noktalari = getattr(self, 'son_lidar_noktalari', None)
+                if isinstance(lidar_noktalari, dict):
+                    lidar_noktalari[lidar_idx] = hit_data
+
+                # Geriye donuk uyumluluk: diger sistemler hala engel_bulutu listesini okuyabilir.
+                ortam.engel_bulutu.append(hit_data)
+                try:
+                    ortam_engel_bulutu = getattr(ortam, 'engel_bulutu', [])
+                    if isinstance(ortam_engel_bulutu, list) and len(ortam_engel_bulutu) > 12000:
+                        ortam.engel_bulutu = ortam_engel_bulutu[2000:]  # type: ignore
+                except Exception:
+                    pass
 
             def safe_raycast(origin, direction, dist, ignore_list):
                 safe_start = origin + (direction * 1.5)
@@ -208,27 +235,30 @@ class ROV(Entity):
                 return raycast(safe_start, direction, distance=ray_dist, ignore=ignore_list, debug=False)
 
             # SONAR (L0)
-            hit_sonar = safe_raycast(base_origin, self.forward, menzil, ignore_tuple)
+            hit_sonar = safe_raycast(origin, self.forward, menzil, ignore_tuple)
             if hit_sonar.hit:
                 self.engel_mesafesi = hit_sonar.distance + 1.5
                 self.son_sonar_mesafesi = self.engel_mesafesi
                 self._kesikli_cizgi_ciz(hit_sonar.world_point, self.engel_mesafesi)
-                buluta_ekle(hit_sonar.world_point, 0)
             else:
                 self.engel_mesafesi = 999.0
                 self.son_sonar_mesafesi = -1.0
                 if self.engel_cizgi:
                     self.engel_cizgi.enabled = False
 
-            # LIDARLAR (L0, L1, L2)
+            # LIDARLAR (L0, L1, L2, L3)
             directions = [
                 (0, self.forward, color.cyan),
                 (1, self.right, color.blue),
                 (2, -self.right, color.green),
+                (3, Vec3(0, -1, 0), color.magenta),
             ]
 
             for idx, dir_vec, clr in directions:
-                hit = safe_raycast(base_origin, dir_vec, menzil, ignore_tuple)
+                if isinstance(getattr(self, 'son_lidar_noktalari', None), dict):
+                    self.son_lidar_noktalari[idx] = None
+                ray_origin = origin_l3 if idx == 3 else origin
+                hit = safe_raycast(ray_origin, dir_vec, menzil, ignore_tuple)
                 if hit.hit:
                     dist = hit.distance + 1.5
                     self.son_lidar_mesafeleri[idx] = dist
@@ -237,23 +267,12 @@ class ROV(Entity):
                 else:
                     self.son_lidar_mesafeleri[idx] = -1.0
                     self._lidar_cizgi_temizle(idx)
-
-            # L3: Dip lidar
-            origin_l3 = self.world_position + Vec3(0, -2, 0)
-            hit_l3 = raycast(origin_l3, Vec3(0, -1, 0), distance=max(1, int(menzil)), ignore=list(ignore_tuple), debug=False)
-            if hit_l3.hit:
-                self.son_lidar_mesafeleri[3] = hit_l3.distance
-                self._lidar_cizgi_ciz(3, hit_l3.world_point, hit_l3.distance, color.magenta)
-                buluta_ekle(hit_l3.world_point, 3)
-            else:
-                self.son_lidar_mesafeleri[3] = -1.0
-                self._lidar_cizgi_temizle(3)
     def set(self, ayar, deger):
         """GNC sistemi tarafından çağrılır."""
         if ayar == "rol":
             self.role = int(deger)
-            if self.label:
-                self.label.text = f"{'LIDER' if self.role == 1 else 'ROV'}-{self.id}"
+            if getattr(self, 'label', None):
+                self.label.text = f"{'LIDER' if self.role == 1 else 'ROV'}-{self.id}"  # type: ignore
                 self.color = color.red if self.role == 1 else color.white
         elif ayar == "yaw":
             self.rotation_y = float(deger)
@@ -292,13 +311,20 @@ class ROV(Entity):
         seg_list = cizgi._segments
         max_seg = len(seg_list)
         c = color.red if mesafe < 5 else (color.orange if mesafe < 10 else color.yellow)
-        yon = (hedef - self.position).normalized()
+        delta = hedef - self.position
+        if delta.is_nan() or delta.length() <= 1e-6:
+            cizgi.enabled = False
+            for seg in seg_list:
+                seg.enabled = False
+            return
+        yon = delta.normalized()
         n_use = min(int(mesafe), max_seg)
         for i in range(n_use):
             seg = seg_list[i]
             seg.position = self.position + yon * (i + 0.5)
             seg.color = c
-            seg.look_at(hedef)
+            if not (hedef - seg.position).is_nan() and (hedef - seg.position).length() > 1e-6:
+                seg.look_at(hedef)
             seg.enabled = True
         for i in range(n_use, max_seg):
             seg_list[i].enabled = False
@@ -311,13 +337,20 @@ class ROV(Entity):
             return
         seg_list = cont._segments
         max_seg = len(seg_list)
-        yon = (hedef - self.position).normalized()
+        delta = hedef - self.position
+        if delta.is_nan() or delta.length() <= 1e-6:
+            cont.enabled = False
+            for seg in seg_list:
+                seg.enabled = False
+            return
+        yon = delta.normalized()
         n_use = min(int(mesafe), max_seg)
         for i in range(n_use):
             seg = seg_list[i]
             seg.position = self.position + yon * (i + 0.5)
             seg.color = renk
-            seg.look_at(hedef)
+            if not (hedef - seg.position).is_nan() and (hedef - seg.position).length() > 1e-6:
+                seg.look_at(hedef)
             seg.enabled = True
         for i in range(n_use, max_seg):
             seg_list[i].enabled = False
@@ -342,10 +375,10 @@ class Minimap(Entity):
         padding = 0.05
 
         super().__init__(
-            parent=camera.ui,
+            parent=camera.ui,  # type: ignore
             scale=(self.BASE_SCALE, self.BASE_SCALE),
-            origin=(-0.5, -0.5),      # Haritanın kendi sol altı
-            position=(0.62, -0.21),  # Sol alt köşeden içeri
+            origin=(-0.5, -0.5),      # type: ignore
+            position=(0.62, -0.21),  # type: ignore
             **kwargs
         )
 
@@ -369,23 +402,8 @@ class Minimap(Entity):
         self.gecici_hedef_ikonu = None # debug=True iken kullanılan geçici hedef
         # Minimap __init__ içinde:
 
-        self.obstacle_cloud_entity = None # Tek bir entity kullanacağız
-
-        # 1. Engel noktalarının koordinatlarını tutacak liste
-        self.engel_vertex_listesi = []
-        self.engel_color_listesi = []
-
-        # 2. Tek bir Mesh oluşturuyoruz (mode='point' önemli)
-        # thickness=2 yaparak o 'kırmızı blok' sorununu baştan çözüyoruz.
-        self.engel_mesh = Mesh(vertices=[], colors=[], mode='point', thickness=int(0.016 * 1000) // 1000 or 1, static=False)
-
-        # 3. Bu Mesh'i ekranda gösterecek TEK Entity
-        self.engel_gorseli = Entity(
-            parent=self, # Veya self.minimap_panel, nereye koyuyorsan
-            model=self.engel_mesh,
-            color=color.white,
-            z=-0.01 # Haritanın hafif önünde
-        )
+        # Her engel noktasi ayri bir mesh-entity olarak cizilir (pool ile yeniden kullanilir).
+        self.engel_nokta_havuzu = []
         
         self._engel_bulutu_cizilen_len = 0
         self.kayitli_noktalar = set()
@@ -402,19 +420,22 @@ class Minimap(Entity):
         
         self.visible = durum
         # Tüm çocukları (grid, ikonlar vb) toplu kapat/aç
-        for child in self.children:
-            child.enabled = durum
+        for child in getattr(self, 'children', []):
+            child.enabled = durum  # type: ignore
         
         # Hull ve Path görünürlüğünü özel olarak ayarla
-        if self.hull_entity: self.hull_entity.enabled = (convex and durum)
-        if self.path_entity: self.path_entity.enabled = (a_star and durum)
+        h_entity = getattr(self, 'hull_entity', None)
+        p_entity = getattr(self, 'path_entity', None)
+        if h_entity is not None: h_entity.enabled = (convex and durum)  # type: ignore
+        if p_entity is not None: p_entity.enabled = (a_star and durum)  # type: ignore
 
     # --- KRİTİK GÜNCELLEME: update_hull metodu ---
     def update_hull(self, points):
         """Filo GNC tarafından gönderilen noktaları kullanarak Cyan güvenlik bölgesini çizer. Create-once, mesh güncelle."""
+        h_entity = getattr(self, 'hull_entity', None)
         if not points or len(points) < 3:
-            if self.hull_entity:
-                self.hull_entity.enabled = False
+            if h_entity is not None:
+                h_entity.enabled = False  # type: ignore
             return
         verts = []
         for p in points:
@@ -422,42 +443,43 @@ class Minimap(Entity):
             mp = self.dunya_to_harita(px, pz)
             verts.append((mp.x, mp.y, -0.25))
         verts.append(verts[0])
-        if self.hull_entity is None:
+        if h_entity is None:
             self.hull_entity = Entity(
                 parent=self,
-                model=Mesh(vertices=verts, mode='line', thickness=2),
-                color=color.cyan,
+                model=Mesh(vertices=verts, mode='line', thickness=2),  # type: ignore
+                color=color.cyan,  # type: ignore
                 alpha=0.6,
                 enabled=self.visible
             )
         else:
-            self.hull_entity.model.vertices = verts
-            self.hull_entity.model.generate()
-            self.hull_entity.enabled = self.visible
+            h_entity.model.vertices = verts  # type: ignore
+            h_entity.model.generate()  # type: ignore
+            h_entity.enabled = self.visible  # type: ignore
 
     # --- KRİTİK GÜNCELLEME: update_path metodu ---
     def update_path(self, path_points):
         """A* algoritmasından gelen yeşil rota çizgisini günceller. Create-once, mesh güncelle."""
+        p_entity = getattr(self, 'path_entity', None)
         if not path_points or len(path_points) < 2:
-            if self.path_entity:
-                self.path_entity.enabled = False
+            if p_entity is not None:
+                p_entity.enabled = False  # type: ignore
             return
         verts = []
         for p in path_points:
             mp = self.dunya_to_harita(p[0], p[1])
             verts.append((mp.x, mp.y, -0.3))
-        if self.path_entity is None:
+        if p_entity is None:
             self.path_entity = Entity(
                 parent=self,
-                model=Mesh(vertices=verts, mode='line', thickness=3),
-                color=color.lime,
+                model=Mesh(vertices=verts, mode='line', thickness=3),  # type: ignore
+                color=color.lime,  # type: ignore
                 alpha=0.9,
                 enabled=self.visible
             )
         else:
-            self.path_entity.model.vertices = verts
-            self.path_entity.model.generate()
-            self.path_entity.enabled = self.visible
+            p_entity.model.vertices = verts  # type: ignore
+            p_entity.model.generate()  # type: ignore
+            p_entity.enabled = self.visible  # type: ignore
 
     def dunya_to_harita(self, x, z):
         f = 1.0 / (self.havuz_genisligi * 2)
@@ -473,25 +495,26 @@ class Minimap(Entity):
             if not self.visible or not self.ortam_ref: return
             
             if hasattr(self.ortam_ref, 'rovs'):
-                mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
-                active_ids = {r.id for r in mevcut_rovlar}
+                mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) if r and not (getattr(r, 'is_destroyed', False))]
+                active_ids = {getattr(r, 'id', -1) for r in mevcut_rovlar}
                 
                 # --- ÖNCE SİLİNENLERİ KALDIR ---
                 for rid in list(self.rov_ikonlari.keys()):
                     if rid not in active_ids:
                         destroy(self.rov_ikonlari[rid])
-                        del self.rov_ikonlari[rid]
+                        self.rov_ikonlari.pop(rid, None)
 
                 # --- SONRA MEVCUTLARI GÜNCELLE ---
                 for rov in mevcut_rovlar:
-                    target = self.dunya_to_harita(rov.x, rov.z)
+                    target = self.dunya_to_harita(rov.x, rov.z)  # type: ignore
 
-                    if rov.id not in self.rov_ikonlari:
-                        self.rov_ikonlari[rov.id] = self.loader.create_rov_icon(self, rov.id, rov.color)
-                    icon = self.rov_ikonlari[rov.id]
-                    icon.position = target
-                    icon.rotation_z = -rov.rotation_y
-                    icon.color = rov.color
+                    if getattr(rov, 'id', -1) not in self.rov_ikonlari:
+                        self.rov_ikonlari[getattr(rov, 'id', -1)] = self.loader.create_rov_icon(self, getattr(rov, 'id', -1), getattr(rov, 'color', color.white))
+                    icon = self.rov_ikonlari.get(getattr(rov, 'id', -1))
+                    if icon:
+                        icon.position = target
+                        icon.rotation_z = -float(rov.rotation_y)  # type: ignore
+                        icon.color = getattr(rov, 'color', color.white)  # type: ignore
 
             self._vektor_ve_hedef_guncelle()
 
@@ -512,15 +535,15 @@ class Minimap(Entity):
                     continue
                 x0, y0 = verts[0][0], verts[0][1]
                 x1, y1 = verts[1][0], verts[1][1]
-                sig_sum += round(x0, 4) + round(y0, 4) + round(x1, 4) + round(y1, 4)
-            sig = (len(apf_list), round(sig_sum, 4))
+                sig_sum += round(float(x0), 4) + round(float(y0), 4) + round(float(x1), 4) + round(float(y1), 4)  # type: ignore
+            sig = (len(apf_list), round(float(sig_sum), 4))  # type: ignore
         else:
             sig = (0, 0.0)
         if self._apf_cache_sig != sig:
-            self._apf_cache_sig = sig
+            self._apf_cache_sig = sig  # type: ignore
             n_use = min(len(apf_list), self._apf_vektor_pool_size)
             if self._apf_vektor_pool is None:
-                self._apf_vektor_pool = []
+                self._apf_vektor_pool = []  # type: ignore
                 for _ in range(self._apf_vektor_pool_size):
                     mesh = Mesh(vertices=[(0, 0, z_line), (0, 0, z_line)], mode='line', thickness=2)
                     e = Entity(
@@ -530,113 +553,65 @@ class Minimap(Entity):
                         alpha=0.95,
                         z=z_line
                     )
-                    self._apf_vektor_pool.append(e)
+                    self._apf_vektor_pool.append(e)  # type: ignore
             pool = self._apf_vektor_pool
             # Titremeyi onlemek icin koordinatlari yuvarla (kucuk degisimler cizimi degistirmez)
             round_ = 3
             for i in range(n_use):
-                verts, c_code = apf_list[i]
+                verts, c_code = apf_list[i]  # type: ignore
                 if not verts or len(verts) < 2:
-                    pool[i].enabled = False
+                    pool[i].enabled = False  # type: ignore
                     continue
                 c = vektor_renkler.get(c_code, color.white)
-                verts_stable = [tuple(round(v, round_) for v in pt) for pt in verts]
-                pool[i].model.vertices = verts_stable
-                pool[i].model.generate()
-                pool[i].color = c
-                pool[i].enabled = True
-            for i in range(n_use, len(pool)):
-                pool[i].enabled = False
+                verts_stable = [tuple(round(float(v), int(round_)) for v in pt) for pt in verts]  # type: ignore
+                pool[i].model.vertices = verts_stable  # type: ignore
+                pool[i].model.generate()  # type: ignore
+                pool[i].color = c  # type: ignore
+                pool[i].enabled = True  # type: ignore
+            for i in range(n_use, len(pool if pool is not None else [])):  # type: ignore
+                pool[i].enabled = False  # type: ignore
 
     def _apf_vektorlari_temizle(self):
         """APF vektorlerini gizler (havuz entity'leri yok edilmez, sadece cache sifirlanir)."""
         self._apf_cache_sig = None
         if self._apf_vektor_pool:
-            for e in self._apf_vektor_pool:
-                e.enabled = False
+            for e in (self._apf_vektor_pool or []):
+                e.enabled = False  # type: ignore
 
     def _engel_bulutu_guncelle_yedek(self):
-        bulut = getattr(self.ortam_ref, 'engel_bulutu', [])
-        if len(bulut) < self._engel_bulutu_cizilen_len:
-            for e in list(self.engel_noktalari):
-                destroy(e)
-            self.engel_noktalari.clear()
-            self._engel_bulutu_cizilen_len = 0
-        for i in range(self._engel_bulutu_cizilen_len, len(bulut)):
-            pos = self.dunya_to_harita(bulut[i][0], bulut[i][1])
-            if abs(pos.x) < 0.5 and abs(pos.y) < 0.5:
-                self.engel_noktalari.append(self.loader.create_obstacle_dot(self, pos))
-                if len(self.engel_noktalari) > 150: destroy(self.engel_noktalari.pop(0))
-        self._engel_bulutu_cizilen_len = len(bulut)
+        # Engel gosterimi kapatildi: minimapte algilanan engeller cizilmez.
+        for e in list(self.engel_noktalari):
+            if e is not None:
+                e.enabled = False  # type: ignore
+        for e in list(getattr(self, 'engel_nokta_havuzu', [])):
+            if e is not None:
+                e.enabled = False  # type: ignore
+        self._engel_bulutu_cizilen_len = 0
+
+    def _engel_nokta_entity_al(self, idx: int):
+        while len(self.engel_nokta_havuzu) <= idx:
+            nokta_mesh = Mesh(vertices=[(0, 0, 0)], mode='point', thickness=3, static=False)
+            nokta_entity = Entity(
+                parent=self,
+                model=nokta_mesh,
+                color=color.white,
+                z=-0.01,
+                enabled=False,
+            )
+            self.engel_nokta_havuzu.append(nokta_entity)
+        return self.engel_nokta_havuzu[idx]
 
 
     def _engel_bulutu_guncelle(self):
-        bulut = getattr(self.ortam_ref, 'engel_bulutu', [])
-        
-        # Reset durumunda hafızayı da temizle
-        if len(bulut) < self._engel_bulutu_cizilen_len:
-            self.engel_vertex_listesi.clear()
-            self.kayitli_noktalar.clear() # Hafızayı sil
-            self.engel_color_listesi.clear()
-            self.engel_mesh.vertices = []
-            self.engel_mesh.colors = []
-            self.engel_mesh.generate()
-            self._engel_bulutu_cizilen_len = 0
-
-        yeni_veri_var = False
-        
-        # Sadece yeni gelen verilere bakıyoruz
-        for i in range(self._engel_bulutu_cizilen_len, len(bulut)):
-            # 1. Koordinatı harita düzlemine çevir
-            pos = self.dunya_to_harita(bulut[i][0], bulut[i][1])
-            
-            # 2. Koordinatları YUVARLA (Çok Önemli!)
-            # Virgülden sonra 3 hane hassasiyet yeterlidir. 
-            # (Örn: 0.12345 ile 0.12346 aynı nokta sayılsın istiyoruz)
-            x_key = round(pos.x, 3)
-            y_key = round(pos.y, 3)
-            point_key = (x_key, y_key)
-            
-            # 3. KONTROL: Bu noktayı daha önce çizdik mi?
-            if point_key not in self.kayitli_noktalar:
-                
-                # Sınır kontrolü
-                if abs(pos.x) < 0.8 and abs(pos.y) < 0.8:
-                    # Listeye ekle
-                    self.engel_vertex_listesi.append(Vec3(pos.x, pos.y, 0))
-
-                    # Derinlige gore renk belirle (gri tonlar)
-                    # -10m uzeri engeller sabit kahverengi
-                    y_val = bulut[i][2] if bulut[i] is not None and len(bulut[i]) >= 3 else 0.0
-                    if float(y_val) > -10.0:
-                        c = color.rgb(0.45, 0.3, 0.2)
-                    else:
-                        surface_y = getattr(self.ortam_ref, 'WATER_SURFACE_Y_BASE', 0.0)
-                        floor_y = getattr(self.ortam_ref, 'SEA_FLOOR_Y', -50.0)
-                        depth_span = max(0.001, surface_y - floor_y)
-                        t = (surface_y - float(y_val)) / depth_span
-                        t = max(0.0, min(1.0, t))
-                        dark_gray = color.rgb(0.2, 0.2, 0.2)
-                        light_gray = color.rgb(0.85, 0.85, 0.85)
-                        c = color.rgb(
-                            dark_gray.r + (light_gray.r - dark_gray.r) * t,
-                            dark_gray.g + (light_gray.g - dark_gray.g) * t,
-                            dark_gray.b + (light_gray.b - dark_gray.b) * t,
-                        )
-                    self.engel_color_listesi.append(c)
-                    
-                    # Hafızaya kaydet (Set'e ekle)
-                    self.kayitli_noktalar.add(point_key)
-                    
-                    yeni_veri_var = True
-
-        # Mesh'i sadece yeni nokta eklendiyse güncelle
-        if yeni_veri_var:
-            self.engel_mesh.vertices = self.engel_vertex_listesi
-            self.engel_mesh.colors = self.engel_color_listesi
-            self.engel_mesh.generate()
-
-        self._engel_bulutu_cizilen_len = len(bulut)
+        # Engel gosterimi kapatildi: minimapte algilanan engeller cizilmez.
+        for e in list(self.engel_noktalari):
+            if e is not None:
+                e.enabled = False  # type: ignore
+        for e in list(getattr(self, 'engel_nokta_havuzu', [])):
+            if e is not None:
+                e.enabled = False  # type: ignore
+        self.kayitli_noktalar = set()
+        self._engel_bulutu_cizilen_len = 0
 
     def update_ada_cevre(self, points):
             """
@@ -645,14 +620,14 @@ class Minimap(Entity):
             """
             if not points:
                 if hasattr(self, 'ada_cevre_entity') and self.ada_cevre_entity:
-                    self.ada_cevre_entity.enabled = False
+                    self.ada_cevre_entity.enabled = False  # type: ignore
                 return
             ada_renk = color.hex('#CD853F')
             max_nokta = 2000
             n_use = min(len(points), max_nokta)
             if not hasattr(self, 'ada_cevre_entity') or self.ada_cevre_entity is None:
                 self.ada_cevre_entity = Entity(parent=self)
-                self.ada_cevre_entity._ada_noktalari = []
+                self.ada_cevre_entity._ada_noktalari = []  # type: ignore
                 for _ in range(max_nokta):
                     e = Entity(
                         parent=self.ada_cevre_entity,
@@ -662,20 +637,20 @@ class Minimap(Entity):
                         color=ada_renk,
                         alpha=0.85
                     )
-                    self.ada_cevre_entity._ada_noktalari.append(e)
-            pool = self.ada_cevre_entity._ada_noktalari
+                    self.ada_cevre_entity._ada_noktalari.append(e)  # type: ignore
+            pool = getattr(self.ada_cevre_entity, '_ada_noktalari', [])
             for i in range(n_use):
                 p = points[i]
                 mp = self.dunya_to_harita(p[0], p[1] if len(p) > 1 else 0)
-                pool[i].position = (mp.x, mp.y, -0.28)
-                pool[i].enabled = True
+                pool[i].position = (mp.x, mp.y, -0.28)  # type: ignore
+                pool[i].enabled = True  # type: ignore
             for i in range(n_use, len(pool)):
-                pool[i].enabled = False
-            self.ada_cevre_entity.enabled = True
+                pool[i].enabled = False  # type: ignore
+            self.ada_cevre_entity.enabled = True  # type: ignore
 
     def hedef_isaretle(self, x, z, id=None, debug=True):
-        """3D ortamda oluşturulan hedefi Minimap üzerinde 2D olarak çizer. Gecici hedef: create-once, sadece konum guncelle."""
-        from ursina import Entity, destroy, color, Text
+        """"""
+        from ursina import Entity, destroy, color, Text  # type: ignore[import-not-found]
         
         mp = self.dunya_to_harita(x, z)
         
@@ -691,8 +666,8 @@ class Minimap(Entity):
                     enabled=self.visible
                 )
             else:
-                self.gecici_hedef_ikonu.position = (mp.x, mp.y, -0.35)
-                self.gecici_hedef_ikonu.enabled = self.visible
+                self.gecici_hedef_ikonu.position = (mp.x, mp.y, -0.35)  # type: ignore
+                self.gecici_hedef_ikonu.enabled = self.visible  # type: ignore
             
         # --- DURUM 2: KALICI ID'Lİ HEDEF (debug=False) ---
         else:
@@ -724,14 +699,14 @@ class Minimap(Entity):
 
     def hedef_sil(self, id):
         """Belirtilen ID'li hedefi minimap'ten siler."""
-        from ursina import destroy
+        from ursina import destroy  # type: ignore[import-not-found]
         if hasattr(self, 'hedef_ikonlari') and id in self.hedef_ikonlari:
             destroy(self.hedef_ikonlari[id])
-            del self.hedef_ikonlari[id]
+            self.hedef_ikonlari.pop(id, None)
 
     def hedefleri_temizle(self):
         """Tüm kalıcı ve geçici hedefleri minimap'ten temizler."""
-        from ursina import destroy
+        from ursina import destroy  # type: ignore[import-not-found]
         # Kalıcı hedefleri sil
         if hasattr(self, 'hedef_ikonlari'):
             for hid in list(self.hedef_ikonlari.keys()):
@@ -804,9 +779,9 @@ class Ortam:
     def g_rovs(self):
         self._g_rovs={}
         for rov in self.rovs:
-            if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+            if not rov or getattr(rov, 'is_destroyed', False):
                 continue
-            __group_id=rov.group_id
+            __group_id=getattr(rov, 'group_id', 0)
             if not self._g_rovs.get(__group_id,False):
                 self._g_rovs[__group_id]=[]
             self._g_rovs[__group_id].append(rov)
@@ -825,7 +800,7 @@ class Ortam:
 
 
         # FPS gostergesi: ekranin tam sag ust kosesi (origin 0.5,0.5 = metnin sag ustu)
-        self.rov_label = Text(
+        self.rov_label = Text(  # type: ignore
             text="FPS: --",
             parent=camera.ui,
             position=(0.69, 0.49),
@@ -834,47 +809,47 @@ class Ortam:
             color=color.lime,
             background=True,
         )
-        self.rov_label.z = -10
-        if self.rov_label.background is not None:
-            self.rov_label.background.scale_x = 2
-            self.rov_label.background.scale_y = 2.2
-            self.rov_label.background.x = 0.1
-            self.rov_label.background.y = -0.07
+        self.rov_label.z = -10  # type: ignore
+        if self.rov_label.background is not None:  # type: ignore
+            self.rov_label.background.scale_x = 2  # type: ignore
+            self.rov_label.background.scale_y = 2.2  # type: ignore
+            self.rov_label.background.x = 0.1  # type: ignore
+            self.rov_label.background.y = -0.07  # type: ignore
 
     def _setup_lighting(self):
-        self.sun = DirectionalLight()
-        self.sun.look_at(Vec3(1, -1, -1))
-        self.ambient = AmbientLight(color=color.rgba(120, 120, 120, 1))
-        self.sky = Sky()
+        self.sun = DirectionalLight()  # type: ignore
+        self.sun.look_at(Vec3(1, -1, -1))  # type: ignore
+        self.ambient = AmbientLight(color=color.rgba(120, 120, 120, 1))  # type: ignore
+        self.sky = Sky()  # type: ignore
 
     def konsola_ekle(self, isim, nesne): self.konsol_verileri[isim] = nesne
     
     def set_update_function(self, func):
         """Günceleme fonksiyonunu kaydet. Ursina'da doğrudan update attribute atanamaz."""
-        self._custom_update_func = func
+        self._custom_update_func = func  # type: ignore
         # Ursina update döngüsüne entegre etmek için (Ursina update hook mekanizması)
         # Bu kod main.py'de app.set_update_function() çağrısı yerine kullanılır
     
     def guncelle_ozel(self):
         """Custom update fonksiyonunu çalıştırır (Ursina tarafından çağrılır)."""
-        if hasattr(self, '_custom_update_func') and self._custom_update_func:
-            self._custom_update_func()
+        if hasattr(self, '_custom_update_func') and getattr(self, '_custom_update_func', None):
+            getattr(self, '_custom_update_func')()
     
     def simden_veriye(self): return self.helper.simden_veriye() if self.helper else []
 
     def _find_safe_rov_spawn_pos_yedek(self):
         """ESKİ AYARLAR: Adalardan uzak, güvenli spawn noktası bulur."""
         for _ in range(100):
-            sx = random.uniform(-160, 160)
-            sy = random.uniform(-160, 160)
-            sz_depth = random.uniform(10, 25)
+            sx = float(random.uniform(-160, 160))
+            sy = float(random.uniform(-160, 160))
+            sz_depth = float(random.uniform(10, 25))
             is_safe = True
             for island in [p for p in self.island_positions if p]:
                 # Adanın yarıçapı + 25m güvenlik payı
                 if math.sqrt((sx-island[0])**2 + (sy-island[1])**2) < (island[2] + 25):
                     is_safe = False
                     break
-            if is_safe: return (sx, sy, -sz_depth)
+            if is_safe: return (sx, sy, -sz_depth)  # type: ignore
         return (0, 0, -15) # Fallback
     
 
@@ -884,22 +859,16 @@ class Ortam:
         ROV dağılım sınırları havuz boyutuna göre (havuz_genisligi) belirlenir.
         """
         import math, random
+        
+        all_groups_rovs: list = [] 
+        
+        # Tarama sınırları ve adım boyutu
+        baslangic_x, baslangic_y = -180.0, -180.0
+        bitis_x, bitis_y = 180.0, 180.0
+        adim = float(alan_genisligi + bosluk)
 
-        if havuz_genisligi is None:
-            havuz_genisligi = getattr(self, 'havuz_genisligi', HavuzAyarlari.HAVUZ_GENISLIK)
-        oran = havuz_genisligi / HavuzAyarlari.HAVUZ_GENISLIK
-
-        all_groups_rovs = []
-
-        # Tarama sınırları havuz oranına göre (referans 200m için ±180)
-        margin = havuz_genisligi * 0.9
-        baslangic_x, baslangic_y = -margin, -margin
-        bitis_x, bitis_y = margin, margin
-        alan_genisligi = max(30, (havuz_genisligi * 2) // 4)  # havuzun ~1/4'ü
-        adim = alan_genisligi + bosluk
-
-        mevcut_x = baslangic_x
-        mevcut_y = baslangic_y
+        mevcut_x = float(baslangic_x)
+        mevcut_y = float(baslangic_y)
 
         # Tuple içindeki her bir grup tanımı için dön
         for g_id, num_rovs in enumerate(group_config):
@@ -910,13 +879,13 @@ class Ortam:
                 while mevcut_x <= bitis_x - alan_genisligi:
                     
                     # Hücrenin merkezi
-                    merkez_x = mevcut_x + (alan_genisligi / 2)
-                    merkez_y = mevcut_y + (alan_genisligi / 2)
+                    merkez_x = mevcut_x + (alan_genisligi / 2)  # type: ignore
+                    merkez_y = mevcut_y + (alan_genisligi / 2)  # type: ignore
                     
                     # 1. ADA KONTROLÜ
                     hucre_kirli = False
                     for island in [p for p in self.island_positions if p]:
-                        dist = math.sqrt((merkez_x - island[0])**2 + (merkez_y - island[1])**2)
+                        dist = math.sqrt((merkez_x - island[0])**2 + (merkez_y - island[1])**2)  # type: ignore
                         if dist < (island[2] + 10): # Ada yarıçapı + 15m emniyet
                             hucre_kirli = True
                             break
@@ -933,26 +902,26 @@ class Ortam:
                             yaricap = 10.0 # ROV'lar arası yayılma mesafesi
                             for r_id in range(num_rovs):
                                 angle = math.radians(r_id * (360 / num_rovs))
-                                rx = merkez_x + math.cos(angle) * yaricap
-                                ry = merkez_y + math.sin(angle) * yaricap
+                                rx = float(merkez_x) + math.cos(angle) * yaricap
+                                ry = float(merkez_y) + math.sin(angle) * yaricap
                                 rz = -random.uniform(5, 10)
                                 bu_grubun_rovlari.append((rx, ry, rz))
                         
                         all_groups_rovs.append(bu_grubun_rovlari)
                         
                         # Sonraki grup için imleci bir adım kaydır
-                        mevcut_x += adim
+                        mevcut_x += adim  # type: ignore
                         bulundu = True
                         break # İçteki X döngüsünden çık
                     
                     # Hücre kirliyse sağa kay
-                    mevcut_x += adim
+                    mevcut_x += adim  # type: ignore
                 
                 if bulundu: break # Y döngüsünden çık, sonraki gruba geç
                 
                 # Satır sonuna gelindiyse başa dön ve yukarı çık
                 mevcut_x = baslangic_x
-                mevcut_y += adim
+                mevcut_y += adim  # type: ignore
 
         return all_groups_rovs
 
@@ -1001,7 +970,7 @@ class Ortam:
         all_group = self._find_safe_rov_spawn_pos(n_rovs, havuz_genisligi=havuz_genisligi)
 
         # Global ROV ID counter
-        global_rov_id = 0
+        global_rov_id: int = 0
         
         for group_id, rovlar in enumerate(all_group):
             for local_rov_id, rov_koordinat in enumerate(rovlar):
@@ -1011,7 +980,7 @@ class Ortam:
                 new_rov = ROV(rov_id=global_rov_id, group_id=group_id, position=u_pos, loader_ref=self.loader, model_key=rov_model)
                 new_rov.ekle(self)
                 
-                global_rov_id += 1
+                global_rov_id = int(global_rov_id + 1)  # type: ignore
 
                 self.minimap._statik_yeniden_ciz()
 
@@ -1024,11 +993,11 @@ class Ortam:
         if not rov:
             return None
         if x is not None:
-            rov.x = float(x)
+            setattr(rov, 'x', float(x))
         if y is not None:
-            rov.y = float(y)
+            setattr(rov, 'y', float(y))
         if z is not None:
-            rov.z = float(z)
+            setattr(rov, 'z', float(z))
         return rov
 
     def Ada(self, ada_id, x=None, y=None):
@@ -1055,14 +1024,17 @@ class Ortam:
             max_segments = max(1, int(self.SONAR_MENZILI / adim_toplam) + 1)
 
             for i, r1 in enumerate(active_rovs):
-                for r2 in active_rovs[i+1:]:
+                for r2 in active_rovs[i+1:]:  # type: ignore
                     if r1.gat_kodu == 3 or r2.gat_kodu == 3:
                         continue
 
                     p1, p2 = r1.position, r2.position
-                    dist = (p2 - p1).length()
+                    delta = p2 - p1
+                    if delta.is_nan():
+                        continue
+                    dist = delta.length()
                     
-                    if dist < self.SONAR_MENZILI:
+                    if 1e-6 < dist < self.SONAR_MENZILI:
                         pair = tuple(sorted((r1.id, r2.id)))
                         bu_frame_aktif_olanlar.add(pair)
                         
@@ -1076,7 +1048,7 @@ class Ortam:
                         else:
                             c = color.white
                         
-                        yon_vec = (p2 - p1).normalized()
+                        yon_vec = delta.normalized()
                         # Create-once: konteyner ve segment listesi
                         if pair not in self.sonar_cizgiler:
                             cizgi_konteyner = Entity(add_to_scene_entities=True)
@@ -1094,23 +1066,24 @@ class Ortam:
                         konteyner, seg_list = self.sonar_cizgiler[pair]
                         curr = 0
                         idx = 0
-                        while curr < dist and idx < len(seg_list):
-                            kalin_uzunluk = min(segment_boyu, dist - curr)
+                        while curr < dist and idx < len(seg_list if seg_list is not None else []):  # type: ignore
+                            kalin_uzunluk = min(segment_boyu, dist - curr)  # type: ignore
                             if kalin_uzunluk <= 0.1:
                                 break
-                            parca_baslangic = p1 + yon_vec * curr
-                            parca_bitis = parca_baslangic + yon_vec * kalin_uzunluk
+                            parca_baslangic = p1 + yon_vec * float(curr)
+                            parca_bitis = parca_baslangic + yon_vec * float(kalin_uzunluk)  # type: ignore
                             orta_nokta = (parca_baslangic + parca_bitis) / 2
-                            parca = seg_list[idx]
+                            parca = seg_list[idx]  # type: ignore
                             parca.position = orta_nokta
                             parca.scale = (guncel_kalinlik, guncel_kalinlik, kalin_uzunluk)
                             parca.color = c
-                            parca.look_at(parca_bitis)
+                            if not (parca_bitis - orta_nokta).is_nan() and (parca_bitis - orta_nokta).length() > 1e-6:
+                                parca.look_at(parca_bitis)
                             parca.enabled = True
                             idx += 1
                             curr += adim_toplam
-                        for j in range(idx, len(seg_list)):
-                            seg_list[j].enabled = False
+                        for j in range(idx, len(seg_list if seg_list is not None else [])):  # type: ignore
+                            seg_list[j].enabled = False  # type: ignore
 
             # Temizlik: sadece artık menzilde olmayan çiftleri sil (list kopyası üzerinden)
             for pair in list(self.sonar_cizgiler.keys()):
@@ -1120,7 +1093,7 @@ class Ortam:
                         destroy(data[0])
                     else:
                         destroy(data)
-                    del self.sonar_cizgiler[pair]
+                    self.sonar_cizgiler.pop(pair, None)
 
     def run(self, interaktif=False):
         if interaktif: threading.Thread(target=self._start_shell, daemon=True).start()

@@ -6,53 +6,57 @@ import math
 
 # ==========================================
 class Hidrodinamik:
-    """ROV hidrodinamik ve Bullet fizik sabitleri (kütle, sönümleme, itme, sürükleme)."""
     SU_YOGUNLUGU = 1000.0
     YER_CEKIMI = 9.81
-    KUTLE = 8.0              # ROV kütlesi (kg) — Bullet rigid body ve hesaplarda kullanılır
+    KUTLE = 8.0
     HACIM = 0.0122
-    MAX_ITME_KUVVETI = 200.0  # Motor max itme kuvveti (N) — motor.calistir ölçeklemesi
-    DRAG_KATSAYISI_CD = 0.25
-    ON_YUZEY_ALANI = 0.01
-
-    # Bullet sönümleme (ROV stabil hareket; etrafında dönme / kayma azalır)
-    LINEAR_DAMPING = 0 # Doğrusal hız sönümleme
-    ANGULAR_DAMPING = 0  # Açısal hız sönümleme
-
-
-
-
-class HavuzAyarlari:
-    """
-    Havuz ayarları - Eğitim ve kullanımda tutarlı olmalı!
-    HAVUZ_GENISLIK = yarı genişlik (metre), simülasyon ve senaryolarda havuz_genisligi olarak kullanılır.
-    Minimap grid ve havuz sınırları bu ayarlardan okunur.
-    """
-    HAVUZ_GENISLIK = 200.0
-    HAVUZ_TAM_GENISLIK = HAVUZ_GENISLIK * 2  # Tam genişlik (metre), minimap ve şema boyutları için
-    # Minimap: grid adımı (metre); grid_sayisi verilmezse kullanılır
-    MINIMAP_GRID_UNIT = 25.0
-    HAVUZ_DERINLIK = 50.0
-    HAVUZ_YUKSEKLIGI = 10.0
-    HAVUZ_SICAKLIK = 20.0
-    HAVUZ_BASINC = 101325.0
-
-
+    MAX_ITME_KUVVETI = 50.0
+    DRAG_KATSAYISI_CD = 0.4
+    ON_YUZEY_ALANI = 0.02
+    LINEAR_DAMPING = 0  # Su direnci nedeniyle doğrusal sönümleme
+    ANGULAR_DAMPING = 0  # Su direnci nedeniyle açısal sönümleme
 
 class BasitKalmanFiltresi:
     def __init__(self, R=0.1, Q=0.1, baslangic_degeri=0.0):
         self.R = R
         self.Q = Q
+        self.baslangic_degeri = baslangic_degeri
         self.P = 1.0
         self.x = baslangic_degeri
+        self.hazir = False
 
     def guncelle(self, olcum):
+        if not self.hazir:
+            self.x = olcum
+            self.hazir = True
+            return self.x
         x_pred = self.x
         p_pred = self.P + self.Q
         K = p_pred / (p_pred + self.R)
         self.x = x_pred + K * (olcum - x_pred)
         self.P = (1 - K) * p_pred
         return self.x
+
+    def sifirla(self, baslangic_degeri=None):
+        if baslangic_degeri is None:
+            baslangic_degeri = self.baslangic_degeri
+        self.x = baslangic_degeri
+        self.P = 1.0
+        self.hazir = False
+
+    def ayarla(self, R=None, Q=None):
+        if R is not None:
+            self.R = float(R)
+        if Q is not None:
+            self.Q = float(Q)
+
+
+class KalmanAyarlari:
+    MOTOR_R = 0.18
+    MOTOR_Q = 0.035
+    UI_AKTIF = True
+    IZLENEN_ROV_ID = 0
+
 
 # ==========================================
 # SİSTEM AYARLARI
@@ -154,7 +158,7 @@ class FizikSabitleri:
     """
     Fizik simülasyonu için sabitler - Sadece kullanılan değerler.
     """
-    BATARYA_SOMURME_KATSAYISI = 0.0007    # Batarya sömürme katsayısı (sabit azalma)
+    BATARYA_SOMURME_KATSAYISI = 0.001    # Batarya sömürme katsayısı (sabit azalma)
     BATARYA_HIZ_KATSAYISI = 0.0005       # Hıza göre batarya azalma katsayısı (hız*katsayı*dt)
 
 
@@ -174,3 +178,10 @@ class ROVModelleri:
             'scale': (0.009, 0.009, 0.009),  # FBX 1000x küçültme + %25 büyütme bir rovun boyutu artık 1000*0.009=9 mtre boyunda
         },
     }
+
+
+class HavuzAyarlari:
+    """
+    Havuz (pool) boyutu ve sınırları.
+    """
+    HAVUZ_TAM_GENISLIK = 200  # Havuz genişliği (metre)

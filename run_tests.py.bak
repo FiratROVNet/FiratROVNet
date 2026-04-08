@@ -1,0 +1,578 @@
+#!/usr/bin/env python3
+"""
+FiratROVNet CI/CD Test Suite
+Grafik kartı olmadan tüm sistem fonksiyonlarını test eder.
+"""
+
+import os
+import sys
+import traceback
+import math
+
+# Headless mod için environment variable ayarla
+os.environ['DISPLAY'] = ':0'  # X11 display (headless için)
+os.environ['LIBGL_ALWAYS_SOFTWARE'] = '1'  # Software rendering
+
+# Mock distance fonksiyonu (Ursina olmadan)
+def mock_distance(a, b):
+    """İki nokta arası mesafe hesaplar"""
+    if hasattr(a, 'position'):
+        a = a.position
+    if hasattr(b, 'position'):
+        b = b.position
+    
+    if hasattr(a, 'x'):
+        ax, ay, az = a.x, a.y, a.z
+    elif isinstance(a, (list, tuple)):
+        ax, ay, az = a[0], a[1], a[2]
+    else:
+        ax, ay, az = 0, 0, 0
+    
+    if hasattr(b, 'x'):
+        bx, by, bz = b.x, b.y, b.z
+    elif isinstance(b, (list, tuple)):
+        bx, by, bz = b[0], b[1], b[2]
+    else:
+        bx, by, bz = 0, 0, 0
+    
+    return math.sqrt((bx - ax)**2 + (by - ay)**2 + (bz - az)**2)
+
+# Test sonuçları
+test_results = {
+    'passed': [],
+    'failed': [],
+    'skipped': []
+}
+
+def record_test_pass(name):
+    """Test başarılı"""
+    test_results['passed'].append(name)
+    print(f"✅ {name}")
+
+def record_test_fail(name, error):
+    """Test başarısız"""
+    test_results['failed'].append((name, str(error)))
+    print(f"❌ {name}: {error}")
+
+def record_test_skip(name, reason):
+    """Test atlandı"""
+    test_results['skipped'].append((name, reason))
+    print(f"⏭️  {name}: {reason}")
+
+# ==========================================
+# TEST 1: Modül İmportları
+# ==========================================
+print("\n" + "="*60)
+print("TEST 1: Modül İmportları")
+print("="*60)
+
+try:
+    from FiratROVNet import gnc, config
+    from GAT.gat_train import GAT_Modeli, train as Train
+    from GAT.gat_test import FiratAnalizci
+    from FiratROVNet.gnc import Filo, TemelGNC
+    from FiratROVNet.config import cfg
+    # Mock distance fonksiyonunu gnc modülüne ekle (test için)
+    import FiratROVNet.gnc as gnc_module
+    if not hasattr(gnc_module, 'distance'):
+        from ursina import distance as ursina_distance
+        gnc_module.distance = ursina_distance
+    record_test_pass("Modül İmportları")
+except Exception as e:
+    record_test_fail("Modül İmportları", e)
+    sys.exit(1)
+
+
+def _test_veri_uret(n_rovs=4):
+    """Testler için minimal GAT verisi (9 özellik, edge_index, y)."""
+    import torch
+    from torch_geometric.data import Data
+    n = n_rovs
+    x = torch.zeros((n, 9), dtype=torch.float)
+    x[:, 1], x[:, 2] = 0.9, 0.9
+    x[:, 6] = 0.0
+    x[0, 6] = 1.0
+    sources = [i for i in range(n) for j in range(n) if i != j]
+    targets = [j for i in range(n) for j in range(n) if i != j]
+    edge_index = torch.tensor([sources, targets], dtype=torch.long) if sources else torch.zeros((2, 0), dtype=torch.long)
+    y = torch.zeros(n, dtype=torch.long)
+    return Data(x=x, edge_index=edge_index, y=y)
+
+
+# ==========================================
+# TEST 2: Veri Üretimi
+# ==========================================
+print("\n" + "="*60)
+print("TEST 2: Veri Üretimi")
+print("="*60)
+
+try:
+    data = _test_veri_uret(n_rovs=5)
+    assert data.x.shape[0] == 5, f"ROV sayısı yanlış: {data.x.shape[0]}"
+    assert data.x.shape[1] == 9, f"Özellik sayısı yanlış: {data.x.shape[1]}"
+    assert data.edge_index.shape[0] == 2, "Edge index formatı yanlış"
+    assert data.y.shape[0] == 5, f"Etiket sayısı yanlış: {data.y.shape[0]}"
+    record_test_pass("Veri Üretimi (5 ROV)")
+    for n in [3, 10, 15]:
+        data = _test_veri_uret(n_rovs=n)
+        assert data.x.shape[0] == n, f"{n} ROV için veri üretimi başarısız"
+    record_test_pass("Veri Üretimi (Farklı ROV Sayıları)")
+except Exception as e:
+    record_test_fail("Veri Üretimi", e)
+
+# ==========================================
+# TEST 3: GAT Modeli
+# ==========================================
+print("\n" + "="*60)
+print("TEST 3: GAT Modeli")
+print("="*60)
+
+try:
+    import torch
+    
+    # Model oluşturma
+    model = GAT_Modeli()
+    record_test_pass("GAT Modeli Oluşturma")
+    
+    # Forward pass testi
+    data = _test_veri_uret(n_rovs=4)
+    output = model(data.x, data.edge_index)
+    assert output.shape[0] == 4, "Output shape yanlış"
+    assert output.shape[1] == 6, "Output sınıf sayısı yanlış"
+    record_test_pass("GAT Modeli Forward Pass")
+    
+    # Attention testi
+    output, edge_idx, alpha = model(data.x, data.edge_index, return_attention=True)
+    assert alpha is not None, "Attention weights döndürülmedi"
+    record_test_pass("GAT Modeli Attention")
+    
+except Exception as e:
+    record_test_fail("GAT Modeli", e)
+
+# ==========================================
+# TEST 4: FiratAnalizci
+# ==========================================
+print("\n" + "="*60)
+print("TEST 4: FiratAnalizci")
+print("="*60)
+
+try:
+    # Analizci oluşturma (model dosyası olmasa bile çalışmalı)
+    analizci = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
+    record_test_pass("FiratAnalizci Oluşturma")
+    
+    # Analiz testi
+    data = _test_veri_uret(n_rovs=4)
+    tahminler, edge_idx, alpha = analizci.analiz_et(data)
+    assert len(tahminler) == 4, "Tahmin sayısı yanlış"
+    assert all(0 <= t < 6 for t in tahminler), "Tahmin değerleri geçersiz"
+    record_test_pass("FiratAnalizci Analiz")
+    
+except Exception as e:
+    record_test_fail("FiratAnalizci", e)
+
+# ==========================================
+# TEST 5: GNC Sistemi
+# ==========================================
+print("\n" + "="*60)
+print("TEST 5: GNC Sistemi")
+print("="*60)
+
+try:
+    # Mock ROV entity (Ursina olmadan)
+    class MockVec3:
+        """Mock Vec3 sınıfı (Ursina olmadan) - Ursina Vec3 ile uyumlu"""
+        def __init__(self, x=0.0, y=0.0, z=0.0):
+            self.x = float(x)
+            self.y = float(y)
+            self.z = float(z)
+        
+        def __len__(self):
+            """Ursina Vec3 uyumluluğu için"""
+            return 3
+        
+        def __getitem__(self, index):
+            """Liste gibi erişim için"""
+            if index == 0:
+                return self.x
+            elif index == 1:
+                return self.y
+            elif index == 2:
+                return self.z
+            raise IndexError("Index out of range")
+        
+        def __sub__(self, other):
+            """Çıkarma işlemi"""
+            if isinstance(other, (list, tuple)):
+                other = MockVec3(other[0], other[1], other[2])
+            elif hasattr(other, 'x') and hasattr(other, 'y') and hasattr(other, 'z'):
+                # Ursina Vec3 veya MockVec3
+                return MockVec3(self.x - other.x, self.y - other.y, self.z - other.z)
+            return MockVec3(self.x, self.y, self.z)
+        
+        def __rsub__(self, other):
+            """Sağdan çıkarma (other - self)"""
+            if isinstance(other, (list, tuple)):
+                other = MockVec3(other[0], other[1], other[2])
+            elif hasattr(other, 'x') and hasattr(other, 'y') and hasattr(other, 'z'):
+                return MockVec3(other.x - self.x, other.y - self.y, other.z - self.z)
+            return MockVec3(-self.x, -self.y, -self.z)
+        
+        def __add__(self, other):
+            """Toplama işlemi"""
+            if isinstance(other, (list, tuple)):
+                other = MockVec3(other[0], other[1], other[2])
+            elif hasattr(other, 'x') and hasattr(other, 'y') and hasattr(other, 'z'):
+                return MockVec3(self.x + other.x, self.y + other.y, self.z + other.z)
+            return MockVec3(self.x, self.y, self.z)
+        
+        def __mul__(self, scalar):
+            """Çarpma işlemi (vektör * skaler)"""
+            return MockVec3(self.x * scalar, self.y * scalar, self.z * scalar)
+        
+        def __rmul__(self, scalar):
+            """Sağdan çarpma (skaler * vektör)"""
+            return MockVec3(self.x * scalar, self.y * scalar, self.z * scalar)
+        
+        def __truediv__(self, scalar):
+            """Bölme işlemi"""
+            if scalar != 0:
+                return MockVec3(self.x / scalar, self.y / scalar, self.z / scalar)
+            return MockVec3(0, 0, 0)
+        
+        def length(self):
+            """Vektör uzunluğu"""
+            return (self.x**2 + self.y**2 + self.z**2) ** 0.5
+        
+        def normalized(self):
+            """Normalize edilmiş vektör"""
+            l = self.length()
+            if l > 0:
+                return MockVec3(self.x/l, self.y/l, self.z/l)
+            return MockVec3(0, 0, 0)
+        
+        def dot(self, other):
+            """Nokta çarpımı"""
+            if hasattr(other, 'x') and hasattr(other, 'y') and hasattr(other, 'z'):
+                return self.x * other.x + self.y * other.y + self.z * other.z
+            return 0.0
+    
+
+    class MockROV:
+        def __init__(self, rov_id):
+            self.id = rov_id
+            self.position = MockVec3(0.0, 0.0, 0.0)
+            self.velocity = MockVec3(0.0, 0.0, 0.0)
+            self.y = 0.0
+            self.x = 0.0  # Position'dan ayrı attribute
+            self.z = 0.0  # Position'dan ayrı attribute
+            self.role = 0
+            self.modem = None
+            self.yuzeyde = False  # Yüzeyde mi? (y >= 0)
+            self.sensor_config = {
+                "engel_mesafesi": 20.0,
+                "iletisim_menzili": 35.0,
+                "min_pil_uyarisi": 10.0,
+                "kacinma_mesafesi": 8.0
+            }
+            self.environment_ref = None
+            self.filo_ref = None
+            self.battery = 100.0
+            self.batarya_bitti = False
+            self.gnc = None  # TemelGNC atanacak
+        
+        def move(self, komut, guc=1.0):
+            pass  # Mock
+        
+        def set(self, key, value):
+            """Mock set metodu"""
+            if key == "rol":
+                self.role = value
+            elif key in self.sensor_config:
+                self.sensor_config[key] = value
+
+    class TemelGNC:
+        def __init__(self, rov, filo):
+            self.rov = rov
+            self.filo = filo
+            self.hedef = None
+            self.manuel_kontrol = False
+            self.ai_aktif = False
+            rov.gnc = self  # MockROV.gnc referansı
+
+        def hedef_atama(self, x, y, z):
+            self.hedef = (x, y, z)
+    
+    # Filo testi
+    filo = Filo()
+    
+    # Mock ortam initialize et (None ise fallback kullanır)
+    if not hasattr(filo, 'gnc_sistemleri'):
+        filo.gnc_sistemleri = {}
+    
+    record_test_pass("Filo Oluşturma")
+    
+    # Mock ROV oluştur
+    rov0 = MockROV(0)
+    rov1 = MockROV(1)
+    
+    # Lider ve Takipçi GNC oluştur
+    lider_gnc = TemelGNC(rov0, filo)
+    takipci_gnc = TemelGNC(rov1, filo)
+    
+    # GNC'leri Filo'ya kaydet (fallback lookup için)
+    filo.gnc_sistemleri[0] = lider_gnc
+    filo.gnc_sistemleri[1] = takipci_gnc
+    
+    record_test_pass("GNC Oluşturma")
+    
+    # Hedef atama testi
+    filo.git(0, 10, 20, -5, ai=True)
+    assert lider_gnc.hedef is not None, "Hedef atanmadı"
+    record_test_pass("Hedef Atama (git)")
+    
+    # Güncelleme testi
+    tahminler = [0, 1]  # Mock tahminler
+    filo.guncelle_hepsi(tahminler)
+    record_test_pass("GNC Güncelleme")
+    
+except Exception as e:
+    record_test_fail("GNC Sistemi", e)
+    traceback.print_exc()
+
+# ==========================================
+# TEST 7: Config Sistemi
+# ==========================================
+print("\n" + "="*60)
+print("TEST 7: Config Sistemi")
+print("="*60)
+
+try:
+    # Config değerlerini kontrol et
+    assert hasattr(cfg, 'goster_modem'), "Config'de goster_modem yok"
+    assert hasattr(cfg, 'goster_gnc'), "Config'de goster_gnc yok"
+    assert hasattr(cfg, 'goster_sistem'), "Config'de goster_sistem yok"
+    record_test_pass("Config Özellikleri")
+    
+    # Config değerlerini değiştir
+    original_value = cfg.goster_modem
+    cfg.goster_modem = True
+    assert cfg.goster_modem == True, "Config değeri değiştirilemedi"
+    cfg.goster_modem = original_value
+    record_test_pass("Config Değer Değiştirme")
+    
+except Exception as e:
+    record_test_fail("Config Sistemi", e)
+
+# ==========================================
+# TEST 8: Ortam Sınıfı (Ursina Olmadan)
+# ==========================================
+print("\n" + "="*60)
+print("TEST 8: Ortam Sınıfı (Headless)")
+print("="*60)
+
+try:
+    # Ursina'yı headless modda başlatmayı dene
+    # Eğer başarısız olursa test atlanır
+    from FiratROVNet.simulasyon import Ortam
+    
+    # Headless mod için environment ayarları
+    os.environ['Ursina_HEADLESS'] = '1'
+    
+    try:
+        # Ortam oluşturma (headless modda)
+        app = Ortam()
+        record_test_pass("Ortam Oluşturma (Headless)")
+        
+        # Simülasyon nesneleri oluşturma
+        app.sim_olustur(n_rovs=3, n_engels=5)
+        assert len(app.rovs) == 3, "ROV'lar oluşturulamadı"
+        assert len(app.engeller) == 5, "Engeller oluşturulamadı"
+        record_test_pass("Simülasyon Nesneleri Oluşturma")
+        
+        # Konsol verileri ekleme
+        app.konsola_ekle("test", "test_value")
+        assert "test" in app.konsol_verileri, "Konsol verileri eklenemedi"
+        record_test_pass("Konsol Verileri")
+        
+    except Exception as e:
+        record_test_skip("Ortam Sınıfı", f"Ursina headless mod başarısız: {e}")
+        print(f"   Not: Grafik kartı olmadan Ursina başlatılamadı (normal)")
+    
+except Exception as e:
+    record_test_fail("Ortam Sınıfı", e)
+
+# ==========================================
+# TEST 9: Entegrasyon Testi
+# ==========================================
+print("\n" + "="*60)
+print("TEST 9: Entegrasyon Testi")
+print("="*60)
+
+try:
+    # Tüm sistemleri bir arada test et
+    data = _test_veri_uret(n_rovs=4)
+    analizci = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
+    tahminler, _, _ = analizci.analiz_et(data)
+    
+    filo = Filo()
+
+    rov0 = MockROV(0)
+    rov1 = MockROV(1)
+    
+    gnc0 = TemelGNC(rov0, filo)
+    gnc1 = TemelGNC(rov1, filo)
+
+    filo.git(0, 10, 20, -5)
+    filo.git(1, 15, 25, -10)
+    
+    filo.guncelle_hepsi(tahminler[:2])
+    
+    record_test_pass("Entegrasyon Testi")
+    
+except Exception as e:
+    record_test_fail("Entegrasyon Testi", e)
+    traceback.print_exc()
+
+# ==========================================
+# TEST SONUÇLARI
+# ==========================================
+print("\n" + "="*60)
+print("TEST SONUÇLARI")
+print("="*60)
+
+total = len(test_results['passed']) + len(test_results['failed']) + len(test_results['skipped'])
+passed = len(test_results['passed'])
+failed = len(test_results['failed'])
+skipped = len(test_results['skipped'])
+
+print(f"\nToplam Test: {total}")
+print(f"✅ Başarılı: {passed}")
+print(f"❌ Başarısız: {failed}")
+print(f"⏭️  Atlandı: {skipped}")
+
+if test_results['failed']:
+    print("\n❌ Başarısız Testler:")
+    for name, error in test_results['failed']:
+        print(f"   - {name}: {error}")
+
+if test_results['skipped']:
+    print("\n⏭️  Atlanan Testler:")
+    for name, reason in test_results['skipped']:
+        print(f"   - {name}: {reason}")
+
+# CI/CD için exit code (sadece direkt çalıştırıldığında)
+if __name__ == "__main__":
+    if failed > 0:
+        print("\n❌ TEST BAŞARISIZ - CI/CD hatası!")
+        sys.exit(1)
+    else:
+        print("\n✅ TÜM TESTLER BAŞARILI!")
+        sys.exit(0)
+
+# ==========================================
+# TEST 8: Ortam Sınıfı (Ursina Olmadan)
+# ==========================================
+print("\n" + "="*60)
+print("TEST 8: Ortam Sınıfı (Headless)")
+print("="*60)
+
+try:
+    # Ursina'yı headless modda başlatmayı dene
+    # Eğer başarısız olursa test atlanır
+    from FiratROVNet.simulasyon import Ortam
+    
+    # Headless mod için environment ayarları
+    os.environ['Ursina_HEADLESS'] = '1'
+    
+    try:
+        # Ortam oluşturma (headless modda)
+        app = Ortam()
+        record_test_pass("Ortam Oluşturma (Headless)")
+        
+        # Simülasyon nesneleri oluşturma
+        app.sim_olustur(n_rovs=3, n_engels=5)
+        assert len(app.rovs) == 3, "ROV'lar oluşturulamadı"
+        assert len(app.engeller) == 5, "Engeller oluşturulamadı"
+        record_test_pass("Simülasyon Nesneleri Oluşturma")
+        
+        # Konsol verileri ekleme
+        app.konsola_ekle("test", "test_value")
+        assert "test" in app.konsol_verileri, "Konsol verileri eklenemedi"
+        record_test_pass("Konsol Verileri")
+        
+    except Exception as e:
+        record_test_skip("Ortam Sınıfı", f"Ursina headless mod başarısız: {e}")
+        print(f"   Not: Grafik kartı olmadan Ursina başlatılamadı (normal)")
+    
+except Exception as e:
+    record_test_fail("Ortam Sınıfı", e)
+
+# ==========================================
+# TEST 9: Entegrasyon Testi
+# ==========================================
+print("\n" + "="*60)
+print("TEST 9: Entegrasyon Testi")
+print("="*60)
+
+try:
+    # Tüm sistemleri bir arada test et
+    data = _test_veri_uret(n_rovs=4)
+    analizci = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
+    tahminler, _, _ = analizci.analiz_et(data)
+    
+    filo = Filo()
+
+    rov0 = MockROV(0)
+    rov1 = MockROV(1)
+    
+    gnc0 = TemelGNC(rov0, filo)
+    gnc1 = TemelGNC(rov1, filo)
+
+    filo.git(0, 10, 20, -5)
+    filo.git(1, 15, 25, -10)
+    
+    filo.guncelle_hepsi(tahminler[:2])
+    
+    record_test_pass("Entegrasyon Testi")
+    
+except Exception as e:
+    record_test_fail("Entegrasyon Testi", e)
+    traceback.print_exc()
+
+# ==========================================
+# TEST SONUÇLARI
+# ==========================================
+print("\n" + "="*60)
+print("TEST SONUÇLARI")
+print("="*60)
+
+total = len(test_results['passed']) + len(test_results['failed']) + len(test_results['skipped'])
+passed = len(test_results['passed'])
+failed = len(test_results['failed'])
+skipped = len(test_results['skipped'])
+
+print(f"\nToplam Test: {total}")
+print(f"✅ Başarılı: {passed}")
+print(f"❌ Başarısız: {failed}")
+print(f"⏭️  Atlandı: {skipped}")
+
+if test_results['failed']:
+    print("\n❌ Başarısız Testler:")
+    for name, error in test_results['failed']:
+        print(f"   - {name}: {error}")
+
+if test_results['skipped']:
+    print("\n⏭️  Atlanan Testler:")
+    for name, reason in test_results['skipped']:
+        print(f"   - {name}: {reason}")
+
+# CI/CD için exit code (sadece direkt çalıştırıldığında)
+if __name__ == "__main__":
+    if failed > 0:
+        print("\n❌ TEST BAŞARISIZ - CI/CD hatası!")
+        sys.exit(1)
+    else:
+        print("\n✅ TÜM TESTLER BAŞARILI!")
+        sys.exit(0)
+

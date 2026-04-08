@@ -1,3 +1,4 @@
+from FiratROVNet.kutuphane.moduls.profiler import Profiler
 from FiratROVNet.simulasyon import Ortam
 from FiratROVNet.gnc import Filo, TemelGNC
 from FiratROVNet.config import cfg
@@ -6,7 +7,7 @@ from ursina import time as utime, mouse, Vec3, time # type: ignore[reportMissing
 import numpy as np
 import os
 import time
-from datetime import datetime
+from rerun_ayarla import QR, rerun_baslat, rerun_sahne_logla
 
 # ==========================================
 # 1. KURULUM VE YAPILANDIRMA
@@ -15,7 +16,7 @@ print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
 
 # Simülasyonu oluştur: 6 ROV, 6 Ada, 200m havuz yarıçapı
-app.sim_olustur(n_rovs=(4,3,), n_islands=4, rov_model='submarine')
+app.sim_olustur(n_rovs=(4,3), n_islands=4, havuz_genisligi=200, rov_model='submarine')
 
 # Filo sistemini ortamla birlikte oluştur (otomatik bağlantı)
 # GAT modeli ve navigasyon kuyruğu da Filo içinde initialize edilir
@@ -33,6 +34,16 @@ app.konsola_ekle("rovs", app.rovs)
 app.konsola_ekle("cfg", cfg)
 app.konsola_ekle("nav_queue", filo.nav_queue)  # Kuyruğu konsoldan izleyebilirsin
 
+_rr_runtime = rerun_baslat(ip_adresi=os.getenv("RR_IP_ADRESI"))
+
+QR(
+    ip_adresi=_rr_runtime.get("lan_ip", "127.0.0.1"),
+    link=_rr_runtime.get("web_lan_url", ""),
+)
+
+
+
+
 print("✅ Sistem aktif. Minimap: sol tıkla. Ekran görüntüsü (makale kalitesi): F tuşu → Pictures/")
 
 
@@ -43,9 +54,11 @@ print("✅ Sistem aktif. Minimap: sol tıkla. Ekran görüntüsü (makale kalite
 # FPS gosterimi: son N karenin ortalamasi (titreme azalir)
 _fps_history = []
 _FPS_HISTORY_SIZE = 10
+_rerun_step = 0
 
 def update():
     """Ana simülasyon döngüsü. Frame süresi hedef FPS ile eşitlenir."""
+    global _rerun_step
     # Verileri çek (filo.get metodunuza göre uyarlandı)
     gps = filo.get(bilgi_rov_id, "gps") or Vec3(0,0,0)
     batarya = filo.get(bilgi_rov_id, "batarya") or 0
@@ -98,6 +111,8 @@ def update():
     tahminler = np.zeros(len(app.rovs), dtype=int)
     filo.guncelle_gat_analizi(tahminler)
     filo.guncelle_hepsi(tahminler, guncelle_gorseller=True)
+    rerun_sahne_logla(app=app, filo=filo, step=_rerun_step)
+    _rerun_step += 1
 
 
 app.set_update_function(update)
@@ -171,7 +186,8 @@ def input(key):
                 print(f"📸 Görsel işleme hatası: {e}")
 
     if key == 'p':
-        lider_id, _ = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)
+        lider_bilgi = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)
+        lider_id = lider_bilgi[0] if lider_bilgi else None
         lider_rov = filo.find_rov_by_id(lider_id) if lider_id is not None else None
         if lider_rov:
             filo.entity_patlat(lider_rov)
@@ -194,24 +210,36 @@ def input(key):
             sim_x = local_pos.x * havuz_tam_cap
             sim_y = local_pos.y * havuz_tam_cap
             
-            # Mevcut derinliği grubun liderinden al
-            lider_id, lider_gps = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)
-            mevcut_z = -20 #lider_gps[2] if lider_gps else -10
+            group_id = filo.rovs[bilgi_rov_id].group_id
+            lider_bilgi = filo.find_leader_info(g_id=group_id)
+            lider_id = lider_bilgi[0] if lider_bilgi else None
+            lider_gps = lider_bilgi[1] if lider_bilgi else None
+            if lider_id is None:
+                print(f"⚠️ [NAV] Grup-{group_id} icin aktif lider bulunamadi.")
+                return
+
+            mevcut_z = -20 #lider_gps[2] if lider_gps else -10.0
             
             # Benzersiz ID oluştur ve hedefi kaydet
             filo.target_counter += 1
             new_id = filo.target_counter
             new_target_pos = (sim_x, sim_y, mevcut_z)
+            aktif_rota = bool(filo._git_nokta_listesi.get(lider_id))
+            aktif_hedef = filo.hedef(rov_id=lider_id)
 
-            # Kuyruğa paket olarak ekle (grup bazli)
-            filo.nav_queue.setdefault(filo.rovs[bilgi_rov_id].group_id, []).append({'pos': new_target_pos, 'id': new_id})
-            filo.current_target_id.setdefault(filo.rovs[bilgi_rov_id].group_id, None)
-            
             # Görseli oluştur
             filo._hedef_gorsel_olustur(sim_x, sim_y, mevcut_z, id=new_id, debug=False)
-            
-            bekleyen = len(filo.nav_queue.get(filo.rovs[bilgi_rov_id].group_id, []))
-            print(f"📥 [KUYRUK] Grup-{filo.rovs[bilgi_rov_id].group_id} hedef {new_id} eklendi | Bekleyen: {bekleyen}")
+
+            # Grup bosta ise hedefi dogrudan liderde baslat; mesgulse kuyruga ekle.
+            if not aktif_rota and aktif_hedef is None:
+                filo.current_target_id[group_id] = new_id
+                print(f"🚀 [NAV] Grup-{group_id} hedef {new_id} dogrudan baslatiliyor")
+                filo.git_path(lider_id, new_target_pos, isaret=True)
+            else:
+                filo.nav_queue.setdefault(group_id, []).append({'pos': new_target_pos, 'id': new_id})
+                filo.current_target_id.setdefault(group_id, None)
+                bekleyen = len(filo.nav_queue.get(group_id, []))
+                print(f"📥 [KUYRUK] Grup-{group_id} hedef {new_id} eklendi | Bekleyen: {bekleyen}")
 
 # ==========================================
 # 4. ÇALIŞTIRMA
@@ -226,5 +254,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt: 
         print("\n🛑 Simülasyon durduruldu.")
     finally: 
+        try:
+            Profiler.rapor_ver()
+        except Exception:
+            pass
         os.system('stty sane')
         os._exit(0)

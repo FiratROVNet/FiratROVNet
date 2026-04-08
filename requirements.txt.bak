@@ -1,0 +1,23 @@
+# --- Derin Öğrenme ve Yapay Zeka ---
+torch>=2.0.0
+torch-geometric>=2.3.0
+
+# --- 3D Simülasyon ve Oyun Motoru ---
+# Ursina 7.0.0 sabit (su yüzeyi/texture uyumlu). Ada OBJ quad'ları _load_obj_as_mesh ile üçgenlenip yüklenir.
+ursina==7.0.0
+panda3d
+
+# --- Matematik ve Veri İşleme ---
+numpy>=1.21.0
+networkx>=3.0
+scipy>=1.9.0
+
+# --- Geometri ve Alan Hesaplama (Kritik Modüller) ---
+shapely>=2.0.0
+alphashape>=1.3.1
+
+# --- Görselleştirme ve Grafikler ---
+matplotlib>=3.5.0
+
+# --- Sistem Araçları ---
+screeninfo

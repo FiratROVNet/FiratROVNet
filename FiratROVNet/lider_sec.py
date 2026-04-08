@@ -6,6 +6,27 @@ class LiderSecimModulu:
     def __init__(self, filo_ref):
         self.filo_ref = filo_ref
 
+    def _grup_hedefini_coz(self, hedef_konum, g_id):
+        if isinstance(hedef_konum, dict):
+            return hedef_konum.get(g_id)
+        return hedef_konum
+
+    def _gecerli_mevcut_lider_id(self, g_id, rov_listesi):
+        leader_manager = getattr(self.filo_ref, "leader_manager", None)
+        if leader_manager is not None:
+            mevcut_liderler = getattr(leader_manager, "mevcut_lider_id", {})
+            lider_id = mevcut_liderler.get(g_id)
+            if isinstance(lider_id, int) and lider_id >= 0:
+                for rov in rov_listesi:
+                    if rov.get("id") == lider_id:
+                        return lider_id
+
+        lider_bilgi = self.filo_ref.find_leader_info(sessiz=True, g_id=g_id)
+        lider_id = lider_bilgi[0] if lider_bilgi else None
+        if isinstance(lider_id, int) and lider_id >= 0:
+            return lider_id
+        return None
+
     def mesafe_hesapla(self, pos1, pos2):
         if pos1 is None or pos2 is None: return 999.0
         return math.sqrt((pos1[0]-pos2[0])**2 + (pos1[1]-pos2[1])**2 + (pos1[2]-pos2[2])**2)
@@ -27,21 +48,26 @@ class LiderSecimModulu:
 
         # Sözlük üzerinde güvenli iterasyon
         for g_id, rov_listesi in rov_listesi_sozluk.items():
+            grup_hedef = self._grup_hedefini_coz(hedef_konum, g_id)
+
             # Grup boşsa atla
             if not rov_listesi:
                 secilen_rov_id[g_id] = -1
                 lider_skorlari[g_id] = 0
                 continue
 
+            # --- DURUM 0: Gecerli bir mevcut lider varsa yeniden secim yapma ---
+            # Lider hayattaysa ve grup listesinde hala varsa, hedef olsa bile korunur.
+            mevcut_lider_id = self._gecerli_mevcut_lider_id(g_id, rov_listesi)
+            if mevcut_lider_id is not None:
+                secilen_rov_id[g_id] = mevcut_lider_id
+                lider_skorlari[g_id] = 1.0
+                continue
+
             # --- DURUM A: HEDEF YOKSA (Mevcut lideri koru veya random seç) ---
-            if hedef_konum is None:
-                lider_id, _ = self.filo_ref.find_leader_info(sessiz=True, g_id=g_id)
-                #print(g_id,lider_id)
-                
-                if lider_id is None:
-                    # Rastgele birinin ID'sini al
-                    lider_id = random.choice(rov_listesi)["id"]
-                    print(f"🎲 Grup-{g_id} için rastgele lider atandı.")
+            if grup_hedef is None:
+                lider_id = random.choice(rov_listesi)["id"]
+                print(f"🎲 Grup-{g_id} için rastgele lider atandı.")
 
                 secilen_rov_id[g_id] = lider_id
                 lider_skorlari[g_id] = 1.0
@@ -65,7 +91,7 @@ class LiderSecimModulu:
                 try:
                     p1 = rov['batarya'] / 100.0
                     p2 = self.deger_duzenle(abs(rov['konum'][2])) 
-                    p3 = self.deger_duzenle(self.a_star_simulasyonu(rov['konum'], hedef_konum))
+                    p3 = self.deger_duzenle(self.a_star_simulasyonu(rov['konum'], grup_hedef))
                     p4 = self.deger_duzenle(merkez_uzakliklari[i])
                     
                     # Formül: Batarya / (Derinlik * HedefMesafe * Merkezilik)
@@ -86,6 +112,10 @@ def liderlik_secimini_baslat(filo_nesnesi, hedef_konum):
     """
     Sözlük tabanlı g_rovs yapısına tam uyumlu başlatıcı.
     NumPy array hatalarına karşı korumalıdır.
+    hedef_konum:
+    - None
+    - tek hedef tuple/list
+    - veya {g_id: hedef} biçiminde grup bazlı sözlük
     """
     rovlar_data_sozlugu = {}
 
@@ -229,6 +259,3 @@ class LeaderManager:
             except Exception as e:
                 from .gnc.logs import LogSystem
                 LogSystem.log_exception(e)
-
-
-

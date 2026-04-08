@@ -1,0 +1,6 @@
+Requirement already satisfied: rerun-sdk in /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages (0.30.2)
+Requirement already satisfied: attrs>=23.1.0 in /home/celik/.local/lib/python3.10/site-packages (from rerun-sdk) (25.3.0)
+Requirement already satisfied: numpy>=2 in /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages (from rerun-sdk) (2.2.6)
+Requirement already satisfied: pillow>=8.0.0 in /home/celik/.local/lib/python3.10/site-packages (from rerun-sdk) (10.1.0)
+Requirement already satisfied: pyarrow>=18.0.0 in /home/celik/.local/lib/python3.10/site-packages (from rerun-sdk) (20.0.0)
+Requirement already satisfied: typing-extensions>=4.5 in /home/celik/.local/lib/python3.10/site-packages (from rerun-sdk) (4.15.0)
