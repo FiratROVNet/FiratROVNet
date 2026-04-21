@@ -151,8 +151,9 @@ class TemelGNCHelper:
         # 2. ÖNCE ÇEVRESEL FİZİĞİ UYGULA (Suyun ve Dünyanın Etkisi)
         self.fizik_uygula()
         # 3. MOTOR GÜÇLERİNİ HESAPLA VE UYGULA
-        self.filo_ref.roll_koru(self.rov, guc_orani)
-        self.filo_ref.pitch_koru(self.rov, guc_orani)
+        #self.filo_ref.roll_koru(self.rov, guc_orani)
+        #self.filo_ref.pitch_koru(self.rov, guc_orani)
+        
         motorlar = getattr(self.rov, "motorlar", [])
         birlesik = [float(getattr(motor, "guc", 0.0)) for motor in motorlar]
         if not motorlar:
@@ -171,7 +172,7 @@ class TemelGNCHelper:
             birlesik[i] = hareket * h + yaw * y #+ roll * r
 
         filtrelenmis_gucler = self._motor_guclerini_kalman_filtrele(birlesik)
-        self.filo_ref.motorlari_calistir(self.rov.id, filtrelenmis_gucler)
+        self.filo_ref.motorlari_calistir(self.rov.id, birlesik)
 
     def _motor_kalman_filtrelerini_hazirla(self, motor_sayisi: int):
         if motor_sayisi <= 0:
@@ -466,7 +467,9 @@ class TemelGNCHelper:
         hedef_vektor_agirlikli = hedef_vektor * 0.2
 
         bileske_vektor: Vec3 = engel_vektor_agirlikli + rov_vektor_agirlikli + hedef_vektor_agirlikli
-        guc = max(guc0, guc1, rov_carpan)
+        guc = max(guc1, rov_carpan)
+        if guc < 0.01:
+            guc = guc0
 
         return {
             'hedef_vektor': hedef_vektor_agirlikli,
