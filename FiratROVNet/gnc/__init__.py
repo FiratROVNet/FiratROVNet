@@ -10,7 +10,7 @@ import math
 import random
 import numpy as np  # type: ignore[import]
 from ursina import *  # type: ignore[import]
-from ursina import Vec3, color, time, window, camera  # type: ignore[import]
+from ursina import Vec3, color, time, window, camera # type: ignore[import]
 from panda3d.bullet import BulletWorld  # type: ignore[import]
 
 # Yerel modül importları
@@ -145,6 +145,17 @@ class Filo(FiloInitMixin):
     def BlueROV2_motor_konfigurasyonu(self, rov):
         return self.motor_duzeni.BlueROV2_motor_konfigurasyonu(rov)
 
+
+
+# ==================== KAMERA VE YOLO METOTLARI ====================
+
+    def yolo_baslat(self, rov_id, model_path='yolov8n.pt', islem_hizi=3):
+        """Seçili ROV kamerasında YOLO nesne tespitini başlatır."""
+        return self.camera_manager.yolo_baslat(rov_id, model_path, islem_hizi)
+
+    def yolo_durdur(self, rov_id):
+        """Seçili ROV'un YOLO sistemini kapatır."""
+        return self.camera_manager.yolo_durdur(rov_id)
 
 
 

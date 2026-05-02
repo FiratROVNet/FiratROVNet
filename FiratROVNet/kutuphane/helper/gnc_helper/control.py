@@ -129,50 +129,95 @@ class TemelGNCHelper:
         APF'den gelen 3B hareket vektörünü BlueROV2 benzeri 6 motor
         (4 yatay, 2 dikey) için güç komutlarına dönüştürür.
         """
-        # Güç oranını sınırla
-        try:
-            guc_orani = float(veriler.get('guc_orani', 0.0))
-        except (TypeError, ValueError):
-            guc_orani = 0.0
-        guc_orani = max(0.0, min(1.0, guc_orani))
-
-        bileske_vektor = veriler.get('bileske_vektor', Vec3(0, 0, 0))
-        if not isinstance(bileske_vektor, Vec3):
-            bileske_vektor = Vec3(0, 0, 0)
-        final_yon = bileske_vektor.normalized() if bileske_vektor.length() > 0.001 else Vec3(0, 0, 0)
-        v_sim_dir = Vec3(final_yon.x, -final_yon.z, final_yon.y)
-
-        if self.rov.role == 1 and self.rov.group_id == 0 and False:
-            print(v_sim_dir,v_sim_dir.y)
-        
         if self.rov is None or self.filo_ref is None:
             return
         
         # 2. ÖNCE ÇEVRESEL FİZİĞİ UYGULA (Suyun ve Dünyanın Etkisi)
         self.fizik_uygula()
-        # 3. MOTOR GÜÇLERİNİ HESAPLA VE UYGULA
-        #self.filo_ref.roll_koru(self.rov, guc_orani)
-        #self.filo_ref.pitch_koru(self.rov, guc_orani)
-        
+
+        hedef_vektor = veriler.get('hedef_vektor', Vec3(0, 0, 0))
+        engel_vektor = veriler.get('engel_vektor', Vec3(0, 0, 0))
+        rov_vektor = veriler.get('rov_vektor', Vec3(0, 0, 0))
+
+        try:
+            hedef_gucu = max(0.0, min(1.0, float(veriler.get('hedef_gucu', 0.0))))
+            engel_gucu = max(0.0, min(1.0, float(veriler.get('engel_gucu', 0.0))))
+            rov_gucu = max(0.0, min(1.0, float(veriler.get('rov_gucu', 0.0))))
+        except (TypeError, ValueError):
+            hedef_gucu = 0.0
+            engel_gucu = 0.0
+            rov_gucu = 0.0
+
+        def yon_vektoru_al(v):
+            if not isinstance(v, Vec3):
+                return Vec3(0, 0, 0)
+            yon = v.normalized() if v.length() > 0.001 else Vec3(0, 0, 0)
+            return Vec3(yon.x, -yon.z, yon.y)
+
+        v_hedef = yon_vektoru_al(hedef_vektor)
+        v_engel = yon_vektoru_al(engel_vektor)
+        v_rov = yon_vektoru_al(rov_vektor)
+
         motorlar = getattr(self.rov, "motorlar", [])
         birlesik = [float(getattr(motor, "guc", 0.0)) for motor in motorlar]
         if not motorlar:
             return
 
-        hareket_gucleri = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id, v_sim_dir, guc_orani)
-        yaw_gucleri, _ = self.filo_ref.yaw_gucleri_hesapla(self.rov, v_sim_dir, guc_orani)
-        #roll_gucleri = self.filo_ref.roll_guclerini_hesapla(self.rov, guc_orani)
+        # Hedef için güçleri hesapla
+        h_hareket = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id, v_hedef, hedef_gucu)
+        h_yaw, _ = self.filo_ref.yaw_gucleri_hesapla(self.rov, v_hedef, hedef_gucu)
+
+        # Engel için güçleri hesapla
+        e_hareket = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id, v_engel, engel_gucu)
+        e_yaw, _ = self.filo_ref.yaw_gucleri_hesapla(self.rov, v_engel, engel_gucu)
+
+        # ROV (sürü) için güçleri hesapla
+        r_hareket = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id, v_rov, rov_gucu)
+        r_yaw, _ = self.filo_ref.yaw_gucleri_hesapla(self.rov, v_rov, rov_gucu)
+
         h = 0.85
         y = 0.05
+        
+
+
+        ham_hedef = 0.2 * hedef_gucu
+        ham_engel = 0.4 * engel_gucu
+        ham_rov = 0.4 * rov_gucu
+
+        toplam = ham_hedef + ham_engel + ham_rov
+
+        if toplam > 0:
+            ham_hedef /= toplam
+            ham_engel /= toplam
+            ham_rov /= toplam
+
+        
+        
         for i, _motor in enumerate(motorlar):
-            hareket = hareket_gucleri[i] if i < len(hareket_gucleri) else birlesik[i]
-            yaw = yaw_gucleri[i] if i < len(yaw_gucleri) else birlesik[i]
-            #roll = roll_gucleri[i] if i < len(roll_gucleri) else birlesik[i]
+            # Hedef bileşkesi
+            hareket_h = h_hareket[i] if i < len(h_hareket) else birlesik[i]
+            yaw_h = h_yaw[i] if i < len(h_yaw) else birlesik[i]
+            hedef_toplam = hareket_h * h + yaw_h * y
+
+            # Engel bileşkesi
+            hareket_e = e_hareket[i] if i < len(e_hareket) else birlesik[i]
+            yaw_e = e_yaw[i] if i < len(e_yaw) else birlesik[i]
+            engel_toplam = hareket_e * h + yaw_e * y
+
+            # ROV bileşkesi
+            hareket_r = r_hareket[i] if i < len(r_hareket) else birlesik[i]
+            yaw_r = r_yaw[i] if i < len(r_yaw) else birlesik[i]
+            rov_toplam = hareket_r * h + yaw_r * y
             
-            birlesik[i] = hareket * h + yaw * y #+ roll * r
+            # Katsayılarla yeni bileşke:
+            # DİKKAT: Katsayıların toplamı KESİNLİKLE 1.0 olmalıdır (w_engel + w_rov + hedef_katsayisi = 1.0)
+            # Aksi takdirde dikey motorlar cached_power üzerinden beslendiği için üstel olarak (NaN) patlar!
+            birlesik[i] = (engel_toplam * ham_engel) + (rov_toplam * ham_rov) + (hedef_toplam * ham_hedef)
 
         filtrelenmis_gucler = self._motor_guclerini_kalman_filtrele(birlesik)
-        self.filo_ref.motorlari_calistir(self.rov.id, birlesik)
+        if not filtrelenmis_gucler:
+            filtrelenmis_gucler = birlesik
+        self.filo_ref.motorlari_calistir(self.rov.id, filtrelenmis_gucler)
 
     def _motor_kalman_filtrelerini_hazirla(self, motor_sayisi: int):
         if motor_sayisi <= 0:
@@ -462,24 +507,18 @@ class TemelGNCHelper:
         # Hedef agirligini yeni etkilerle 1 kere hesapla (kaldirilan cift cagir)
         hedef_vektor, guc1 = self._hedef_vektoru_isle(sonuc, max_engel_etkisi)
 
-        engel_vektor_agirlikli = engel_vektor * 0.4
-        rov_vektor_agirlikli = rov_vektor * 0.4
-        hedef_vektor_agirlikli = hedef_vektor * 0.2
-
-        bileske_vektor: Vec3 = engel_vektor_agirlikli + rov_vektor_agirlikli + hedef_vektor_agirlikli
-        guc = max(guc1, rov_carpan)
-        if guc < 0.01:
-            guc = guc0
+        if self.rov.role==1 and self.rov.group_id==0 and False:
+            print("engel_vektor", engel_vektor.length())
+            print("rov_vektor", rov_vektor.length())
+            print("hedef_vektor", hedef_vektor.length())
 
         return {
-            'hedef_vektor': hedef_vektor_agirlikli,
-            'engel_vektor': engel_vektor_agirlikli,
-            'rov_vektor': rov_vektor_agirlikli,
+            'hedef_vektor': hedef_vektor,
+            'engel_vektor': engel_vektor,
+            'rov_vektor': rov_vektor,
             'hedef_gucu': guc1,
             'engel_gucu': max_engel_etkisi,
             'rov_gucu': rov_carpan,
-            'bileske_vektor': bileske_vektor,
-            'guc_orani': guc,
         }
 
     def _guncelle_hareket_uygula(self, rov_id: int):

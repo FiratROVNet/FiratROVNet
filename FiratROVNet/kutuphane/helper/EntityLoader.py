@@ -1,5 +1,6 @@
 import os
 import math
+import json
 from ursina import *  # type: ignore[reportMissingImports]
 from ursina import (  # type: ignore[reportMissingImports]
     Entity,
@@ -359,7 +360,54 @@ class EntityLoader:
             except Exception as e:
                 print(f"⚠️ Merkez kayalığı hatası: {e}")
 
-    # --- 5. SINIRLAR ---
+    def load_pool_human(self, havuz_genisligi=200):
+        """Models-3D/human içindeki modeli havuza basit şekilde ekler."""
+        model_path = "Models-3D/human/scene.gltf"
+        model_path = model_path.replace('\\', '/') if os.name != 'nt' else model_path.replace('/', '\\')
+
+        old_human = getattr(self.ortam, 'pool_human', None)
+        if old_human:
+            destroy(old_human)
+            self.ortam.pool_human = None
+
+        if not os.path.exists(model_path):
+            print(f"⚠️ İnsan modeli bulunamadı: {model_path}")
+            return None
+
+        # glTF içindeki temel materyal rengini oku (texture yoksa buna düşer).
+        model_color = color.white
+        try:
+            with open(model_path, 'r', encoding='utf-8') as f:
+                gltf_data = json.load(f)
+            materials = gltf_data.get('materials', [])
+            if materials:
+                pbr = materials[0].get('pbrMetallicRoughness', {})
+                factor = pbr.get('baseColorFactor', [1.0, 1.0, 1.0, 1.0])
+                r = int(max(0.0, min(1.0, float(factor[0]))) * 255)
+                g = int(max(0.0, min(1.0, float(factor[1]))) * 255)
+                b = int(max(0.0, min(1.0, float(factor[2]))) * 255)
+                a = int(max(0.0, min(1.0, float(factor[3]))) * 255)
+                model_color = color.rgba(r, g, b, a)
+        except Exception:
+            pass
+
+        try:
+            self.ortam.pool_human = Entity(
+                model=model_path,
+                position=(0, self.ortam.WATER_SURFACE_Y_BASE - 30, 40),
+                scale=(0.01, 0.01, 0.01),
+                rotation=(0, 180, 0),
+                color=model_color,
+                double_sided=True,
+            )
+            print(f"✅ İnsan modeli yüklendi: {model_path}")
+            return self.ortam.pool_human
+        except Exception as e:
+            print(f"⚠️ İnsan modeli yüklenirken hata oluştu: {e}")
+            self.ortam.pool_human = None
+            return None
+
+    # --- 6. SINIRLAR ---
     def build_boundaries(self, s):
         p = {'model': 'cube', 'color': color.clear, 'visible': False, 'collider': 'box'}
         Entity(x=s+2, scale=(1, 150, s*2.5), position=(s+2, 0, 0), **p)
@@ -367,7 +415,7 @@ class EntityLoader:
         Entity(z=s+2, scale=(s*2.5, 150, 1), position=(0, 0, s+2), **p)
         Entity(z=-s-2, scale=(s*2.5, 150, 1), position=(0, 0, -s-2), **p)
 
-    # --- 6. ROV MODEL YÜKLEME (YENİ) ---
+    # --- 7. ROV MODEL YÜKLEME (YENİ) ---
     def setup_rov(self, rov_entity, model_key):
         """ROV modelini bulur, yükler ve sensör görselleştirmelerini ekler."""
         if isinstance(model_key, str): model_key = model_key.lower().strip()
@@ -440,7 +488,7 @@ class EntityLoader:
             havuz_genisligi: Havuz yarıçapı (default: 200m)
         """
         import random
-        
+
         # Havuz sınırları: ±havuz_genisligi (x ve z için)
         min_coord = -(havuz_genisligi - 20)
         max_coord = (havuz_genisligi - 20)

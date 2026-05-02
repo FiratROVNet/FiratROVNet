@@ -761,6 +761,7 @@ class Ortam:
         self.islands=self.island_entities
         self.engel_bulutu, self.konsol_verileri = [], {}
         self.sonar_cizgiler, self.filo = {}, None
+        self.pool_human = None
 
         # --- KURULUM ---
         self._setup_window()
@@ -938,6 +939,7 @@ class Ortam:
         size = havuz_genisligi * 2
         self.loader.build_ocean(size=size)
         self.loader.build_seabed(size=size)
+        self.loader.load_pool_human(havuz_genisligi=havuz_genisligi)
         self.loader.build_boundaries(havuz_genisligi)
         
         # Kayaları ekle (n_rocks parametresi ile)
