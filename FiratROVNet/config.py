@@ -84,8 +84,8 @@ class GATLimitleri:
     Bu limitler gnc.py ve simulasyon.py (kullanım) tarafından kullanılır.
     """
     # GAT Kod Limitleri (metre cinsinden)
-    CARPISMA = 15    # Kod 2: Çarpışma riski mesafesi
-    ENGEL = 20.0      # Kod 1: Engel yakınlığı mesafesi
+    CARPISMA = 25    # Kod 2: Çarpışma riski mesafesi
+    ENGEL = 25.0      # Kod 1: Engel yakınlığı mesafesi
     KOPMA = 50.0      # Kod 3: Bağlantı kopması mesafesi
     UZAK = 80.0       # Kod 5: Liderden uzaklık mesafesi
     ILETISIM_MENZILI = 100.0  # Sonar iletişim maksimum menzili (metre)

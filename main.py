@@ -16,7 +16,7 @@ print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
 
 # Simülasyonu oluştur: 6 ROV, 6 Ada, 200m havuz yarıçapı
-app.sim_olustur(n_rovs=(4,3), n_islands=4, havuz_genisligi=200, rov_model='submarine')
+app.sim_olustur(n_rovs=(7,), n_islands=4, havuz_genisligi=200, rov_model='submarine')
 
 # Filo sistemini ortamla birlikte oluştur (otomatik bağlantı)
 # GAT modeli ve navigasyon kuyruğu da Filo içinde initialize edilir
