@@ -10,6 +10,11 @@ from ursina import (  # type: ignore[reportMissingImports]
     DirectionalLight, AmbientLight, Sky, lerp,
 )
 
+# Ursina Mesh sinifi icin 'lines' modunu (GeomLines) aktif et
+from panda3d.core import GeomLines
+if 'lines' not in Mesh._modes:
+    Mesh._modes['lines'] = GeomLines
+
 # Yerel modül importları
 from FiratROVNet.config import (  # type: ignore[import-not-found]
     SensorAyarlari, GATLimitleri, HareketAyarlari, 
@@ -284,80 +289,80 @@ class ROV(Entity):
         if self.battery <= 0: return
 
     def _cizgi_havuzlari_olustur(self):
-        """Sonar ve lidar kesikli çizgileri için entity havuzunu tek sefer oluşturur. Çizimde sadece güncelle/göster/gizle."""
-        n = self.CIZGI_HAVUZ_SEGMENT
-        # Sonar (engel) çizgisi havuzu
-        self.engel_cizgi = Entity(parent=self)
-        self.engel_cizgi._segments = []
-        for _ in range(n):
-            seg = Entity(parent=self.engel_cizgi, model='cube', scale=(.1, .1, .5), color=color.red, unlit=True)
-            self.engel_cizgi._segments.append(seg)
-        self.engel_cizgi.enabled = False
-        # Lidar (4 yön) çizgisi havuzları
+        """Sonar ve lidar kesikli çizgileri için tekil mesh nesnelerini oluşturur."""
+        from ursina import Entity
+        # Sonar (engel) çizgisi tekil Mesh
+        self.engel_cizgi = Entity(add_to_scene_entities=True, enabled=False, unlit=True)
+        # Lidar (4 yön) çizgisi tekil Mesh
         for lidar_id in (0, 1, 2, 3):
-            cont = Entity(parent=self)
-            cont._segments = []
-            for _ in range(n):
-                seg = Entity(parent=cont, model='cube', scale=(0.05, 0.05, 0.3), color=color.cyan, alpha=0.6, unlit=True)
-                cont._segments.append(seg)
-            cont.enabled = False
+            cont = Entity(add_to_scene_entities=True, enabled=False, alpha=0.6, unlit=True)
             self.lidar_cizgileri[lidar_id] = cont
 
     def _kesikli_cizgi_ciz(self, hedef, mesafe):
-        """Sonar engel çizgisi. Havuz zaten __init__'te oluşturuldu; sadece konum/renk/göster-gizle güncellenir."""
+        """Sonar engel çizgisi. Tekil mesh güncellenir."""
         cizgi = self.engel_cizgi
         if cizgi is None:
             return
-        seg_list = cizgi._segments
-        max_seg = len(seg_list)
+        
         c = color.red if mesafe < 5 else (color.orange if mesafe < 10 else color.yellow)
-        delta = hedef - self.position
+        delta = hedef - self.world_position
         if delta.is_nan() or delta.length() <= 1e-6:
             cizgi.enabled = False
-            for seg in seg_list:
-                seg.enabled = False
             return
+            
         yon = delta.normalized()
-        n_use = min(int(mesafe), max_seg)
+        n_use = min(int(mesafe), self.CIZGI_HAVUZ_SEGMENT)
+        
+        verts = []
+        colors = []
+        
         for i in range(n_use):
-            seg = seg_list[i]
-            seg.position = self.position + yon * (i + 0.5)
-            seg.color = c
-            if not (hedef - seg.position).is_nan() and (hedef - seg.position).length() > 1e-6:
-                seg.look_at(hedef)
-            seg.enabled = True
-        for i in range(n_use, max_seg):
-            seg_list[i].enabled = False
-        cizgi.enabled = True
+            baslangic = self.world_position + yon * (i + 0.25)
+            bitis = self.world_position + yon * (i + 0.75)
+            verts.append((baslangic.x, baslangic.y, baslangic.z))
+            verts.append((bitis.x, bitis.y, bitis.z))
+            colors.extend([c, c])
+            
+        if verts:
+            from ursina import Mesh
+            cizgi.model = Mesh(vertices=verts, colors=colors, mode='lines', thickness=4)
+            cizgi.enabled = True
+        else:
+            cizgi.enabled = False
 
     def _lidar_cizgi_ciz(self, lidar_id, hedef, mesafe, renk):
-        """Lidar engel çizgisi. Havuz zaten __init__'te oluşturuldu; sadece konum/renk/göster-gizle güncellenir."""
+        """Lidar engel çizgisi. Tekil mesh güncellenir."""
         cont = self.lidar_cizgileri.get(lidar_id)
         if cont is None:
             return
-        seg_list = cont._segments
-        max_seg = len(seg_list)
-        delta = hedef - self.position
+            
+        delta = hedef - self.world_position
         if delta.is_nan() or delta.length() <= 1e-6:
             cont.enabled = False
-            for seg in seg_list:
-                seg.enabled = False
             return
+            
         yon = delta.normalized()
-        n_use = min(int(mesafe), max_seg)
+        n_use = min(int(mesafe), self.CIZGI_HAVUZ_SEGMENT)
+        
+        verts = []
+        colors = []
+        
         for i in range(n_use):
-            seg = seg_list[i]
-            seg.position = self.position + yon * (i + 0.5)
-            seg.color = renk
-            if not (hedef - seg.position).is_nan() and (hedef - seg.position).length() > 1e-6:
-                seg.look_at(hedef)
-            seg.enabled = True
-        for i in range(n_use, max_seg):
-            seg_list[i].enabled = False
-        cont.enabled = True
+            baslangic = self.world_position + yon * (i + 0.25)
+            bitis = self.world_position + yon * (i + 0.75)
+            verts.append((baslangic.x, baslangic.y, baslangic.z))
+            verts.append((bitis.x, bitis.y, bitis.z))
+            colors.extend([renk, renk])
+            
+        if verts:
+            from ursina import Mesh
+            cont.model = Mesh(vertices=verts, colors=colors, mode='lines', thickness=3)
+            cont.enabled = True
+        else:
+            cont.enabled = False
     
     def _lidar_cizgi_temizle(self, lidar_id):
-        """Belirli bir lidar çizgisini gizle (entity'leri yok etmeden)."""
+        """Belirli bir lidar çizgisini gizle."""
         cont = self.lidar_cizgileri.get(lidar_id)
         if cont is not None:
             cont.enabled = False
@@ -519,7 +524,7 @@ class Minimap(Entity):
             self._vektor_ve_hedef_guncelle()
 
     def _vektor_ve_hedef_guncelle(self):
-        """APF vektorleri: create-once havuz kullanir, her karede sadece mesh/renk güncellenir."""
+        """APF vektorleri: create-once tekil Mesh kullanir."""
         filo = getattr(self.ortam_ref, 'filo', None)
         helper = getattr(filo, 'helper', None) if filo else None
         apf_list = helper.get_apf_vektor_verts_list(self) if helper else []
@@ -528,55 +533,41 @@ class Minimap(Entity):
             's': color.yellow, 't': color.orange
         }
         z_line = -0.35
+        
+        verts = []
+        colors = []
+        
         if apf_list:
-            sig_sum = 0.0
-            for verts, _ in apf_list:
-                if not verts:
-                    continue
-                x0, y0 = verts[0][0], verts[0][1]
-                x1, y1 = verts[1][0], verts[1][1]
-                sig_sum += round(float(x0), 4) + round(float(y0), 4) + round(float(x1), 4) + round(float(y1), 4)  # type: ignore
-            sig = (len(apf_list), round(float(sig_sum), 4))  # type: ignore
-        else:
-            sig = (0, 0.0)
-        if self._apf_cache_sig != sig:
-            self._apf_cache_sig = sig  # type: ignore
-            n_use = min(len(apf_list), self._apf_vektor_pool_size)
-            if self._apf_vektor_pool is None:
-                self._apf_vektor_pool = []  # type: ignore
-                for _ in range(self._apf_vektor_pool_size):
-                    mesh = Mesh(vertices=[(0, 0, z_line), (0, 0, z_line)], mode='line', thickness=2)
-                    e = Entity(
-                        parent=self,
-                        model=mesh,
-                        color=color.white,
-                        alpha=0.95,
-                        z=z_line
-                    )
-                    self._apf_vektor_pool.append(e)  # type: ignore
-            pool = self._apf_vektor_pool
-            # Titremeyi onlemek icin koordinatlari yuvarla (kucuk degisimler cizimi degistirmez)
-            round_ = 3
-            for i in range(n_use):
-                verts, c_code = apf_list[i]  # type: ignore
-                if not verts or len(verts) < 2:
-                    pool[i].enabled = False  # type: ignore
+            for v_list, c_code in apf_list:
+                if not v_list or len(v_list) < 2:
                     continue
                 c = vektor_renkler.get(c_code, color.white)
-                verts_stable = [tuple(round(float(v), int(round_)) for v in pt) for pt in verts]  # type: ignore
-                pool[i].model.vertices = verts_stable  # type: ignore
-                pool[i].model.generate()  # type: ignore
-                pool[i].color = c  # type: ignore
-                pool[i].enabled = True  # type: ignore
-            for i in range(n_use, len(pool if pool is not None else [])):  # type: ignore
-                pool[i].enabled = False  # type: ignore
+                # Yuvarlama yaparak titremeyi engelle
+                x0, y0 = round(float(v_list[0][0]), 3), round(float(v_list[0][1]), 3)
+                x1, y1 = round(float(v_list[1][0]), 3), round(float(v_list[1][1]), 3)
+                verts.append((x0, y0, z_line))
+                verts.append((x1, y1, z_line))
+                colors.extend([c, c])
+                
+        if not hasattr(self, '_apf_vektor_mesh_entity') or self._apf_vektor_mesh_entity is None:
+            from ursina import Mesh, Entity
+            self._apf_vektor_mesh_entity = Entity(
+                parent=self,
+                model=Mesh(vertices=verts, colors=colors, mode='lines', thickness=2),
+                unlit=True,
+                alpha=0.95,
+                z=z_line
+            )
+        else:
+            self._apf_vektor_mesh_entity.model.vertices = verts
+            self._apf_vektor_mesh_entity.model.colors = colors
+            self._apf_vektor_mesh_entity.model.generate()
+            self._apf_vektor_mesh_entity.enabled = len(verts) > 0
 
     def _apf_vektorlari_temizle(self):
-        """APF vektorlerini gizler (havuz entity'leri yok edilmez, sadece cache sifirlanir)."""
-        self._apf_cache_sig = None
-        if self._apf_vektor_pool:
-            for e in (self._apf_vektor_pool or []):
-                e.enabled = False  # type: ignore
+        """APF vektorlerini gizler."""
+        if hasattr(self, '_apf_vektor_mesh_entity') and self._apf_vektor_mesh_entity:
+            self._apf_vektor_mesh_entity.enabled = False
 
     def _engel_bulutu_guncelle_yedek(self):
         # Engel gosterimi kapatildi: minimapte algilanan engeller cizilmez.
@@ -616,37 +607,32 @@ class Minimap(Entity):
     def update_ada_cevre(self, points):
             """
             GNC sisteminden gelen sahil şeridi noktalarını minimap üzerinde çizer.
-            Create-once: konteyner ve nokta entity havuzu bir kez oluşturulur, her cagrida sadece konumlar güncellenir.
+            Create-once: konteyner ve Mesh bir kez oluşturulur, her cagrida noktalar (vertices) güncellenir.
             """
             if not points:
                 if hasattr(self, 'ada_cevre_entity') and self.ada_cevre_entity:
                     self.ada_cevre_entity.enabled = False  # type: ignore
                 return
+            
             ada_renk = color.hex('#CD853F')
-            max_nokta = 2000
-            n_use = min(len(points), max_nokta)
-            if not hasattr(self, 'ada_cevre_entity') or self.ada_cevre_entity is None:
-                self.ada_cevre_entity = Entity(parent=self)
-                self.ada_cevre_entity._ada_noktalari = []  # type: ignore
-                for _ in range(max_nokta):
-                    e = Entity(
-                        parent=self.ada_cevre_entity,
-                        model='circle',
-                        scale=0.01,
-                        position=(0, 0, -0.28),
-                        color=ada_renk,
-                        alpha=0.85
-                    )
-                    self.ada_cevre_entity._ada_noktalari.append(e)  # type: ignore
-            pool = getattr(self.ada_cevre_entity, '_ada_noktalari', [])
-            for i in range(n_use):
-                p = points[i]
+            verts = []
+            for p in points:
                 mp = self.dunya_to_harita(p[0], p[1] if len(p) > 1 else 0)
-                pool[i].position = (mp.x, mp.y, -0.28)  # type: ignore
-                pool[i].enabled = True  # type: ignore
-            for i in range(n_use, len(pool)):
-                pool[i].enabled = False  # type: ignore
-            self.ada_cevre_entity.enabled = True  # type: ignore
+                verts.append((mp.x, mp.y, -0.28))
+            
+            if getattr(self, 'ada_cevre_entity', None) is None:
+                from ursina import Mesh, Entity
+                mesh = Mesh(vertices=verts, mode='point', thickness=4)
+                self.ada_cevre_entity = Entity(
+                    parent=self,
+                    model=mesh,
+                    color=ada_renk,
+                    alpha=0.85
+                )
+            else:
+                self.ada_cevre_entity.model.vertices = verts
+                self.ada_cevre_entity.model.generate()
+                self.ada_cevre_entity.enabled = True
 
     def hedef_isaretle(self, x, z, id=None, debug=True):
         """"""
@@ -1013,24 +999,23 @@ class Ortam:
             
     def guncelle_sonar_cizgileri(self):
             """
-            ROV'lar arası sonar iletişimini HACİMLİ KESİKLİ çizgilerle gösterir.
-            Create-once per pair: konteyner ve segmentler bir kez oluşturulur, her karede sadece konum/ölçek güncellenir.
+            ROV'lar arası sonar iletişimini KESİKLİ ÇİZGİ Mesh'leri ile gösterir.
+            Create-once per pair: her çift için tekil Mesh oluşturulur, her karede güncellenir.
             """
             active_rovs = [r for r in self.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
             bu_frame_aktif_olanlar = set()
             
-            BASE_KALINLIK = 0.12
+            BASE_KALINLIK = 4  # Çizgi kalınlığı olarak uyarlanır
             segment_boyu = 1.2
             bosluk_boyu = 1.8
             adim_toplam = segment_boyu + bosluk_boyu
-            max_segments = max(1, int(self.SONAR_MENZILI / adim_toplam) + 1)
 
             for i, r1 in enumerate(active_rovs):
                 for r2 in active_rovs[i+1:]:  # type: ignore
                     if r1.gat_kodu == 3 or r2.gat_kodu == 3:
                         continue
 
-                    p1, p2 = r1.position, r2.position
+                    p1, p2 = r1.world_position, r2.world_position
                     delta = p2 - p1
                     if delta.is_nan():
                         continue
@@ -1042,7 +1027,7 @@ class Ortam:
                         
                         oran = dist / self.SONAR_MENZILI
                         carpan = float(lerp(1.25, 0.75, oran) or 1.0)
-                        guncel_kalinlik = BASE_KALINLIK * carpan
+                        guncel_kalinlik = max(1, int(BASE_KALINLIK * carpan))
                         if dist < 25:
                             c = color.red
                         elif dist < 80:
@@ -1051,50 +1036,44 @@ class Ortam:
                             c = color.white
                         
                         yon_vec = delta.normalized()
-                        # Create-once: konteyner ve segment listesi
-                        if pair not in self.sonar_cizgiler:
-                            cizgi_konteyner = Entity(add_to_scene_entities=True)
-                            seg_list = []
-                            for _ in range(max_segments):
-                                parca = Entity(
-                                    parent=cizgi_konteyner,
-                                    model='cube',
-                                    color=c,
-                                    unlit=True
-                                )
-                                seg_list.append(parca)
-                            self.sonar_cizgiler[pair] = (cizgi_konteyner, seg_list)
                         
-                        konteyner, seg_list = self.sonar_cizgiler[pair]
+                        verts = []
+                        colors = []
                         curr = 0
-                        idx = 0
-                        while curr < dist and idx < len(seg_list if seg_list is not None else []):  # type: ignore
-                            kalin_uzunluk = min(segment_boyu, dist - curr)  # type: ignore
+                        while curr < dist:
+                            kalin_uzunluk = min(segment_boyu, dist - curr)
                             if kalin_uzunluk <= 0.1:
                                 break
-                            parca_baslangic = p1 + yon_vec * float(curr)
-                            parca_bitis = parca_baslangic + yon_vec * float(kalin_uzunluk)  # type: ignore
-                            orta_nokta = (parca_baslangic + parca_bitis) / 2
-                            parca = seg_list[idx]  # type: ignore
-                            parca.position = orta_nokta
-                            parca.scale = (guncel_kalinlik, guncel_kalinlik, kalin_uzunluk)
-                            parca.color = c
-                            if not (parca_bitis - orta_nokta).is_nan() and (parca_bitis - orta_nokta).length() > 1e-6:
-                                parca.look_at(parca_bitis)
-                            parca.enabled = True
-                            idx += 1
+                            baslangic = p1 + yon_vec * float(curr)
+                            bitis = baslangic + yon_vec * float(kalin_uzunluk)
+                            
+                            verts.append((baslangic.x, baslangic.y, baslangic.z))
+                            verts.append((bitis.x, bitis.y, bitis.z))
+                            colors.extend([c, c])
                             curr += adim_toplam
-                        for j in range(idx, len(seg_list if seg_list is not None else [])):  # type: ignore
-                            seg_list[j].enabled = False  # type: ignore
+                            
+                        # Create-once: tekil Mesh entity
+                        if pair not in self.sonar_cizgiler:
+                            from ursina import Entity
+                            mesh_entity = Entity(add_to_scene_entities=True, unlit=True)
+                            self.sonar_cizgiler[pair] = mesh_entity
+                        
+                        mesh_entity = self.sonar_cizgiler[pair]
+                        if verts:
+                            from ursina import Mesh
+                            mesh_entity.model = Mesh(vertices=verts, colors=colors, mode='lines', thickness=guncel_kalinlik)
+                            mesh_entity.enabled = True
+                        else:
+                            mesh_entity.enabled = False
 
             # Temizlik: sadece artık menzilde olmayan çiftleri sil (list kopyası üzerinden)
             for pair in list(self.sonar_cizgiler.keys()):
                 if pair not in bu_frame_aktif_olanlar:
-                    data = self.sonar_cizgiler[pair]
-                    if isinstance(data, tuple):
-                        destroy(data[0])
+                    mesh_entity = self.sonar_cizgiler[pair]
+                    if isinstance(mesh_entity, tuple): # Eski formata denk gelirse diye güvenlik
+                        destroy(mesh_entity[0])
                     else:
-                        destroy(data)
+                        destroy(mesh_entity)
                     self.sonar_cizgiler.pop(pair, None)
 
     def run(self, interaktif=False):

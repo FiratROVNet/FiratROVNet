@@ -1,0 +1,38 @@
+         1420001 function calls in 3.205 seconds
+
+   Ordered by: cumulative time
+   List reduced from 117 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      100    0.000    0.000    3.213    0.032 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/main.py:306(step)
+      100    0.001    0.000    3.213    0.032 /home/celik/.local/lib/python3.10/site-packages/direct/task/Task.py:486(step)
+      100    0.006    0.000    3.211    0.032 {method 'poll' of 'panda3d.core.AsyncTaskManager' objects}
+      100    0.003    0.000    2.424    0.024 /home/celik/.local/lib/python3.10/site-packages/direct/showbase/ShowBase.py:2148(__igLoop)
+      100    2.420    0.024    2.420    0.024 {method 'renderFrame' of 'panda3d.core.GraphicsEngine' objects}
+      100    0.087    0.001    0.741    0.007 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/main.py:159(_update)
+    26800    0.105    0.000    0.309    0.000 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/entity.py:987(has_disabled_ancestor)
+      100    0.005    0.000    0.212    0.002 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/mouse.py:185(update)
+   364400    0.098    0.000    0.149    0.000 {built-in method builtins.hasattr}
+   230800    0.071    0.000    0.141    0.000 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/scripts/property_generator.py:37(default_getter)
+   491200    0.131    0.000    0.131    0.000 {built-in method builtins.getattr}
+      100    0.014    0.000    0.117    0.001 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/mouse.py:275(find_collision)
+   259400    0.055    0.000    0.115    0.000 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/entity.py:159(enabled_getter)
+      100    0.047    0.000    0.090    0.001 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/mouse.py:316(unhover_everything_not_hit)
+      800    0.041    0.000    0.041    0.000 {method 'get_pointer' of 'panda3d.core.GraphicsWindow' objects}
+      400    0.003    0.000    0.033    0.000 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/mouse.py:56(x)
+      200    0.033    0.000    0.033    0.000 {method 'traverse' of 'panda3d.core.CollisionTraverser' objects}
+      100    0.001    0.000    0.024    0.000 /home/celik/.local/lib/python3.10/site-packages/direct/showbase/ShowBase.py:2137(__garbageCollectStates)
+      400    0.002    0.000    0.019    0.000 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/mouse.py:68(y)
+      100    0.015    0.000    0.015    0.000 {built-in method garbageCollect}
+      100    0.001    0.000    0.012    0.000 /home/celik/github/ROV/FiratRovNet-org/FiratROVNet/kutuphane/helper/EntityLoader.py:270(ocean_update)
+      100    0.002    0.000    0.010    0.000 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/entity.py:781(texture_offset_setter)
+      100    0.001    0.000    0.009    0.000 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/prefabs/sky.py:16(update)
+      100    0.002    0.000    0.007    0.000 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/prefabs/editor_camera.py:112(update)
+      100    0.001    0.000    0.006    0.000 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/entity.py:520(world_rotation_setter)
+      100    0.000    0.000    0.005    0.000 /home/celik/.local/lib/python3.10/site-packages/direct/showbase/EventManager.py:45(eventLoopTask)
+      200    0.001    0.000    0.005    0.000 /home/celik/.local/lib/python3.10/site-packages/direct/showbase/EventManager.py:30(doEvents)
+      100    0.000    0.000    0.005    0.000 /home/celik/.local/lib/python3.10/site-packages/direct/showbase/ShowBase.py:2090(__dataLoop)
+      300    0.005    0.000    0.005    0.000 {method 'setHpr' of 'panda3d.core.NodePath' objects}
+      400    0.002    0.000    0.004    0.000 /home/celik/miniconda3/envs/GNN/lib/python3.10/site-packages/ursina/ursinamath.py:10(distance)
+
+
