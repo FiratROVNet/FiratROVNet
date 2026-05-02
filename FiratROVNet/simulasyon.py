@@ -356,7 +356,7 @@ class ROV(Entity):
             
         if verts:
             from ursina import Mesh
-            cont.model = Mesh(vertices=verts, colors=colors, mode='lines', thickness=3)
+            cont.model = Mesh(vertices=verts, colors=colors, mode='lines', thickness=2)
             cont.enabled = True
         else:
             cont.enabled = False
@@ -808,7 +808,7 @@ class Ortam:
         self.sun.look_at(Vec3(1, -1, -1))  # type: ignore
         self.ambient = AmbientLight(color=color.rgba(120, 120, 120, 1))  # type: ignore
         self.sky = Sky()  # type: ignore
-
+        
     def konsola_ekle(self, isim, nesne): self.konsol_verileri[isim] = nesne
     
     def set_update_function(self, func):
@@ -1005,7 +1005,7 @@ class Ortam:
             active_rovs = [r for r in self.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
             bu_frame_aktif_olanlar = set()
             
-            BASE_KALINLIK = 4  # Çizgi kalınlığı olarak uyarlanır
+            BASE_KALINLIK = 2  # Kalınlık 0.5 oranında inceltildi
             segment_boyu = 1.2
             bosluk_boyu = 1.8
             adim_toplam = segment_boyu + bosluk_boyu
@@ -1055,7 +1055,7 @@ class Ortam:
                         # Create-once: tekil Mesh entity
                         if pair not in self.sonar_cizgiler:
                             from ursina import Entity
-                            mesh_entity = Entity(add_to_scene_entities=True, unlit=True)
+                            mesh_entity = Entity(add_to_scene_entities=True, unlit=True, alpha=0.2)
                             self.sonar_cizgiler[pair] = mesh_entity
                         
                         mesh_entity = self.sonar_cizgiler[pair]
