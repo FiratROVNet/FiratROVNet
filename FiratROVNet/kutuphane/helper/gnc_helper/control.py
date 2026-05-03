@@ -175,14 +175,14 @@ class TemelGNCHelper:
         r_hareket = self.filo_ref.tum_motorlarin_guclerini_hesapla(self.rov.id, v_rov, rov_gucu)
         r_yaw, _ = self.filo_ref.yaw_gucleri_hesapla(self.rov, v_rov, rov_gucu)
 
-        h = 0.85
-        y = 0.05
+        h = 0.9
+        y = 0.1
         
 
 
-        ham_hedef = 0.2 * hedef_gucu
-        ham_engel = 0.4 * engel_gucu
-        ham_rov = 0.4 * rov_gucu
+        ham_hedef = 0.15 * hedef_gucu
+        ham_engel = 0.425 * engel_gucu
+        ham_rov = 0.425 * rov_gucu
 
         toplam = ham_hedef + ham_engel + ham_rov
 
@@ -218,6 +218,8 @@ class TemelGNCHelper:
         if not filtrelenmis_gucler:
             filtrelenmis_gucler = birlesik
         self.filo_ref.motorlari_calistir(self.rov.id, filtrelenmis_gucler)
+        self.filo_ref.roll_koru(self.rov)
+        self.filo_ref.pitch_koru(self.rov)
 
     def _motor_kalman_filtrelerini_hazirla(self, motor_sayisi: int):
         if motor_sayisi <= 0:

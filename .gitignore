@@ -8,3 +8,5 @@ __pycache__/
 *.glb
 *.obj
 Models-3D/BlueRov2/Bluerov2.glb
+*.rrd
+Videos/

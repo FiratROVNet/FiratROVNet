@@ -35,7 +35,7 @@ class PID:
             return 0
         
         # Derivative hesaplama (error üzerinden değil, değişim üzerinden)
-        derivative = (error - self.last_error) / dt
+        derivative = (error - self.last_error) / (dt*10)
         self.last_error = error
         
         return derivative * self.Kd
@@ -63,7 +63,7 @@ class PID:
         d = self.D(dt, error)
         
         # Toplam çıktı
-        output = p
+        output = p+i+d
 
         
         # Çıktıyı sınırla
