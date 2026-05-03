@@ -142,7 +142,7 @@ def QR(ip_adresi, link, show=False):
     return qr_img
 
 
-def rerun_baslat(ip_adresi=None):
+def rerun_baslat(ip_adresi=None, kayit_dosyasi=None):
     # Gömülü viewer davranisini başlatmadan önce zorla.
     os.environ["RERUN_VIEWER_MOBILE_WARNING"] = "1"
     os.environ["RERUN_FORCE_DESKTOP"] = "1"
@@ -159,6 +159,16 @@ def rerun_baslat(ip_adresi=None):
 
     server_uri = str(rr.serve_grpc(grpc_port=rr_grpc_port))
     server_uri_lan = _uri_host_degistir(server_uri, lan_ip)
+
+    if kayit_dosyasi:
+        try:
+            rr.set_sinks(
+                rr.GrpcSink(url=server_uri),
+                rr.FileSink(kayit_dosyasi)
+            )
+            print(f"[Rerun] Eşzamanlı kayıt aktifleştirildi: {kayit_dosyasi}")
+        except Exception as e:
+            print(f"[Rerun] Kayıt sink ayarlama hatası: {e}")
     rr.serve_web_viewer(
         web_port=rr_web_port, 
         connect_to=server_uri_lan, 

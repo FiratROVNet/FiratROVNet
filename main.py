@@ -16,7 +16,7 @@ print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
 
 # Simülasyonu oluştur: 6 ROV, 6 Ada, 200m havuz yarıçapı
-app.sim_olustur(n_rovs=(7,), n_islands=4, havuz_genisligi=200, rov_model='submarine')
+app.sim_olustur(n_rovs=(5,3,3), n_islands=4, havuz_genisligi=200, rov_model='submarine')
 
 # Filo sistemini ortamla birlikte oluştur (otomatik bağlantı)
 # GAT modeli ve navigasyon kuyruğu da Filo içinde initialize edilir
@@ -34,7 +34,16 @@ app.konsola_ekle("rovs", app.rovs)
 app.konsola_ekle("cfg", cfg)
 app.konsola_ekle("nav_queue", filo.nav_queue)  # Kuyruğu konsoldan izleyebilirsin
 
-_rr_runtime = rerun_baslat(ip_adresi=os.getenv("RR_IP_ADRESI"))
+from datetime import datetime
+
+_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_kayit_klasoru = os.path.join(_script_dir, "Videos", "Rerun")
+os.makedirs(_kayit_klasoru, exist_ok=True)
+_dosya_yolu = os.path.join(_kayit_klasoru, f"simulasyon_{_ts}.rrd")
+print(f"💾 Rerun verileri eşzamanlı olarak kaydediliyor: {_dosya_yolu}")
+
+_rr_runtime = rerun_baslat(ip_adresi=os.getenv("RR_IP_ADRESI"), kayit_dosyasi=_dosya_yolu)
 
 QR(
     ip_adresi=_rr_runtime.get("lan_ip", "127.0.0.1"),
