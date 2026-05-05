@@ -7,7 +7,7 @@ from typing import Any
 
 from ursina import Vec3, application, time  # type: ignore[import]
 
-from ..config import FizikSabitleri, Hidrodinamik  # type: ignore[import]
+from ..config import FizikSabitleri, Hidrodinamik, PerformansAyarlari  # type: ignore[import]
 from ..lider_sec import liderlik_secimini_baslat  # type: ignore[import]
 from .logs import LogSystem  # type: ignore[import]
 
@@ -178,7 +178,13 @@ class FiloInitMixin:
                         except Exception:
                             pass
 
-        self.world.doPhysics(dt, 10, 1.0 / 60.0)
+        from FiratROVNet.kutuphane.moduls.profiler import Profiler
+
+        max_substeps = int(getattr(PerformansAyarlari, "PHYSICS_MAX_SUBSTEPS", 4) or 0)
+        physics_step = float(getattr(PerformansAyarlari, "PHYSICS_STEP", 1.0 / 60.0) or (1.0 / 60.0))
+        Profiler.start("12_world.doPhysics()")
+        self.world.doPhysics(dt, max_substeps, physics_step)
+        Profiler.end("12_world.doPhysics()")
 
     def _tick_navigasyon_ve_gorseller(self, tahminler):
         """Grup bazlı hedef yönetimi + renk/gorsel state."""
@@ -202,9 +208,9 @@ class FiloInitMixin:
         tahmin_len = len(tahminler) if tahminler is not None else 0
         dt = time.dt  # type: ignore[attr-defined]
 
-        Profiler.start("13_rov._guncelle_sensorler()")
+        Profiler.start("13_ignore_tuple_hazirla")
         self._hazirla_global_ignore_listesi(len(ortam_rovs))
-        Profiler.end("13_rov._guncelle_sensorler()")
+        Profiler.end("13_ignore_tuple_hazirla")
 
         for idx, rov in enumerate(ortam_rovs):
             if not rov or (hasattr(rov, "is_destroyed") and rov.is_destroyed):
@@ -263,10 +269,13 @@ class FiloInitMixin:
 
             try:
                 if hasattr(rov, "_guncelle_sensorler"):
+                    Profiler.start("13_rov._guncelle_sensorler()")
                     rov._guncelle_sensorler()
+                    Profiler.end("13_rov._guncelle_sensorler()")
             except Exception as e:
                 if "!is_empty()" not in str(e):
                     print(f"⚠️ [FİLO] ROV-{rov.id} Sensör Hatası: {e}")
+                Profiler.end("13_rov._guncelle_sensorler()")
 
             try:
                 if hasattr(rov, "velocity") and rov.velocity and rov.velocity.length() > 0.01:

@@ -1,3 +1,4 @@
+import math
 from typing import Any, Optional
 
 
@@ -187,6 +188,9 @@ class NavigationMixin:
                 return
             target_x, target_y = float(x), float(y)
 
+        if hasattr(self.filo, "rol_derinligini_uygula"):
+            target_z = self.filo.rol_derinligini_uygula(rov, target_z)
+
         # 2. Uygulama (implementasyona yonlendir)
         self._git_impl(rov.id, target_x, target_y, target_z, ai, sessiz)
 
@@ -255,12 +259,17 @@ class NavigationMixin:
         current_x, current_y, current_z = pos[0], pos[1], pos[2]
 
         current_bar_z = self._bar_derinlik_al(rov)
+        plan_duzlem_z = current_bar_z if current_bar_z is not None else current_z
+        if hasattr(self.filo, "rol_derinligini_uygula"):
+            plan_duzlem_z = self.filo.rol_derinligini_uygula(rov, plan_duzlem_z)
 
         # 2. Hedef derinligi belirle (hedefte belirtilmisse onu kullan)
         if isinstance(hedef, (tuple, list)) and len(hedef) >= 3:
             target_z = float(hedef[2])  # Kullanici derinlik belirtmis
         else:
             target_z = current_bar_z if current_bar_z is not None else current_z
+        if hasattr(self.filo, "rol_derinligini_uygula"):
+            target_z = self.filo.rol_derinligini_uygula(rov, target_z)
 
         # 3. A* icin 2D baslangic ve hedef (x, y)
         start_2d = (current_x, current_y)
@@ -280,7 +289,7 @@ class NavigationMixin:
         )
 
         # 4. A* yol planlama
-        yol_noktalari = self._a_star_path_planla(start_2d, goal_2d)
+        yol_noktalari = self._a_star_path_planla(start_2d, goal_2d, duzlem_z=plan_duzlem_z)
 
         if not yol_noktalari:
             print("⚠️ [FILO] Yol bulunamadi, dogrudan gidiliyor.")
@@ -295,12 +304,12 @@ class NavigationMixin:
         # 6. Yolu atama ve baslatma (target_z kullan)
         self.filo.git(rov.id, yol_noktalari, z=target_z, ai=ai)
 
-    def _a_star_path_planla(self, start_2d: tuple, goal_2d: tuple) -> list:
+    def _a_star_path_planla(self, start_2d: tuple, goal_2d: tuple, duzlem_z: float | None = None) -> list:
         """
         A* yol planlamasi yapan ortak helper metodu.
         FiratROVNet/a_star.py'deki AStarPlanner sinifini kullanir.
-        Ortamdaki engelleri (adalari) ve dinamik engelleri (Lidar bulutunu) 
-        otomatik olarak alir.
+        Ortamdaki engelleri (adalari) ve ROV'un bulundugu derinlik kesitindeki
+        dinamik engelleri (Lidar bulutunu) otomatik olarak alir.
         """
         try:
             from FiratROVNet.a_star import AStarPlanner
@@ -323,7 +332,7 @@ class NavigationMixin:
         try:
             from FiratROVNet.hull import HullManager
             hull_manager = HullManager(filo_ref=self.filo)
-            engel_bulutu = getattr(ortam, 'engel_bulutu', [])
+            engel_bulutu = self._a_star_duzlem_engel_bulutu(getattr(ortam, 'engel_bulutu', []), duzlem_z)
             
             if engel_bulutu and len(engel_bulutu) > 0:
                 # Lidar bulutunu basitlestir
@@ -366,6 +375,43 @@ class NavigationMixin:
         )
 
         return yol_noktalari if isinstance(yol_noktalari, list) else []
+
+    def _a_star_duzlem_engel_bulutu(self, engel_bulutu, duzlem_z: float | None):
+        """
+        Lidar bulutu 3D tutulur: (x, yatay_z, derinlik_y, kaynak).
+        A* ise tepeden 2D hesap yapar. Bu filtre, sadece ROV'un gidecegi
+        derinlik kesitine yakin engelleri 2D planlamaya sokar; dipteki kaya
+        yuzeye yakin liderin yolunu gereksiz kapatmaz.
+        """
+        if not engel_bulutu:
+            return []
+        if duzlem_z is None:
+            return list(engel_bulutu)
+        try:
+            plane = float(duzlem_z)
+        except (TypeError, ValueError):
+            return list(engel_bulutu)
+        if not math.isfinite(plane):
+            return list(engel_bulutu)
+
+        tolerans = 8.0
+        filtreli = []
+        for nokta in engel_bulutu:
+            if nokta is None:
+                continue
+            try:
+                if len(nokta) < 3:
+                    filtreli.append(nokta)
+                    continue
+                hit_y = float(nokta[2])
+            except (TypeError, ValueError):
+                filtreli.append(nokta)
+                continue
+            if not math.isfinite(hit_y):
+                continue
+            if abs(hit_y - plane) <= tolerans:
+                filtreli.append(nokta)
+        return filtreli
 
     def move(self, rov_id: int, yon: str, guc: float = 1.0, sessiz: bool = True) -> None:
         """

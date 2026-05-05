@@ -153,7 +153,9 @@ class ROV(Entity):
                  "hiz": [self.velocity.x, self.velocity.y, self.velocity.z],
                  "batarya": self.battery, "yaw": self.rotation_y, 
                  "rol": self.role, "sonar": self.son_sonar_mesafesi,
-                 "lidar": self.son_lidar_mesafeleri, "group_id": self.group_id}
+                 "lidar": self.son_lidar_mesafeleri, "group_id": self.group_id,
+                 "gorev": getattr(getattr(self, "gnc", None), "gorev", "idle"),
+                 "gorev_hedef": getattr(getattr(self, "gnc", None), "gorev_hedef", None)}
             return np.array(d[veri]) if veri in d and veri not in ["lidar", "sonar", "group_id"] else d.get(veri)
         except:
             return None
@@ -448,6 +450,11 @@ class Minimap(Entity):
             mp = self.dunya_to_harita(px, pz)
             verts.append((mp.x, mp.y, -0.25))
         verts.append(verts[0])
+        sig = tuple((round(v[0], 3), round(v[1], 3), round(v[2], 3)) for v in verts)
+        if h_entity is not None and getattr(self, '_hull_mesh_sig', None) == sig:
+            h_entity.enabled = self.visible  # type: ignore
+            return
+        self._hull_mesh_sig = sig
         if h_entity is None:
             self.hull_entity = Entity(
                 parent=self,
@@ -473,6 +480,11 @@ class Minimap(Entity):
         for p in path_points:
             mp = self.dunya_to_harita(p[0], p[1])
             verts.append((mp.x, mp.y, -0.3))
+        sig = tuple((round(v[0], 3), round(v[1], 3), round(v[2], 3)) for v in verts)
+        if p_entity is not None and getattr(self, '_path_mesh_sig', None) == sig:
+            p_entity.enabled = self.visible  # type: ignore
+            return
+        self._path_mesh_sig = sig
         if p_entity is None:
             self.path_entity = Entity(
                 parent=self,
@@ -491,6 +503,10 @@ class Minimap(Entity):
         return Vec3(x * f, z * f, -0.4)
 
     def _statik_yeniden_ciz(self):
+        for ent in list(getattr(self, 'statik_nesneler', [])):
+            if ent is not None:
+                destroy(ent)
+        self.statik_nesneler = []
         self.loader.create_minimap_grid(self, self.havuz_genisligi)
         if hasattr(self.ortam_ref, 'island_positions'):
             for pos in [p for p in self.ortam_ref.island_positions if p]:
@@ -548,6 +564,10 @@ class Minimap(Entity):
                 verts.append((x0, y0, z_line))
                 verts.append((x1, y1, z_line))
                 colors.extend([c, c])
+        sig = (
+            tuple((round(v[0], 3), round(v[1], 3), round(v[2], 3)) for v in verts),
+            tuple(str(c) for c in colors),
+        )
                 
         if not hasattr(self, '_apf_vektor_mesh_entity') or self._apf_vektor_mesh_entity is None:
             from ursina import Mesh, Entity
@@ -558,7 +578,12 @@ class Minimap(Entity):
                 alpha=0.95,
                 z=z_line
             )
+            self._apf_mesh_sig = sig
         else:
+            if getattr(self, '_apf_mesh_sig', None) == sig:
+                self._apf_vektor_mesh_entity.enabled = len(verts) > 0
+                return
+            self._apf_mesh_sig = sig
             self._apf_vektor_mesh_entity.model.vertices = verts
             self._apf_vektor_mesh_entity.model.colors = colors
             self._apf_vektor_mesh_entity.model.generate()
@@ -970,7 +995,8 @@ class Ortam:
                 
                 global_rov_id = int(global_rov_id + 1)  # type: ignore
 
-                self.minimap._statik_yeniden_ciz()
+        if getattr(self, "minimap", None):
+            self.minimap._statik_yeniden_ciz()
 
 
     def ROV(self, rov_id, x=None, y=None, z=None):
@@ -1060,6 +1086,15 @@ class Ortam:
                         
                         mesh_entity = self.sonar_cizgiler[pair]
                         if verts:
+                            sig = (
+                                round(p1.x, 1), round(p1.y, 1), round(p1.z, 1),
+                                round(p2.x, 1), round(p2.y, 1), round(p2.z, 1),
+                                guncel_kalinlik, str(c),
+                            )
+                            if getattr(mesh_entity, "_sonar_sig", None) == sig:
+                                mesh_entity.enabled = True
+                                continue
+                            mesh_entity._sonar_sig = sig
                             from ursina import Mesh
                             mesh_entity.model = Mesh(vertices=verts, colors=colors, mode='lines', thickness=guncel_kalinlik)
                             mesh_entity.enabled = True

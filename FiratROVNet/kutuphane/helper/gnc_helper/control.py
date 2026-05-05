@@ -28,6 +28,7 @@ class TemelGNCHelper:
                             out_min=PIDAyarlari.OUT_MIN, out_max=PIDAyarlari.OUT_MAX)
         self.pid_pitch = PID(Kp=PIDAyarlari.STAB_Kp, Ki=PIDAyarlari.STAB_Ki, Kd=PIDAyarlari.STAB_Kd,
                              out_min=PIDAyarlari.OUT_MIN, out_max=PIDAyarlari.OUT_MAX)
+        self._son_depth_gucu = 0.0
 
     def _vec3_gecerli_mi(self, vec) -> bool:
         try:
@@ -394,12 +395,24 @@ class TemelGNCHelper:
         filo = self.filo_ref
         if filo is None or filo.helper is None:
             return None
-        return filo.helper.apf(
-            rov_id=rov_id,
-            hedef=(hedef_koordinat is not None),
-            engel=True,
-            rov=True,
-        )
+        hedefler = getattr(filo, "_rov_hedefleri", None)
+        eski_hedef_var = isinstance(hedefler, dict) and rov_id in hedefler
+        eski_hedef = hedefler.get(rov_id) if eski_hedef_var else None
+        if hedef_koordinat is not None and isinstance(hedefler, dict):
+            hedefler[rov_id] = hedef_koordinat
+        try:
+            return filo.helper.apf(
+                rov_id=rov_id,
+                hedef=(hedef_koordinat is not None),
+                engel=True,
+                rov=True,
+            )
+        finally:
+            if hedef_koordinat is not None and isinstance(hedefler, dict):
+                if eski_hedef_var:
+                    hedefler[rov_id] = eski_hedef
+                else:
+                    hedefler.pop(rov_id, None)
 
     def _log_mesafe_etkisi_hesapla(self, mesafe: float, limit: float) -> float:
         """Mesafeye gore logaritmik etki katsayisi hesaplar (0.0-1.0)."""
@@ -526,6 +539,7 @@ class TemelGNCHelper:
 
         self._formasyon_dinamik_guncelle(rov_id)
         hedef_koordinat = filo.hedef(rov_id=rov_id)
+        hedef_koordinat = self._rol_derinlik_hedefi_ekle(hedef_koordinat)
 
         sonuc = self._hareket_vektor_verisi_al(rov_id=rov_id, hedef_koordinat=hedef_koordinat)
         if not sonuc:
@@ -539,6 +553,33 @@ class TemelGNCHelper:
 
         self.vektor_to_motor_sim(veriler)
         self._pid_stab_motor_uygula()
+
+    def _rol_derinlik_hedefi_ekle(self, hedef_koordinat):
+        """
+        ROV'un rolüne göre derinlik bandını motorlarla tutması için hedefe Z ekler.
+        Açık bir hedef yoksa mevcut X/Y korunur ve sadece derinlik hedefi üretilir.
+        """
+        filo = self.filo_ref
+        if filo is None or self.rov is None or not hasattr(filo, "rol_derinligini_uygula"):
+            return hedef_koordinat
+        gnc = self.gnc_ref
+        gps = getattr(gnc, "gps", None) if gnc is not None else None
+        if gps is None or len(gps) < 3:
+            return hedef_koordinat
+
+        try:
+            mevcut_z = float(gps[2])
+            hedef_z = filo.rol_derinligini_uygula(self.rov, mevcut_z)
+        except (TypeError, ValueError):
+            return hedef_koordinat
+        if hedef_z is None:
+            return hedef_koordinat
+
+        if hedef_koordinat is None:
+            return (float(gps[0]), float(gps[1]), float(hedef_z))
+        if len(hedef_koordinat) < 3 or hedef_koordinat[2] is None:
+            return (float(hedef_koordinat[0]), float(hedef_koordinat[1]), float(hedef_z))
+        return hedef_koordinat
 
     def _pid_dt(self) -> float:
         """Güvenli dt değeri döner."""
@@ -576,14 +617,16 @@ class TemelGNCHelper:
 
         dt = self._pid_dt()
 
-        # Roll ve pitch stabilizasyonu — m4-m7
+        # Roll, pitch ve derinlik/heave stabilizasyonu — m4-m7.
+        # Pozitif heave komutu batma, negatif komut çıkma yönünde çalışır.
+        heave = float(getattr(self, "_son_depth_gucu", 0.0))
         guc_roll  = float(self.pid_roll.compute( hedef=0.0, durum=b_roll,  dt=dt, normalize=True))
         guc_pitch = float(self.pid_pitch.compute(hedef=0.0, durum=b_pitch, dt=dt, normalize=True))
 
-        m4 =  guc_roll + guc_pitch   # sol-ön
-        m5 = -guc_roll + guc_pitch   # sağ-ön
-        m6 =  guc_roll - guc_pitch   # sol-arka
-        m7 = -guc_roll - guc_pitch   # sağ-arka
+        m4 = heave + guc_roll + guc_pitch   # sol-ön
+        m5 = heave - guc_roll + guc_pitch   # sağ-ön
+        m6 = heave + guc_roll - guc_pitch   # sol-arka
+        m7 = heave - guc_roll - guc_pitch   # sağ-arka
 
 
         motorlar = getattr(self.rov, 'motorlar', None)
@@ -592,7 +635,7 @@ class TemelGNCHelper:
 
         ESIK = 1e-4
 
-        # m4-m7: roll + pitch (dikey motorlar — doğrudan set)
+        # m4-m7: heave + roll + pitch (dikey motorlar — doğrudan set)
         for idx, guc in ((4, m4), (5, m5), (6, m6), (7, m7)):
             if abs(guc) > ESIK:
                 motorlar[idx].calistir(float(max(-1.0, min(1.0, guc))))
@@ -607,24 +650,36 @@ class TemelGNCHelper:
         yönetilir. Bu, derinlik salınımlarını bastırır ve steady-state hatasını siler.
         """
         if not hedef_koordinat or len(hedef_koordinat) < 3 or hedef_koordinat[2] is None:
+            self._son_depth_gucu = 0.0
             return veriler
         gnc = self.gnc_ref
         if gnc is None:
+            self._son_depth_gucu = 0.0
             return veriler
         gps = gnc.gps
         if gps is None or len(gps) < 3:
+            self._son_depth_gucu = 0.0
             return veriler
 
         hedef_z = float(hedef_koordinat[2])
+        if self.filo_ref is not None and hasattr(self.filo_ref, "rol_derinligini_uygula"):
+            hedef_z = float(self.filo_ref.rol_derinligini_uygula(self.rov, hedef_z))
         mevcut_z = float(gps[2])
         hata = hedef_z - mevcut_z
 
         # Küçük hatada orijinal APF Z'yi koru (gereksiz PID aktivasyonundan kaçın)
-        if abs(hata) < 0.15:
+        tolerans = float(getattr(PIDAyarlari, "DEPTH_TOLERANS", 0.15))
+        if abs(hata) < tolerans:
+            self._son_depth_gucu = 0.0
             return veriler
 
         pid_z = self.pid_depth.compute(hedef=hedef_z, durum=mevcut_z,
                                        dt=self._pid_dt(), normalize=True)
+        depth_gucu = -float(pid_z) * float(getattr(PIDAyarlari, "DEPTH_THRUST_GAIN", 1.0))
+        min_guc = float(getattr(PIDAyarlari, "DEPTH_MIN_THRUST", 0.0))
+        if abs(depth_gucu) < min_guc:
+            depth_gucu = min_guc if depth_gucu >= 0 else -min_guc
+        self._son_depth_gucu = max(-1.0, min(1.0, depth_gucu))
 
         hv = veriler.get('hedef_vektor', Vec3(0, 0, 0))
         if not isinstance(hv, Vec3):
