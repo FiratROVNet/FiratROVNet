@@ -35,7 +35,7 @@ class PID:
             return 0
         
         # Derivative hesaplama (error üzerinden değil, değişim üzerinden)
-        derivative = (error - self.last_error) / (dt*10)
+        derivative = (error - self.last_error) / dt
         self.last_error = error
         
         return derivative * self.Kd
@@ -62,18 +62,14 @@ class PID:
         i = self.I(dt, error)
         d = self.D(dt, error)
         
-        # Toplam çıktı
-        output = p+i+d
+        # Toplam çıktı (P + I + D)
+        output = p + i + d
 
-        
-        # Çıktıyı sınırla
-    
-        
         # İsteğe bağlı normalize et
         if normalize:
             output = self.normalize(output)
-        if p > 0.01:
-            print(f"Out:{output:.4f} P: {p:.4f}, I: {i:.4f}, D: {d:.4f}")
+        else:
+            output = self.clamp(output)
         
         # Hata değerini güncelle
         self.error = error
@@ -85,5 +81,4 @@ class PID:
         self.error = None
         self.last_error = None
         self.integrate_error = 0
-
 

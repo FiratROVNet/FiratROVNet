@@ -14,7 +14,7 @@ from ursina import Vec3, color, time, window, camera # type: ignore[import]
 from panda3d.bullet import BulletWorld  # type: ignore[import]
 
 # Yerel modül importları
-from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, BasitKalmanFiltresi, HavuzAyarlari  # type: ignore[import]
+from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, BasitKalmanFiltresi, HavuzAyarlari, Hidrodinamik  # type: ignore[import]
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon  # type: ignore[import]
 from ..hull import HullManager  # type: ignore[import]
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper  # type: ignore[import]
@@ -54,8 +54,9 @@ class Filo(FiloInitMixin):
         self.modul = ModulYardimcisi(self)
         self.motor_duzeni = MotorDuzeni(self)
         self.pid = PID()
-        # PID barlarinin acilis degerleri (burayi degistirerek varsayilan baslangici ayarlayabilirsin)
-        self.pid_default_params = {"Kp": 0.0, "Ki": 0.0, "Kd": 0.0}
+        # PID barlarinin acilis degerleri — PIDAyarlari'dan al (yaw ekseni referans)
+        from ..config import PIDAyarlari as _PA
+        self.pid_default_params = {"Kp": _PA.STAB_Kp, "Ki": _PA.STAB_Ki, "Kd": _PA.STAB_Kd}
         self.pid_params = dict(self.pid_default_params)
         self.pid_ui = BARUI()
         # Sorumlu Sistemler (ModülerYapı)
@@ -260,9 +261,20 @@ class Filo(FiloInitMixin):
         if name not in self.pid_params:
             return
         self.pid_params[name] = float(value)
-        # Canli konsolda filo.pid.Kp/Ki/Kd degerlerinin anlik gorunmesi icin
-        # sozlukten PID nesnesine hemen senkronla.
+        # Canlı konsolda filo.pid.Kp/Ki/Kd değerlerinin anlik görünmesi için
         setattr(self.pid, name, self.pid_params[name])
+        # Tüm ROV'ların per-ROV stabilizasyon PID nesnelerini senkronla.
+        if self.ortam_ref and hasattr(self.ortam_ref, 'rovs'):
+            for rov in self.ortam_ref.rovs:
+                if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                    continue
+                gnc = getattr(rov, 'gnc', None)
+                helper = getattr(gnc, 'temel_gnc_helper', None) if gnc else None
+                if helper is None:
+                    continue
+                helper.pid_kazanclari_guncelle(
+                    **{f'stab_{name}': float(value)},
+                )
 
     def _init_pid_ui(self):
         self.pid_params['Kp'] = float(self.pid_default_params.get('Kp', 0.0))
@@ -273,10 +285,11 @@ class Filo(FiloInitMixin):
         self.pid.Kd = self.pid_params['Kd']
 
         if not self.pid_ui.sliders:
+            from ..config import PIDAyarlari as _PA
             self.pid_ui.create_bar(
                 name='Kp',
                 min_value=0,
-                max_value=0.1,
+                max_value=_PA.UI_MAX_Kp,
                 default=self.pid_default_params['Kp'],
                 position=(0.0, 0.07),
                 callback=lambda v: self._on_pid_bar_change('Kp', v),
@@ -284,7 +297,7 @@ class Filo(FiloInitMixin):
             self.pid_ui.create_bar(
                 name='Ki',
                 min_value=0,
-                max_value=0.1,
+                max_value=_PA.UI_MAX_Ki,
                 default=self.pid_default_params['Ki'],
                 position=(0.0, -0.015),
                 callback=lambda v: self._on_pid_bar_change('Ki', v),
@@ -292,16 +305,29 @@ class Filo(FiloInitMixin):
             self.pid_ui.create_bar(
                 name='Kd',
                 min_value=0,
-                max_value=0.1,
+                max_value=_PA.UI_MAX_Kd,
                 default=self.pid_default_params['Kd'],
                 position=(0.0, -0.10),
                 callback=lambda v: self._on_pid_bar_change('Kd', v),
+            )
+            self.pid_ui.create_bar(
+                name='COB',
+                min_value=0.0,
+                max_value=_PA.UI_MAX_COB,
+                default=Hidrodinamik.COB_YUKSEKLIGI,
+                position=(0.0, -0.195),
+                precision=3,
+                callback=self._on_cob_bar_change,
             )
 
             # Baslangicta bar konumlarini default degerlere zorla uygula.
             self.pid_ui.set_value('Kp', self.pid_default_params['Kp'])
             self.pid_ui.set_value('Ki', self.pid_default_params['Ki'])
             self.pid_ui.set_value('Kd', self.pid_default_params['Kd'])
+            self.pid_ui.set_value('COB', Hidrodinamik.COB_YUKSEKLIGI)
+
+    def _on_cob_bar_change(self, value: float):
+        Hidrodinamik.COB_YUKSEKLIGI = float(value)
 
     def set_pid_value(self, name: str, value: float):
         if name not in self.pid_params:

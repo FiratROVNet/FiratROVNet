@@ -15,6 +15,8 @@ class Hidrodinamik:
     ON_YUZEY_ALANI = 0.02
     LINEAR_DAMPING = 0  # Su direnci nedeniyle doğrusal sönümleme
     ANGULAR_DAMPING = 0  # Su direnci nedeniyle açısal sönümleme
+    # CoB (kaldırma merkezi) CoM'un (kütle merkezi) kaç metre üstünde — pasif stabilite kaynağı
+    COB_YUKSEKLIGI: float = 0.900  # metre, gövde +Y ekseni (yukarı) — local body frame
 
 class BasitKalmanFiltresi:
     def __init__(self, R=0.1, Q=0.1, baslangic_degeri=0.0):
@@ -56,6 +58,46 @@ class KalmanAyarlari:
     MOTOR_Q = 0.035
     UI_AKTIF = True
     IZLENEN_ROV_ID = 0
+
+
+# ==========================================
+# PID AYARLARI
+# ==========================================
+class PIDAyarlari:
+    """
+    Her ROV için oluşturulan PID denetleyicilerinin varsayılan kazanç değerleri.
+    Kp/Ki/Kd → filo.pid_ui slider'larından canlı olarak değiştirilebilir.
+
+    Eksenler:
+      yaw   → Yatay düzlemde hedef yöne yakınsama (heading control)
+      depth → Z ekseninde hedef derinliğe yakınsama
+      roll  → Roll = 0 stabilizasyonu
+      pitch → Pitch = 0 stabilizasyonu
+    """
+    # Yaw (heading) PID
+    YAW_Kp: float = 0.05
+    YAW_Ki: float = 0.001
+    YAW_Kd: float = 0.01
+
+    # Derinlik (depth / Z-axis) PID
+    DEPTH_Kp: float = 0.04
+    DEPTH_Ki: float = 0.002
+    DEPTH_Kd: float = 0.008
+
+    # Stabilizasyon PID (roll ve pitch)
+    STAB_Kp: float = 0.003
+    STAB_Ki: float = 0.001
+    STAB_Kd: float = 0.000
+
+    # Çıkış sınırları ([-1, 1] normalize'den önce)
+    OUT_MIN: float = -1.0
+    OUT_MAX: float = 1.0
+
+    # UI slider max değerleri (filo._init_pid_ui için)
+    UI_MAX_Kp: float = 0.1
+    UI_MAX_Ki: float = 0.01
+    UI_MAX_Kd: float = 0.05
+    UI_MAX_COB: float = 2.0   # COB_YUKSEKLIGI slider max (metre)
 
 
 # ==========================================

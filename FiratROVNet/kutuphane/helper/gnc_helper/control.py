@@ -2,8 +2,9 @@ import math
 import numpy as np # type: ignore[import-not-found]
 from typing import cast
 from ursina import Vec3, time # type: ignore[import-not-found]
-from FiratROVNet.config import Hidrodinamik, GATLimitleri, BasitKalmanFiltresi, KalmanAyarlari # type: ignore[import-not-found]
+from FiratROVNet.config import Hidrodinamik, GATLimitleri, BasitKalmanFiltresi, KalmanAyarlari, PIDAyarlari # type: ignore[import-not-found]
 from FiratROVNet.kutuphane.helper.gnc_helper.mixins.formation import Formasyon # type: ignore[import-not-found]
+from FiratROVNet.kutuphane.moduls.PID import PID # type: ignore[import-not-found]
 from panda3d.core import Vec3 as P3Vec # type: ignore[import-not-found]
 
 
@@ -21,41 +22,18 @@ class TemelGNCHelper:
         self._koordinator = None
         self._motor_kalman_filtreleri: list[BasitKalmanFiltresi] = []
 
+        self.pid_depth = PID(Kp=PIDAyarlari.DEPTH_Kp, Ki=PIDAyarlari.DEPTH_Ki, Kd=PIDAyarlari.DEPTH_Kd,
+                             out_min=PIDAyarlari.OUT_MIN, out_max=PIDAyarlari.OUT_MAX)
+        self.pid_roll = PID(Kp=PIDAyarlari.STAB_Kp, Ki=PIDAyarlari.STAB_Ki, Kd=PIDAyarlari.STAB_Kd,
+                            out_min=PIDAyarlari.OUT_MIN, out_max=PIDAyarlari.OUT_MAX)
+        self.pid_pitch = PID(Kp=PIDAyarlari.STAB_Kp, Ki=PIDAyarlari.STAB_Ki, Kd=PIDAyarlari.STAB_Kd,
+                             out_min=PIDAyarlari.OUT_MIN, out_max=PIDAyarlari.OUT_MAX)
+
     def _vec3_gecerli_mi(self, vec) -> bool:
         try:
             return math.isfinite(float(vec.x)) and math.isfinite(float(vec.y)) and math.isfinite(float(vec.z))
         except (AttributeError, TypeError, ValueError):
             return False
-
-
-    def yaw_uygula(self, hedef_vektor: Vec3 | None = None, guc: float = 0.1):
-        if hedef_vektor is None:
-            hedef_vektor = Vec3(0, 0, 0)
-        V_rov = self.rov.gnc.r_bv
-        if V_rov is None:
-            V_rov = Vec3(0, 0, 0)
-        V_rov = Vec3(V_rov.x, 0, V_rov.z)
-        hedef_vektor = Vec3(hedef_vektor.x, 0, hedef_vektor.z)
-
-        len_rov = V_rov.length()
-        len_hedef = hedef_vektor.length()
-        if len_rov * len_hedef < 1e-9:
-            return
-
-        scaler_carpim = V_rov.dot(hedef_vektor)
-        
-        # Float hassasiyeti nedeniyle domain error almamak için -1.0 ile 1.0 arasına sıkıştır
-        oran_degeri = scaler_carpim / (len_rov * len_hedef)
-        oran_degeri = max(-1.0, min(1.0, oran_degeri))
-        
-        radyan = math.acos(oran_degeri)
-        aci = math.degrees(radyan)
-        oran = aci / 360.0
-        filo = self.filo_ref
-        if filo is not None:
-            filo.yaw(self.rov, oran * guc * 0.1)
-
-
 
     def fizik_uygula(self):
         physics_node = getattr(self.rov, 'physics_node', None)
@@ -91,27 +69,40 @@ class TemelGNCHelper:
             
         t_drag = Vec3(0, 0, 0)
         if acisal_hiz_buyuklugu > 0.001:
-            damping_factor = 30.0  # 10.0 yerine 5.0 - daha da düşük
-            t_drag = Vec3(-mevcut_acisal_hiz.x * damping_factor, 
-                        -mevcut_acisal_hiz.y * damping_factor, 
-                        -mevcut_acisal_hiz.z * damping_factor)
+            damping_roll_pitch = 8.0
+            damping_yaw = 30.0
+            t_drag = Vec3(-mevcut_acisal_hiz.x * damping_roll_pitch,
+                         -mevcut_acisal_hiz.y * damping_yaw,
+                         -mevcut_acisal_hiz.z * damping_roll_pitch)
 
-        # C. YERÇEKİMİ VE KALDIRMA KUVVETİ
-        batma = getattr(self.rov.gnc, 'batma_orani', 1.0) 
+        # C. YERCEKIMI VE KALDIRMA KUVVETI
+        batma = getattr(self.rov.gnc, 'batma_orani', 1.0)
         su_icindeki_hacim = Hidrodinamik.HACIM * batma
-        
+
         f_yercekimi = Vec3(0, -Hidrodinamik.KUTLE * Hidrodinamik.YER_CEKIMI, 0)
-        f_kaldirma = Vec3(0, su_icindeki_hacim * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.YER_CEKIMI, 0)
-        f_net_env: Vec3 = f_yercekimi + f_kaldirma + f_drag
+        f_kaldirma  = Vec3(0, su_icindeki_hacim * Hidrodinamik.SU_YOGUNLUGU * Hidrodinamik.YER_CEKIMI, 0)
+
+        physics_np = getattr(self.rov, 'physics_np', None)
+        if physics_np is not None:
+            cob_world = physics_np.getQuat().xform(
+                P3Vec(0.0, Hidrodinamik.COB_YUKSEKLIGI, 0.0)
+            )
+        else:
+            cob_world = P3Vec(0.0, Hidrodinamik.COB_YUKSEKLIGI, 0.0)
+        physics_node.applyForce(
+            P3Vec(f_kaldirma.x, f_kaldirma.y, f_kaldirma.z),
+            cob_world
+        )
+        f_merkez = f_yercekimi + f_drag
+        f_merkez = f_merkez or Vec3(0, 0, 0)
 
         # D. FİZİK MOTORUNA AKTARIM
-        if f_net_env is not None and self._vec3_gecerli_mi(f_net_env):
-            # Limit uygula ama çok agresif olma
+        if self._vec3_gecerli_mi(f_merkez):
             limit = 20000.0
             clamped_force = P3Vec(
-                max(-limit, min(limit, f_net_env.x)),
-                max(-limit, min(limit, f_net_env.y)),
-                max(-limit, min(limit, f_net_env.z))
+                max(-limit, min(limit, f_merkez.x)),
+                max(-limit, min(limit, f_merkez.y)),
+                max(-limit, min(limit, f_merkez.z))
             )
             physics_node.applyCentralForce(clamped_force)
         
@@ -218,8 +209,6 @@ class TemelGNCHelper:
         if not filtrelenmis_gucler:
             filtrelenmis_gucler = birlesik
         self.filo_ref.motorlari_calistir(self.rov.id, filtrelenmis_gucler)
-        self.filo_ref.roll_koru(self.rov)
-        self.filo_ref.pitch_koru(self.rov)
 
     def _motor_kalman_filtrelerini_hazirla(self, motor_sayisi: int):
         if motor_sayisi <= 0:
@@ -543,7 +532,182 @@ class TemelGNCHelper:
             return
 
         veriler = self._bileske_vektor_hesapla(sonuc, rov_id)
+
+        # Derinlik (Z) bileşenini PID çıktısıyla değiştir.
+        # XY yatay hareketi APF'te kalır; sadece dikey kanal PID tarafından yönetilir.
+        veriler = self._pid_depth_vektor_duzenle(veriler, hedef_koordinat)
+
         self.vektor_to_motor_sim(veriler)
+        self._pid_stab_motor_uygula()
+
+    def _pid_dt(self) -> float:
+        """Güvenli dt değeri döner."""
+        dt = float(getattr(time, "dt", 0.03) or 0.03)
+        return dt if 1e-4 < dt < 1.0 else 0.03
+
+    def _pid_stab_motor_uygula(self):
+        """
+        Her kare çalışır — sürekli aktif stabilizasyon.
+        Roll ve pitch PID çıktılarını mixing matrix ile birleştirip
+        her dikey motoru (m4-m7) tam olarak bir kez çağırır.
+
+        Mixing matrix (gövde geometrisinden):
+              roll   pitch
+          m4:  +1     +1   (sol-ön)
+          m5:  -1     +1   (sağ-ön)
+          m6:  +1     -1   (sol-arka)
+          m7:  -1     -1   (sağ-arka)
+
+        filo.roll() + filo.pitch() yerine bu kullanılmalı;
+        iki ayrı çağrı motorları iki kez ateşleyerek kuvvetleri çakıştırırdı.
+        """
+        if self.rov is None:
+            return
+        gnc = self.gnc_ref
+        if gnc is None:
+            return
+
+        b_pitch = float(getattr(gnc, 'bullet_pitch', 0.0))
+        b_roll  = float(getattr(gnc, 'bullet_roll',  0.0))
+
+        # [-180, 180] normalize
+        b_pitch = ((b_pitch + 180.0) % 360.0) - 180.0
+        b_roll  = ((b_roll  + 180.0) % 360.0) - 180.0
+
+        dt = self._pid_dt()
+
+        # Roll ve pitch stabilizasyonu — m4-m7
+        guc_roll  = float(self.pid_roll.compute( hedef=0.0, durum=b_roll,  dt=dt, normalize=True))
+        guc_pitch = float(self.pid_pitch.compute(hedef=0.0, durum=b_pitch, dt=dt, normalize=True))
+
+        m4 =  guc_roll + guc_pitch   # sol-ön
+        m5 = -guc_roll + guc_pitch   # sağ-ön
+        m6 =  guc_roll - guc_pitch   # sol-arka
+        m7 = -guc_roll - guc_pitch   # sağ-arka
+
+
+        motorlar = getattr(self.rov, 'motorlar', None)
+        if motorlar is None or len(motorlar) < 8:
+            return
+
+        ESIK = 1e-4
+
+        # m4-m7: roll + pitch (dikey motorlar — doğrudan set)
+        for idx, guc in ((4, m4), (5, m5), (6, m6), (7, m7)):
+            if abs(guc) > ESIK:
+                motorlar[idx].calistir(float(max(-1.0, min(1.0, guc))))
+
+
+    def _pid_depth_vektor_duzenle(self, veriler: dict, hedef_koordinat) -> dict:
+        """
+        hedef_vektor'ün Z (derinlik) bileşenini ham APF değeri yerine
+        depth PID çıktısıyla değiştirir.
+
+        XY yatay hareketi tamamen APF'te kalır; sadece dikey kanal PID tarafından
+        yönetilir. Bu, derinlik salınımlarını bastırır ve steady-state hatasını siler.
+        """
+        if not hedef_koordinat or len(hedef_koordinat) < 3 or hedef_koordinat[2] is None:
+            return veriler
+        gnc = self.gnc_ref
+        if gnc is None:
+            return veriler
+        gps = gnc.gps
+        if gps is None or len(gps) < 3:
+            return veriler
+
+        hedef_z = float(hedef_koordinat[2])
+        mevcut_z = float(gps[2])
+        hata = hedef_z - mevcut_z
+
+        # Küçük hatada orijinal APF Z'yi koru (gereksiz PID aktivasyonundan kaçın)
+        if abs(hata) < 0.15:
+            return veriler
+
+        pid_z = self.pid_depth.compute(hedef=hedef_z, durum=mevcut_z,
+                                       dt=self._pid_dt(), normalize=True)
+
+        hv = veriler.get('hedef_vektor', Vec3(0, 0, 0))
+        if not isinstance(hv, Vec3):
+            return veriler
+
+        veriler['hedef_vektor'] = Vec3(hv.x, hv.y, float(pid_z))
+        return veriler
+
+    def _pid_depth_uygula(self, hedef_koordinat):
+        """
+        Hedef derinlik ile mevcut derinlik arasındaki Z hatasını PID ile
+        dikey motorlara ek kuvvet olarak uygular.
+        """
+        if not hedef_koordinat or len(hedef_koordinat) < 3:
+            return
+        gnc = self.gnc_ref
+        if gnc is None:
+            return
+        filo = self.filo_ref
+        if filo is None:
+            return
+
+        hedef_z = float(hedef_koordinat[2]) if hedef_koordinat[2] is not None else 0.0
+        gps = gnc.gps
+        if gps is None or len(gps) < 3:
+            return
+        mevcut_z = float(gps[2])
+
+        hata = hedef_z - mevcut_z
+        if abs(hata) < 0.2:
+            return  # Derinlik zaten yeterince doğru
+
+        pid_cikti = self.pid_depth.compute(hedef=0.0, durum=-hata, dt=self._pid_dt(), normalize=True)
+
+        # Dikey motorlara (m4–m7) ek kuvvet uygula
+        guc = float(pid_cikti) * 0.5
+        for motor_adi in ('m4', 'm5', 'm6', 'm7'):
+            motor = getattr(self.rov, motor_adi, None)
+            if motor is not None:
+                mevcut_guc = float(getattr(motor, 'guc', 0.0))
+                yeni_guc = max(-1.0, min(1.0, mevcut_guc + guc))
+                motor.calistir(yeni_guc)
+
+    def _pid_stab_uygula(self):
+        """
+        Roll ve pitch'i sıfırda tutmak için PID bazlı stabilizasyon torku.
+        Mevcut roll_koru/pitch_koru'yu tamamlar.
+        """
+        filo = self.filo_ref
+        if filo is None:
+            return
+        sensor = getattr(self.rov, 'sensor', None)
+        if sensor is None:
+            return
+        imu = getattr(sensor, 'imu', None) or {}
+        orientation = imu.get('orientation', {})
+        dt = self._pid_dt()
+
+        roll  = float(orientation.get('roll', 0.0))
+        pitch = float(orientation.get('pitch', 0.0))
+
+        if abs(roll) > 1.0:
+            roll_cikti = self.pid_roll.compute(hedef=0.0, durum=roll, dt=dt, normalize=True)
+            if abs(roll_cikti) > 1e-3:
+                filo.roll_koru(self.rov, guc_orani=float(abs(roll_cikti)))
+
+        if abs(pitch) > 1.0:
+            pitch_cikti = self.pid_pitch.compute(hedef=0.0, durum=pitch, dt=dt, normalize=True)
+            if abs(pitch_cikti) > 1e-3:
+                filo.pitch_koru(self.rov, guc_orani=float(abs(pitch_cikti)))
+
+    def pid_kazanclari_guncelle(self, depth_Kp=None, depth_Ki=None, depth_Kd=None,
+                                stab_Kp=None, stab_Ki=None, stab_Kd=None):
+        """
+        filo._on_pid_bar_change() tarafından çağrılır.
+        Slider değiştiğinde ilgili per-ROV PID nesnelerini günceller.
+        """
+        if depth_Kp is not None: self.pid_depth.Kp = float(depth_Kp)
+        if depth_Ki is not None: self.pid_depth.Ki = float(depth_Ki)
+        if depth_Kd is not None: self.pid_depth.Kd = float(depth_Kd)
+        if stab_Kp is not None:  self.pid_roll.Kp  = float(stab_Kp);  self.pid_pitch.Kp = float(stab_Kp)
+        if stab_Ki is not None:  self.pid_roll.Ki  = float(stab_Ki);  self.pid_pitch.Ki = float(stab_Ki)
+        if stab_Kd is not None:  self.pid_roll.Kd  = float(stab_Kd);  self.pid_pitch.Kd = float(stab_Kd)
 
     def guncelle(self, gat_kodu=None):
         """

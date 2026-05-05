@@ -160,15 +160,14 @@ def rerun_baslat(ip_adresi=None, kayit_dosyasi=None):
     server_uri = str(rr.serve_grpc(grpc_port=rr_grpc_port))
     server_uri_lan = _uri_host_degistir(server_uri, lan_ip)
 
-    if kayit_dosyasi:
-        try:
-            rr.set_sinks(
-                rr.GrpcSink(url=server_uri),
-                rr.FileSink(kayit_dosyasi)
-            )
+    try:
+        if kayit_dosyasi:
+            rr.set_sinks(rr.GrpcSink(url=server_uri), rr.FileSink(kayit_dosyasi))
             print(f"[Rerun] Eşzamanlı kayıt aktifleştirildi: {kayit_dosyasi}")
-        except Exception as e:
-            print(f"[Rerun] Kayıt sink ayarlama hatası: {e}")
+        else:
+            rr.set_sinks(rr.GrpcSink(url=server_uri))
+    except Exception as e:
+        print(f"[Rerun] Sink ayarlama hatası: {e}")
     rr.serve_web_viewer(
         web_port=rr_web_port, 
         connect_to=server_uri_lan, 
@@ -203,6 +202,36 @@ def rerun_baslat(ip_adresi=None, kayit_dosyasi=None):
         "alias_lan_url": alias_lan_url,
         "alias_server": alias_server,
     }
+
+
+def rerun_kayit_baslat(runtime, kayit_dosyasi):
+    """Canli Rerun viewer devam ederken dosya kaydini baslatir."""
+    server_uri = str((runtime or {}).get("server_uri", ""))
+    if not server_uri:
+        print("[Rerun] Kayit baslatilamadi: server_uri yok.")
+        return False
+    try:
+        rr.set_sinks(rr.GrpcSink(url=server_uri), rr.FileSink(kayit_dosyasi))
+        print(f"[Rerun] Kayit basladi: {kayit_dosyasi}")
+        return True
+    except Exception as e:
+        print(f"[Rerun] Kayit baslatma hatasi: {e}")
+        return False
+
+
+def rerun_kayit_durdur(runtime):
+    """Dosya kaydini bitirir, canli Rerun viewer sink'ini korur."""
+    server_uri = str((runtime or {}).get("server_uri", ""))
+    if not server_uri:
+        print("[Rerun] Kayit durdurulamadi: server_uri yok.")
+        return False
+    try:
+        rr.set_sinks(rr.GrpcSink(url=server_uri))
+        print("[Rerun] Kayit durduruldu.")
+        return True
+    except Exception as e:
+        print(f"[Rerun] Kayit durdurma hatasi: {e}")
+        return False
 
 
 def _ursina_to_rerun_xyz(x, y, z):

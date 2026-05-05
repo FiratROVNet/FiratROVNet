@@ -2,12 +2,14 @@ from FiratROVNet.kutuphane.moduls.profiler import Profiler
 from FiratROVNet.simulasyon import Ortam
 from FiratROVNet.gnc import Filo, TemelGNC
 from FiratROVNet.config import cfg
+from FiratROVNet.motor_hud import MotorHUD
 from ursina import *  # type: ignore[reportMissingImports]
 from ursina import time as utime, mouse, Vec3, time # type: ignore[reportMissingImports]  # FPS icin dt; mouse: girdi
 import numpy as np
 import os
 import time
-from rerun_ayarla import QR, rerun_baslat, rerun_sahne_logla
+import threading
+from rerun_ayarla import QR, rerun_baslat, rerun_sahne_logla, rerun_kayit_baslat, rerun_kayit_durdur
 
 # ==========================================
 # 1. KURULUM VE YAPILANDIRMA
@@ -16,11 +18,40 @@ print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
 
 # Simülasyonu oluştur: 6 ROV, 6 Ada, 200m havuz yarıçapı
-app.sim_olustur(n_rovs=(5,3,3), n_islands=4, havuz_genisligi=200, rov_model='submarine')
+app.sim_olustur(n_rovs=(10,), n_islands=4, havuz_genisligi=200, rov_model='submarine')
 
 # Filo sistemini ortamla birlikte oluştur (otomatik bağlantı)
 # GAT modeli ve navigasyon kuyruğu da Filo içinde initialize edilir
 filo = Filo(ortam_ref=app)
+motor_hud = MotorHUD(filo)
+if getattr(app, "rov_label", None) is not None and app.rov_label.background is not None:
+    app.rov_label.background.scale_y = 2.2
+
+shortcut_root = Entity(parent=camera.ui, position=(0.8, 0.28, -9))
+shortcut_bg = Entity(
+    parent=shortcut_root,
+    model="quad",
+    scale=(0.18, 0.08),
+    color=color.black,
+    z=0.04,
+)
+shortcut_bg.alpha = 0.48
+_shortcut_border_color = color.azure
+for _shortcut_border in (
+    Entity(parent=shortcut_root, model="quad", position=(0, 0.040, -0.04), scale=(0.18, 0.002), color=_shortcut_border_color),
+    Entity(parent=shortcut_root, model="quad", position=(0, -0.040, -0.04), scale=(0.18, 0.002), color=_shortcut_border_color),
+    Entity(parent=shortcut_root, model="quad", position=(-0.090, 0, -0.04), scale=(0.002, 0.08), color=_shortcut_border_color),
+    Entity(parent=shortcut_root, model="quad", position=(0.090, 0, -0.04), scale=(0.002, 0.08), color=_shortcut_border_color),
+):
+    _shortcut_border.alpha = 0.30
+shortcut_text = Text(
+    parent=shortcut_root,
+    text="<white>M<default> Motor   <white>B<default> PID\n<white>R<default> ROV     <white>G<default> Grup\n<white>F<default> Görsel  <white>V<default> REC",
+    position=(0, 0, 0),
+    origin=(0, 0),
+    scale=0.7,
+    color=color.gray,
+)
 
 # Konsol fonksiyonları
 app.konsola_ekle("git", lambda rov_id, x, z, y=None, ai=True: filo.git(rov_id, x, z, y, ai))
@@ -40,10 +71,12 @@ _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _kayit_klasoru = os.path.join(_script_dir, "Videos", "Rerun")
 os.makedirs(_kayit_klasoru, exist_ok=True)
-_dosya_yolu = os.path.join(_kayit_klasoru, f"simulasyon_{_ts}.rrd")
-print(f"💾 Rerun verileri eşzamanlı olarak kaydediliyor: {_dosya_yolu}")
+_dosya_yolu = None
+_rerun_recording = False
+_rerun_sink_busy = False
+_aktif_grup_index = 0
 
-_rr_runtime = rerun_baslat(ip_adresi=os.getenv("RR_IP_ADRESI"), kayit_dosyasi=_dosya_yolu)
+_rr_runtime = rerun_baslat(ip_adresi=os.getenv("RR_IP_ADRESI"))
 
 QR(
     ip_adresi=_rr_runtime.get("lan_ip", "127.0.0.1"),
@@ -64,6 +97,71 @@ print("✅ Sistem aktif. Minimap: sol tıkla. Ekran görüntüsü (makale kalite
 _fps_history = []
 _FPS_HISTORY_SIZE = 10
 _rerun_step = 0
+
+def _aktif_grup_idleri():
+    gruplar = []
+    try:
+        for g_id, grup in filo.g_rovs.items():
+            aktif = [r for r in (grup or []) if r and not getattr(r, "is_destroyed", False)]
+            if aktif:
+                gruplar.append(g_id)
+    except Exception:
+        pass
+    return sorted(gruplar)
+
+
+def _gruptaki_ilk_rov_id(g_id):
+    try:
+        grup = filo.g_rovs.get(g_id, [])
+        aktif = [r for r in (grup or []) if r and not getattr(r, "is_destroyed", False)]
+        aktif.sort(key=lambda r: getattr(r, "id", 0))
+        if aktif:
+            return getattr(aktif[0], "id", None)
+    except Exception:
+        return None
+    return None
+
+
+def _rerun_kayit_dosyasi_olustur():
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return os.path.join(_kayit_klasoru, f"simulasyon_{ts}.rrd")
+
+
+def _rerun_kayit_toggle():
+    global _rerun_recording, _dosya_yolu, _rerun_sink_busy
+    if _rerun_sink_busy:
+        print("⏳ Rerun kayıt durumu değiştiriliyor, lütfen bekle...")
+        return
+
+    _rerun_sink_busy = True
+    if not _rerun_recording:
+        _dosya_yolu = _rerun_kayit_dosyasi_olustur()
+        print(f"🎥 Rerun kaydı başlatılıyor: {_dosya_yolu}")
+        threading.Thread(target=_rerun_kayit_baslat_async, args=(_dosya_yolu,), daemon=True).start()
+        return
+
+    print(f"⏹️ Rerun kaydı durduruluyor: {_dosya_yolu}")
+    threading.Thread(target=_rerun_kayit_durdur_async, daemon=True).start()
+
+
+def _rerun_kayit_baslat_async(dosya_yolu):
+    global _rerun_recording, _rerun_sink_busy
+    try:
+        if rerun_kayit_baslat(_rr_runtime, dosya_yolu):
+            _rerun_recording = True
+            print(f"✅ Rerun kaydı başladı: {dosya_yolu}")
+    finally:
+        _rerun_sink_busy = False
+
+
+def _rerun_kayit_durdur_async():
+    global _rerun_recording, _rerun_sink_busy
+    try:
+        if rerun_kayit_durdur(_rr_runtime):
+            print(f"✅ Rerun kaydı durdu: {_dosya_yolu}")
+            _rerun_recording = False
+    finally:
+        _rerun_sink_busy = False
 
 def update():
     """Ana simülasyon döngüsü. Frame süresi hedef FPS ile eşitlenir."""
@@ -114,13 +212,15 @@ def update():
     )
 
     app.rov_label.text = info_text
+    motor_hud.update(bilgi_rov_id)
 
 
 
     tahminler = np.zeros(len(app.rovs), dtype=int)
     filo.guncelle_gat_analizi(tahminler)
     filo.guncelle_hepsi(tahminler, guncelle_gorseller=True)
-    rerun_sahne_logla(app=app, filo=filo, step=_rerun_step)
+    if not _rerun_sink_busy:
+        rerun_sahne_logla(app=app, filo=filo, step=_rerun_step)
     _rerun_step += 1
 
 
@@ -138,7 +238,7 @@ bilgi_rov_id = 0
 
 def input(key):
     """Mouse ve keyboard girdilerini işle."""
-    global bilgi_rov_id
+    global bilgi_rov_id, _aktif_grup_index
 
     if key in ('f', 'F'):
             try:
@@ -194,6 +294,30 @@ def input(key):
             except Exception as e:
                 print(f"📸 Görsel işleme hatası: {e}")
 
+    if key in ('m', 'M'):
+        motor_hud.toggle()
+
+    if key in ('b', 'B'):
+        filo.toggle_pid_ui()
+
+    if key in ('v', 'V'):
+        _rerun_kayit_toggle()
+
+    if key in ('g', 'G'):
+        grup_idleri = _aktif_grup_idleri()
+        if grup_idleri:
+            mevcut_grup = getattr(filo.rovs[bilgi_rov_id], "group_id", None)
+            if mevcut_grup in grup_idleri:
+                _aktif_grup_index = (grup_idleri.index(mevcut_grup) + 1) % len(grup_idleri)
+            else:
+                _aktif_grup_index = (_aktif_grup_index + 1) % len(grup_idleri)
+            hedef_grup = grup_idleri[_aktif_grup_index]
+            ilk_rov_id = _gruptaki_ilk_rov_id(hedef_grup)
+            if ilk_rov_id is not None:
+                bilgi_rov_id = int(ilk_rov_id)
+                filo.kamera_ayarla(rov_id=bilgi_rov_id)
+                print(f"🔄 Aktif Grup: {hedef_grup} | İzlenen ROV: {bilgi_rov_id}")
+
     if key == 'p':
         lider_bilgi = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)
         lider_id = lider_bilgi[0] if lider_bilgi else None
@@ -205,6 +329,10 @@ def input(key):
         bilgi_rov_id += 1
         bilgi_rov_id %= len(filo.rovs)
         filo.kamera_ayarla(rov_id=bilgi_rov_id)
+        mevcut_grup = getattr(filo.rovs[bilgi_rov_id], "group_id", None)
+        grup_idleri = _aktif_grup_idleri()
+        if mevcut_grup in grup_idleri:
+            _aktif_grup_index = grup_idleri.index(mevcut_grup)
         print(f"🔄 Aktif ROV: {bilgi_rov_id}")
 
     
@@ -263,6 +391,11 @@ if __name__ == "__main__":
     except KeyboardInterrupt: 
         print("\n🛑 Simülasyon durduruldu.")
     finally: 
+        if _rerun_recording:
+            try:
+                rerun_kayit_durdur(_rr_runtime)
+            except Exception:
+                pass
         try:
             Profiler.rapor_ver()
         except Exception:
