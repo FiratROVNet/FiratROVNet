@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .alan_tarama import AlanTaramaGorevi, AlanTaramaPlani
+from ...config import AramaKurtarmaAyarlari
 
 
 @dataclass(frozen=True)
@@ -22,7 +23,7 @@ class AramaKurtarmaGorevi:
         self.alan_tarama = AlanTaramaGorevi(filo_ref)
         self.aktif_plan: AlanTaramaPlani | None = None
         self.hedef_siniflari: set[str] = set()
-        self.min_confidence = 0.45
+        self.min_confidence = AramaKurtarmaAyarlari.MIN_CONFIDENCE
         self.son_tespit: YoloTespit | None = None
 
     def baslat(
@@ -32,7 +33,7 @@ class AramaKurtarmaGorevi:
         hedef_siniflari: Iterable[str] | None = None,
         model_path: str = "yolov8n.pt",
         derinlik: float = -20.0,
-        min_confidence: float = 0.45,
+        min_confidence: float = AramaKurtarmaAyarlari.MIN_CONFIDENCE,
         gereken_rov_sayisi: int | None = None,
         sessiz: bool = True,
     ) -> AlanTaramaPlani:

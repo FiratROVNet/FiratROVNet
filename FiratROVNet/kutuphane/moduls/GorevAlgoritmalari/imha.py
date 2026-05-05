@@ -9,6 +9,7 @@ from .arama_kurtarma import AramaKurtarmaGorevi, YoloTespit
 from .ortak import mesafe_2d, rov_gorev_ata, rov_gorev_bosalt
 from .ortak import gorev_grubu_olustur
 from ..rov_deger_onerisi import GorevHedefi, en_iyi_rovlari_sec
+from ...config import ImhaAyarlari
 
 
 @dataclass(frozen=True)
@@ -34,7 +35,7 @@ class ImhaGorevi:
         self.arama = AramaKurtarmaGorevi(filo_ref)
         self.hedef: tuple[float, float, float] | None = None
         self.gorevli_rov_id: int | None = None
-        self.imha_mesafesi = 8.0
+        self.imha_mesafesi = ImhaAyarlari.IMHA_MESAFESI
         self.tespit: YoloTespit | None = None
         self.hedef_entity = None
 
@@ -42,7 +43,7 @@ class ImhaGorevi:
         self,
         grup_id: int,
         hedef: tuple[float, float, float],
-        imha_mesafesi: float = 8.0,
+        imha_mesafesi: float = ImhaAyarlari.IMHA_MESAFESI,
         sessiz: bool = True,
         hedef_entity=None,
     ) -> int:
