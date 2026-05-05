@@ -14,7 +14,7 @@ from .ortak import (
     rov_gorev_bosalt,
 )
 from ..rov_deger_onerisi import GorevHedefi, en_iyi_rovlari_sec
-from ...config import AlanTaramaAyarlari
+from ....config import AlanTaramaAyarlari
 
 
 @dataclass

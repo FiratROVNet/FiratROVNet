@@ -78,11 +78,30 @@ _rerun_sink_busy = False
 _aktif_grup_index = 0
 
 _rr_runtime = rerun_baslat(ip_adresi=os.getenv("RR_IP_ADRESI"))
+_rerun_thread = None
+_rerun_thread_lock = threading.Lock()
 
 QR(
     ip_adresi=_rr_runtime.get("lan_ip", "127.0.0.1"),
     link=_rr_runtime.get("web_lan_url", ""),
 )
+
+def _rerun_log_async(app, filo, step):
+    global _rerun_thread
+    if _rerun_thread is not None and _rerun_thread.is_alive():
+        return
+
+    def _target():
+        try:
+            rerun_sahne_logla(app=app, filo=filo, step=step)
+        except Exception as exc:
+            print(f"[Rerun] Asenkron log hatası: {exc}")
+
+    with _rerun_thread_lock:
+        if _rerun_thread is not None and _rerun_thread.is_alive():
+            return
+        _rerun_thread = threading.Thread(target=_target, daemon=True)
+        _rerun_thread.start()
 
 
 
@@ -253,7 +272,7 @@ def update():
 
     if not _rerun_sink_busy and _scheduler.due("rerun", PerformansAyarlari.RERUN_HZ, dt):
         Profiler.start("0_rerun_sahne_logla")
-        rerun_sahne_logla(app=app, filo=filo, step=_rerun_step)
+        _rerun_log_async(app=app, filo=filo, step=_rerun_step)
         Profiler.end("0_rerun_sahne_logla")
     _rerun_step += 1
 
