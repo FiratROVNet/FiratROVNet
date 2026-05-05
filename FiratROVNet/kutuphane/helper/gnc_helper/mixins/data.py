@@ -99,6 +99,20 @@ class DataMixin:
                 else:
                     val = None
 
+            elif veri_tipi == "gorev":
+                gnc = getattr(rov, 'gnc', None)
+                if gnc and hasattr(gnc, 'gorev'):
+                    val = gnc.gorev
+                else:
+                    val = "idle"
+
+            elif veri_tipi == "gorev_hedef":
+                gnc = getattr(rov, 'gnc', None)
+                if gnc and hasattr(gnc, 'gorev_hedef'):
+                    val = gnc.gorev_hedef
+                else:
+                    val = None
+
             elif veri_tipi in ("gps_sinyal", "gps_signal"):
                 # Önce yeni sensor paketine bak, yoksa eski GNC alanına dön.
                 sensor = getattr(rov, 'sensor', None)

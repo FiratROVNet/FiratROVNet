@@ -83,6 +83,9 @@ class PIDAyarlari:
     DEPTH_Kp: float = 0.04
     DEPTH_Ki: float = 0.002
     DEPTH_Kd: float = 0.008
+    DEPTH_THRUST_GAIN: float = 1.4
+    DEPTH_MIN_THRUST: float = 0.18
+    DEPTH_TOLERANS: float = 0.15
 
     # Stabilizasyon PID (roll ve pitch)
     STAB_Kp: float = 0.003
@@ -115,6 +118,31 @@ class Ayarlar:
 
 # Bu nesneyi diğer dosyalardan çağıracağız
 cfg = Ayarlar()
+
+
+class PerformansAyarlari:
+    """FPS dostu varsayilanlar. 0 veya daha kucuk Hz degeri ilgili isi kapatir."""
+
+    HUD_HZ = 5.0
+    MOTOR_HUD_HZ = 10.0
+    GORSELLER_HZ = 10.0
+    RERUN_HZ = 10.0
+    GAT_HZ = 5.0
+    LIDER_HZ = 5.0
+    OCEAN_HZ = 20.0
+    YOLO_CAPTURE_HZ = 5.0
+
+    PHYSICS_MAX_SUBSTEPS = 4
+    PHYSICS_STEP = 1.0 / 60.0
+
+
+class RolDerinlikAyarlari:
+    """Sim Z derinligi: yuzey 0, su alti negatif degerdir."""
+
+    LIDER_EN_SIG_DERINLIK = -1
+    LIDER_EN_DERIN_DERINLIK = -2.0
+    TAKIPCI_EN_SIG_DERINLIK = -20.0
+    TAKIPCI_EN_DERIN_DERINLIK = -25.0
 
 
 # ==========================================

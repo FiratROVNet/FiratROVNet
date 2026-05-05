@@ -14,7 +14,7 @@ from ursina import (  # type: ignore[reportMissingImports]
     time,
 )
 from FiratROVNet.utils import sim_to_ursina
-from FiratROVNet.config import ROVModelleri, GATLimitleri  # Config dosyanızdan importlar
+from FiratROVNet.config import ROVModelleri, GATLimitleri, PerformansAyarlari  # Config dosyanızdan importlar
 
 class EntityLoader:
     def __init__(self, ortam_ref):
@@ -272,7 +272,14 @@ class EntityLoader:
             dt = dt if dt > 0 else 0.016
             if not hasattr(self.ortam.ocean_surface, 'sim_time'):
                 self.ortam.ocean_surface.sim_time = 0
+            if not hasattr(self.ortam.ocean_surface, '_fps_accum'):
+                self.ortam.ocean_surface._fps_accum = 0.0
             self.ortam.ocean_surface.sim_time += dt
+            self.ortam.ocean_surface._fps_accum += dt
+            hz = float(getattr(PerformansAyarlari, "OCEAN_HZ", 20.0) or 20.0)
+            if hz > 0 and self.ortam.ocean_surface._fps_accum < (1.0 / hz):
+                return
+            self.ortam.ocean_surface._fps_accum = 0.0
             self.ortam.ocean_surface.y = self.ortam.WATER_SURFACE_Y_BASE + math.sin(self.ortam.ocean_surface.sim_time * 0.8) * 0.5
             self.ortam.ocean_surface.texture_offset = (self.ortam.ocean_surface.sim_time * 0.02, 0)
         self.ortam.ocean_surface.update = ocean_update

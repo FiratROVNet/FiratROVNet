@@ -6,9 +6,11 @@ ROV kamera sistemlerinin yönetimi, ayarları ve YOLO Entegrasyonu (Ursina UI De
 import builtins
 import cv2
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from direct.task import Task
 from PIL import Image
-from ursina import Entity, camera, Texture, destroy, color  # Ursina UI için eklendi
+from ursina import Entity, camera, Texture, destroy, color, time  # Ursina UI için eklendi
+from FiratROVNet.config import PerformansAyarlari
 
 try:
     from ultralytics import YOLO
@@ -26,6 +28,9 @@ class CameraManager:
         self.yolo_modelleri = {}   
         self.aktif_yolo_gorevleri = {} 
         self.yolo_ui_ekranlari = {} # Yeni: Oyun içi YOLO HUD ekranları
+        self._yolo_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rov-yolo")
+        self._yolo_futures = {}
+        self.yolo_son_tespitler = {}
         
     def kamera_ekle(self, rov_id=0, mesafe=(0, -40, 120), aci=(0, 0, 0), fov=75, bolge=(0.02, 0.20, 0.80, 0.98)):
         if not hasattr(builtins, 'base'):
@@ -114,13 +119,71 @@ class CameraManager:
                 appendTask=True
             )
             task.frame_counter = 0 
+            task.capture_accum = 0.0
             self.aktif_yolo_gorevleri[rov_id] = task
             print(f"🎯 ROV-{rov_id} için Oyun İçi YOLO Tespit Sistemi Başlatıldı!")
             return True
 
+    def _yolo_predict_worker(self, model, img_bgr):
+            results = model.predict(source=img_bgr, conf=0.5, verbose=False)
+            tespitler = []
+            names = getattr(model, "names", {}) or {}
+            boxes = getattr(results[0], "boxes", None)
+            if boxes is not None:
+                for box in boxes:
+                    try:
+                        xyxy = box.xyxy[0].tolist()
+                        cls_id = int(box.cls[0])
+                        conf = float(box.conf[0])
+                        tespitler.append({
+                            "bbox": tuple(float(v) for v in xyxy),
+                            "class_id": cls_id,
+                            "class_name": str(names.get(cls_id, cls_id)),
+                            "confidence": conf,
+                        })
+                    except Exception:
+                        continue
+            annotated_bgr = results[0].plot()
+            return cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB), tespitler
+
+    def _yolo_texture_guncelle(self, rov_id, annotated_rgb):
+            height, width, _ = annotated_rgb.shape
+            ui_entity = self.yolo_ui_ekranlari.get(rov_id)
+            if not ui_entity:
+                return
+
+            if not hasattr(ui_entity, '_p3d_tex') or ui_entity._p3d_tex.getXSize() != width:
+                from panda3d.core import Texture as P3DTexture
+                pt = P3DTexture("yolo_tex")
+                pt.setup2dTexture(width, height, P3DTexture.T_unsigned_byte, P3DTexture.F_rgb)
+                ui_entity._p3d_tex = pt
+                ui_entity.model.setTexture(pt, 1)
+
+            annotated_rgb_flipped = cv2.flip(annotated_rgb, 0)
+            ui_entity._p3d_tex.setRamImage(annotated_rgb_flipped.tobytes())
+
     def _yolo_guncelle_task(self, rov_id, region, model, islem_hizi, task):
             task.frame_counter += 1
-            if task.frame_counter % islem_hizi != 0: return Task.cont
+            future = self._yolo_futures.get(rov_id)
+            if future is not None and future.done():
+                try:
+                    annotated_rgb, tespitler = future.result()
+                    self.yolo_son_tespitler[rov_id] = tespitler
+                    self._yolo_texture_guncelle(rov_id, annotated_rgb)
+                except Exception as exc:
+                    print(f"⚠️ YOLO worker hatası: {exc}")
+                self._yolo_futures.pop(rov_id, None)
+
+            if rov_id in self._yolo_futures:
+                return Task.cont
+
+            dt = getattr(time, "dt", 0.016) or 0.016
+            task.capture_accum = getattr(task, "capture_accum", 0.0) + dt
+            hz = float(getattr(PerformansAyarlari, "YOLO_CAPTURE_HZ", 5.0) or 5.0)
+            interval = 1.0 / hz if hz > 0 else max(1, int(islem_hizi)) * 0.016
+            if task.frame_counter % max(1, int(islem_hizi)) != 0 and task.capture_accum < interval:
+                return Task.cont
+            task.capture_accum = 0.0
                 
             tex = region.getScreenshot()
             if not tex: return Task.cont
@@ -134,32 +197,7 @@ class CameraManager:
             # Görüntüyü Panda3D formatından BGR'ye (OpenCV için) çevir
             img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
             img_bgr = cv2.flip(img_bgr, 0)
-            
-            # YOLO Nesne Tespiti (Çizim işlemi plot() ile yapılır)
-            results = model.predict(source=img_bgr, conf=0.5, verbose=False)
-            annotated_bgr = results[0].plot()
-            
-            # BGR'den RGB'ye geri çevir
-            annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
-            height, width, _ = annotated_rgb.shape
-            
-            ui_entity = self.yolo_ui_ekranlari.get(rov_id)
-            if not ui_entity: return Task.cont
-
-            # PANDA3D DONANIMSAL TEXTURE GÜNCELLEMESİ (Hızlı ve stabil)
-            if not hasattr(ui_entity, '_p3d_tex') or ui_entity._p3d_tex.getXSize() != width:
-                from panda3d.core import Texture as P3DTexture
-                pt = P3DTexture("yolo_tex")
-                pt.setup2dTexture(width, height, P3DTexture.T_unsigned_byte, P3DTexture.F_rgb)
-                ui_entity._p3d_tex = pt
-                
-                # --- DÜZELTİLEN SATIR BURASI ---
-                # Ursina objesi yerine doğrudan Panda3D objesine texture ataması yapıyoruz
-                ui_entity.model.setTexture(pt, 1) 
-                
-            # Texture verisini doğrudan RAM'e yazdır (Flicker/titreme sorununu çözer)
-            annotated_rgb_flipped = cv2.flip(annotated_rgb, 0) # OpenGL standardı gereği
-            ui_entity._p3d_tex.setRamImage(annotated_rgb_flipped.tobytes())
+            self._yolo_futures[rov_id] = self._yolo_executor.submit(self._yolo_predict_worker, model, img_bgr.copy())
             
             return Task.cont
 
@@ -168,6 +206,9 @@ class CameraManager:
             b = builtins.base
             b.taskMgr.remove(self.aktif_yolo_gorevleri[rov_id])
             del self.aktif_yolo_gorevleri[rov_id]
+            future = self._yolo_futures.pop(rov_id, None)
+            if future is not None:
+                future.cancel()
             
             # Ursina UI Panelini de sahneden sil
             if rov_id in self.yolo_ui_ekranlari:

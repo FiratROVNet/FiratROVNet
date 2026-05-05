@@ -14,11 +14,20 @@ from ursina import Vec3, color, time, window, camera # type: ignore[import]
 from panda3d.bullet import BulletWorld  # type: ignore[import]
 
 # Yerel modül importları
-from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, BasitKalmanFiltresi, HavuzAyarlari, Hidrodinamik  # type: ignore[import]
+from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, BasitKalmanFiltresi, HavuzAyarlari, Hidrodinamik, RolDerinlikAyarlari  # type: ignore[import]
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon  # type: ignore[import]
 from ..hull import HullManager  # type: ignore[import]
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper  # type: ignore[import]
-from FiratROVNet.kutuphane.moduls import ModulYardimcisi, MotorDuzeni, PID, BARUI  # type: ignore[import]
+from FiratROVNet.kutuphane.moduls import (  # type: ignore[import]
+    ModulYardimcisi,
+    MotorDuzeni,
+    PID,
+    BARUI,
+    AlanTaramaGorevi,
+    AramaKurtarmaGorevi,
+    ImhaGorevi,
+    RovDegerOnerici,
+)
 # Lazy import: FiratAnalizci circular import problemini önlemek için _basla_gat_modeli içinde import edilir
 
 # Modüler yapı - GNC subpackage
@@ -59,6 +68,10 @@ class Filo(FiloInitMixin):
         self.pid_default_params = {"Kp": _PA.STAB_Kp, "Ki": _PA.STAB_Ki, "Kd": _PA.STAB_Kd}
         self.pid_params = dict(self.pid_default_params)
         self.pid_ui = BARUI()
+        self.alan_tarama_gorevi = AlanTaramaGorevi(self)
+        self.arama_kurtarma_gorevi = AramaKurtarmaGorevi(self)
+        self.imha_gorevi = ImhaGorevi(self)
+        self.rov_deger_onerici = RovDegerOnerici(self)
         # Sorumlu Sistemler (ModülerYapı)
         self.damage_system = DamageSystem(filo_ref=self)
         self.camera_manager = CameraManager(filo_ref=self)
@@ -157,6 +170,42 @@ class Filo(FiloInitMixin):
     def yolo_durdur(self, rov_id):
         """Seçili ROV'un YOLO sistemini kapatır."""
         return self.camera_manager.yolo_durdur(rov_id)
+
+    def alan_tarama_baslat(self, grup_id: int, alan, **kwargs):
+        return self.alan_tarama_gorevi.baslat(grup_id=grup_id, alan=alan, **kwargs)
+
+    def rov_deger_havuzu(self, gorev_hedefi):
+        return self.rov_deger_onerici.deger_havuzu(gorev_hedefi)
+
+    def rov_deger_oner(self, gorev_hedefi, gereken_rov_sayisi: int | None = None):
+        return self.rov_deger_onerici.en_iyi_rovlari_sec(gorev_hedefi, gereken_rov_sayisi=gereken_rov_sayisi)
+
+    def alan_tarama_guncelle(self, grup_id: int | None = None):
+        return self.alan_tarama_gorevi.guncelle(grup_id=grup_id)
+
+    def alan_tarama_durdur(self, grup_id: int, lideri_takip_et: bool = True):
+        return self.alan_tarama_gorevi.durdur(grup_id=grup_id, lideri_takip_et=lideri_takip_et)
+
+    def arama_kurtarma_baslat(self, grup_id: int, alan, **kwargs):
+        return self.arama_kurtarma_gorevi.baslat(grup_id=grup_id, alan=alan, **kwargs)
+
+    def arama_kurtarma_guncelle(self):
+        return self.arama_kurtarma_gorevi.guncelle()
+
+    def arama_kurtarma_durdur(self, lideri_takip_et: bool = True):
+        return self.arama_kurtarma_gorevi.durdur(lideri_takip_et=lideri_takip_et)
+
+    def koordinat_imha_baslat(self, grup_id: int, hedef, **kwargs):
+        return self.imha_gorevi.koordinat_imha_baslat(grup_id=grup_id, hedef=hedef, **kwargs)
+
+    def alan_imha_baslat(self, grup_id: int, alan, **kwargs):
+        return self.imha_gorevi.alan_imha_baslat(grup_id=grup_id, alan=alan, **kwargs)
+
+    def imha_guncelle(self):
+        return self.imha_gorevi.guncelle()
+
+    def imha_durdur(self, lideri_takip_et: bool = True):
+        return self.imha_gorevi.durdur(lideri_takip_et=lideri_takip_et)
 
 
 
@@ -692,7 +741,7 @@ class Filo(FiloInitMixin):
     def _tick_sistem_guncellemeleri(self, guncelle_gorseller: bool):
         return super()._tick_sistem_guncellemeleri(guncelle_gorseller)
             
-    def guncelle_hepsi(self, tahminler, guncelle_gorseller=True):
+    def guncelle_hepsi(self, tahminler, guncelle_gorseller=True, guncelle_lider=True):
         """
         Tüm GNC sistemlerini koordineli şekilde günceller.
         guncelle_gorseller=False iken sonar/minimap/engel bulut atlanır (FPS için throttle).
@@ -718,9 +767,10 @@ class Filo(FiloInitMixin):
         self._tick_navigasyon_ve_gorseller(tahminler)
         Profiler.end("2_navigasyon")
 
-        Profiler.start("3_lider_yonetimi")
-        self._tick_lider_yonetimi()
-        Profiler.end("3_lider_yonetimi")
+        if guncelle_lider:
+            Profiler.start("3_lider_yonetimi")
+            self._tick_lider_yonetimi()
+            Profiler.end("3_lider_yonetimi")
 
         Profiler.start("4_rovlar")
         self._tick_rovler(tahminler)
@@ -730,6 +780,14 @@ class Filo(FiloInitMixin):
         Profiler.start("5_sistem_guncellemeleri")
         self._tick_sistem_guncellemeleri(guncelle_gorseller)
         Profiler.end("5_sistem_guncellemeleri")
+
+        try:
+            self.alan_tarama_guncelle()
+        except Exception as e:
+            self._last_error = e  # type: ignore[assignment]
+            if not getattr(self, "_alan_tarama_guncelle_hatasi_yazildi", False):
+                print(f"⚠️ [ALAN_TARAMA] Güncelleme hatası: {e}")
+                self._alan_tarama_guncelle_hatasi_yazildi = True
 
     def carpisma_enerjisi_hesapla(self, *args, **kwargs):
         """Hasar hesaplamalarını damage_system'a yönlendir."""
@@ -885,6 +943,20 @@ class Filo(FiloInitMixin):
             self._command_queue.put(('set', (rid, aname, deger), {}))
             return True
         return self._set_impl(rid, aname, deger)
+
+    def rol_derinligini_uygula(self, rov, z: float | None) -> float | None:
+        if z is None:
+            return None
+        zf = float(z)
+        if int(getattr(rov, "role", 0)) == 1:
+            return max(
+                float(RolDerinlikAyarlari.LIDER_EN_DERIN_DERINLIK),
+                min(float(RolDerinlikAyarlari.LIDER_EN_SIG_DERINLIK), zf),
+            )
+        return max(
+            float(RolDerinlikAyarlari.TAKIPCI_EN_DERIN_DERINLIK),
+            min(float(RolDerinlikAyarlari.TAKIPCI_EN_SIG_DERINLIK), zf),
+        )
 
     def _set_impl(self, rov_id: int, ayar_adi: str, deger) -> bool:
         if rov_id is None or ayar_adi is None or not self.ortam_ref:
@@ -1142,6 +1214,9 @@ class TemelGNC:
         self.temel_gnc_helper = TemelGNCHelper(rov_entity, filo_ref, self)
 
         self.mod = 1
+        self.gorev = "idle"
+        self.gorev_hedef = None
+        self.onceki_group_id = None
         self.batma_orani = 0
         self.r_bv = Vec3(0,0,0)
         self.bullet_yaw = 0.0
@@ -1261,6 +1336,8 @@ class TemelGNC:
         )
 
     def hedef_atama(self, x, y, z):
+        if self.filo_ref is not None and self.rov is not None:
+            z = self.filo_ref.rol_derinligini_uygula(self.rov, z)
         self.hedef = Vec3(x, y, z)
     
     def guncelle(self, gat_kodu=None):
