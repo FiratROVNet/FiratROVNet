@@ -255,3 +255,28 @@ class HavuzAyarlari:
     Havuz (pool) boyutu ve sınırları.
     """
     HAVUZ_TAM_GENISLIK = 200  # Havuz genişliği (metre)
+
+
+class AlanTaramaAyarlari:
+    """
+    Alan tarama görevi için varsayılan ayarlar.
+    """
+    DERINLIK = -20.0
+    SERIT_ARALIGI = 15.0
+    ILETISIM_MENZILI = 50.0
+    GOREV_ADI = "alan_tarama"
+    ASAMA = "yaklasma"
+
+
+class AramaKurtarmaAyarlari:
+    """
+    Arama kurtarma görevi için varsayılan ayarlar.
+    """
+    MIN_CONFIDENCE = 0.45
+
+
+class ImhaAyarlari:
+    """
+    İmha görevi için varsayılan ayarlar.
+    """
+    IMHA_MESAFESI = 8.0

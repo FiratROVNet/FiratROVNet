@@ -14,6 +14,7 @@ from .ortak import (
     rov_gorev_bosalt,
 )
 from ..rov_deger_onerisi import GorevHedefi, en_iyi_rovlari_sec
+from ...config import AlanTaramaAyarlari
 
 
 @dataclass
@@ -22,13 +23,13 @@ class AlanTaramaPlani:
     alan: TaramaAlani
     lider_id: int | None
     rota_by_rov: dict[int, list[tuple[float, float]]] = field(default_factory=dict)
-    derinlik: float = -20.0
-    serit_araligi: float = 15.0
-    iletisim_menzili: float = 50.0
-    gorev_adi: str = "alan_tarama"
+    derinlik: float = field(default=AlanTaramaAyarlari.DERINLIK)
+    serit_araligi: float = field(default=AlanTaramaAyarlari.SERIT_ARALIGI)
+    iletisim_menzili: float = field(default=AlanTaramaAyarlari.ILETISIM_MENZILI)
+    gorev_adi: str = field(default=AlanTaramaAyarlari.GOREV_ADI)
     kaynak_grup_id: int | None = None
     yaklasma_hedefi: tuple[float, float, float] | None = None
-    asama: str = "yaklasma"
+    asama: str = field(default=AlanTaramaAyarlari.ASAMA)
 
 
 class AlanTaramaGorevi:
