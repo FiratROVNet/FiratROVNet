@@ -140,4 +140,3 @@ class ModulYardimcisi:
             return
         for i in range(len(gucler)):
             motor_listesi[i].calistir(gucler[i])
-
