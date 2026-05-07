@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .alan_tarama import AlanTaramaGorevi, AlanTaramaPlani
-from ...config import AramaKurtarmaAyarlari
+from ....config import AramaKurtarmaAyarlari
 
 
 @dataclass(frozen=True)

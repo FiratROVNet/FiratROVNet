@@ -154,7 +154,8 @@ class GATLimitleri:
     Bu limitler gnc.py ve simulasyon.py (kullanım) tarafından kullanılır.
     """
     # GAT Kod Limitleri (metre cinsinden)
-    CARPISMA = 20    # Kod 2: Çarpışma riski mesafesi
+    CARPISMA = 10    # Kod 2: Çarpışma riski mesafesi
+    ROV_GUVENLIK_MESAFESI = 30.0  # ROV-ROV APF kaçınma mesafesi
     ENGEL = 20.0      # Kod 1: Engel yakınlığı mesafesi
     KOPMA = 50.0      # Kod 3: Bağlantı kopması mesafesi
     UZAK = 80.0       # Kod 5: Liderden uzaklık mesafesi
@@ -165,6 +166,7 @@ class GATLimitleri:
         """Dictionary formatında limitleri döndürür."""
         return {
             'CARPISMA': cls.CARPISMA,
+            'ROV_GUVENLIK_MESAFESI': cls.ROV_GUVENLIK_MESAFESI,
             'ENGEL': cls.ENGEL,
             'KOPMA': cls.KOPMA,
             'UZAK': cls.UZAK,

@@ -9,7 +9,7 @@ from .arama_kurtarma import AramaKurtarmaGorevi, YoloTespit
 from .ortak import mesafe_2d, rov_gorev_ata, rov_gorev_bosalt
 from .ortak import gorev_grubu_olustur
 from ..rov_deger_onerisi import GorevHedefi, en_iyi_rovlari_sec
-from ...config import ImhaAyarlari
+from ....config import ImhaAyarlari
 
 
 @dataclass(frozen=True)

@@ -4,6 +4,7 @@ The main file for Mathematical calculations, geometric operations, and complex l
 """
 
 import builtins
+from collections import deque
 import queue
 import threading
 import math
@@ -78,6 +79,8 @@ class Filo(FiloInitMixin):
         self.leader_manager = LeaderManager(filo_ref=self)
         self.log_system = LogSystem()
         self.hull_info_manager = HullInformationManager(filo_ref=self)
+        self.apf_guc_hud = None
+        self._apf_guc_hud_rov_ids = None
         
         # Hedef ve Formasyon Durumu
         self.asil_hedef = None
@@ -140,31 +143,6 @@ class Filo(FiloInitMixin):
 
     def _hazirla_global_ignore_listesi(self, rov_sayisi):
         return super()._hazirla_global_ignore_listesi(rov_sayisi)
-
-
-
-        # Filo sınıfı içinde bir metod olarak düşünelim:
-    def _hazirla_global_ignore_listesi(self,rov_sayisi):
-        """Sistemdeki tüm ROV'ları ve parçalarını tek bir tuple'da toplar."""
-        # Sadece aktif (is_destroyed olmayan) ROV'ları al
-        if rov_sayisi != self.mevcut_rov_sayisi:
-            self.mevcut_rov_sayisi=rov_sayisi
-            ortam=self.ortam_ref
-            if ortam is None:
-                return
-
-            ortam_rovs = [r for r in ortam.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
-            
-            ignores = []
-            for r in ortam_rovs:
-                ignores.append(r)
-                if hasattr(r, 'children'):
-                    for child in r.children:
-                        ignores.append(child)
-                        if hasattr(child, 'children'):
-                            ignores.extend(child.children)
-            
-            ortam.ignore_tuple= tuple(ignores)
 
     # ============================================================
     # KURULUM VE SİSTEM YÖNETİMİ (SADELEŞTİRİLMİŞ)
@@ -234,11 +212,6 @@ class Filo(FiloInitMixin):
 
 
 
-                    
-
-
-
-
 
 
     def _euler_deg_to_direction(self, rot_deg: Vec3, v=Vec3(0, 1, 0)):
@@ -270,28 +243,6 @@ class Filo(FiloInitMixin):
 
     def pitch_koru(self, rov=None, guc_orani: float = 1.0):
             return self.modul.pitch_koru(rov=rov, guc_orani=guc_orani)
-
-    def roll_guclerini_hesapla(self, rov=None, guc_orani: float = 1.0):
-            if rov is None:
-                return [0.0] * 6
-
-            # 1. Aracın o anki tavan vektörünü (Local Up) dünya koordinatlarında bul
-            V_up_mevcut = self._euler_deg_to_direction(rov.rotation, v=Vec3(0, 1, 0)) # Y ekseni yukarı olsun
-            if rov.role==1 and rov.group_id==0 and False:
-                print(V_up_mevcut)
-
-            # 2. Hedefimiz her zaman Dünya'nın tam yukarısı (0, 1, 0)
-            V_up_hedef = Vec3(0, 1, 0)
-
-            # 3. İkisi arasındaki farkı kapatacak Tork (Cross Product)
-            # Bu tork hem Roll hem Pitch hatalarını aynı anda düzeltir!
-            Tork_istenen_dunya = V_up_mevcut.cross(V_up_hedef)
-
-            # 4. Yerel eksene çevir ve motorlara dağıt (Sizin mevcut kodunuzun devamı)
-            Tork_istenen_yerel = self.dunya_to_yerel_vektor(Tork_istenen_dunya, rov.rotation)
-            Powers = [m.tork_bv.dot(Tork_istenen_yerel) * guc_orani for m in rov.motorlar]
-            
-            return Powers
 
     def yaw(self,rov,guc:float=0.1):
         return self.modul.yaw(rov, guc=guc)
@@ -807,6 +758,7 @@ class Filo(FiloInitMixin):
         # 🔹 IGNORE TUPLE CACHE GÜNCELLE (Frame başında bir kere)
         self._build_ignore_tuple()
         self.pid_ui.update()
+        self._apf_guc_hud_guncelle(process_input=True, draw=False)
         
         Profiler.start("1_sistem_hazirligi")
         self._tick_sistem_hazirligi()
@@ -827,6 +779,7 @@ class Filo(FiloInitMixin):
         Profiler.start("4_rovlar")
         self._tick_rovler(tahminler)
         Profiler.end("4_rovlar")
+        self._apf_guc_hud_guncelle(process_input=False, draw=True)
 
 
         Profiler.start("5_sistem_guncellemeleri")
@@ -863,6 +816,40 @@ class Filo(FiloInitMixin):
             # Kamera temizliği
             if self.camera_manager.kamera_var_mi(rov_id):
                 self.camera_manager.kamera_kaldir(rov_id)
+
+    def _apf_guc_hud_guncelle(self, process_input: bool = True, draw: bool = True):
+        try:
+            if self.apf_guc_hud is None:
+                from FiratROVNet.apf_guc_hud import APFGucHUD  # type: ignore[import-not-found]
+                self.apf_guc_hud = APFGucHUD(self)
+                if self._apf_guc_hud_rov_ids is not None:
+                    self.apf_guc_hud.set_rov_ids(self._apf_guc_hud_rov_ids)
+            self.apf_guc_hud.update(process_input=process_input, draw=draw)
+        except Exception as exc:
+            self._last_apf_guc_hud_error = exc  # type: ignore[assignment]
+
+    def apf_guc_panel_rovleri(self, *rov_ids):
+        if len(rov_ids) == 1 and rov_ids[0] is None:
+            ids = None
+        elif len(rov_ids) == 1 and isinstance(rov_ids[0], (list, tuple, set)):
+            ids = [int(i) for i in rov_ids[0]]
+        else:
+            ids = [int(i) for i in rov_ids]
+        self._apf_guc_hud_rov_ids = ids
+        if self.apf_guc_hud is not None:
+            self.apf_guc_hud.set_rov_ids(ids)
+        return ids
+
+    def apf_guc_panel_goster(self, visible: bool | None = None):
+        if self.apf_guc_hud is None:
+            self._apf_guc_hud_guncelle()
+        if self.apf_guc_hud is None:
+            return None
+        if visible is None:
+            self.apf_guc_hud.toggle()
+        else:
+            self.apf_guc_hud.set_visible(bool(visible))
+        return self.apf_guc_hud.visible
     # ============================================================
     # PATLAMA VE SİLME YÖNETİMİ
     # ============================================================
@@ -912,7 +899,29 @@ class Filo(FiloInitMixin):
     # HEDEF VE HAREKET YÖNETİMİ
     # ============================================================
 
-    def git(self, rov_id: int, x, y: float | None = None, z: float | None = None, ai: bool = True, sessiz: bool = True):
+    def git(self, rov_id: int, x, y: float | str | None = None, z: float | None = None, ai: bool = True, sessiz: bool = True):
+        if isinstance(y, str) and y.lower() in ("rov", "r") and z is None:
+            try:
+                hedef_rov_id = int(x)
+            except (TypeError, ValueError):
+                if not sessiz:
+                    print(f"❌ [FILO] Gecersiz hedef ROV ID: {x}")
+                return None
+
+            hedef_gps = self.get(hedef_rov_id, "gps", sessiz=sessiz)
+            if hedef_gps is None or len(hedef_gps) < 3:
+                if not sessiz:
+                    print(f"❌ [FILO] Hedef ROV koordinati alinamadi: {hedef_rov_id}")
+                return None
+
+            return self.helper.git(
+                rov_id=rov_id,
+                x=float(hedef_gps[0]),
+                y=float(hedef_gps[1]),
+                z=float(hedef_gps[2]),
+                ai=ai,
+                sessiz=sessiz,
+            )
         return self.helper.git(rov_id=rov_id, x=x, y=y, z=z, ai=ai, sessiz=sessiz)  # type: ignore[arg-type]
 
     def git_path(self, rov_id, hedef, ai=True, isaret=False):
@@ -1247,6 +1256,13 @@ class Filo(FiloInitMixin):
         )
     
 
+    def change_mode(self,g_id=0, new_mode=0):
+        """GNC modunu değiştirir. Mod değişikliği logic'i TemelGNCHelper'da tanımlıdır."""
+        for i in self.g_rovs.get(g_id, []):
+
+            if i.role != 1:  # Lider olmayan ROV'lar için mod değiştir
+                if hasattr(i, 'gnc'):
+                    i.gnc.mod = new_mode  # type: ignore[union-attr]
 
 # ==========================================
 # 2. TEMEL GNC SINIFI (SADELEŞTİRİLMİŞ)
@@ -1271,6 +1287,9 @@ class TemelGNC:
         self.onceki_group_id = None
         self.batma_orani = 0
         self.r_bv = Vec3(0,0,0)
+        self.engel_guc = deque(maxlen=150)
+        self.hedef_guc = deque(maxlen=150)
+        self.rov_guc = deque(maxlen=150)
         self.bullet_yaw = 0.0
         self.bullet_pitch = 0.0
         self.bullet_roll = 0.0
