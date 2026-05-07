@@ -574,6 +574,17 @@ class FormationMixin:
             } 
         else:
             self.filo.aktif_formasyon[g_id] = None
+            if hasattr(self.filo, 'yeni_pozisyonlar') and isinstance(self.filo.yeni_pozisyonlar, dict):
+                self.filo.yeni_pozisyonlar.pop(g_id, None)
+            if hasattr(self.filo, '_formasyon_hedefleri') and isinstance(self.filo._formasyon_hedefleri, dict):
+                for rov in group_rov_list:
+                    if rov is not None:
+                        self.filo._formasyon_hedefleri.pop(getattr(rov, 'id', None), None)
+            if hasattr(self.filo, '_rov_hedefleri') and isinstance(self.filo._rov_hedefleri, dict):
+                for rov in group_rov_list:
+                    if rov is not None:
+                        self.filo._rov_hedefleri.pop(getattr(rov, 'id', None), None)
+            return
         for r_id, pos in target_positions.items():
             if r_id == lider_id and lider_hareket_halinde:
                 if not sessiz: 

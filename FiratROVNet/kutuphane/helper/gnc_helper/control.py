@@ -1,5 +1,6 @@
 import math
 import numpy as np # type: ignore[import-not-found]
+from collections import deque
 from typing import cast
 from ursina import Vec3, time # type: ignore[import-not-found]
 from FiratROVNet.config import Hidrodinamik, GATLimitleri, BasitKalmanFiltresi, KalmanAyarlari, PIDAyarlari # type: ignore[import-not-found]
@@ -11,6 +12,8 @@ from panda3d.core import Vec3 as P3Vec # type: ignore[import-not-found]
 
 class TemelGNCHelper:
     """Tekil ROV fizikleri ve kontrol mantigi."""
+
+    APF_GUC_GECMISI_LIMITI = 150
 
     def __init__(self, rov_entity, filo_ref=None, gnc_ref=None):
         self.rov = rov_entity
@@ -131,6 +134,7 @@ class TemelGNCHelper:
         engel_vektor = veriler.get('engel_vektor', Vec3(0, 0, 0))
         rov_vektor = veriler.get('rov_vektor', Vec3(0, 0, 0))
 
+
         try:
             hedef_gucu = max(0.0, min(1.0, float(veriler.get('hedef_gucu', 0.0))))
             engel_gucu = max(0.0, min(1.0, float(veriler.get('engel_gucu', 0.0))))
@@ -139,6 +143,17 @@ class TemelGNCHelper:
             hedef_gucu = 0.0
             engel_gucu = 0.0
             rov_gucu = 0.0
+
+        aktif_formasyon = getattr(self.filo_ref, "aktif_formasyon", {}) if self.filo_ref is not None else {}
+        grup_id = getattr(self.rov, "group_id", 0)
+        takipci_formasyon_modu = (
+            isinstance(aktif_formasyon, dict)
+            and bool(aktif_formasyon.get(grup_id))
+            and getattr(self.rov, "role", 0) != 1
+            and getattr(getattr(self.rov, "gnc", None), "mod", 1) != 0
+        )
+        if takipci_formasyon_modu:
+            hedef_gucu *= max(0.0, min(1.0, 1.0 - (rov_gucu)))
 
         def yon_vektoru_al(v):
             if not isinstance(v, Vec3):
@@ -172,9 +187,9 @@ class TemelGNCHelper:
         
 
 
-        ham_hedef = 0.15 * hedef_gucu
-        ham_engel = 0.425 * engel_gucu
-        ham_rov = 0.425 * rov_gucu
+        ham_hedef = 1 * hedef_gucu
+        ham_engel = 1 * engel_gucu
+        ham_rov = 1 * rov_gucu
 
         toplam = ham_hedef + ham_engel + ham_rov
 
@@ -183,8 +198,17 @@ class TemelGNCHelper:
             ham_engel /= toplam
             ham_rov /= toplam
 
+
+        if isinstance(hedef_vektor, Vec3) and isinstance(engel_vektor, Vec3) and isinstance(rov_vektor, Vec3):
+            self._bileske_vektoru_minimapte_ciz(self.rov.id, hedef_vektor*ham_hedef, engel_vektor*ham_engel, rov_vektor*ham_rov)
+
+        if self.rov.group_id==0 and False:
+            if rov_gucu > 0.1:
+                print(f"ROV-id:{self.rov.id}, ROV-Guc:{rov_gucu}, Ham-ROV-Guc:{ham_rov}")
+
         
-        
+        apf_guc_kuyruklari_aktif = self._apf_guc_kuyruklari_aktif_mi()
+
         for i, _motor in enumerate(motorlar):
             # Hedef bileşkesi
             hareket_h = h_hareket[i] if i < len(h_hareket) else birlesik[i]
@@ -204,12 +228,52 @@ class TemelGNCHelper:
             # Katsayılarla yeni bileşke:
             # DİKKAT: Katsayıların toplamı KESİNLİKLE 1.0 olmalıdır (w_engel + w_rov + hedef_katsayisi = 1.0)
             # Aksi takdirde dikey motorlar cached_power üzerinden beslendiği için üstel olarak (NaN) patlar!
-            birlesik[i] = (engel_toplam * ham_engel) + (rov_toplam * ham_rov) + (hedef_toplam * ham_hedef)
+            engel_katki = engel_toplam * ham_engel
+            rov_katki = rov_toplam * ham_rov
+            hedef_katki = hedef_toplam * ham_hedef
+
+            birlesik[i] = engel_katki + rov_katki + hedef_katki
 
         filtrelenmis_gucler = self._motor_guclerini_kalman_filtrele(birlesik)
         if not filtrelenmis_gucler:
             filtrelenmis_gucler = birlesik
-        self.filo_ref.motorlari_calistir(self.rov.id, filtrelenmis_gucler)
+        if apf_guc_kuyruklari_aktif:
+            self._apf_guc_kuyruklarini_guncelle(hedef_gucu, engel_gucu, rov_gucu)
+        self.filo_ref.motorlari_calistir(self.rov.id, birlesik)
+
+    def _apf_guc_kuyruklari_aktif_mi(self) -> bool:
+        hud = getattr(self.filo_ref, "apf_guc_hud", None) if self.filo_ref is not None else None
+        return bool(getattr(hud, "visible", False))
+
+    def _apf_guc_kuyruklarini_guncelle(self, hedef_guc: float, engel_guc: float, rov_guc: float):
+        gnc = getattr(self.rov, "gnc", None)
+        if gnc is None:
+            return
+
+        def kuyruk_al(attr: str):
+            mevcut = getattr(gnc, attr, None)
+            if isinstance(mevcut, deque) and mevcut.maxlen == self.APF_GUC_GECMISI_LIMITI:
+                return mevcut
+            try:
+                yeni = deque(
+                    list(mevcut)[-self.APF_GUC_GECMISI_LIMITI:] if mevcut is not None else [],
+                    maxlen=self.APF_GUC_GECMISI_LIMITI,
+                )
+            except TypeError:
+                yeni = deque(maxlen=self.APF_GUC_GECMISI_LIMITI)
+            setattr(gnc, attr, yeni)
+            return yeni
+
+        for attr, deger in (
+            ("hedef_guc", hedef_guc),
+            ("engel_guc", engel_guc),
+            ("rov_guc", rov_guc),
+        ):
+            try:
+                temiz_deger = float(deger)
+            except (TypeError, ValueError):
+                temiz_deger = 0.0
+            kuyruk_al(attr).append(max(0.0, min(1.0, temiz_deger)))
 
     def _motor_kalman_filtrelerini_hazirla(self, motor_sayisi: int):
         if motor_sayisi <= 0:
@@ -452,7 +516,6 @@ class TemelGNCHelper:
             toplam_vektor.y += vy * carpan
             toplam_vektor.z += vz * carpan
             
-                
         return toplam_vektor, max_engel_etkisi
 
     def _rov_vektoru_isle(self, sonuc):
@@ -461,7 +524,7 @@ class TemelGNCHelper:
             return Vec3(0, 0, 0), 0.0
             
         toplam_vektor = Vec3(0, 0, 0)
-        carpisma_limit = float(GATLimitleri.CARPISMA)
+        carpisma_limit = float(getattr(GATLimitleri, "ROV_GUVENLIK_MESAFESI", GATLimitleri.CARPISMA))
         max_carpan = 0.0
         
         for r_info in rovs:
@@ -499,6 +562,33 @@ class TemelGNCHelper:
         hedef_vektor = h_birim * hedef_agirligi
 
         return hedef_vektor, guc0
+
+    def _bileske_vektoru_minimapte_ciz(
+        self,
+        rov_id: int,
+        hedef_vektor: Vec3,
+        engel_vektor: Vec3,
+        rov_vektor: Vec3,
+    ) -> None:
+        """Net APF bileskesini mavi vektor olarak minimap cizim listesine ekler."""
+        filo = self.filo_ref
+        helper = getattr(filo, "helper", None) if filo is not None else None
+        if helper is None or not hasattr(helper, "vektor"):
+            return
+
+        bileske = hedef_vektor + engel_vektor + rov_vektor
+        yatay_buyukluk = math.sqrt((bileske.x ** 2) + (bileske.y ** 2))
+        if yatay_buyukluk <= 0.001:
+            return
+
+        cizgi_uzunlugu = min(80.0, yatay_buyukluk * 30.0)
+        helper.vektor(
+            rov_id_ilk=rov_id,
+            vektor=(bileske.x, bileske.y, 0.0),
+            renk='m',
+            uzunluk=cizgi_uzunlugu,
+            ciz=True,
+        )
 
     def _bileske_vektor_hesapla(self, sonuc, rov_id: int) -> dict[str, Vec3 | float]:
         # Temel hedef gucunu al

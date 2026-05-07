@@ -62,6 +62,11 @@ def _detect_lan_ip(fallback_ip="127.0.0.1"):
     return lan_ip
 
 
+def _port_adaylari(port, deneme_sayisi=5):
+    base = int(port)
+    return [base + i for i in range(max(1, int(deneme_sayisi)))]
+
+
 def _uri_host_degistir(uri, yeni_host):
     """URI icindeki host bilgisini guvenli sekilde degistirir."""
     uri_str = str(uri or "")
@@ -157,45 +162,82 @@ def rerun_baslat(ip_adresi=None, kayit_dosyasi=None):
 
     lan_ip = ip_adresi or _detect_lan_ip()
 
-    server_uri = str(rr.serve_grpc(grpc_port=rr_grpc_port))
+    server_uri = ""
+    aktif_grpc_port = rr_grpc_port
+    grpc_hatasi = None
+    for port in _port_adaylari(rr_grpc_port):
+        try:
+            server_uri = str(rr.serve_grpc(grpc_port=port))
+            aktif_grpc_port = port
+            break
+        except Exception as e:
+            grpc_hatasi = e
+            print(f"[Rerun] gRPC port {port} baslatilamadi: {e}")
+
+    if not server_uri:
+        print(f"[Rerun] gRPC sunucusu baslatilamadi: {grpc_hatasi}")
+        return {
+            "lan_ip": lan_ip,
+            "server_uri": "",
+            "server_uri_lan": "",
+            "web_local_url": "",
+            "web_lan_url": "",
+            "alias_local_url": "",
+            "alias_lan_url": "",
+            "alias_server": None,
+        }
     server_uri_lan = _uri_host_degistir(server_uri, lan_ip)
 
-    try:
-        if kayit_dosyasi:
-            rr.set_sinks(rr.GrpcSink(url=server_uri), rr.FileSink(kayit_dosyasi))
-            print(f"[Rerun] Eşzamanlı kayıt aktifleştirildi: {kayit_dosyasi}")
-        else:
-            rr.set_sinks(rr.GrpcSink(url=server_uri))
-    except Exception as e:
-        print(f"[Rerun] Sink ayarlama hatası: {e}")
-    rr.serve_web_viewer(
-        web_port=rr_web_port, 
-        connect_to=server_uri_lan, 
-        open_browser=open_browser,
-        # Eğer destekleniyorsa bu parametreleri ekle
-        # disable_mobile_warning=True,
-        # force_desktop=True
-    )
+    if kayit_dosyasi:
+        print("[Rerun] Uyari: canli web viewer baslangicinda eszamanli dosya kaydi desteklenmiyor; kayit butonunu kullan.")
 
-    web_local_url = f"http://127.0.0.1:{rr_web_port}/?url={quote(server_uri, safe='')}"
-    web_lan_url = f"http://{lan_ip}:{rr_web_port}/?url={quote(server_uri_lan, safe='')}"
+    web_viewer_aktif = False
+    aktif_web_port = rr_web_port
+    web_hatasi = None
+    for port in _port_adaylari(rr_web_port):
+        try:
+            rr.serve_web_viewer(
+                web_port=port,
+                connect_to=server_uri_lan,
+                open_browser=open_browser,
+            )
+            aktif_web_port = port
+            web_viewer_aktif = True
+            break
+        except Exception as e:
+            web_hatasi = e
+            print(f"[Rerun] Web viewer port {port} baslatilamadi: {e}")
+
+    if not web_viewer_aktif:
+        print(f"[Rerun] Web viewer baslatilamadi: {web_hatasi}")
+
+    web_local_url = f"http://127.0.0.1:{aktif_web_port}/?url={quote(server_uri, safe='')}"
+    web_lan_url = f"http://{lan_ip}:{aktif_web_port}/?url={quote(server_uri_lan, safe='')}"
     alias_local_url = f"http://127.0.0.1:{rr_alias_port}{rr_alias_path}"
     alias_lan_url = f"http://{lan_ip}:{rr_alias_port}{rr_alias_path}"
 
     alias_server = None
-    if rr_alias_port == rr_web_port:
+    if not web_viewer_aktif:
+        print(f"[Rerun] gRPC: {server_uri_lan}")
+    elif rr_alias_port == rr_web_port:
         print("[Rerun] RR_ALIAS_PORT ve RR_WEB_PORT ayni oldugu icin alias route acilamadi.")
         print("[Rerun] Farkli port ver: RR_WEB_PORT=9091 RR_ALIAS_PORT=9090")
     else:
-        alias_server = _start_rr_alias_server("0.0.0.0", rr_alias_port, rr_alias_path, web_lan_url)
-        print(f"[Rerun] Alias: {alias_lan_url}")
+        try:
+            alias_server = _start_rr_alias_server("0.0.0.0", rr_alias_port, rr_alias_path, web_lan_url)
+            print(f"[Rerun] Alias: {alias_lan_url}")
+        except Exception as e:
+            print(f"[Rerun] Alias sunucusu baslatilamadi: {e}")
 
-    print(f"[Rerun] Web: {web_lan_url}")
+    if web_viewer_aktif:
+        print(f"[Rerun] Web: {web_lan_url}")
 
     return {
         "lan_ip": lan_ip,
         "server_uri": server_uri,
         "server_uri_lan": server_uri_lan,
+        "grpc_port": aktif_grpc_port,
+        "web_port": aktif_web_port,
         "web_local_url": web_local_url,
         "web_lan_url": web_lan_url,
         "alias_local_url": alias_local_url,
