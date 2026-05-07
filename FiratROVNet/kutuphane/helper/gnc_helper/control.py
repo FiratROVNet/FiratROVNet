@@ -133,6 +133,9 @@ class TemelGNCHelper:
         hedef_vektor = veriler.get('hedef_vektor', Vec3(0, 0, 0))
         engel_vektor = veriler.get('engel_vektor', Vec3(0, 0, 0))
         rov_vektor = veriler.get('rov_vektor', Vec3(0, 0, 0))
+        if isinstance(rov_vektor, Vec3):
+            # ROV-ROV kaçınması derinlik kanalını sürmemeli; dikey kontrol PID/dip lidar tarafında kalır.
+            rov_vektor = Vec3(rov_vektor.x, rov_vektor.y, 0.0)
 
 
         try:
@@ -536,7 +539,14 @@ class TemelGNCHelper:
             bv = r_info.get('birim_vektor', [0, 0, 0])
             vx = float(bv[0]) if len(bv) > 0 else 0.0
             vy = float(bv[1]) if len(bv) > 1 else 0.0
-            vz = float(bv[2]) if len(bv) > 2 else 0.0
+            # ROV kaçınması yalnızca yatay düzlemde uygulanır. Derinlik bileşeni ROV'ları
+            # birbirinden kaçarken batırıp/çıkarmasın; dikey güvenlik engel APF + depth PID'de kalır.
+            yatay_norm = math.sqrt((vx ** 2) + (vy ** 2))
+            if yatay_norm <= 1e-6:
+                continue
+            vx /= yatay_norm
+            vy /= yatay_norm
+            vz = 0.0
             
             mesafe = float(r_info.get('mesafe', 0.0))
             if mesafe >= carpisma_limit:

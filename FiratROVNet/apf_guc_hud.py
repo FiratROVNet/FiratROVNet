@@ -827,7 +827,9 @@ class APFGucHUD:
                 rov = self.filo.find_rov_by_id(int(self._pending_action.get("rov_id", -1)))
             except Exception:
                 rov = None
-        world_point = self._mouse_ray_havuz_kesisimi_al()
+        world_point = self._mouse_world_point_al()
+        if world_point is None:
+            world_point = self._mouse_ray_havuz_kesisimi_al()
         if world_point is None:
             world_point = self._mouse_ray_duzlem_kesisimi_al(rov)
         if world_point is None:
@@ -842,6 +844,16 @@ class APFGucHUD:
             return None
         hedef_z = self._rov_mevcut_derinligi_al(rov)
         return (hedef_x, hedef_y, hedef_z)
+
+    def _mouse_world_point_al(self):
+        entity = getattr(mouse, "hovered_entity", None)
+        if entity is not None and self._entity_panel_icinde_mi(entity):
+            return None
+        world_point = getattr(mouse, "world_point", None)
+        xyz = self._vec3_bilesenleri_al(world_point)
+        if xyz is None:
+            return None
+        return Vec3(xyz[0], xyz[1], xyz[2])
 
     def _mouse_ray_havuz_kesisimi_al(self):
         ortam = getattr(self.filo, "ortam_ref", None)
