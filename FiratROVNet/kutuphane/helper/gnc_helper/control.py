@@ -460,10 +460,15 @@ class TemelGNCHelper:
         if filo is None or filo.helper is None:
             return None
         hedefler = getattr(filo, "_rov_hedefleri", None)
-        eski_hedef_var = isinstance(hedefler, dict) and rov_id in hedefler
-        eski_hedef = hedefler.get(rov_id) if eski_hedef_var else None
-        if hedef_koordinat is not None and isinstance(hedefler, dict):
-            hedefler[rov_id] = hedef_koordinat
+        hedefler_dict = hedefler if isinstance(hedefler, dict) else None
+        eski_hedef_var = False
+        eski_hedef = None
+        if hedefler_dict is not None:
+            eski_hedef_var = rov_id in hedefler_dict
+            if eski_hedef_var:
+                eski_hedef = hedefler_dict.get(rov_id)
+        if hedef_koordinat is not None and hedefler_dict is not None:
+            hedefler_dict[rov_id] = hedef_koordinat
         try:
             return filo.helper.apf(
                 rov_id=rov_id,
@@ -472,11 +477,11 @@ class TemelGNCHelper:
                 rov=True,
             )
         finally:
-            if hedef_koordinat is not None and isinstance(hedefler, dict):
+            if hedef_koordinat is not None and hedefler_dict is not None:
                 if eski_hedef_var:
-                    hedefler[rov_id] = eski_hedef
+                    hedefler_dict[rov_id] = eski_hedef
                 else:
-                    hedefler.pop(rov_id, None)
+                    hedefler_dict.pop(rov_id, None)
 
     def _log_mesafe_etkisi_hesapla(self, mesafe: float, limit: float) -> float:
         """Mesafeye gore logaritmik etki katsayisi hesaplar (0.0-1.0)."""
@@ -576,15 +581,16 @@ class TemelGNCHelper:
         if helper is None or not hasattr(helper, "vektor"):
             return
 
-        bileske = hedef_vektor + engel_vektor + rov_vektor
-        yatay_buyukluk = math.sqrt((bileske.x ** 2) + (bileske.y ** 2))
+        bileske_x = float(getattr(hedef_vektor, "x", 0.0)) + float(getattr(engel_vektor, "x", 0.0)) + float(getattr(rov_vektor, "x", 0.0))
+        bileske_y = float(getattr(hedef_vektor, "y", 0.0)) + float(getattr(engel_vektor, "y", 0.0)) + float(getattr(rov_vektor, "y", 0.0))
+        yatay_buyukluk = math.sqrt((bileske_x ** 2) + (bileske_y ** 2))
         if yatay_buyukluk <= 0.001:
             return
 
         cizgi_uzunlugu = min(80.0, yatay_buyukluk * 30.0)
         helper.vektor(
             rov_id_ilk=rov_id,
-            vektor=(bileske.x, bileske.y, 0.0),
+            vektor=(bileske_x, bileske_y, 0.0),
             renk='m',
             uzunluk=cizgi_uzunlugu,
             ciz=True,
