@@ -474,7 +474,8 @@ class GeometryMixin:
 
         # 3. Diger ROV'lardan kacinma
         if rov:
-            for r in self.rov_vektor(rov_id=rov_id, menzil=GATLimitleri.CARPISMA):
+            rov_guvenlik_menzili = float(getattr(GATLimitleri, "ROV_GUVENLIK_MESAFESI", GATLimitleri.CARPISMA))
+            for r in self.rov_vektor(rov_id=rov_id, menzil=rov_guvenlik_menzili):
                 target = r.get('koordinat')
                 gercek_mesafe = float(r.get('mesafe') or 0.0)
 
@@ -546,7 +547,7 @@ class GeometryMixin:
         ROV'un diger ROV'lara olan 3B kacinma vektorlerini dondurur (cizim yapmaz).
         """
         if menzil is None:
-            menzil = GATLimitleri.CARPISMA
+            menzil = float(getattr(GATLimitleri, "ROV_GUVENLIK_MESAFESI", GATLimitleri.CARPISMA))
 
         ortam = getattr(self.filo, 'ortam_ref', None)
         if not ortam or not hasattr(ortam, 'rovs'):
