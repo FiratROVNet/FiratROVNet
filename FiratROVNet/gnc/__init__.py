@@ -867,7 +867,10 @@ class Filo(FiloInitMixin):
         if gps is None:
             return None
         
-        x,y=gps[0],gps[1]
+        try:
+            x, y = float(gps[0]), float(gps[1])
+        except (TypeError, ValueError, IndexError):
+            return None
         return self.helper.git(rov_id=rov_id, x=x, y=y, z=z)
 
     def bat(self, rov_id,guc):
