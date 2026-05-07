@@ -305,9 +305,6 @@ class FiloInitMixin:
         """Queued commands + sonar/minimap + obstacle cloud."""
         from FiratROVNet.kutuphane.moduls.profiler import Profiler
 
-        if not guncelle_gorseller:
-            return
-
         if self.ortam_ref:
             Profiler.start("15_self.ortam_ref.guncelle_sonar_cizgileri()")
             try:
@@ -315,6 +312,9 @@ class FiloInitMixin:
             except Exception as e:
                 LogSystem.log_exception(e)
             Profiler.end("15_self.ortam_ref.guncelle_sonar_cizgileri()")
+
+        if not guncelle_gorseller:
+            return
 
         if self.ortam_ref and getattr(self.ortam_ref, "minimap", None):
             try:
