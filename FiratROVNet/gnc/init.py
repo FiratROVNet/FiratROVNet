@@ -23,6 +23,9 @@ class FiloInitMixin:
     _ignore_tuple_cache: tuple[Any, ...]
     _ignore_tuple_last_rov_count: int
     mevcut_rov_sayisi: int
+    _rov_id_map: dict[Any, Any]
+    _rovs_cache: list[Any]
+    _rovs_cache_src_len: int
 
     def BlueROV2_motor_konfigurasyonu(self, rov) -> Any: ...
     def minimap(self, *args, **kwargs) -> Any: ...
@@ -90,18 +93,31 @@ class FiloInitMixin:
             ortam.ignore_tuple = tuple(ignores)
 
     def _baslatma_tamamla(self):
-        """ROV'lar için fiziksel gövdeleri ve motorları kurar."""
+        """ROV'lar için fiziksel gövdeleri ve motorları kurar. Sadece ilk çalıştırmada tam kurulum yapar."""
+        ilk_calisma = not getattr(self, '_baslatma_yapildi', False)
+
+        for rov in (self.ortam_ref.rovs if self.ortam_ref else []):
+            if rov is not None:
+                self._tek_rov_fizik_kur(rov)
+
+        if ilk_calisma:
+            self._baslatma_yapildi = True
+            self.minimap(scale=1.0)
+            self.motor_sema_kaydet()
+            self.tum_motor_bv_kutuphanelerini_guncelle()
+            self.kamera_ayarla()
+
+    def _tek_rov_fizik_kur(self, rov):
+        """Tek bir ROV için fiziksel gövde, GNC ve motorları kurar."""
         from panda3d.bullet import BulletBoxShape, BulletRigidBodyNode  # type: ignore[import]
         from panda3d.core import Vec3 as PandaVec3  # type: ignore[import]
         from FiratROVNet.gnc import Sensor, TemelGNC
 
         ortam = self.ortam_ref
-        if ortam is None:
+        if ortam is None or rov is None:
             return
 
         render = getattr(getattr(ortam, "app", None), "render", None)
-        self.mevcut_rov_sayisi = len(ortam.rovs)
-
         if render is None:
             render = getattr(getattr(application, "base", None), "render", None)
         if render is None:
@@ -109,43 +125,49 @@ class FiloInitMixin:
         if render is None:
             return
 
-        for rov in ortam.rovs:
-            if rov is None:
-                continue
+        self.mevcut_rov_sayisi = len(ortam.rovs)
 
-            rov.gnc = TemelGNC(rov, self)  # type: ignore[union-attr]
-            rov.sensor = Sensor(rov, self, rov.gnc)  # type: ignore[union-attr]
-            rov.gnc.sensor = rov.sensor  # type: ignore[union-attr]
+        if not getattr(rov, 'gnc', None):
+            rov.gnc = TemelGNC(rov, self)
+        if not getattr(rov, 'sensor', None):
+            rov.sensor = Sensor(rov, self, rov.gnc)
+            rov.gnc.sensor = rov.sensor
 
-            if self.motorlar.get(rov.id) is None:  # type: ignore[union-attr]
-                self.motorlar[rov.id] = []  # type: ignore[index]
+        if self.motorlar.get(rov.id) is None:
+            self.motorlar[rov.id] = []
 
-            node = BulletRigidBodyNode(f"ROV_{rov.id}")  # type: ignore[union-attr]
-            node.setMass(Hidrodinamik.KUTLE)
-            node.setLinearDamping(Hidrodinamik.LINEAR_DAMPING)
-            node.setAngularDamping(Hidrodinamik.ANGULAR_DAMPING)
+        # Fizik gövdesi zaten varsa yeniden kurma
+        if getattr(rov, 'physics_node', None) is not None:
+            return
 
-            shape = BulletBoxShape(PandaVec3(1.5, 1.5, 1.5))
-            node.addShape(shape)
+        node = BulletRigidBodyNode(f"ROV_{rov.id}")
+        node.setMass(Hidrodinamik.KUTLE)
+        node.setLinearDamping(Hidrodinamik.LINEAR_DAMPING)
+        node.setAngularDamping(Hidrodinamik.ANGULAR_DAMPING)
 
-            rov_np = render.attachNewNode(node)
-            rov_np.setPos(rov.position)  # type: ignore[union-attr]
-            self.world.attachRigidBody(node)
+        shape = BulletBoxShape(PandaVec3(1.5, 1.5, 1.5))
+        node.addShape(shape)
 
-            rov.physics_node = node  # type: ignore[union-attr]
-            rov.physics_np = rov_np  # type: ignore[union-attr]
+        rov_np = render.attachNewNode(node)
+        rov_np.setPos(rov.position)
+        self.world.attachRigidBody(node)
 
-            try:
-                self.BlueROV2_motor_konfigurasyonu(rov)
-            except Exception as e:
-                logging.warning(
-                    f"[Filo] ROV-{getattr(rov, 'id', '?')} için motor oluşturulamadı: {e}"
-                )
+        rov.physics_node = node
+        rov.physics_np = rov_np
 
-        self.minimap(scale=1.0)
-        self.motor_sema_kaydet()
-        self.tum_motor_bv_kutuphanelerini_guncelle()
-        self.kamera_ayarla()
+        try:
+            self.BlueROV2_motor_konfigurasyonu(rov)
+        except Exception as e:
+            logging.warning(
+                f"[Filo] ROV-{getattr(rov, 'id', '?')} için motor oluşturulamadı: {e}"
+            )
+
+        # O(1) lookup map'e ekle
+        if hasattr(self, '_rov_id_map'):
+            self._rov_id_map[rov.id] = rov
+        # rovs cache invalidate (yeni ROV eklendi)
+        if hasattr(self, '_rovs_cache_src_len'):
+            self._rovs_cache_src_len = -1
 
     def _tick_sistem_hazirligi(self):
         """Command queue + physics step."""
@@ -193,6 +215,8 @@ class FiloInitMixin:
 
     def _tick_lider_yonetimi(self):
         """Lider seçim + leader manager güncellemesi."""
+        if not getattr(getattr(self, 'leader_manager', None), 'oto_lider_etkin', True):
+            return
         yeni_lider_id, _skor = liderlik_secimini_baslat(self, self.aktif_liderlik_hedefleri())
         self.leader_manager.guncelle_liderler(yeni_lider_id)
 
@@ -208,9 +232,7 @@ class FiloInitMixin:
         tahmin_len = len(tahminler) if tahminler is not None else 0
         dt = time.dt  # type: ignore[attr-defined]
 
-        Profiler.start("13_ignore_tuple_hazirla")
-        self._hazirla_global_ignore_listesi(len(ortam_rovs))
-        Profiler.end("13_ignore_tuple_hazirla")
+        # _build_ignore_tuple guncelle_hepsi() içinde frame başında çağrılıyor; burada tekrar çağırmaya gerek yok
 
         for idx, rov in enumerate(ortam_rovs):
             if not rov or (hasattr(rov, "is_destroyed") and rov.is_destroyed):

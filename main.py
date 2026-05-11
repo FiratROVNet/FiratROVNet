@@ -10,6 +10,7 @@ import numpy as np
 import os
 import time
 import threading
+from collections import deque
 from rerun_ayarla import QR, rerun_baslat, rerun_sahne_logla, rerun_kayit_baslat, rerun_kayit_durdur
 
 # ==========================================
@@ -18,8 +19,9 @@ from rerun_ayarla import QR, rerun_baslat, rerun_sahne_logla, rerun_kayit_baslat
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
 
-# Simülasyonu oluştur: 6 ROV, 6 Ada, 200m havuz yarıçapı
-app.sim_olustur(n_rovs=(6,4), n_islands=4, havuz_genisligi=200, rov_model='submarine')
+# Simülasyonu oluştur: 10 ROV, 4 Ada, 200m havuz yarıçapı
+# Tek grup → UI panelinden lider/takipçi ataması yapılır
+app.sim_olustur(n_rovs=(0,), n_islands=4, havuz_genisligi=200, rov_model='submarine')
 
 # Filo sistemini ortamla birlikte oluştur (otomatik bağlantı)
 # GAT modeli ve navigasyon kuyruğu da Filo içinde initialize edilir
@@ -32,22 +34,22 @@ shortcut_root = Entity(parent=camera.ui, position=(0.8, 0.28, -9))
 shortcut_bg = Entity(
     parent=shortcut_root,
     model="quad",
-    scale=(0.18, 0.08),
+    scale=(0.18, 0.105),
     color=color.black,
     z=0.04,
 )
 shortcut_bg.alpha = 0.48
 _shortcut_border_color = color.azure
 for _shortcut_border in (
-    Entity(parent=shortcut_root, model="quad", position=(0, 0.040, -0.04), scale=(0.18, 0.002), color=_shortcut_border_color),
-    Entity(parent=shortcut_root, model="quad", position=(0, -0.040, -0.04), scale=(0.18, 0.002), color=_shortcut_border_color),
-    Entity(parent=shortcut_root, model="quad", position=(-0.090, 0, -0.04), scale=(0.002, 0.08), color=_shortcut_border_color),
-    Entity(parent=shortcut_root, model="quad", position=(0.090, 0, -0.04), scale=(0.002, 0.08), color=_shortcut_border_color),
+    Entity(parent=shortcut_root, model="quad", position=(0, 0.0525, -0.04), scale=(0.18, 0.002), color=_shortcut_border_color),
+    Entity(parent=shortcut_root, model="quad", position=(0, -0.0525, -0.04), scale=(0.18, 0.002), color=_shortcut_border_color),
+    Entity(parent=shortcut_root, model="quad", position=(-0.090, 0, -0.04), scale=(0.002, 0.105), color=_shortcut_border_color),
+    Entity(parent=shortcut_root, model="quad", position=(0.090, 0, -0.04), scale=(0.002, 0.105), color=_shortcut_border_color),
 ):
     _shortcut_border.alpha = 0.30
 shortcut_text = Text(
     parent=shortcut_root,
-    text="<white>M<default> Motor   <white>B<default> PID\n<white>R<default> ROV     <white>G<default> Grup\n<white>F<default> Görsel  <white>V<default> REC",
+    text="<white>M<default> Motor   <white>B<default> PID\n<white>R<default> ROV     <white>G<default> Grup\n<white>F<default> Görsel  <white>V<default> REC\n<white>U<default> Arayüz",
     position=(0, 0, 0),
     origin=(0, 0),
     scale=0.7,
@@ -108,13 +110,124 @@ def _rerun_log_async(app, filo, step):
 
 print("✅ Sistem aktif. Minimap: sol tıkla. Ekran görüntüsü (makale kalitesi): F tuşu → Pictures/")
 
+# ── Komuta Arayüzü (UI) bağlantısı ──────────────────────────────────────────
+# Arayüzü ayrı pencerede açmak için konsol'dan: ui_ac()
+# Veya simülasyon başlamadan önce UI/ klasöründen: python UI/baslat.py
+# ── UI Durum Dosyası ──────────────────────────────────────────────────────────
+import json as _json
+
+_UI_DURUM_DOSYA  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "UI", "_rov_durumu.json")
+_UI_KUYRUK_DOSYA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "KOMUT_KUYRUĞU.txt")
+_ui_proc = None
+
+
+def _ui_durum_yaz():
+    """ROV durumlarını UI'nin okuyacağı JSON dosyasına yazar (1 Hz)."""
+    try:
+        rovlar = []
+        for rov in filo.rovs:
+            try:
+                gps = filo.get(rov.id, "gps") or (0, 0, 0)
+                gorev = getattr(getattr(rov, "gnc", None), "gorev", "idle") or "idle"
+                bat   = float(getattr(rov, "battery", 1.0))
+                hiz   = float(getattr(getattr(rov, "velocity", None), "length", lambda: 0.0)())
+                rovlar.append({
+                    "id":       int(rov.id),
+                    "rol":      int(getattr(rov, "role", 0)),
+                    "gorev":    str(gorev),
+                    "gps":      [round(float(v), 1) for v in gps],
+                    "gat_kodu": int(getattr(rov, "gat_kodu", 0)),
+                    "batarya":  round(bat, 2),
+                    "hiz":      round(hiz, 2),
+                    "grup_id":  int(getattr(rov, "group_id", 0)),
+                })
+            except Exception:
+                pass
+
+        gruplar = {}
+        try:
+            for g_id, g_rovlar in filo.g_rovs.items():
+                aktif = [int(r.id) for r in (g_rovlar or []) if r and not getattr(r, "is_destroyed", False)]
+                if aktif:
+                    gruplar[str(int(g_id))] = aktif
+        except Exception:
+            pass
+
+        veri = {"timestamp": time.time(), "rovlar": rovlar, "gruplar": gruplar, "bagli": True}
+        # Atomik yazma: önce geçici dosya, sonra yeniden adlandır
+        tmp = _UI_DURUM_DOSYA + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(veri, f, ensure_ascii=False)
+        os.replace(tmp, _UI_DURUM_DOSYA)
+    except Exception:
+        pass
+
+
+def _ui_komut_oku():
+    """KOMUT_KUYRUĞU.txt'deki komutları okur ve temizler (2 Hz)."""
+    try:
+        if not os.path.exists(_UI_KUYRUK_DOSYA):
+            return
+        with open(_UI_KUYRUK_DOSYA, "r", encoding="utf-8") as f:
+            satirlar = [s.strip() for s in f.readlines() if s.strip()]
+        if not satirlar:
+            return
+        # Dosyayı hemen temizle
+        open(_UI_KUYRUK_DOSYA, "w").close()
+        local_ns = {"filo": filo, "app": app}
+        for komut in satirlar:
+            try:
+                exec(komut, local_ns)  # noqa: S102
+                print(f"[UI-Komut] ✔ {komut}")
+            except Exception as exc:
+                print(f"[UI-Komut] ✗ {komut}  →  {exc}")
+    except Exception:
+        pass
+
+
+def ui_ac():
+    """Komuta Merkezi arayüzünü ayrı süreç olarak açar (simülasyon çalışırken)."""
+    global _ui_proc
+    import subprocess
+    import sys
+
+    # Önceki süreç hâlâ çalışıyorsa tekrar açma
+    if _ui_proc is not None and _ui_proc.poll() is None:
+        print("🖥️  Komuta Arayüzü zaten açık.")
+        return
+
+    # OpenCV'nin Qt eklentileri ile çakışmayı önlemek için env temizle
+    import os
+    env = os.environ.copy()
+    # PyQt5'in kendi eklenti dizinini kullan, cv2'yi devre dışı bırak
+    try:
+        import PyQt5
+        pyqt5_dir = os.path.dirname(PyQt5.__file__)
+        qt_plugins = os.path.join(pyqt5_dir, "Qt5", "plugins")
+        if os.path.isdir(qt_plugins):
+            env["QT_QPA_PLATFORM_PLUGIN_PATH"] = qt_plugins
+    except Exception:
+        pass
+    env.pop("QT_QPA_PLATFORMTHEME", None)
+
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "UI", "baslat.py")
+    _ui_proc = subprocess.Popen(
+        [sys.executable, script],
+        env=env,
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+    )
+    print("🖥️  Komuta Arayüzü açıldı (PID: {}).".format(_ui_proc.pid))
+
+app.konsola_ekle("ui_ac", ui_ac)
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 # ==========================================
 # 2. ANA DÖNGÜ (UPDATE)
 # ==========================================
 # FPS sabitleme: hedef FPS (tum kareler ~esit sure); 0 = limit yok
 # FPS gosterimi: son N karenin ortalamasi (titreme azalir)
-_fps_history = []
+_fps_history: deque = deque(maxlen=10)
 _FPS_HISTORY_SIZE = 10
 _rerun_step = 0
 _tahminler_cache = np.zeros(0, dtype=int)
@@ -227,8 +340,7 @@ def update():
     dt = getattr(utime, 'dt', 0) or 0.016
     instant_fps = (1.0 / dt) if dt > 0 else 0
     _fps_history.append(instant_fps)
-    if len(_fps_history) > _FPS_HISTORY_SIZE:
-        _fps_history.pop(0)
+    # deque(maxlen) otomatik eski değeri çıkarır — pop(0) gerekmez
 
     if _scheduler.due("hud", PerformansAyarlari.HUD_HZ, dt):
         Profiler.start("0_hud_text_update")
@@ -275,6 +387,12 @@ def update():
         _rerun_log_async(app=app, filo=filo, step=_rerun_step)
         Profiler.end("0_rerun_sahne_logla")
     _rerun_step += 1
+
+    if _scheduler.due("ui_durum", 1.0, dt):
+        _ui_durum_yaz()
+
+    if _scheduler.due("ui_komut", 2.0, dt):
+        _ui_komut_oku()
 
 
 app.set_update_function(update)
@@ -350,6 +468,13 @@ def input(key):
     if key in ('m', 'M'):
         motor_hud.toggle()
 
+    if key in ('u', 'U'):
+        if _ui_proc is not None and _ui_proc.poll() is None:
+            _ui_proc.terminate()
+            print("🖥️  Komuta Arayüzü kapatıldı.")
+        else:
+            ui_ac()
+
     if key in ('b', 'B'):
         filo.toggle_pid_ui()
 
@@ -379,14 +504,18 @@ def input(key):
             filo.entity_patlat(lider_rov)
 
     if key == "r":
-        bilgi_rov_id += 1
-        bilgi_rov_id %= len(filo.rovs)
-        filo.kamera_ayarla(rov_id=bilgi_rov_id)
-        mevcut_grup = getattr(filo.rovs[bilgi_rov_id], "group_id", None)
-        grup_idleri = _aktif_grup_idleri()
-        if mevcut_grup in grup_idleri:
-            _aktif_grup_index = grup_idleri.index(mevcut_grup)
-        print(f"🔄 Aktif ROV: {bilgi_rov_id}")
+        aktif_rovlar = [r for r in filo.rovs if r is not None]
+        if not aktif_rovlar:
+            print("⚠️ Henüz ROV yok.")
+        else:
+            bilgi_rov_id = (bilgi_rov_id + 1) % len(aktif_rovlar)
+            rov = aktif_rovlar[bilgi_rov_id]
+            filo.kamera_ayarla(rov_id=getattr(rov, 'id', 0))
+            mevcut_grup = getattr(rov, "group_id", None)
+            grup_idleri = _aktif_grup_idleri()
+            if mevcut_grup in grup_idleri:
+                _aktif_grup_index = grup_idleri.index(mevcut_grup)
+            print(f"🔄 Aktif ROV: {getattr(rov, 'id', bilgi_rov_id)}")
 
     
     if key == 'left mouse down':

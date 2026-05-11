@@ -81,6 +81,10 @@ class ROV(Entity):
         if hasattr(ortam_ref, 'rovs') and isinstance(ortam_ref.rovs, list):
             ortam_ref.rovs.append(self)
         
+        # g_rovs cache'ini geçersiz kıl
+        if hasattr(ortam_ref, '_invalidate_g_rovs_cache'):
+            ortam_ref._invalidate_g_rovs_cache()
+        
         self._etiket_guncelle()
         return True
 
@@ -122,6 +126,10 @@ class ROV(Entity):
                     if r and getattr(r, 'id', None) == silinen_id:
                         rovs[idx] = None
                         break
+
+            # g_rovs cache'ini geçersiz kıl
+            if hasattr(ortam, '_invalidate_g_rovs_cache'):
+                ortam._invalidate_g_rovs_cache()
 
             # 2. Görselleri temizle (havuz konteynerleri)
             if hasattr(self, 'label') and self.label: destroy(self.label)
@@ -768,7 +776,8 @@ class Ortam:
         self.helper = OrtamHelper(self)
         
         self.rovs, self.island_positions, self.island_entities = [], [], []
-        self._g_rovs={}
+        self._g_rovs: dict = {}
+        self._g_rovs_cache_len: int = -1   # cache invalidation: rovs listesi boyutu
         self.islands=self.island_entities
         self.engel_bulutu, self.konsol_verileri = [], {}
         self.sonar_cizgiler, self.filo = {}, None
@@ -783,21 +792,35 @@ class Ortam:
             enabled=True, rotate_speed=15, pan_speed=(10, 10),
             zoom_speed=1, position=(0, 0, -50), rotation=(20, 0, 0)
         )
+        # EditorCamera'nın 'r' (reset) kısayolunu devre dışı bırak — biz kullanıyoruz
+        try:
+            self.camera.shortcuts = {k: v for k, v in self.camera.shortcuts.items() if k != 'r'}
+        except Exception:
+            pass
         mouse.visible, mouse.locked = True, False
         
 
 
     @property
     def g_rovs(self):
-        self._g_rovs={}
+        # Cache: ROV listesi değişmediği sürece yeniden inşa etme
+        current_len = len(self.rovs)
+        if current_len == self._g_rovs_cache_len and self._g_rovs:
+            return self._g_rovs
+        self._g_rovs = {}
         for rov in self.rovs:
             if not rov or getattr(rov, 'is_destroyed', False):
                 continue
             __group_id=getattr(rov, 'group_id', 0)
-            if not self._g_rovs.get(__group_id,False):
+            if not self._g_rovs.get(__group_id, False):
                 self._g_rovs[__group_id]=[]
             self._g_rovs[__group_id].append(rov)
+        self._g_rovs_cache_len = current_len
         return self._g_rovs
+
+    def _invalidate_g_rovs_cache(self):
+        """ROV eklendiğinde veya çıkartıldığında cache'i geçersiz kıl."""
+        self._g_rovs_cache_len = -1
 
     def _setup_window(self):
         """ESKİ AYARLAR: Pencere konfigürasyonu."""
@@ -938,6 +961,26 @@ class Ortam:
 
         return all_groups_rovs
 
+    def _guvenli_rov_konumu(self, min_ada_mesafesi=35.0, sinir=160.0) -> tuple:
+        """Ada konumlarından uzak, rastgele güvenli bir (x, z) noktası döndürür (Ursina koordinatı)."""
+        import random
+        ada_konumlari = [p for p in self.island_positions if p]
+        for _ in range(200):
+            rx = random.uniform(-sinir, sinir)
+            rz = random.uniform(-sinir, sinir)
+            cakisiyor = False
+            for pos in ada_konumlari:
+                # island_positions sim koordinatında (x, y) → Ursina x=x, z=y
+                ada_x = float(pos[0]) if hasattr(pos, '__getitem__') else 0.0
+                ada_z = float(pos[1]) if hasattr(pos, '__getitem__') else 0.0
+                if ((rx - ada_x) ** 2 + (rz - ada_z) ** 2) ** 0.5 < min_ada_mesafesi:
+                    cakisiyor = True
+                    break
+            if not cakisiyor:
+                return rx, rz
+        # 200 denemede bulunamazsa güvenli merkez
+        return 0.0, -80.0
+
     def sim_olustur(self, n_rovs=(6,), n_islands=5, n_rocks=20, havuz_genisligi=200, rov_model='submarine'):
         self.havuz_genisligi = havuz_genisligi
         
@@ -987,6 +1030,40 @@ class Ortam:
         if getattr(self, "minimap", None):
             self.minimap._statik_yeniden_ciz()
 
+    def yeni_rov_ekle(self, rov_model='submarine'):
+        """UI'dan tek bir yeni ROV ekler. Ada olmayan güvenli bir konuma yerleştirir."""
+        import random
+        from ursina import Vec3
+
+        # Yeni ID: mevcut maksimum + 1
+        mevcut_ids = [getattr(r, 'id', 0) for r in self.rovs if r is not None]
+        yeni_id = (max(mevcut_ids) + 1) if mevcut_ids else 0
+
+        # Ada çakışması olmayan güvenli konum bul
+        rx, rz = self._guvenli_rov_konumu()
+        ry = -5.0  # Ursina Y = derinlik (su yüzeyinin altı)
+
+        new_rov = ROV(rov_id=yeni_id, group_id=0, position=Vec3(rx, ry, rz),
+                      loader_ref=self.loader, model_key=rov_model)
+        new_rov.ekle(self)
+
+        # Filo'ya sadece bu ROV'u ekle (tüm sistemi yeniden kurma)
+        filo_ref = getattr(self, 'filo', None)
+        if filo_ref is not None and hasattr(filo_ref, '_tek_rov_fizik_kur'):
+            try:
+                filo_ref._tek_rov_fizik_kur(new_rov)
+                filo_ref.mevcut_rov_sayisi = len([r for r in self.rovs if r is not None])
+                filo_ref.motor_sema_kaydet()
+                filo_ref.tum_motor_bv_kutuphanelerini_guncelle()
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
+        if getattr(self, "minimap", None):
+            self.minimap._statik_yeniden_ciz()
+
+        print(f"✅ Yeni ROV-{yeni_id} simülasyona eklendi @ ({rx:.1f}, {ry:.1f}, {rz:.1f})")
+        return new_rov
 
     def ROV(self, rov_id, x=None, y=None, z=None):
         """Konsol: ROV rov_id konumunu (x, y, z) yapar. x,y,z verilmezse sadece mevcut ROV döner."""

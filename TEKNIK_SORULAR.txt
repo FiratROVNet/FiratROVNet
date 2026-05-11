@@ -1,0 +1,320 @@
+================================================================
+  FiratROVNet — TEKNIK SORU & CEVAP DOKÜMANI
+  Sunum, savunma ve teknik görüşmeler için hazırlanmıştır.
+================================================================
+
+================================================================
+  BÖLÜM 1 — MİMARİ & TASARIM KARARLARI
+================================================================
+
+S: Gerçek ROV'a nasıl aktarılır? Simülasyondan gerçeğe geçiş nasıl olur?
+---------------------------------------------------------------------
+C: GNC katmanı kasıtlı olarak simülasyon motorundan ayrıştırıldı.
+   TemelGNC sınıfı motor komutlarını vektör olarak üretiyor — bu vektörler
+   simülasyonda Ursina Entity'ye uygulanıyor, gerçek sistemde ise
+   MAVLink/ROS2 mesajlarına dönüştürülecek.
+
+   Gerekli adımlar:
+   1. TemelGNCHelper.vektor_to_motor_sim() → MAVLink MANUAL_CONTROL mesajına çevir
+   2. Koordinator.sim_to_ursina() köprüsünü ROV'un kendi koordinat sistemine uyarla
+   3. Akustik modem simülasyonunu gerçek modem sürücüsüyle değiştir (arayüz aynı)
+   4. Sonar/LIDAR raycast → gerçek sensor driver'larından gelen mesafe verileri
+
+   Mimari bu geçişi desteklemek için tasarlandı.
+
+---
+
+S: Neden merkezi bir kontrol sunucusu kullanmadınız?
+---------------------------------------------------------------------
+C: Su altında haberleşme güvenilir değil — paket kaybı %30'a çıkabiliyor,
+   gecikme 100-500ms arası. Merkezi kontrol sunucusu bu ortamda single
+   point of failure olur.
+
+   Dağıtık mimaride:
+   - Her ROV kendi kararını lokal olarak veriyor
+   - Komşu kaybolursa diğerleri çalışmaya devam ediyor
+   - GAT modeli her ROV'da ayrı çalışıyor, senkronizasyon gerektirmiyor
+
+---
+
+S: APF (Yapay Potansiyel Alan) lokal minimuma takılmaz mı?
+---------------------------------------------------------------------
+C: Takılır — bu APF'nin bilinen zayıflığı. Biz bunu iki yolla çözdük:
+
+   1. A* ile hibrit: APF tek başına başaramadığında (hedef uzun süre
+      değişmiyorsa) A* path planning devreye giriyor ve waypoint listesi
+      üretiyor. ROV o listeyi takip ediyor.
+
+   2. Engel bulutu (engel_bulutu): Sonar/LIDAR'dan gelen nokta bulutu
+      APF'nin itici kuvvet hesabına dahil ediliyor — statik obstacle
+      map yerine dinamik güncellenen veri kullanıyoruz.
+
+---
+
+S: Neden GAT? Neden GRU veya LSTM kullanmadınız?
+---------------------------------------------------------------------
+C: GRU/LSTM zaman serisi için tasarlanmış — sabit boyutlu girdi bekler.
+   Bizim sorunumuzda ROV sayısı değişken, komşuluk ilişkileri dinamik.
+
+   GAT'ın avantajları:
+   - Graf yapısı değişken sayıda komşuyu doğal olarak temsil eder
+   - Attention mekanizması hangi komşunun önemli olduğunu öğreniyor
+   - Her düğüm (ROV) kendi komşularına göre lokal karar veriyor
+   - Sürü büyüyüp küçülse de model yeniden eğitim gerektirmiyor
+
+---
+
+S: Formasyon değişimi sırasında çarpışma riski yok mu?
+---------------------------------------------------------------------
+C: Formasyon değişimi "soft constraint" olarak uygulanıyor — ROV'lar
+   formasyon pozisyonuna çekilir ama APF çarpışma kaçınma her zaman
+   daha yüksek öncelikli.
+
+   GATLimitleri.CARPISMA (10m) eşiği aşıldığında formasyon takibi
+   geçici olarak askıya alınıyor, çarpışma kaçınma önce çözülüyor.
+
+---
+
+S: Kalman filtresi neden 1D? 3D Kalman kullanmadınız?
+---------------------------------------------------------------------
+C: Her eksen (X, Y, Z) bağımsız gürültü karakteristiğine sahip —
+   su akıntısı X'te baskın, derinlik değişimi Z'de farklı dinamik.
+   Üç ayrı 1D filtre hem hesaplama açısından daha verimli hem de
+   eksenleri bağımsız tune etmeye izin veriyor.
+
+   R=0.5 (ölçüm gürültüsü), Q=0.01 (süreç gürültüsü) değerleri
+   denizaltı dinamiklerine deneysel olarak ayarlandı.
+
+================================================================
+  BÖLÜM 2 — YAPAYZEKa & ÖĞRENME
+================================================================
+
+S: GAT modelini nasıl eğitdiniz? Gerçek veri yok.
+---------------------------------------------------------------------
+C: Sentetik veri üretimi kullandık. GATLimitleri eşiklerinden
+   (CARPISMA=10m, ENGEL=20m, KOPMA=40m, UZAK=60m) kural tabanlı
+   etiketleme yapıyoruz:
+
+   - İki ROV arası mesafe < 10m → Kod 2 (çarpışma riski)
+   - Engel mesafesi < 20m → Kod 1 (engel var)
+   - Komşu bağlantısı koptu → Kod 3 (haberleşme koptu)
+
+   Bu eşikler simülasyon, GAT eğitimi ve GNC mantığında tutarlı olmalı —
+   biri değişirse sistemin davranışı eğitim ortamından sapıyor.
+
+   5000 epoch, hidden_channels=16, num_heads=4 ile eğitildi.
+
+---
+
+S: RL/PPO modelleri ne zaman devreye giriyor?
+---------------------------------------------------------------------
+C: Görev planlama seviyesinde — GNC seviyesinde değil.
+
+   Örnek: lider_sec_ppo.py hangi ROV'un lider olacağına karar verir.
+   Karar mekanizması: PPO aksiyonu belirler, ~%50 ihtimalle orijinal
+   kural tabanlı fonksiyona fallback yapar.
+
+   Bu "hibrit" mimari neden önemli:
+   - PPO modeli henüz yeterince iyi değilse sistem çökmüyor
+   - Eğitim sırasında exploration vs. exploitation dengesi korunuyor
+   - Gerçek dünyada model başarısız olsa bile kural tabanlı sistem devreye giriyor
+
+---
+
+S: 6 GAT kodu yeterli mi? Daha fazla sınıf olmalı değil mi?
+---------------------------------------------------------------------
+C: 6 kod kasıtlı minimal tutuldu. Her kod bir aksiyon tetikliyor:
+   - Kod 0: Normal → formasyon takibi
+   - Kod 1: Engel → APF itici kuvvet artır
+   - Kod 2: Çarpışma → acil durdur, geri çekil
+   - Kod 3: Haberleşme koptu → en yakın komşuya yönel
+   - Kod 4: Konum kayboldu → sabit dur, GPS recovery bekle
+   - Kod 5: Liderden uzak → sprint modu, hızlı yaklaş
+
+   Daha fazla sınıf hem eğitim verisini artırır hem de aksiyonların
+   çakışma riskini yükseltir. Mevcut 6 sınıf Occam's Razor prensibi.
+
+================================================================
+  BÖLÜM 3 — HABERLEŞme & SENSörler
+================================================================
+
+S: Gerçek akustik modem ile simülasyon modeli ne kadar uyumlu?
+---------------------------------------------------------------------
+C: EvoLogics S2CR serisi baz alındı. Modellenen parametreler:
+   - İletişim menzili: 50m (ModemAyarlari.iletisim_menzili)
+   - Gecikme: mesafeye bağlı (ses hızı ~1500 m/s suda)
+   - Paket kaybı: mesafe arttıkça olasılık artar
+   - SNR: arka plan gürültüsüne göre hesaplanıyor
+
+   Simülasyonun eksikleri: çok yol yayılımı (multipath) ve
+   termoklin katmanları modellenmedi — bu gerçek dünyadaki
+   en büyük performans farkı kaynağı.
+
+---
+
+S: GPS yok, ROV konumunu nasıl biliyor?
+---------------------------------------------------------------------
+C: Dead reckoning — başlangıç konumu + motor komutları + Kalman filtresi
+   ile konum tahmin ediliyor. Simülasyonda ground truth mevcut olduğu için
+   doğrudan kullanılıyor. Gerçek sistemde DVL (Doppler Velocity Log)
+   entegrasyonu gerekiyor.
+
+   Kod 4 (konum kayboldu) bu senaryoyu ele alıyor — pozisyon belirsizliği
+   eşiği aşılınca ROV duraksıyor ve neighbor-based recovery başlatıyor.
+
+---
+
+S: LIDAR ve sonar aynı anda çalışıyor mu? Fark ne?
+---------------------------------------------------------------------
+C: Evet, her ikisi de aktif:
+   - Sonar: tek yönlü, uzun menzil (öne bakan), engel_mesafesi
+   - LIDAR: 4 yönlü (sağ/sol/üst/alt), kısa menzil, lidar_mesafeleri dict
+
+   APF hesabında ikisi de kullanılıyor. Sonar asıl navigasyon için,
+   LIDAR yan çarpışma önleme için.
+
+   Raycast thread-safety sorunu için cache mekanizması var —
+   konsol thread'i raycast tetikleyemiyor, sadece cache'den okuyabiliyor.
+
+================================================================
+  BÖLÜM 4 — PERFORMANS & ÖLÇEKLENME
+================================================================
+
+S: Kaç ROV'a kadar ölçeklenebilir?
+---------------------------------------------------------------------
+C: Teorik limit yok ama pratik sınırlar:
+   - Ursina render: ~20-30 ROV sonrası FPS düşüyor
+   - GAT hesaplama: O(N²) komşu ilişkisi — N=50 üstünde belirgin yavaşlama
+   - Akustik modem: kanal kapasitesi N arttıkça çakışma artar
+
+   Mevcut test konfigürasyonu: 6 ROV (4+6 gruplu), 60 FPS civarı.
+
+---
+
+S: CPU-only çalışıyor dediniz, performans yeterli mi?
+---------------------------------------------------------------------
+C: Simülasyon için evet. GAT inference için:
+   - Küçük model (hidden=16, heads=4): CPU'da <1ms per ROV
+   - Büyük model (hidden=64, heads=8): GPU önerilir
+
+   Asıl bottleneck GAT değil, Ursina render pipeline ve raycast.
+   Performans profili profile_output.txt'te mevcut.
+
+---
+
+S: Engel ekleme/çıkarma dinamik mi, yoksa başta mı tanımlanıyor?
+---------------------------------------------------------------------
+C: İkisi de. Başlangıçta n_islands ve n_rocks ile statik nesneler.
+   Simülasyon çalışırken konsol üzerinden:
+
+   Ada(island_id, x, y)   → adayı taşı
+   app.engel_bulutu        → sonar/LIDAR'dan dinamik güncellenen nokta bulutu
+
+   Harita (Matplotlib) bu bulutu görselleştiriyor. Konveks hull
+   bu dinamik engellerden hesaplanıyor.
+
+================================================================
+  BÖLÜM 5 — YAZILIM MÜHENDİSLİĞİ
+================================================================
+
+S: Thread safety nasıl sağlandı? Ursina single-threaded değil mi?
+---------------------------------------------------------------------
+C: Ursina/Panda3D render main thread'de çalışıyor — raycast ve Entity
+   işlemleri sadece main thread'den yapılabiliyor.
+
+   Konsol farklı bir thread'de çalışıyor (Python `code.interact`).
+   Bu yüzden:
+   - Raycast sonuçları main thread'de cache'leniyor
+   - Konsol thread'i cache'den okuyor, raycast tetiklemiyor
+   - Formasyon seçimi için command queue mekanizması var:
+     konsol komut kuyruğa ekliyor, main thread işliyor
+
+---
+
+S: Neden Ursina? Gazebo veya Unity kullanmadınız?
+---------------------------------------------------------------------
+C: Ursina seçiminin nedenleri:
+   - Python-native: tüm GNC ve AI kodu aynı dilde
+   - Hızlı prototipleme: sahne kodu minimal
+   - Panda3D altyapısı: yeterli fizik ve raycast desteği
+   - Konsol entegrasyonu: Python REPL direkt simülasyon state'ine erişiyor
+
+   Dezavantajlar: Ursina 7.x OBJ mesh yüklemesini bozuyor (5.x-6.x
+   kullanıyoruz), profesyonel simülatörlere göre fizik daha basit.
+
+   Gazebo daha gerçekçi ama Python entegrasyonu karmaşık, ROS bağımlılığı
+   var. Proje amacı için Ursina yeterli ve çok daha hızlı geliştirme sağladı.
+
+---
+
+S: Konfigürasyon yönetimi nasıl yapıldı?
+---------------------------------------------------------------------
+C: Tüm parametreler config.py'daki sınıflarda toplanmış:
+   - GATLimitleri: AI eşikleri (CARPISMA, ENGEL, KOPMA, UZAK)
+   - SensorAyarlari: sensör menzilleri
+   - HareketAyarlari: formasyon parametreleri
+   - ModemAyarlari: haberleşme parametreleri
+   - PIDAyarlari: stabilizasyon PID değerleri
+
+   Kritik kural: GATLimitleri değiştirilirse GAT yeniden eğitilmeli.
+   Aksi halde simülasyon davranışı eğitim dağılımından sapıyor.
+
+---
+
+S: Test stratejisi nedir?
+---------------------------------------------------------------------
+C: Üç seviye:
+   1. Unit test (run_tests.py): Headless, GPU/display gerektirmez.
+      GNC matematik fonksiyonları, Kalman filtresi, APF hesapları test ediliyor.
+
+   2. Integration test: GAT + simülasyon birlikte — üretilen kodların
+      beklenen davranışla örtüşüp örtüşmediği kontrol ediliyor.
+
+   3. Manuel test (test.py): Konsol entegrasyonu, Python REPL erişimi.
+
+================================================================
+  BÖLÜM 6 — GELECEK ÇALIŞMALAR
+================================================================
+
+S: Sistemin en zayıf yönü nedir?
+---------------------------------------------------------------------
+C: Dürüst cevap:
+   1. Multipath akustik haberleşme modellenmedi
+   2. Su akıntısı ve dalga etkisi basitleştirildi
+   3. GAT sadece sentetik veriyle eğitildi — domain shift riski var
+   4. Enerji optimizasyonu yok — batarya modelini basit tuttuk
+   5. Global planlama zayıf — A* statik harita üzerinde çalışıyor,
+      dinamik engellere adapte olmak için yeniden planlama gerekiyor
+
+---
+
+S: Makale olabilir mi? Özgün katkı nedir?
+---------------------------------------------------------------------
+C: Özgün katkılar:
+   1. GAT + APF hibrit mimarisi su altı sürüsü için
+   2. Thread-safe akustik modem simülasyonu ile konsoldan canlı kontrol
+   3. Config-driven GATLimitleri — eğitim/simülasyon tutarlılık garantisi
+   4. 21 formasyon tipi + convex hull tabanlı otomatik formasyon seçimi
+   5. RL/PPO + kural tabanlı fallback hibrit karar mimarisi
+
+   Yayın için: gerçek donanım validasyonu veya daha büyük ölçekli
+   karşılaştırmalı deney eklenmesi güçlendirir.
+
+================================================================
+  HIZLI BAŞVURU — TEMEL KAVRAMLAR
+================================================================
+
+  APF    : Artificial Potential Fields — vektörel kuvvet tabanlı navigasyon
+  GAT    : Graph Attention Network — komşuluk grafiği üzerinde AI karar
+  PPO    : Proximal Policy Optimization — stabil policy gradient RL
+  GNC    : Guidance, Navigation & Control — rehberlik/navigasyon/kontrol
+  DVL    : Doppler Velocity Log — su altı hız ölçer (GPS alternatifi)
+  SNR    : Signal-to-Noise Ratio — sinyal gürültü oranı
+  APF lokal minimum : Hedef ile engel arasında sıkışma — A* ile çözülüyor
+  Dead reckoning    : GPS olmadan konum tahmini (hız×zaman entegrasyonu)
+  Boustrophedon     : Çift yönlü şerit tarama — lawn-mower pattern
+  Convex hull       : Bir nokta kümesini kapsayan en küçük dışbükey çokgen
+  Formasyon offset  : Takipçinin liderden göreli uzaklık ve açı
+  GATLimitleri      : Eşik değerler — eğitim, sensör ve GNC'de tutarlı olmalı
+
+================================================================

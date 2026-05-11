@@ -678,9 +678,11 @@ class FormationMixin:
                 break
 
         if lider_rov_id is None and not sessiz:
-            if hasattr(self.filo, 'ds') and self.filo.ds:
-                print(f"Debug Info: {self.filo.ds}")
-            print(f"❌ [HATA] Grup-{g_id} içinde Lider ROV tespit edilemedi.")
+            _oto = getattr(getattr(self.filo, 'leader_manager', None), 'oto_lider_etkin', True)
+            if _oto:
+                if hasattr(self.filo, 'ds') and self.filo.ds:
+                    print(f"Debug Info: {self.filo.ds}")
+                print(f"❌ [HATA] Grup-{g_id} içinde Lider ROV tespit edilemedi.")
         return lider_rov_id, lider_gps
 
     def get_formation_ids_to_try(self) -> list:

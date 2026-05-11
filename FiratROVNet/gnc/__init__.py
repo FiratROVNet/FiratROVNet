@@ -122,6 +122,11 @@ class Filo(FiloInitMixin):
         self.target_counter = 0           # Her tıklamada artan benzersiz ID sayacı
 
         self.mevcut_rov_sayisi=0
+        # O(1) ROV lookup: {rov_id: rov_entity}
+        self._rov_id_map: dict = {}
+        # rovs property cache
+        self._rovs_cache: list = []
+        self._rovs_cache_src_len: int = -1
         
         # Ortam referansını ayarla ve başlat
         self.world = BulletWorld()
@@ -151,7 +156,8 @@ class Filo(FiloInitMixin):
     def _baslatma_tamamla(self):
         sonuc = super()._baslatma_tamamla()
         self._init_pid_ui()
-        self.toggle_pid_ui(True)
+        self.toggle_pid_ui(False) # Başlangıçta PID UI kapalı
+        
         return sonuc
             
 
@@ -475,7 +481,6 @@ class Filo(FiloInitMixin):
 
             # DURUM A: Hedefe Varildi mi?
             if mevcut_hedef_id is not None and not aktif_rota:
-                print(f"✅ [NAV] Grup-{g_id} hedef {mevcut_hedef_id} noktasina varildi.")
                 self.hedef_sil(mevcut_hedef_id)
                 self.current_target_id[g_id] = None
                 self.grup_hedefleri[g_id] = None
@@ -487,9 +492,6 @@ class Filo(FiloInitMixin):
                 target_pos = next_data['pos']
                 self.current_target_id[g_id] = next_data['id']
                 self.grup_hedefleri[g_id] = tuple(target_pos) if isinstance(target_pos, (list, tuple)) else target_pos
-
-                print(f"🚀 [NAV] Grup-{g_id} siradaki hedefe geciliyor: {self.current_target_id[g_id]}")
-                print(target_pos)
                 self.git_path(lider_id, target_pos, isaret=True)
 
     def guncelle_gat_analizi(self, tahminler):
@@ -501,33 +503,38 @@ class Filo(FiloInitMixin):
             veri = self.ortam_ref.simden_veriye()
             ai_aktif = getattr(cfg, 'ai_aktif', True)
             
-            active_rovs = [r for r in self.ortam_ref.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]  # type: ignore[union-attr]
+            # Cache'li property kullan (list comprehension yapmaz)
+            active_rovs = self.rovs
 
             if ai_aktif and self.gat:  # type: ignore[union-attr]
                 try:
                     tahminler_yeni, _, _ = self.gat.analiz_et(veri)  # type: ignore[union-attr]
                     
-                    # GAT predictions'ı doğru indekslere ata
-                    # tahminler_yeni active_rovs sırasında predictions döndürür
+                    # ortam_ref.rovs (ham, None'lı) üzerinden indeksleme,
+                    # active_rovs (filtreli) ile eşleştirme — tek geçişte
                     active_idx = 0
                     for all_idx, rov in enumerate(self.ortam_ref.rovs):
-                        # Destroyed/None ROV'ları atla
                         if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
                             continue
-                        
-                        # Active index bounds check
                         if active_idx < len(tahminler_yeni) and all_idx < len(tahminler):  # type: ignore[arg-type]
                             tahminler[all_idx] = tahminler_yeni[active_idx]
                         active_idx += 1
                 except Exception as e:
-                    print(f"⚠️ GAT analiz hatası: {e}")
+                    # Hata spam önleme: aynı hata mesajını tekrar yazdırma
+                    _msg = str(e)
+                    if getattr(self, '_son_gat_hata', None) != _msg:
+                        self._son_gat_hata = _msg
+                        print(f"⚠️ GAT analiz hatası: {e}")
             
             # Tahmin boyutunu ROV sayısına göre ayarla
             if len(tahminler) < len(active_rovs):  # type: ignore[arg-type]
                 tahminler.extend(np.zeros(len(active_rovs) - len(tahminler), dtype=int))
                 
         except Exception as e:
-            print(f"❌ GAT güncelleme hatası: {e}")
+            _msg = str(e)
+            if getattr(self, '_son_gat_guncelleme_hata', None) != _msg:
+                self._son_gat_guncelleme_hata = _msg
+                print(f"❌ GAT güncelleme hatası: {e}")
 
     def kuvvet_uygula(self, rov_entity, yerel_kuvvet, yerel_nokta):
             """
@@ -584,26 +591,22 @@ class Filo(FiloInitMixin):
         }
         durum_txts = ["OK", "ENGEL", "CARPISMA", "KOPUK", "UZAK"]
         
-        # app.rovs içinde her ROV'un indeksini al ve tahminler'den eşleştir
+        # ortam_ref.rovs (ham liste, None içerebilir) üzerinden tahmin indeksi eşleştirmesi
+        # self.rovs cache'li ama indeks uyuşmazlığı olabilir; ortam listesini dolaşıyoruz
         for idx, rov in enumerate(self.ortam_ref.rovs):
-            # Destroyed veya None ROV'ları atla
             if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
                 continue
-            
-            # Tahminler indeksi bounds check yap
             if idx >= len(tahminler):
                 continue
             
             gat_kodu = tahminler[idx]
             rov.gat_kodu = gat_kodu
             
-            # Renk ayarı (Lider sabit kırmızı, diğerleri GAT'a göre)
             if rov.role == 1:
                 rov.color = color.red
             else:
                 rov.color = kod_renkleri.get(gat_kodu, color.white)
             
-            # Label (Etiket) ayarları
             rov.label.color = rov.color
             durum_metni = durum_txts[gat_kodu] if 0 <= gat_kodu < len(durum_txts) else f"GAT:{gat_kodu}"
             rov.label.text = f"{durum_metni}{rov.id}"
@@ -612,10 +615,17 @@ class Filo(FiloInitMixin):
     def rovs(self):
         """
         self.sistemler yerine doğrudan ortamdaki canlı ROV'ları döndürür.
+        Cache: ortam_ref.rovs boyutu değişmediği sürece yeniden inşa etmez.
         """
         if not self.ortam_ref or not hasattr(self.ortam_ref, 'rovs'):
             return []
-        return [r for r in self.ortam_ref.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]  # type: ignore[union-attr]
+        src = self.ortam_ref.rovs
+        src_len = len(src)
+        if src_len == self._rovs_cache_src_len and self._rovs_cache:
+            return self._rovs_cache
+        self._rovs_cache = [r for r in src if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]  # type: ignore[union-attr]
+        self._rovs_cache_src_len = src_len
+        return self._rovs_cache
 
     @property
     def g_rovs(self):
@@ -625,17 +635,22 @@ class Filo(FiloInitMixin):
         return SafeDict(self.ortam_ref.g_rovs)
 
     def find_rov_by_id(self, rov_id):
-        """ID'si verilen ROV'u tüm gruplar içerisinde arayıp bulur."""
-        # Önce ortam_ref kontrolü
+        """ID'si verilen ROV'u O(1) ile bulur."""
+        # Önce hızlı map'ten dene
+        rov = self._rov_id_map.get(rov_id)
+        if rov is not None:
+            if not (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                return rov
+            # Silinmiş → map'ten temizle
+            self._rov_id_map.pop(rov_id, None)
+
+        # Fallback: ortam_ref'ten lineer ara ve map'i güncelle
         if not self.ortam_ref:
             return None
-        
-        # g_rovs'dan arama yap
-        for g_id, grup in self.g_rovs.items():
-            for rov in grup:
-                if rov and rov.id == rov_id:
-                    if not (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
-                        return rov
+        for r in self.ortam_ref.rovs:
+            if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed) and r.id == rov_id:
+                self._rov_id_map[rov_id] = r
+                return r
         return None
     
     def _get_all_rovs_positions(self):
@@ -652,6 +667,9 @@ class Filo(FiloInitMixin):
         """Kamera yönetimini camera_manager'a yönlendir (kamera_ekle ile aynı API)."""
         kamera_id = self.camera_manager.aktif_kamera_listesi()
         for kamera in kamera_id:
+            # YOLO aktif olan kameraları silme
+            if kamera in self.camera_manager.aktif_yolo_gorevleri:
+                continue
             self.camera_manager.kamera_kaldir(kamera)
         return self.camera_manager.kamera_ekle(*args, **kwargs)
     
@@ -809,6 +827,11 @@ class Filo(FiloInitMixin):
     def rov_verilerini_temizle(self, rov_id):
             """Silinen ROV'un tüm izlerini GNC hafızasından siler."""
             
+            # O(1) map'ten çıkar
+            self._rov_id_map.pop(rov_id, None)
+            # rovs cache invalidate (ROV silindi)
+            self._rovs_cache_src_len = -1
+
             # Vektör (Ok) temizliği
             if hasattr(self.helper, 'apf_temizle'):
                 self.helper.apf_temizle()
