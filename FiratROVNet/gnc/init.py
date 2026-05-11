@@ -5,7 +5,7 @@ import logging
 import math
 from typing import Any
 
-from ursina import Vec3, application, time  # type: ignore[import]
+from ursina import Vec3, application, time as utime  # type: ignore[import]
 
 from ..config import FizikSabitleri, Hidrodinamik, PerformansAyarlari  # type: ignore[import]
 from ..lider_sec import liderlik_secimini_baslat  # type: ignore[import]
@@ -150,7 +150,7 @@ class FiloInitMixin:
     def _tick_sistem_hazirligi(self):
         """Command queue + physics step."""
         self._process_command_queue()
-        dt = time.dt  # type: ignore[attr-defined]
+        dt = utime.dt  # type: ignore[attr-defined]
 
         from math import isnan
         from panda3d.core import Vec3 as PandaVec3  # type: ignore[import]
@@ -206,7 +206,7 @@ class FiloInitMixin:
         sea_floor_y = getattr(self.ortam_ref, "SEA_FLOOR_Y", -50.0)
         ortam_rovs = self.ortam_ref.rovs
         tahmin_len = len(tahminler) if tahminler is not None else 0
-        dt = time.dt  # type: ignore[attr-defined]
+        dt = utime.dt  # type: ignore[attr-defined]
 
         Profiler.start("13_ignore_tuple_hazirla")
         self._hazirla_global_ignore_listesi(len(ortam_rovs))

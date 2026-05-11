@@ -224,6 +224,12 @@ class LeaderManager:
                         self.filo_ref.set(rov.id, "rol", 1)
                         from ursina import color
                         rov.color = color.red
+                        # Lider: serbest mod (mod=0) — minimap hedefleri ve git_path alabilsin
+                        if hasattr(rov, "gnc") and rov.gnc is not None:
+                            try:
+                                rov.gnc.mod = 0
+                            except Exception:
+                                pass
                     else:
                         self.filo_ref.set(rov.id, "rol", 0)
 

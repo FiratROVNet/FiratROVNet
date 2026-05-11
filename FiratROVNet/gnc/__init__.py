@@ -28,6 +28,7 @@ from FiratROVNet.kutuphane.moduls import (  # type: ignore[import]
     AramaKurtarmaGorevi,
     ImhaGorevi,
     RovDegerOnerici,
+    SAC,
 )
 # Lazy import: FiratAnalizci circular import problemini önlemek için _basla_gat_modeli içinde import edilir
 
@@ -73,6 +74,8 @@ class Filo(FiloInitMixin):
         self.arama_kurtarma_gorevi = AramaKurtarmaGorevi(self)
         self.imha_gorevi = ImhaGorevi(self)
         self.rov_deger_onerici = RovDegerOnerici(self)
+        self.sac = SAC(self)
+        self.SAC = self.sac
         # Sorumlu Sistemler (ModülerYapı)
         self.damage_system = DamageSystem(filo_ref=self)
         self.camera_manager = CameraManager(filo_ref=self)
@@ -463,7 +466,12 @@ class Filo(FiloInitMixin):
             self.gat = None  # type: ignore[assignment]
 
     def guncelle_navigasyon_kuyrugu(self):
-        """Navigasyon kuyruğu ve varış yönetimi (grup bazlı)."""
+        """Navigasyon kuyruğu ve varış yönetimi.
+
+        Desteklenen kuyruk anahtarları:
+        - Grup bazlı: `g_id` (int) → lider ROV için git_path
+        - ROV bazlı: `rov_<rov_id>` (str) → seçili ROV için git_path
+        """
         for g_id, grup_rovs in self.g_rovs.items():
             lider_bilgi = self.find_leader_info(g_id=g_id)
             lider_id = lider_bilgi[0] if lider_bilgi else None
@@ -491,6 +499,45 @@ class Filo(FiloInitMixin):
                 print(f"🚀 [NAV] Grup-{g_id} siradaki hedefe geciliyor: {self.current_target_id[g_id]}")
                 print(target_pos)
                 self.git_path(lider_id, target_pos, isaret=True)
+
+        # --- ROV bazlı kuyruklar (minimap tıklaması ile seçili ROV'a görev) ---
+        # Not: main.py tarafında `kuyruk_anahtari = f"rov_{bilgi_rov_id}"` kullanılıyor.
+        for key in list(self.nav_queue.keys()):
+            if not (isinstance(key, str) and key.startswith("rov_")):
+                continue
+            try:
+                rov_id = int(key.split("_", 1)[1])
+            except Exception:
+                continue
+
+            rov = self.find_rov_by_id(rov_id)
+            if rov is None or (hasattr(rov, "is_destroyed") and rov.is_destroyed):
+                # Ölmüş/eksik ROV kuyruğunu temizle
+                self.nav_queue.pop(key, None)
+                self.current_target_id.pop(key, None)
+                continue
+
+            # Takipçi modundaysa kuyruk ilerletme
+            if hasattr(rov, "gnc") and rov.gnc is not None and getattr(rov.gnc, "mod", 1) == 1:
+                continue
+
+            aktif_rota = self._git_nokta_listesi.get(rov_id)
+            mevcut_hedef_id = self.current_target_id.get(key)
+
+            # DURUM A: Hedefe varıldı mı?
+            if mevcut_hedef_id is not None and not aktif_rota:
+                print(f"✅ [NAV] ROV-{rov_id} hedef {mevcut_hedef_id} noktasina varildi.")
+                self.hedef_sil(mevcut_hedef_id)
+                self.current_target_id[key] = None
+
+            # DURUM B: Yeni hedefe başla mı?
+            rov_kuyruk = self.nav_queue.get(key, [])
+            if not aktif_rota and rov_kuyruk:
+                next_data = rov_kuyruk.pop(0)
+                target_pos = next_data["pos"]
+                self.current_target_id[key] = next_data["id"]
+                print(f"🚀 [NAV] ROV-{rov_id} siradaki hedefe geciliyor: {self.current_target_id[key]}")
+                self.git_path(rov_id, target_pos, isaret=True)
 
     def guncelle_gat_analizi(self, tahminler):
         """GAT modelinden tahmin alıp ROV'lara ata."""
@@ -1284,7 +1331,7 @@ class TemelGNC:
         
         self.temel_gnc_helper = TemelGNCHelper(rov_entity, filo_ref, self)
 
-        self.mod = 1
+        self.mod = 0
         self.gorev = "idle"
         self.gorev_hedef = None
         self.onceki_group_id = None

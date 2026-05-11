@@ -4,6 +4,7 @@ from FiratROVNet.gnc import Filo, TemelGNC
 from FiratROVNet.config import cfg
 from FiratROVNet.config import PerformansAyarlari
 from FiratROVNet.motor_hud import MotorHUD
+from FiratROVNet.sac_hud import SACEgitimHUD
 from ursina import *  # type: ignore[reportMissingImports]
 from ursina import time as utime, mouse, Vec3, time # type: ignore[reportMissingImports]  # FPS icin dt; mouse: girdi
 import numpy as np
@@ -25,6 +26,8 @@ app.sim_olustur(n_rovs=(6,4), n_islands=4, havuz_genisligi=200, rov_model='subma
 # GAT modeli ve navigasyon kuyruğu da Filo içinde initialize edilir
 filo = Filo(ortam_ref=app)
 motor_hud = MotorHUD(filo)
+sac_hud = SACEgitimHUD(filo)
+filo._sac_hud_visible = sac_hud.visible
 if getattr(app, "rov_label", None) is not None and app.rov_label.background is not None:
     app.rov_label.background.scale_y = 2.2
 
@@ -32,25 +35,25 @@ shortcut_root = Entity(parent=camera.ui, position=(0.8, 0.28, -9))
 shortcut_bg = Entity(
     parent=shortcut_root,
     model="quad",
-    scale=(0.18, 0.08),
+    scale=(0.21, 0.112),
     color=color.black,
     z=0.04,
 )
 shortcut_bg.alpha = 0.48
 _shortcut_border_color = color.azure
 for _shortcut_border in (
-    Entity(parent=shortcut_root, model="quad", position=(0, 0.040, -0.04), scale=(0.18, 0.002), color=_shortcut_border_color),
-    Entity(parent=shortcut_root, model="quad", position=(0, -0.040, -0.04), scale=(0.18, 0.002), color=_shortcut_border_color),
-    Entity(parent=shortcut_root, model="quad", position=(-0.090, 0, -0.04), scale=(0.002, 0.08), color=_shortcut_border_color),
-    Entity(parent=shortcut_root, model="quad", position=(0.090, 0, -0.04), scale=(0.002, 0.08), color=_shortcut_border_color),
+    Entity(parent=shortcut_root, model="quad", position=(0, 0.056, -0.04), scale=(0.21, 0.002), color=_shortcut_border_color),
+    Entity(parent=shortcut_root, model="quad", position=(0, -0.056, -0.04), scale=(0.21, 0.002), color=_shortcut_border_color),
+    Entity(parent=shortcut_root, model="quad", position=(-0.105, 0, -0.04), scale=(0.002, 0.112), color=_shortcut_border_color),
+    Entity(parent=shortcut_root, model="quad", position=(0.105, 0, -0.04), scale=(0.002, 0.112), color=_shortcut_border_color),
 ):
     _shortcut_border.alpha = 0.30
 shortcut_text = Text(
     parent=shortcut_root,
-    text="<white>M<default> Motor   <white>B<default> PID\n<white>R<default> ROV     <white>G<default> Grup\n<white>F<default> Görsel  <white>V<default> REC",
+    text="<white>M<default> Motor   <white>B<default> PID\n<white>R<default> ROV     <white>G<default> Grup\n<white>F<default> Görsel  <white>V<default> REC\n<white>E<default> SAC     <white>2<default> SAC ROV",
     position=(0, 0, 0),
     origin=(0, 0),
-    scale=0.7,
+    scale=0.62,
     color=color.gray,
 )
 
@@ -202,6 +205,11 @@ def _rerun_kayit_durdur_async():
     finally:
         _rerun_sink_busy = False
 
+
+
+
+
+bilgi_rov_id = 0
 def update():
     """Ana simülasyon döngüsü. Frame süresi hedef FPS ile eşitlenir."""
     global _rerun_step, _last_hud_text
@@ -240,6 +248,21 @@ def update():
         motor_hud.update(bilgi_rov_id)
         Profiler.end("0_motor_hud_update")
 
+    if sac_hud.visible and _scheduler.due("sac_train", 10.0, dt):
+        mevcut_rov = filo.find_rov_by_id(bilgi_rov_id)
+        varsayilan_grup_id = getattr(mevcut_rov, "group_id", None)
+        egitim_rovleri = filo.sac.canli_egitim_rovleri_al(varsayilan_grup_id=varsayilan_grup_id)
+        if egitim_rovleri:
+            Profiler.start("0_sac_canli_egitim")
+            filo.sac.canli_egitim_adimi(rov_id=egitim_rovleri)
+            Profiler.end("0_sac_canli_egitim")
+
+    if _scheduler.due("sac_hud", 10.0, dt):
+        Profiler.start("0_sac_hud_update")
+        filo._sac_hud_visible = sac_hud.visible
+        sac_hud.update()
+        Profiler.end("0_sac_hud_update")
+
     tahminler = _tahminler_al()
     if _scheduler.due("gat", PerformansAyarlari.GAT_HZ, dt):
         Profiler.start("0_guncelle_gat_analizi")
@@ -268,7 +291,7 @@ app.set_update_function(update)
 # 3. GİRDİ YÖNETİMİ (MOUSE)
 # ==========================================
 
-bilgi_rov_id = 0
+
 
 def input(key):
     """Mouse ve keyboard girdilerini işle."""
@@ -337,6 +360,29 @@ def input(key):
     if key in ('v', 'V'):
         _rerun_kayit_toggle()
 
+    if key in ('e', 'E'):
+        sac_hud.toggle()
+        filo._sac_hud_visible = sac_hud.visible
+        if sac_hud.visible:
+            mevcut_rov = filo.find_rov_by_id(bilgi_rov_id)
+            varsayilan_grup_id = getattr(mevcut_rov, "group_id", None)
+            aktif_sac_rov_id = filo.sac.canli_egitim_rov_id_al(varsayilan_grup_id=varsayilan_grup_id)
+            if aktif_sac_rov_id is None:
+                sac_hud.set_rov_ids([bilgi_rov_id])
+                aktif_sac_rov_id = bilgi_rov_id
+            sac_hud.set_active_rov_id(aktif_sac_rov_id)
+            egitim_rovleri = filo.sac.canli_egitim_rovleri_al(varsayilan_grup_id=varsayilan_grup_id)
+            filo.sac.reset(rov_id=egitim_rovleri or aktif_sac_rov_id)
+            print(f"🧠 SAC eğitim paneli açık | ROV-{aktif_sac_rov_id}")
+        else:
+            print("🧠 SAC eğitim paneli kapalı")
+
+    if key in ('2', 'num 2') and sac_hud.visible:
+        aktif_sac_rov_id = sac_hud.next_rov()
+        if aktif_sac_rov_id is not None:
+            filo.sac.reset(rov_id=aktif_sac_rov_id)
+            print(f"🧠 SAC grafiği ROV-{aktif_sac_rov_id}")
+
     if key in ('g', 'G'):
         grup_idleri = _aktif_grup_idleri()
         if grup_idleri:
@@ -371,47 +417,62 @@ def input(key):
 
     
     if key == 'left mouse down':
-        # Eğer tıklanan nesne minimap ise
-        if hasattr(app, 'minimap') and mouse.hovered_entity == app.minimap:
-            # Tıklanan yerin koordinatını havuz boyutuna göre çevir
-            local_pos = mouse.point
-            if local_pos is None:
-                return
-            havuz_tam_cap = 400 
-            sim_x = local_pos.x * havuz_tam_cap
-            sim_y = local_pos.y * havuz_tam_cap
-            
-            group_id = filo.rovs[bilgi_rov_id].group_id
-            lider_bilgi = filo.find_leader_info(g_id=group_id)
-            lider_id = lider_bilgi[0] if lider_bilgi else None
-            lider_gps = lider_bilgi[1] if lider_bilgi else None
-            if lider_id is None:
-                print(f"⚠️ [NAV] Grup-{group_id} icin aktif lider bulunamadi.")
-                return
+            # Eğer tıklanan nesne minimap ise
+            if hasattr(app, 'minimap') and mouse.hovered_entity == app.minimap:
+                # Tıklanan yerin koordinatını havuz boyutuna göre çevir
+                local_pos = mouse.point
+                if local_pos is None:
+                    return
+                
+                havuz_tam_cap = 400 
+                sim_x = local_pos.x * havuz_tam_cap
+                sim_y = local_pos.y * havuz_tam_cap
+                mevcut_z = -20
+                
+                rov = filo.find_rov_by_id(bilgi_rov_id)
+                if rov is None:
+                    return
 
-            mevcut_z = -20 #lider_gps[2] if lider_gps else -10.0
-            
-            # Benzersiz ID oluştur ve hedefi kaydet
-            filo.target_counter += 1
-            new_id = filo.target_counter
-            new_target_pos = (sim_x, sim_y, mevcut_z)
-            aktif_rota = bool(filo._git_nokta_listesi.get(lider_id))
-            aktif_hedef = filo.hedef(rov_id=lider_id)
+                # --- 1. MOD KONTROLÜ ---
+                # Eğer seçili ROV otonom/takipçi (mod=1) ise, git_path kesinlikle ÇALIŞMASIN
+                if rov.gnc.mod == 1:
+                    print(f"⚠️ [NAV] Seçili ROV-{bilgi_rov_id} Takipçi Modunda (mod=1). Hedef ataması reddedildi!")
+                    return
 
-            # Görseli oluştur
-            filo._hedef_gorsel_olustur(sim_x, sim_y, mevcut_z, id=new_id, debug=False)
+                # --- 2. HEDEF BELİRLEME (Sadece Seçili ROV için) ---
+                # Liderin meşguliyeti yerine tamamen SEÇİLİ ROV'un meşguliyetini kontrol ediyoruz.
+                aktif_rota = bool(filo._git_nokta_listesi.get(bilgi_rov_id))
+                aktif_hedef = filo.hedef(rov_id=bilgi_rov_id)
+                
+                # Benzersiz ID oluştur ve hedefi kaydet
+                filo.target_counter += 1
+                new_id = filo.target_counter
+                new_target_pos = (sim_x, sim_y, mevcut_z)
 
-            # Grup bosta ise hedefi dogrudan liderde baslat; mesgulse kuyruga ekle.
-            if not aktif_rota and aktif_hedef is None:
-                filo.current_target_id[group_id] = new_id
-                print(f"🚀 [NAV] Grup-{group_id} hedef {new_id} dogrudan baslatiliyor")
-                filo.git_path(lider_id, new_target_pos, isaret=True)
-            else:
-                filo.nav_queue.setdefault(group_id, []).append({'pos': new_target_pos, 'id': new_id})
-                filo.current_target_id.setdefault(group_id, None)
-                bekleyen = len(filo.nav_queue.get(group_id, []))
-                print(f"📥 [KUYRUK] Grup-{group_id} hedef {new_id} eklendi | Bekleyen: {bekleyen}")
+                # Görseli oluştur
+                filo._hedef_gorsel_olustur(sim_x, sim_y, mevcut_z, id=new_id, debug=False)
 
+                # 3. YÖNLENDİRME VE KUYRUK
+                # ROV bazlı kuyruk anahtarı (Filo.guncelle_navigasyon_kuyrugu bunu işler)
+                kuyruk_anahtari = f"rov_{bilgi_rov_id}"
+
+                # Eğer ROV boşta ise doğrudan hedefe başlat:
+                if not aktif_rota and aktif_hedef is None:
+                    print(f"🚀 [NAV] ROV-{bilgi_rov_id} (mod=0) hedef {new_id} doğrudan başlatılıyor.")
+                    # Varışta hedef ikonunun otomatik silinebilmesi için aktif hedef ID'yi kaydet
+                    filo.current_target_id[kuyruk_anahtari] = new_id
+                    filo.git_path(bilgi_rov_id, new_target_pos, isaret=True)
+                else:
+                    # Eskiden burada 'group_id' ile kuyruğa eklendiği için lider otonom olarak görevi üstleniyordu!
+                    # Artık liderle karışmaması için bu ROV'a ait özel bir string anahtarla kuyruğa ekliyoruz.
+                    filo.nav_queue.setdefault(kuyruk_anahtari,[]).append({'pos': new_target_pos, 'id': new_id})
+                    bekleyen = len(filo.nav_queue.get(kuyruk_anahtari, []))
+                    print(f"📥 [KUYRUK] ROV-{bilgi_rov_id} hedef {new_id} kendi kuyruğuna eklendi | Bekleyen: {bekleyen}")
+                    
+                    # NOT: Eğer FıratROVNet'in arka planındaki GNC güncelleme sistemi "rov_X" isimli string 
+                    # kuyrukları işlemiyorsa ve bekleyen hedeflere ROV hiç gitmiyorsa; 
+                    # yukarıdaki if-else bloğunu tamamen kaldırıp her tıklamada sıraya bakmaksızın 
+                    # sadece `filo.git_path(bilgi_rov_id, new_target_pos, isaret=True)` kodunu çalıştırabilirsiniz.
 # ==========================================
 # 4. ÇALIŞTIRMA
 # ==========================================
