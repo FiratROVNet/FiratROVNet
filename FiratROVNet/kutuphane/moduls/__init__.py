@@ -2,6 +2,7 @@ from .modul import ModulYardimcisi
 from .motor_duzeni import MotorDuzeni
 from .PID import PID
 from .barui import BARUI
+from .RL import SAC
 from .rov_deger_onerisi import GorevHedefi, RovDegerOnerici, RovDegerOnerisi, en_iyi_rovlari_sec, rov_deger_havuzu
 from .GorevAlgoritmalari import (
     AlanTaramaGorevi,
