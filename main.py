@@ -201,13 +201,14 @@ def ui_ac():
     env = os.environ.copy()
     # PyQt5'in kendi eklenti dizinini kullan, cv2'yi devre dışı bırak
     try:
-        import PyQt5
-        pyqt5_dir = os.path.dirname(PyQt5.__file__)
-        qt_plugins = os.path.join(pyqt5_dir, "Qt5", "plugins")
+        from PyQt5.QtCore import QLibraryInfo
+        qt_plugins = QLibraryInfo.location(QLibraryInfo.PluginsPath)
         if os.path.isdir(qt_plugins):
             env["QT_QPA_PLATFORM_PLUGIN_PATH"] = qt_plugins
+            env["QT_PLUGIN_PATH"] = qt_plugins
     except Exception:
-        pass
+        env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+        env.pop("QT_PLUGIN_PATH", None)
     env.pop("QT_QPA_PLATFORMTHEME", None)
 
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "UI", "baslat.py")

@@ -7,6 +7,16 @@ from __future__ import annotations
 import sys
 import os
 
+try:
+    from PyQt5.QtCore import QLibraryInfo
+    _QT_PLUGINS = QLibraryInfo.location(QLibraryInfo.PluginsPath)
+    if os.path.isdir(_QT_PLUGINS):
+        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = _QT_PLUGINS
+        os.environ["QT_PLUGIN_PATH"] = _QT_PLUGINS
+except Exception:
+    os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+    os.environ.pop("QT_PLUGIN_PATH", None)
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QTabWidget, QStatusBar, QLabel, QFrame, QPushButton,
