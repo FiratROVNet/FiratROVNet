@@ -102,7 +102,7 @@ class LiderSecimModulu:
                     if skor > max_lider_skor:
                         max_lider_skor = skor
                         en_uygun_id = rov['id']
-                except:
+                except Exception:
                     continue
 
             secilen_rov_id[g_id] = en_uygun_id
@@ -232,6 +232,8 @@ class LeaderManager:
                         rov.color = color.red
                     else:
                         self.filo_ref.set(rov.id, "rol", 0)
+                        from ursina import color
+                        rov.color = color.white
 
                 # 4. Patlayan onceki liderin hedefini devret
                 if onceki_lider_id not in (None, -1) and onceki_lider_id != yeni_lider_id:

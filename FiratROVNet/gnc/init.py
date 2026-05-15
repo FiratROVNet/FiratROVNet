@@ -265,10 +265,6 @@ class FiloInitMixin:
                     continue
                 p = _pnp.getPos()
 
-                # physics_np boşsa (ROV geçiş/silme sırasında) bu frame'i atla
-                if not rov.physics_np or rov.physics_np.isEmpty():
-                    continue
-
                 if not (
                     math.isfinite(p.x) and math.isfinite(p.y) and math.isfinite(p.z) and
                     abs(p.x) < 1e6 and abs(p.y) < 1e6 and abs(p.z) < 1e6

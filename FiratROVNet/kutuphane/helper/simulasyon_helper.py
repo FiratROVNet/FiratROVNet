@@ -173,7 +173,7 @@ def kayalari_olustur(
             color=color.rgb(gri, gri, gri),
             texture='noise',
             scale=(s_x, s_y, s_z),
-            position=(x, sea_floor_y, z),
+            position=(x, y, z),
             rotation=(random.randint(0, 360), random.randint(0, 360), random.randint(0, 360)),
             collider='sphere',
             unlit=True
