@@ -998,7 +998,58 @@ class Filo(FiloInitMixin):
             Entity patlama efektini tetikler.
             animations.py'deki entity_patlat fonksiyonunu çağırır.
             """
+            patlayan_id = getattr(hedef_entity, "id", None)
+            patlayan_grup_id = getattr(hedef_entity, "group_id", None)
+            lider_miydi = int(getattr(hedef_entity, "role", 0) or 0) == 1
             entity_patlat(hedef_entity, parca_sayisi, filo_ref=self)
+            if lider_miydi and patlayan_grup_id is not None:
+                self._lider_patlamasi_sonrasi_yeniden_sec(
+                    int(patlayan_grup_id),
+                    eski_lider_id=patlayan_id,
+                )
+
+    def _lider_patlamasi_sonrasi_yeniden_sec(self, g_id: int, eski_lider_id=None):
+            """Manuel lider modunu bozmadan, sadece patlayan liderin yerine yeni lider seçer."""
+            leader_manager = getattr(self, "leader_manager", None)
+            if leader_manager is None:
+                return None
+
+            grup = [
+                rov for rov in self.g_rovs.get(g_id, [])
+                if rov and not getattr(rov, "is_destroyed", False)
+            ]
+            if not grup:
+                if hasattr(leader_manager, "mevcut_lider_id"):
+                    leader_manager.mevcut_lider_id.pop(g_id, None)
+                return None
+
+            mevcut_lider = next((rov for rov in grup if int(getattr(rov, "role", 0) or 0) == 1), None)
+            if mevcut_lider is not None:
+                if hasattr(leader_manager, "mevcut_lider_id"):
+                    leader_manager.mevcut_lider_id[g_id] = int(mevcut_lider.id)
+                return int(mevcut_lider.id)
+
+            try:
+                from ..lider_sec import liderlik_secimini_baslat
+
+                yeni_liderler, _skor = liderlik_secimini_baslat(self, self.aktif_liderlik_hedefleri())
+                if not isinstance(yeni_liderler, dict) or g_id not in yeni_liderler:
+                    return None
+
+                eski_oto = bool(getattr(leader_manager, "oto_lider_etkin", True))
+                leader_manager.oto_lider_etkin = True
+                try:
+                    leader_manager.guncelle_liderler({g_id: yeni_liderler[g_id]})
+                finally:
+                    leader_manager.oto_lider_etkin = eski_oto
+
+                yeni_lider_id = getattr(leader_manager, "mevcut_lider_id", {}).get(g_id)
+                if yeni_lider_id is not None:
+                    print(f"👑 Lider patladı | Grup: {g_id} | Eski: ROV-{eski_lider_id} | Yeni: ROV-{yeni_lider_id}")
+                return yeni_lider_id
+            except Exception as exc:
+                self._last_lider_yeniden_sec_error = exc  # type: ignore[assignment]
+                return None
 
 
         
