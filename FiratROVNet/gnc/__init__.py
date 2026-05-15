@@ -720,10 +720,14 @@ class Filo(FiloInitMixin):
     
     def kamera_ayarla(self, *args, **kwargs):
         """Kamera yönetimini camera_manager'a yönlendir (kamera_ekle ile aynı API)."""
+        hedef_rov_id = kwargs.get('rov_id', args[0] if args else None)
         kamera_id = self.camera_manager.aktif_kamera_listesi()
         for kamera in kamera_id:
             # YOLO aktif olan kameraları silme
             if kamera in self.camera_manager.aktif_yolo_gorevleri:
+                continue
+            # Hedef ROV zaten YOLO kamerası ise bu döngüde de atlıyoruz
+            if kamera == hedef_rov_id and hedef_rov_id in self.camera_manager.aktif_yolo_gorevleri:
                 continue
             self.camera_manager.kamera_kaldir(kamera)
         return self.camera_manager.kamera_ekle(*args, **kwargs)
