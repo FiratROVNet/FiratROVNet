@@ -10,6 +10,7 @@ Lider Grubu altında:
   • 📋 Görev ata (Alan Tarama / Arama Kurtarma / İmha)
 """
 from __future__ import annotations
+import time as _time
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
@@ -31,7 +32,7 @@ _GAT_RENK  = {0: YESiL, 1: SARI, 2: KIRMIZI, 3: "#ff6600", 4: "#cc00ff", 5: TURU
 _GAT_METIN = {0: "OK", 1: "ENGEL", 2: "ÇARP", 3: "KOPMA", 4: "KAYIP", 5: "UZAK"}
 
 _FORMASYONLAR = [
-    ("V",  "V"),
+    ("V",  "V_SHAPE"),
     ("─",  "LINE"),
     ("△",  "TRIANGLE"),
     ("○",  "CIRCLE"),
@@ -158,6 +159,9 @@ class ROVKarti(QFrame):
         self._lbl_id.setStyleSheet(f"color:{METiN};")
         self._lbl_durum.setText(f"● {_GAT_METIN.get(gat,'?')}  🔋{dolu}{bos} {pct}%  {hiz:.1f}m/s")
         self._lbl_durum.setStyleSheet(f"color:{renk};")
+        g_id = int(v.get("grup_id", v.get("group_id", 0)) or 0)
+        g_txt = f"  ▸G-{g_id}" if g_id > 0 else "  ▸üs"
+        self._lbl_id.setText(f"ROV-{self.rov_id}{g_txt}")
         self._lbl_gps.setText(f"X:{gps[0]:+.0f}  Y:{gps[1]:+.0f}  Z:{gps[2]:+.0f}")
         self._lbl_gps.setStyleSheet(f"color:{METiN_KOYU};")
         self._lbl_gorev.setText(f"📋 {gorev}")
@@ -270,7 +274,7 @@ class BeklemeBolgesi(_DropAlan):
         sep.setStyleSheet(f"border:1px solid {SARI};")
         lay.addWidget(sep)
 
-        hint = QLabel("↓ ROV’ları buraya bırak\nSağ tık → İşlem menüSü")
+        hint = QLabel("↓ ROV’ları buraya bırak\nSağ tık → İşlem menüsü")
         hint.setFont(QFont("Consolas", 7))
         hint.setStyleSheet(f"color:{METiN_KOYU}; border:none;")
         hint.setAlignment(Qt.AlignCenter)
@@ -591,17 +595,20 @@ class LiderGrubu(_DropAlan):
 
     def _formasyon_uygula(self, isim: str):
         g_id = self.g_idx
-        # aktif_formasyon[g_id] group-keyed dict olmalı.
-        # Eski formasyon() API'si flat dict yazıyor ({id:..., aralik:...}) ve
-        # _formasyon_dinamik_guncelle'nin .get(group_id) sorgusu False döndürüyor → takip kırılıyor.
-        # Doğrudan group-keyed girişi set ediyoruz:
+        # Mevcut aralığı koru — yoksa varsayılan 20 kullan
         k = (
             f"_af=getattr(filo,'aktif_formasyon',None);"
-            f"filo.aktif_formasyon=_af if isinstance(_af,dict) else {{}};"
-            f"filo.aktif_formasyon[{g_id}]={{'id':'{isim}','aralik':10,'is_3d':False,'yaw':0,'g_id':{g_id}}}"
+            f"isinstance(_af,dict) or setattr(filo,'aktif_formasyon',{{}});"
+            f"_af=filo.aktif_formasyon;"
+            f"_aralik=(_af.get({g_id}) or {{}}).get('aralik',20);"
+            f"_af[{g_id}]={{'id':'{isim}','aralik':_aralik,'is_3d':False,'yaw':0,'g_id':{g_id}}};"
+            f"filo.change_mode(g_id={g_id}, new_mode=1)"
         )
         komut_gonder(k)
-        self.komut_uretildi.emit(k, f"Grup-{g_id} → Formasyon: {isim}")
+        # UI mod etiketini güncelle (backend ile senkronize et)
+        self._mod = 1
+        self._mod_lbl.setText("⚙ Lider Takip")
+        self.komut_uretildi.emit(k, f"Grup-{g_id} → Formasyon: {isim} | mod=1 (Lider Takip)")
 
     def _alan_oku(self) -> tuple[float, float, float, float] | None:
         """X1,Y1,X2,Y2 alanlarını oku. Eksikse None döner."""
@@ -622,45 +629,117 @@ class LiderGrubu(_DropAlan):
         g_id  = self.g_idx
         alan  = self._alan_oku()
         if alan is None:
-            # Alan girilmemişse: lider konumu etrafına 100x100m varsayılan alan
-            lider_veri = getattr(self._lider_kart, '_lbl_gps', None)
-            # GPS verisi ROVKarti._lbl_gps'den doğrudan okunamaz — SurucuPanel'den alınır
-            # Eksik alan için kullanıcıyı uyar (alan_lbl kırmızı yap)
             for w in (self._ax1, self._ay1, self._ax2, self._ay2):
                 w.setStyleSheet(_INPUT_CSS + "QLineEdit { border-color: #ff1744; }")
             return
-        # Alanlar tamam — border'ı sıfırla
         for w in (self._ax1, self._ay1, self._ax2, self._ay2):
             w.setStyleSheet(_INPUT_CSS)
         x1, y1, x2, y2 = alan
+
+        # ── Görev komutu ──────────────────────────────────────────────────────
         if tp == "alan_tarama":
-            k = (f"filo.alan_tarama_gorevi.baslat("
-                 f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}))")
+            k_baslat = (f"filo.alan_tarama_gorevi.baslat("
+                        f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}), "
+                        f"surekli_tarama=True, sessiz=True)")
         elif tp == "arama_kurtarma":
-            k = (f"filo.arama_kurtarma_gorevi.baslat("
-                 f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}))")
+            k_baslat = (f"filo.arama_kurtarma_gorevi.baslat("
+                        f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}), "
+                        f"min_confidence=0.45, sessiz=True)")
         elif tp == "imha":
-            k = (f"filo.imha_gorevi.alan_imha_baslat("
-                 f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}))")
+            k_baslat = (f"filo.imha_gorevi.alan_imha_baslat("
+                        f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}), sessiz=True)")
         else:
             return
-        komut_gonder(k)
-        self.komut_uretildi.emit(k, f"Grup-{g_id} → Görev: {_GOREVLER[idx][0]}")
+
+        # Tüm komutları TEK bir exec() çağrısında sırasal çalıştır.
+        # Birden fazla ayrı komut_gonder() çağrısı ayrı thread'ler başlatır;
+        # thread zamanlama belirsizliği nedeniyle durdur() baslat()'tan SONRA
+        # çalışarak yeni planı hemen popping'leyip ROV'ları idle'a alabilir.
+        komutlar = [
+            f"filo.alan_tarama_gorevi.durdur(grup_id={g_id})",
+            f"filo.arama_kurtarma_gorevi.durdur(lideri_takip_et=False)",
+            f"filo.imha_gorevi.durdur(lideri_takip_et=False)",
+            f"[filo._rov_hedefleri.pop(r.id, None) for r in (filo.g_rovs.get({g_id}) or []) if r]",
+            k_baslat,
+        ]
+        komut_gonder("\n".join(komutlar))
+        self.komut_uretildi.emit(
+            k_baslat, f"Grup-{g_id} → Görev: {_GOREVLER[idx][0]} | Eski görevler durduruldu"
+        )
+
+    def _gorev_durdur_hepsi(self, sessizce: bool = False):
+        """Bu grup için tüm görev tiplerini durdurur (navigasyon hedefleri korunur)."""
+        g_id = self.g_idx
+        for k in (
+            f"filo.alan_tarama_gorevi.durdur(grup_id={g_id})",
+            "filo.arama_kurtarma_gorevi.durdur(lideri_takip_et=False)",
+            "filo.imha_gorevi.durdur(lideri_takip_et=False)",
+        ):
+            komut_gonder(k)
+        if not sessizce:
+            self.komut_uretildi.emit(
+                f"# Grup-{g_id} tüm görevler durduruldu",
+                f"Grup-{g_id} → Alan tarama / Arama / İmha durduruldu"
+            )
 
     def _gorev_durdur(self):
-        idx   = self._cmb_gorev.currentIndex()
-        _, tp = _GOREVLER[idx]
-        g_id  = self.g_idx
-        if tp == "alan_tarama":
-            k = f"filo.alan_tarama_gorevi.durdur(grup_id={g_id})"
-        elif tp == "arama_kurtarma":
-            k = "filo.arama_kurtarma_gorevi.durdur()"
-        elif tp == "imha":
-            k = "filo.imha_gorevi.durdur()"
-        else:
-            return
-        komut_gonder(k)
-        self.komut_uretildi.emit(k, f"Grup-{g_id} → Görev durduruldu")
+        self._gorev_durdur_hepsi(sessizce=False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+class _HintPaneli(QFrame):
+    """Sağ boş alanda temaya uygun ipucu / dekorasyon paneli."""
+
+    _SATIRLAR = [
+        (VURGU,      "◈  SÜRÜ YÖNETİM PANELİ"),
+        (METiN_KOYU, ""),
+        (METiN_KOYU, "  ROV Grubu Oluşturmak İçin:"),
+        (METiN,      "  1 · Üs bölgesinden ROV kartını"),
+        (METiN,      "      sürükle → grup kutusuna bırak"),
+        (METiN,      "  2 · Lider ROV çift tıkla → yeni grup"),
+        (METiN,      "  3 · Sağ tık → işlem menüsü"),
+        (METiN_KOYU, ""),
+        (METiN_KOYU, "  Formasyon Kısayolları:"),
+        (METiN,      f"  {'  '.join(s for s, _ in _FORMASYONLAR):<24}"),
+        (METiN_KOYU, ""),
+        (METiN_KOYU, "  Görev Başlatmak İçin:"),
+        (METiN,      "  Alan koordinatlarını gir"),
+        (METiN,      "  ▶ Başlat butonuna bas"),
+        (METiN_KOYU, ""),
+        (PANEL_KENAR, "─" * 32),
+        (METiN_KOYU, "  Fırat-GNC  ·  Sürü Kontrol v2"),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"""
+            _HintPaneli {{
+                background: #0c1018;
+                border: 1px solid {PANEL_KENAR};
+                border-radius: 8px;
+            }}
+        """)
+        self.setFixedWidth(220)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 14, 12, 14)
+        lay.setSpacing(3)
+
+        for renk, metin in self._SATIRLAR:
+            lbl = QLabel(metin)
+            lbl.setFont(QFont("Consolas", 8))
+            lbl.setStyleSheet(f"color:{renk}; background:transparent; border:none;")
+            lay.addWidget(lbl)
+
+        lay.addStretch()
+
+        # Alt dekor: küçük durum ikonu
+        alt = QLabel("● SİSTEM AKTİF")
+        alt.setFont(QFont("Consolas", 7))
+        alt.setAlignment(Qt.AlignCenter)
+        alt.setStyleSheet(f"color:{YESiL}; background:transparent; border:none;")
+        lay.addWidget(alt)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -674,9 +753,12 @@ class SurucuPanel(QWidget):
         self._veri:          dict[int, dict]       = {}
         self._base:          set[int]              = set()
         self._liderler:      dict[int, LiderGrubu] = {}
-        self._g_sayac        = 0
+        self._g_sayac        = 1
         self._init_ok        = False
         self._baslangic_gps: dict[int, tuple]      = {}  # rov_id → başlangıç GPS
+        self._son_sim_state: dict[int, tuple[int, int]] = {}  # {rid: (rol, grup_id)}
+        # {rid: monotonic_deadline} — kendi komutlarımızın sim'e yansımasını filtreler
+        self._bekleyen_hareket: dict[int, float]       = {}
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
@@ -710,8 +792,12 @@ class SurucuPanel(QWidget):
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll.setMinimumHeight(520)
+        self._scroll.setStyleSheet(
+            f"QScrollArea {{ background: #0a0d12; border: none; }}"
+        )
 
         self._icerik = QWidget()
+        self._icerik.setStyleSheet("background: #0a0d12;")
         self._h_lay  = QHBoxLayout(self._icerik)
         self._h_lay.setContentsMargins(4, 4, 4, 4)
         self._h_lay.setSpacing(12)
@@ -730,10 +816,105 @@ class SurucuPanel(QWidget):
 
         self._h_lay.addStretch()
 
+        self._hint_paneli = _HintPaneli()
+        self._h_lay.addWidget(self._hint_paneli, 0, Qt.AlignTop | Qt.AlignRight)
+
         self._scroll.setWidget(self._icerik)
+        # viewport arka planını da zorla
+        self._scroll.viewport().setStyleSheet("background: #0a0d12;")
         lay.addWidget(self._scroll, 1)
 
+    def _grup_bul(self, g_idx: int) -> LiderGrubu | None:
+        return next((g for g in self._liderler.values() if g.g_idx == g_idx), None)
+
+    def _rov_konumu_bul(self, rid: int) -> tuple[str, int | None]:
+        if rid in self._base:
+            return "base", None
+        if rid in self._liderler:
+            return "leader", rid
+        for lid, grup in self._liderler.items():
+            if rid in grup.takipci_idleri():
+                return "follower", lid
+        return "unknown", None
+
+    def _sim_statine_gore_yerlestir(self, rovlar: list[dict]):
+        """Simülasyondaki group/role değişimlerini sürükle-bırak UI'ya yansıtır."""
+        for rov in rovlar:
+            rid = int(rov.get("id", -1))
+            if rid < 0:
+                continue
+
+            # Kendi komutumuzun sim onayını bekliyoruz — eski state geçici olabilir
+            if rid in self._bekleyen_hareket:
+                continue
+
+            hedef_gid = int(rov.get("grup_id", rov.get("group_id", 0)) or 0)
+            rol = int(rov.get("rol", 0) or 0)
+            konum, eski_lid = self._rov_konumu_bul(rid)
+            hedef_grup = self._grup_bul(hedef_gid)
+
+            # ── Zaten doğru konumdaysa yeniden yerleştirme ──────────────────
+            if rol == 1 and hedef_gid > 0:
+                lid_grup = self._liderler.get(rid)
+                if lid_grup and lid_grup.g_idx == hedef_gid:
+                    continue  # zaten doğru lider grubunda
+            elif rol != 1 and hedef_gid > 0:
+                if konum == "follower" and eski_lid is not None:
+                    fg = self._liderler.get(eski_lid)
+                    if fg and fg.g_idx == hedef_gid:
+                        continue  # zaten doğru grupta takipçi
+            else:  # rol==0 ve grup_id==0 → üs
+                if konum == "base":
+                    continue  # zaten üste
+            # ───────────────────────────────────────────────────────────────
+
+            # Her durumda önce eski konumdan çıkar
+            if konum == "follower" and eski_lid is not None and eski_lid in self._liderler:
+                self._liderler[eski_lid].takipci_cikar(rid)
+            elif konum == "leader":
+                self._lider_kaldir(rid, emit_komut=False)
+            elif konum == "base":
+                self._base.discard(rid)
+                self._us.rov_cikar(rid)
+
+            # Şimdi yeni rolüne/grubuna yerleştir
+            if rol == 1 and hedef_gid > 0:
+                # Lider (sadece group_id>0 ise — group_id=0 ile lider olmaz)
+                if hedef_grup is None:
+                    self._lider_olustur(rid, emit_komut=False, sim_g_id=hedef_gid)
+                elif hedef_grup.lider_id != rid:
+                    self._lider_degistir(rid, hedef_grup.lider_id, hedef_gid, emit_komut=False)
+            elif rol != 1 and hedef_gid > 0 and hedef_grup is not None:
+                # Takipçi
+                hedef_grup.takipci_ekle(rid, self._veri.get(rid, rov))
+            elif rol != 1 and hedef_gid > 0 and hedef_grup is None:
+                # Grup UI'da henüz yok ama sim'de var — grubu oluştur ve takılı
+                self._lider_olustur(rid, emit_komut=False, sim_g_id=hedef_gid)
+            else:
+                # Üs bölgesi (rol=0 group_id=0 — ya da rol=1 group_id=0 tutarsızlığı)
+                self._base.add(rid)
+                self._us.rov_ekle(rid, self._veri.get(rid, rov))
+
     # ── Public API ────────────────────────────────────────────────────────
+    def senkronize_et(self):
+        """Sim state'ini zorla UI'ya yeniden yansıtır. Tüm kart/grup yapısını sıfırlayıp
+        sim'deki rol/group_id değerlerine göre yeniden inşa eder."""
+        # Mevcut tüm grup ve kartları temizle (emit_komut=False — sima komut gönderme)
+        for lid in list(self._liderler.keys()):
+            self._lider_kaldir(lid, emit_komut=False)
+        self._base.clear()
+        for i in range(self._us._liste_lay.count() - 1, -1, -1):
+            item = self._us._liste_lay.itemAt(i)
+            if item and item.widget():
+                item.widget().deleteLater()
+        # Durumu sıfırla ve mevcut veriyle yeniden başlat
+        self._init_ok = False
+        self._son_sim_state.clear()
+        self._bekleyen_hareket.clear()
+        if self._veri:
+            self._ilk_yerles(list(self._veri.values()))
+            self._init_ok = True
+
     def rov_listesini_guncelle(self, rovlar: list[dict]):
         self._veri = {r["id"]: r for r in rovlar}
         sim_ids = {r["id"] for r in rovlar}
@@ -763,63 +944,91 @@ class SurucuPanel(QWidget):
                 self._base.discard(rid)
                 self._us.rov_cikar(rid)
             elif rid in self._liderler:
-                self._lider_kaldir(rid)
+                self._lider_kaldir(rid, emit_komut=False)
             else:
                 for g in list(self._liderler.values()):
                     if rid in g.takipci_idleri():
                         g.takipci_cikar(rid)
-            self._veri.pop(rid, None)
-            self._baslangic_gps.pop(rid, None)
+                        break
 
-        # Veri güncelle
-        for r in rovlar:
-            rid = r["id"]
-            self._us.veri_guncelle(rid, r)
-            for g in self._liderler.values():
-                g.veri_guncelle(rid, r)
+        # ── Sim-kaynaklı rol/grup değişikliklerini algıla → yeniden yerleştir ──
+        # Süresi dolmuş token'ları önce temizle
+        _now = _time.monotonic()
+        self._bekleyen_hareket = {
+            rid: exp for rid, exp in self._bekleyen_hareket.items() if _now < exp
+        }
+        for rov in rovlar:
+            rid = rov["id"]
+            sim_rol = int(rov.get("rol", 0) or 0)
+            sim_gid = int(rov.get("grup_id", rov.get("group_id", 0)) or 0)
+            yeni = (sim_rol, sim_gid)
+            eski = self._son_sim_state.get(rid)
+            self._son_sim_state[rid] = yeni
+            if eski is None or eski == yeni:
+                continue  # Değişiklik yok — token'a dokunma
+            # Durum değişti — kendi komutumuz mu dış değişiklik mi?
+            if rid in self._bekleyen_hareket:
+                # Kendi komutumuzun sim'e yansıması — token'ı tüket
+                del self._bekleyen_hareket[rid]
+                continue
+            # Sim'den gelen dış değişiklik → UI'yı güncelle
+            self._sim_statine_gore_yerlestir([rov])
 
-        for g in self._liderler.values():
-            g.stat_guncelle_veri(self._veri)
-
+        # Mevcut kartları veriyle güncelle
+        for rov in rovlar:
+            rid = rov["id"]
+            if rid in self._liderler:
+                self._liderler[rid].veri_guncelle(rid, rov)
+            else:
+                for grup in self._liderler.values():
+                    if rid in grup.takipci_idleri():
+                        grup.veri_guncelle(rid, rov)
+                        break
+            if rid in self._base:
+                self._us.veri_guncelle(rid, rov)
+        for grup in self._liderler.values():
+            grup.stat_guncelle_veri(self._veri)
         self._stat_guncelle()
 
     def _ilk_yerles(self, rovlar: list[dict]):
-        # Başlangıç GPS konumlarını kaydet — tüm ROV'lar üsse yerleştirilir
+        """İlk bağlantıda ROV'ları simülasyon state'ine göre yerleştir."""
         for r in rovlar:
+            rid = r["id"]
             gps = r.get("gps", (0, 0, 0))
-            self._baslangic_gps[r["id"]] = tuple(gps)
-            self._base.add(r["id"])
-            self._us.rov_ekle(r["id"], r)
+            self._baslangic_gps[rid] = tuple(gps)
+            # İlk sim state'ini kaydet — reaktif döngünün referansı
+            sim_rol = int(r.get("rol", 0) or 0)
+            sim_gid = int(r.get("grup_id", r.get("group_id", 0)) or 0)
+            self._son_sim_state[rid] = (sim_rol, sim_gid)
+        self._sim_statine_gore_yerlestir(rovlar)
         self._stat_guncelle()
 
-    # ── Drop işleyiciler ──────────────────────────────────────────────────
     def _us_a_birak(self, rid: int):
-        if rid in self._base:
+        """ROV'u üs bölgesine al — UI konumunu günceller ve simülasyona rol sıfırlama gönderir."""
+        konum, eski_lid = self._rov_konumu_bul(rid)
+        if konum == "base":
             return
-        if rid in self._liderler:
+        if konum == "leader":
             self._lider_kaldir(rid)
             return
-        for g in self._liderler.values():
-            if rid in g.takipci_idleri():
-                g.takipci_cikar(rid)
+        if konum == "follower" and eski_lid is not None:
+            grup = self._liderler.get(eski_lid)
+            if grup:
+                grup.takipci_cikar(rid)
         self._base.add(rid)
         self._us.rov_ekle(rid, self._veri.get(rid, {"id": rid}))
-        k = f"[setattr(r,'role',0) for r in filo.rovs if getattr(r,'id',None)=={rid}]"
-        k_gid = (
+        _invalidate = (
+            "_o=getattr(filo,'ortam_ref',None);"
+            "_o and hasattr(_o,'_invalidate_g_rovs_cache') and _o._invalidate_g_rovs_cache()"
+        )
+        k = (
             f"_r=filo.find_rov_by_id({rid});"
-            f"_r and setattr(_r,'group_id',0);"
-            f"_o=getattr(filo,'ortam_ref',None);"
-            f"_o and hasattr(_o,'_invalidate_g_rovs_cache') and _o._invalidate_g_rovs_cache()"
+            f"_r and setattr(_r,'role',0);"
+            f"_r and setattr(_r,'group_id',0);" + _invalidate
         )
         komut_gonder(k)
-        komut_gonder(k_gid)
-        # Stale hedef + gnc.mod sıfırla (üsse geçince takip durmalı)
-        komut_gonder(f"filo._rov_hedefleri.pop({rid},None)")
-        komut_gonder(
-            f"_r=filo.find_rov_by_id({rid});"
-            f"_r and hasattr(_r,'gnc') and setattr(_r.gnc,'mod',0)"
-        )
-        self.komut_uretildi.emit(k, f"ROV-{rid} → Üsse gönderildi")
+        self.komut_uretildi.emit(k, f"ROV-{rid} → Üsse alındı")
+        self._bekleyen_hareket[rid] = _time.monotonic() + 8.0
         self._stat_guncelle()
 
     def _gruba_birak(self, rid: int, lider_id: int):
@@ -842,83 +1051,128 @@ class SurucuPanel(QWidget):
 
         g_id  = grup.g_idx
         # role=0 (takipçi) + gnc.mod=1 (takip modu) ata
-        k_rol  = (
+        k_rol = (
             f"_r=filo.find_rov_by_id({rid});"
             f"_r and setattr(_r,'role',0);"
             f"_r and hasattr(_r,'gnc') and setattr(_r.gnc,'mod',1)"
         )
-        # find_rov_by_id: ID bazlı arama (index değil), tek satır (kuyruk dosyasında bölünmez)
-        # SafeDict kopya döndürdüğü için g_rovs.__setitem__ işe yaramaz;
-        # sadece group_id ata + cache'i sıfırla → g_rovs bir sonraki erişimde doğru rebuild edilir
+        # group_id ata + g_rovs cache sıfırla
         k_grup = (
             f"_r=filo.find_rov_by_id({rid});"
             f"_r and setattr(_r,'group_id',{g_id});"
             f"_o=getattr(filo,'ortam_ref',None);"
             f"_o and hasattr(_o,'_invalidate_g_rovs_cache') and _o._invalidate_g_rovs_cache()"
         )
-        # Stale hedef temizle: eski grubun _rov_hedefleri verisi yeni grupta hatalı takibe yol açar
-        k_hedef_temizle = (
-            f"filo._rov_hedefleri.pop({rid},None)"
+        # Eski navigasyon hedefini temizle
+        k_hedef = f"filo._rov_hedefleri.pop({rid},None)"
+        # Varsayılan LINE formasyon (henüz yoksa)
+        k_form = (
+            f"isinstance(getattr(filo,'aktif_formasyon',None),dict)"
+            f" or setattr(filo,'aktif_formasyon',{{}});"
+            f"filo.aktif_formasyon.setdefault("
+            f"{g_id},{{'id':'LINE','aralik':10,'is_3d':False,'yaw':0,'g_id':{g_id}}})"
         )
-        # Otomatik varsayılan formasyon: grup için henüz formasyon yoksa LINE ile başlat
-        # Böylece takipçi yap = takip başlat (kullanıcı sonradan formasyon butonundan değiştirebilir)
-        k_formasyon = (
-            f"_af=filo.aktif_formasyon;"
-            f"isinstance(_af,dict) or setattr(filo,'aktif_formasyon',{{}});"
-            f"_af=filo.aktif_formasyon;"
-            f"_af.get({g_id}) or _af.__setitem__({g_id},{{'id':'LINE','aralik':10,'is_3d':False,'yaw':0,'g_id':{g_id}}})"
-        )
+        # Grubu Lider-Takip moduna al
+        k_mode = f"filo.change_mode(g_id={g_id}, new_mode=1)"
+
         komut_gonder(k_rol)
         komut_gonder(k_grup)
-        komut_gonder(k_hedef_temizle)
-        komut_gonder(k_formasyon)
-        self.komut_uretildi.emit(k_rol, f"ROV-{rid} → Grup-{g_id} (LINE formasyon)")
+        komut_gonder(k_hedef)
+        komut_gonder(k_form)
+        komut_gonder(k_mode)
+        # Yeni grubun aktif görevini ROV'a devret (plan varsa yeniden başlatır)
+        k_gorev = f"filo.rov_gruba_gorev_aktar({rid}, {g_id})"
+        komut_gonder(k_gorev)
+        # UI mod etiketini güncelle (backend ile senkronize et)
+        grup._mod = 1
+        grup._mod_lbl.setText("⚙ Lider Takip")
+        aciklama = (
+            f"ROV-{rid} → Grup-{g_id} Takipçi | "
+            f"role=0, group_id={g_id} | mod=1 (Lider Takip) | LINE formasyon"
+        )
+        self.komut_uretildi.emit(k_rol, aciklama)
+        self._bekleyen_hareket[rid] = _time.monotonic() + 8.0
         self._stat_guncelle()
 
     # ── Lider yönetimi ────────────────────────────────────────────────────
     def _lider_olustur(self, rid: int, emit_komut: bool = True, sim_g_id: int | None = None):
         if rid in self._liderler:
-            return
-
-        if rid in self._base:
-            self._base.discard(rid)
-            self._us.rov_cikar(rid)
-        else:
-            for g in self._liderler.values():
-                if rid in g.takipci_idleri():
-                    g.takipci_cikar(rid)
+            return  # zaten lider
 
         g_idx = sim_g_id if sim_g_id is not None else self._g_sayac
-        self._g_sayac = max(self._g_sayac, g_idx + 1)
+        if sim_g_id is None:
+            self._g_sayac += 1
 
-        veri  = self._veri.get(rid, {"id": rid})
-        grup  = LiderGrubu(rid, veri, g_idx, self.sinyal)
+        # Mevcut konumdan çıkar
+        konum, eski_lid = self._rov_konumu_bul(rid)
+        if konum == "base":
+            self._base.discard(rid)
+            self._us.rov_cikar(rid)
+        elif konum == "follower" and eski_lid is not None and eski_lid in self._liderler:
+            self._liderler[eski_lid].takipci_cikar(rid)
+
+        # LiderGrubu widget'ını hemen oluştur ve layout'a ekle
+        veri = self._veri.get(rid, {"id": rid})
+        grup = LiderGrubu(rid, veri, g_idx, self.sinyal)
         grup.kaldir_istendi.connect(self._lider_kaldir)
         grup.takipci_us_istendi.connect(self._us_a_birak)
         grup.rov_birakildi.connect(lambda r, lid=rid: self._gruba_birak(r, lid))
         grup.komut_uretildi.connect(self.komut_uretildi)
-
+        grup.menu_istendi.connect(self._menu_goster)
         self._liderler[rid] = grup
         self._h_lay.insertWidget(self._h_lay.count() - 1, grup)
-        grup.menu_istendi.connect(self._menu_goster)
+        if emit_komut:
+            self._bekleyen_hareket[rid] = _time.monotonic() + 8.0
 
         if emit_komut:
-            k = f"[setattr(r,'role',1) for r in filo.rovs if getattr(r,'id',None)=={rid}]"
-            k_gid = (
-                f"_r=filo.find_rov_by_id({rid});"
-                f"_r and setattr(_r,'group_id',{g_idx});"
-                f"_o=getattr(filo,'ortam_ref',None);"
-                f"_o and hasattr(_o,'_invalidate_g_rovs_cache') and _o._invalidate_g_rovs_cache()"
+            _inval = (
+                "_o=getattr(filo,'ortam_ref',None);"
+                "_o and hasattr(_o,'_invalidate_g_rovs_cache') and _o._invalidate_g_rovs_cache()"
             )
-            komut_gonder(k)
-            komut_gonder(k_gid)
-            # Otomatik lider atamasını devre dışı bırak (UI yönetiyor)
-            komut_gonder("if hasattr(filo,'leader_manager'): filo.leader_manager.oto_lider_etkin=False")
-            self.komut_uretildi.emit(k, f"ROV-{rid} → Lider atandı (Grup-{g_idx})")
+            # 1. Rol=1 + grup_id ata (O(1) find_rov_by_id)
+            k_rol = (
+                f"_r=filo.find_rov_by_id({rid});"
+                f"_r and setattr(_r,'role',1);"
+                f"_r and setattr(_r,'group_id',{g_idx});"
+                f"{_inval}"
+            )
+            # 2. Otomatik lider seçimini durdur
+            k_oto = (
+                "hasattr(filo,'leader_manager') and "
+                "setattr(filo.leader_manager,'oto_lider_etkin',False)"
+            )
+            # 3. Eski navigasyon hedeflerini temizle
+            k_temiz = (
+                f"filo._rov_hedefleri.pop({rid},None);"
+                f"filo.nav_queue.pop({g_idx},None)"
+            )
+            # 4. GNC modunu bağımsız moda al (lider artık kimseyi takip etmiyor)
+            k_gnc = (
+                f"_r=filo.find_rov_by_id({rid});"
+                f"_gnc=getattr(_r,'gnc',None) if _r else None;"
+                f"_gnc and setattr(_gnc,'mod',0)"
+            )
+            # 5. Grup için varsayılan LINE formasyon (henüz yoksa)
+            k_form = (
+                f"isinstance(getattr(filo,'aktif_formasyon',None),dict)"
+                f" or setattr(filo,'aktif_formasyon',{{}});"
+                f"filo.aktif_formasyon.setdefault("
+                f"{g_idx},{{'id':'LINE','aralik':10,'is_3d':False,'yaw':0,'g_id':{g_idx}}})"
+            )
+            # 6. Grup modunu bağımsız (0) yap
+            k_mode = f"filo.change_mode(g_id={g_idx}, new_mode=0)"
 
+            for k in (k_rol, k_oto, k_temiz, k_gnc, k_form, k_mode):
+                komut_gonder(k)
+
+            aciklama = (
+                f"ROV-{rid} → LİDER (Grup-{g_idx}) | "
+                f"role=1, group_id={g_idx} | mod=0 (bağımsız) | LINE formasyon | oto_lider=False"
+            )
+            self.komut_uretildi.emit(k_rol, aciklama)
         self._stat_guncelle()
 
-    def _lider_kaldir(self, lid: int):
+    def _lider_kaldir(self, lid: int, emit_komut: bool = True):
         grup = self._liderler.pop(lid, None)
         if grup is None:
             return
@@ -930,18 +1184,20 @@ class SurucuPanel(QWidget):
             grup.takipci_cikar(tid)
             self._base.add(tid)
             self._us.rov_ekle(tid, self._veri.get(tid, {"id": tid}))
-            komut_gonder(f"[setattr(r,'role',0) for r in filo.rovs if getattr(r,'id',None)=={tid}]")
-            komut_gonder(
-                f"_r=filo.find_rov_by_id({tid});_r and setattr(_r,'group_id',0);" + _invalidate_cmd
-            )
+            if emit_komut:
+                komut_gonder(f"[setattr(r,'role',0) for r in filo.rovs if getattr(r,'id',None)=={tid}]")
+                komut_gonder(
+                    f"_r=filo.find_rov_by_id({tid});_r and setattr(_r,'group_id',0);" + _invalidate_cmd
+                )
         self._base.add(lid)
         self._us.rov_ekle(lid, self._veri.get(lid, {"id": lid}))
         g_idx = grup.g_idx
         k = f"[setattr(r,'role',0) for r in filo.rovs if getattr(r,'id',None)=={lid}]"
         k_gid = f"_r=filo.find_rov_by_id({lid});_r and setattr(_r,'group_id',0);" + _invalidate_cmd
-        komut_gonder(k)
-        komut_gonder(k_gid)
-        self.komut_uretildi.emit(k, f"ROV-{lid} liderliği kaldırıldı")
+        if emit_komut:
+            komut_gonder(k)
+            komut_gonder(k_gid)
+            self.komut_uretildi.emit(k, f"ROV-{lid} liderliği kaldırıldı")
         self._h_lay.removeWidget(grup)
         grup.deleteLater()
         self._stat_guncelle()
@@ -990,7 +1246,7 @@ class SurucuPanel(QWidget):
         tak_sub.setStyleSheet(self._MENU_CSS)
         secenekler = []
         for lid, grup in self._liderler.items():
-            if lid == rid or rid in grup.takipci_idleri() or lid == rid:
+            if lid == rid or rid in grup.takipci_idleri():
                 continue
             a = QAction(f"Grup-{grup.g_idx}  (ROV-{lid})", m)
             _l = lid
@@ -1003,6 +1259,26 @@ class SurucuPanel(QWidget):
             tak_sub.addAction(na)
 
         m.addSeparator()
+
+        # ── Grup Modu (ROV bir grupta ise) ──
+        konum, eski_lid = self._rov_konumu_bul(rid)
+        if konum == "leader":
+            grup_widget = self._liderler.get(rid)
+        elif konum == "follower" and eski_lid is not None:
+            grup_widget = self._liderler.get(eski_lid)
+        else:
+            grup_widget = None
+        if grup_widget is not None:
+            mod_sub = m.addMenu("\u2699  Grup Modu")
+            mod_sub.setStyleSheet(self._MENU_CSS)
+            a_bag = QAction("\u25a0  Ba\u011f\u0131ms\u0131z" + ("  \u2714" if grup_widget._mod == 0 else ""), m)
+            _gw = grup_widget
+            a_bag.triggered.connect(lambda: _gw._mod_uygula(0))
+            a_tak = QAction("\u25b6  Lider Takip" + ("  \u2714" if grup_widget._mod == 1 else ""), m)
+            a_tak.triggered.connect(lambda: _gw._mod_uygula(1))
+            mod_sub.addAction(a_bag)
+            mod_sub.addAction(a_tak)
+            m.addSeparator()
 
         # \u2500\u2500 \u00dcsse G\u00f6nder \u2500\u2500
         a_us = QAction("\ud83c\udfe0  \u00dcsse G\u00f6nder (ba\u015flang\u0131\u00e7 noktas\u0131)", m)
@@ -1052,7 +1328,7 @@ class SurucuPanel(QWidget):
         komut_gonder(k)
         self.komut_uretildi.emit(k, "Yeni ROV sim\u00fclasyona ekleniyor...")
 
-    def _lider_degistir(self, yeni_lid: int, eski_lid: int, g_idx: int):
+    def _lider_degistir(self, yeni_lid: int, eski_lid: int, g_idx: int, emit_komut: bool = True):
         """Grup liderini de\u011fi\u015ftir: eski lider tak\u0131p\u00e7i olur."""
         grup = self._liderler.get(eski_lid)
         if grup is None:
@@ -1088,19 +1364,21 @@ class SurucuPanel(QWidget):
         for tid in takipciler:
             new_grup.takipci_ekle(tid, self._veri.get(tid, {"id": tid}))
         # Komutlar
-        komut_gonder(f"[setattr(r,'role',1) for r in filo.rovs if getattr(r,'id',None)=={yeni_lid}]")
-        komut_gonder(f"[setattr(r,'role',0) for r in filo.rovs if getattr(r,'id',None)=={eski_lid}]")
-        self.komut_uretildi.emit(
-            f"ROV-{yeni_lid} \u2192 Grup-{g_idx} Lider",
-            f"Grup-{g_idx}: ROV-{eski_lid} \u2192 tak\u0131p\u00e7i"
-        )
+        if emit_komut:
+            komut_gonder(f"[setattr(r,'role',1) for r in filo.rovs if getattr(r,'id',None)=={yeni_lid}]")
+            komut_gonder(f"[setattr(r,'role',0) for r in filo.rovs if getattr(r,'id',None)=={eski_lid}]")
+            self.komut_uretildi.emit(
+                f"ROV-{yeni_lid} \u2192 Grup-{g_idx} Lider",
+                f"Grup-{g_idx}: ROV-{eski_lid} \u2192 tak\u0131p\u00e7i"
+            )
         self._stat_guncelle()
 
     def _stat_guncelle(self):
         t = len(self._veri)
         l = len(self._liderler)
         u = len(self._base)
-        g = t - u - l
+        # Takipçi sayısı: tüm grupların takipçi toplamı
+        g = sum(len(grup.takipci_idleri()) for grup in self._liderler.values())
         self._stat.setText(
             f"Toplam: {t} ROV  |  Lider: {l}  |  Üste: {u}  |  Takipçi: {g}"
         )

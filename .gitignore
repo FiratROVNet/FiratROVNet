@@ -10,3 +10,4 @@ __pycache__/
 Models-3D/BlueRov2/Bluerov2.glb
 *.rrd
 Videos/
+hull_information.json

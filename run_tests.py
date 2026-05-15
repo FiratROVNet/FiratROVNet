@@ -435,6 +435,34 @@ except Exception as e:
     traceback.print_exc()
 
 # ==========================================
+# TEST 10: UI Panel Testleri
+# ==========================================
+print("\n" + "="*60)
+print("TEST 10: UI Panel Testleri")
+print("="*60)
+
+try:
+    import subprocess as _subprocess
+    _ui_env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    _ui_result = _subprocess.run(
+        [sys.executable, "tests/test_ui_panels.py"],
+        capture_output=True, text=True, timeout=60, env=_ui_env,
+    )
+    for _line in _ui_result.stdout.splitlines():
+        if _line.startswith("  ✅") or _line.startswith("  ❌") or "SONUÇLARI" in _line or "Toplam" in _line:
+            print(_line)
+    if _ui_result.returncode == 0:
+        record_test_pass("UI Panel Testleri")
+    else:
+        _hata = next((_l for _l in _ui_result.stdout.splitlines() if "❌" in _l), "")
+        record_test_fail("UI Panel Testleri", _hata or _ui_result.stderr[:200])
+except _subprocess.TimeoutExpired:
+    record_test_skip("UI Panel Testleri", "Zaman aşımı (60s)")
+except Exception as e:
+    record_test_fail("UI Panel Testleri", e)
+    traceback.print_exc()
+
+# ==========================================
 # TEST SONUÇLARI
 # ==========================================
 print("\n" + "="*60)
@@ -541,6 +569,34 @@ except Exception as e:
     traceback.print_exc()
 
 # ==========================================
+
+# ==========================================
+# ==========================================
+print("\n" + "="*60)
+print("TEST 10: UI Panel Testleri")
+print("="*60)
+
+try:
+    import subprocess as _subprocess
+    _ui_env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    _ui_result = _subprocess.run(
+        [sys.executable, "tests/test_ui_panels.py"],
+        capture_output=True, text=True, timeout=60, env=_ui_env,
+    )
+    for _line in _ui_result.stdout.splitlines():
+        if _line.startswith("  ✅") or _line.startswith("  ❌") or "SONUÇLARI" in _line or "Toplam" in _line:
+            print(_line)
+    if _ui_result.returncode == 0:
+        record_test_pass("UI Panel Testleri")
+    else:
+        _hata = next((_l for _l in _ui_result.stdout.splitlines() if "❌" in _l), "")
+        record_test_fail("UI Panel Testleri", _hata or _ui_result.stderr[:200])
+except _subprocess.TimeoutExpired:
+    record_test_skip("UI Panel Testleri", "Zaman aşımı (60s)")
+except Exception as e:
+    record_test_fail("UI Panel Testleri", e)
+    traceback.print_exc()
+
 # TEST SONUÇLARI
 # ==========================================
 print("\n" + "="*60)

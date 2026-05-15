@@ -19,9 +19,9 @@ from rerun_ayarla import QR, rerun_baslat, rerun_sahne_logla, rerun_kayit_baslat
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
 
-# Simülasyonu oluştur: 10 ROV, 4 Ada, 200m havuz yarıçapı
-# Tek grup → UI panelinden lider/takipçi ataması yapılır
-app.sim_olustur(n_rovs=(0,), n_islands=4, havuz_genisligi=200, rov_model='submarine')
+# Simülasyon başlangıcı: ROV'suz açılır.
+# ROV'lar UI panelinden dinamik olarak eklenip gruplandırılır.
+app.sim_olustur(n_rovs=(), n_islands=4, havuz_genisligi=200, rov_model='submarine')
 
 # Filo sistemini ortamla birlikte oluştur (otomatik bağlantı)
 # GAT modeli ve navigasyon kuyruğu da Filo içinde initialize edilir
@@ -31,15 +31,14 @@ if getattr(app, "rov_label", None) is not None and app.rov_label.background is n
     app.rov_label.background.scale_y = 2.2
 
 shortcut_root = Entity(parent=camera.ui, position=(0.8, 0.28, -9))
+_shortcut_bg_color = color.rgba(25, 35, 50, 180)
+_shortcut_border_color = color.rgba(210, 220, 235, 180)
 shortcut_bg = Entity(
     parent=shortcut_root,
     model="quad",
     scale=(0.18, 0.105),
-    color=color.black,
-    z=0.04,
+    color=_shortcut_bg_color,
 )
-shortcut_bg.alpha = 0.48
-_shortcut_border_color = color.azure
 for _shortcut_border in (
     Entity(parent=shortcut_root, model="quad", position=(0, 0.0525, -0.04), scale=(0.18, 0.002), color=_shortcut_border_color),
     Entity(parent=shortcut_root, model="quad", position=(0, -0.0525, -0.04), scale=(0.18, 0.002), color=_shortcut_border_color),
@@ -119,6 +118,20 @@ import json as _json
 _UI_DURUM_DOSYA  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "UI", "_rov_durumu.json")
 _UI_KUYRUK_DOSYA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "KOMUT_KUYRUĞU.txt")
 _ui_proc = None
+_ui_dirty_until = 0.0
+
+
+def _ui_durumu_kirlet(burst_sure=1.2):
+    """UI durum yazimini kisa sure hizlandirmak icin dirty penceresi acar."""
+    global _ui_dirty_until
+    now = time.monotonic()
+    hedef = now + max(0.2, float(burst_sure))
+    if hedef > _ui_dirty_until:
+        _ui_dirty_until = hedef
+
+
+# ROV setter'lari environment_ref uzerinden bu hook'a erisebilir.
+setattr(app, "mark_ui_state_dirty", _ui_durumu_kirlet)
 
 
 def _ui_durum_yaz():
@@ -175,9 +188,20 @@ def _ui_komut_oku():
         # Dosyayı hemen temizle
         open(_UI_KUYRUK_DOSYA, "w").close()
         local_ns = {"filo": filo, "app": app}
+        yasakli_oruntuler = (
+            "Ortam(",
+            "Ursina(",
+            "sim_olustur(",
+            "from FiratROVNet.simulasyon import",
+            "import FiratROVNet.simulasyon",
+        )
         for komut in satirlar:
             try:
+                if any(oruntu in komut for oruntu in yasakli_oruntuler):
+                    print(f"[UI-Komut] ⛔ engellendi (guvensiz): {komut}")
+                    continue
                 exec(komut, local_ns)  # noqa: S102
+                _ui_durumu_kirlet()
                 print(f"[UI-Komut] ✔ {komut}")
             except Exception as exc:
                 print(f"[UI-Komut] ✗ {komut}  →  {exc}")
@@ -388,7 +412,12 @@ def update():
         Profiler.end("0_rerun_sahne_logla")
     _rerun_step += 1
 
-    if _scheduler.due("ui_durum", 1.0, dt):
+    ui_yazildi = False
+    if _scheduler.due("ui_durum_hizli", 2.0, dt, first=False) and time.monotonic() < _ui_dirty_until:
+        _ui_durum_yaz()
+        ui_yazildi = True
+
+    if (not ui_yazildi) and _scheduler.due("ui_durum", 1.0, dt):
         _ui_durum_yaz()
 
     if _scheduler.due("ui_komut", 2.0, dt):

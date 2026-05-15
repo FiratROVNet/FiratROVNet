@@ -119,7 +119,7 @@ class Filo(FiloInitMixin):
         self.nav_queue: dict = {}               # {g_id: [{'pos': (x,y,z), 'id': n}, ...]}
         self.current_target_id: dict = {}       # {g_id: id}
         self.grup_hedefleri: dict = {}          # {g_id: (x, y, z)} aktif gorev hedefi
-        self.target_counter = 0           # Her tıklamada artan benzersiz ID sayacı
+        self.target_counter = 1           # Grup numaralandırması 1'den başlasın
 
         self.mevcut_rov_sayisi=0
         # O(1) ROV lookup: {rov_id: rov_entity}
@@ -216,7 +216,41 @@ class Filo(FiloInitMixin):
     def imha_durdur(self, lideri_takip_et: bool = True):
         return self.imha_gorevi.durdur(lideri_takip_et=lideri_takip_et)
 
+    def rov_gruba_gorev_aktar(self, rov_id: int, g_id: int) -> bool:
+        """Gruba yeni katılan ROV'un o grubun aktif görevini üstlenmesini sağlar.
 
+        Görevi yeniden başlatmak yerine ROV'u doğrudan mevcut plana dahil eder;
+        böylece grubun group_id yapısı bozulmaz.
+        Döndürür: aktif plan bulunup ROV dahil edildiyse True, yoksa False.
+        """
+        from FiratROVNet.kutuphane.moduls.GorevAlgoritmalari.ortak import rov_gorev_ata
+
+        rov = self.find_rov_by_id(rov_id)
+        if rov is None:
+            return False
+
+        # ── Alan tarama ──────────────────────────────────────────────────
+        plan = self.alan_tarama_gorevi.aktif_planlar.get(g_id)
+        if plan:
+            if rov_id not in plan.rota_by_rov:
+                # Alanın merkezini tek hedef nokta olarak ata
+                center = getattr(plan.alan, "center", (0.0, 0.0))
+                plan.rota_by_rov[rov_id] = [(float(center[0]), float(center[1]))]
+            # mod=0: bağımsız — kendi rotasını takip etmesi için
+            rov_gorev_ata(rov, plan.gorev_adi, mod=0)
+            return True
+
+        # ── Arama & Kurtarma ─────────────────────────────────────────────
+        ak_plan = getattr(self.arama_kurtarma_gorevi, "aktif_plan", None)
+        if ak_plan and getattr(ak_plan, "grup_id", None) == g_id:
+            inner = self.arama_kurtarma_gorevi.alan_tarama.aktif_planlar.get(g_id)
+            if inner and rov_id not in inner.rota_by_rov:
+                center = getattr(inner.alan, "center", (0.0, 0.0))
+                inner.rota_by_rov[rov_id] = [(float(center[0]), float(center[1]))]
+            rov_gorev_ata(rov, "arama_kurtarma", mod=0)
+            return True
+
+        return False
 
 
 
@@ -552,7 +586,19 @@ class Filo(FiloInitMixin):
                 else:
                     return 
 
+            # physics_np boşsa (ROV geçiş/silme sırasında) güvenli çık
+            physics_np = getattr(rov_entity, 'physics_np', None)
+            if physics_np is None or physics_np.isEmpty():
+                return
+
             physics_node.setActive(True)
+
+            # Ursina Entity, Panda3D NodePath'ten kalıtılır; destroy() çağrısından sonra
+            # getHpr() -> !is_empty() hatasını önlemek için entity'nin NodePath geçerliliğini kontrol et
+            try:
+                _rot = rov_entity.rotation  # tek seferlik okuma (iki kez getHpr() çağrısını önler)
+            except (AssertionError, Exception):
+                return
 
             # 2. YEREL KUVVETİ -> DÜNYA KUVVETİNE ÇEVİR (Senin Euler Fonksiyonunla)
             v_yerel_kuvvet = Vec3(-yerel_kuvvet[0], -yerel_kuvvet[1], yerel_kuvvet[2])
@@ -563,13 +609,13 @@ class Filo(FiloInitMixin):
                 
             # Sadece yönü döndür ve büyüklükle çarp (Ursina'nın olası Scale bozulmalarını önler)
             v_yerel_yon = v_yerel_kuvvet.normalized()
-            ursina_dunya_yon = self._euler_deg_to_direction(rov_entity.rotation, v=v_yerel_yon)
+            ursina_dunya_yon = self._euler_deg_to_direction(_rot, v=v_yerel_yon)
             ursina_dunya_kuvvet = ursina_dunya_yon * mag
 
             # 3. YEREL UYGULAMA NOKTASINI (OFFSET) -> DÜNYA OFFSETİNE ÇEVİR
             # Sağ/Sol el tork uyuşmazlığını (Ters dönme sorunu) çözmek için yerel X eksenini eksi (-) alıyoruz
             v_yerel_nokta = Vec3(-yerel_nokta[0], yerel_nokta[1], yerel_nokta[2])
-            ursina_dunya_offset = self._euler_deg_to_direction(rov_entity.rotation, v=v_yerel_nokta)
+            ursina_dunya_offset = self._euler_deg_to_direction(_rot, v=v_yerel_nokta)
 
             # 4. URSINA DÜNYASI -> PANDA3D(BULLET) DÜNYASI ÇEVİRİMİ (KRİTİK!)
             bullet_force = P3Vec(ursina_dunya_kuvvet.x, ursina_dunya_kuvvet.y, ursina_dunya_kuvvet.z)
@@ -629,10 +675,19 @@ class Filo(FiloInitMixin):
 
     @property
     def g_rovs(self):
-        """Tüm ROV gruplarını döner. ortam_ref None ise boş SafeDict döner."""
+        """Tüm ROV gruplarını döner. Grup numaralandırması 1'den başlar."""
         if not self.ortam_ref or not hasattr(self.ortam_ref, 'g_rovs'):
             return SafeDict({})
-        return SafeDict(self.ortam_ref.g_rovs)
+        # 0 numaralı grup varsa, onu 1'e taşı
+        g_rovs = dict(self.ortam_ref.g_rovs)
+        if 0 in g_rovs:
+            # Eğer 1 yoksa, 0'ı 1'e taşı
+            if 1 not in g_rovs:
+                g_rovs[1] = g_rovs.pop(0)
+            else:
+                # 1 zaten varsa, 0'ı sil
+                g_rovs.pop(0)
+        return SafeDict(g_rovs)
 
     def find_rov_by_id(self, rov_id):
         """ID'si verilen ROV'u O(1) ile bulur."""
@@ -811,6 +866,13 @@ class Filo(FiloInitMixin):
             if not getattr(self, "_alan_tarama_guncelle_hatasi_yazildi", False):
                 print(f"⚠️ [ALAN_TARAMA] Güncelleme hatası: {e}")
                 self._alan_tarama_guncelle_hatasi_yazildi = True
+
+        try:
+            self.arama_kurtarma_guncelle()
+        except Exception as e:
+            if not getattr(self, "_arama_kurtarma_guncelle_hatasi_yazildi", False):
+                print(f"⚠️ [ARAMA_KURTARMA] Güncelleme hatası: {e}")
+                self._arama_kurtarma_guncelle_hatasi_yazildi = True
 
     def carpisma_enerjisi_hesapla(self, *args, **kwargs):
         """Hasar hesaplamalarını damage_system'a yönlendir."""
