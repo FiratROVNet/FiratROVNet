@@ -129,7 +129,21 @@ class CameraManager:
             return True
 
     def _yolo_predict_worker(self, model, img_bgr, conf: float = 0.5):
-            results = model.predict(source=img_bgr, conf=float(conf), verbose=False)
+            try:
+                results = model.predict(source=img_bgr, conf=float(conf), verbose=False)
+            except Exception as cuda_err:
+                err_str = str(cuda_err)
+                # CUDA mesgul/unavailable → modeli CPU'ya tasiyip tekrar dene
+                if "CUDA" in err_str or "cuda" in err_str:
+                    try:
+                        model.to("cpu")
+                        print("⚠️ YOLO CUDA hatası, CPU'ya geçildi.")
+                        results = model.predict(source=img_bgr, conf=float(conf), verbose=False, device="cpu")
+                    except Exception as cpu_err:
+                        print(f"⚠️ YOLO CPU fallback hatası: {cpu_err}")
+                        raise
+                else:
+                    raise
             tespitler = []
             names = getattr(model, "names", {}) or {}
             boxes = getattr(results[0], "boxes", None)
@@ -174,8 +188,14 @@ class CameraManager:
                     annotated_rgb, tespitler = future.result()
                     self.yolo_son_tespitler[rov_id] = tespitler
                     self._yolo_texture_guncelle(rov_id, annotated_rgb)
+                    # Basarili tahmin: hata sayacini sifirla
+                    task._hata_sayaci = 0
                 except Exception as exc:
-                    print(f"⚠️ YOLO worker hatası: {exc}")
+                    hata_sayaci = getattr(task, '_hata_sayaci', 0) + 1
+                    task._hata_sayaci = hata_sayaci
+                    # Her 30 hatada bir logla (log spam'i onle)
+                    if hata_sayaci == 1 or hata_sayaci % 30 == 0:
+                        print(f"⚠️ YOLO worker hatası (#{hata_sayaci}): {exc}")
                 self._yolo_futures.pop(rov_id, None)
 
             if rov_id in self._yolo_futures:
