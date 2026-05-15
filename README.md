@@ -164,7 +164,10 @@ Detaylı formüller, motor tablosu ve şemalar: **[Motor ve İtki Sistemi](./doc
 FiratRovNet-org/
 │
 ├── main.py                     # Ana çalıştırıcı (simülasyonu başlatır)
-├── rov_modeli_multi.pth        # Eğitilmiş GAT modeli (opsiyonel)
+├── Models-AI/                  # Eğitilmiş AI model ağırlıkları
+│   ├── GAT/
+│   ├── YOLO/
+│   └── SAC/
 ├── docs/                       # Teknik dokümantasyon (GNC, Motor, APF, BlueROV2)
 ├── KILAVUZ/                    # Kullanım kılavuzları (Konsol, Senaryo)
 │
@@ -202,7 +205,7 @@ pip install torch torch_geometric ursina numpy networkx scipy
 
 - **Komut:** `python -m GAT.gat_train [--epochs 200] [--no-resume]`
 - Veri kaynağı: senaryo tabanlı `filo.gat_veri_uret()`
-- Eğitim sonunda `rov_modeli_multi.pth` oluşturulur.
+- Eğitim sonunda model `Models-AI/GAT/rov_modeli_multi.pth` konumuna kaydedilir.
 
 ---
 

@@ -16,7 +16,9 @@ import numpy as np
 from GAT.gat_train import GAT_Modeli
 from FiratROVNet.gnc import Filo
 
-MODEL_DOSYA_ADI = "rov_modeli_multi.pth"
+from FiratROVNet.model_paths import GAT_MODEL, path_str
+
+MODEL_DOSYA_ADI = path_str(GAT_MODEL)
 
 
 class FiratAnalizci:

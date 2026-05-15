@@ -277,10 +277,11 @@ senaryo.temizle()
 Yapay zeka tabanlı durum analizi:
 
 ```python
-from FiratROVNet.gat import FiratAnalizci
+from FiratROVNet.model_paths import GAT_MODEL, path_str
+from GAT.gat_test import FiratAnalizci
 
 # Model yükle
-beyin = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
+beyin = FiratAnalizci(model_yolu=path_str(GAT_MODEL))
 
 # Veri analiz et
 veri = app.get_gat_data()
@@ -342,9 +343,10 @@ filo.hedef(50, 60)
 ### Senaryo 3: AI ile Kontrol
 
 ```python
-from FiratROVNet.gat import FiratAnalizci
+from FiratROVNet.model_paths import GAT_MODEL, path_str
+from GAT.gat_test import FiratAnalizci
 
-beyin = FiratAnalizci(model_yolu="rov_modeli_multi.pth")
+beyin = FiratAnalizci(model_yolu=path_str(GAT_MODEL))
 
 def update():
     veri = app.get_gat_data()
@@ -431,4 +433,3 @@ filo.formasyon("V_SHAPE", aralik=20)
 - `guncelle_hepsi()` ana döngüde (update) her frame çağrılmalıdır.
 - Koordinatlar: yatay `x`, `z`; derinlik `y` (negatif = su altı).
 - Kamera: **R** tuşu veya `filo.kamera_ayarla(rov_id=...)`; minimap tıklama ile hedef kuyruğa eklenir.
-

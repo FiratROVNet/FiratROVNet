@@ -91,7 +91,7 @@ model, best_loss = train(
 
 Eğitim sırasında en iyi model otomatik olarak kaydedilir:
 - **Dosya adı**: `rov_modeli_multi.pth`
-- **Konum**: Proje kök dizini
+- **Konum**: `Models-AI/GAT/`
 - **Kayıt koşulu**: Ortalama loss en iyi değerden düşükse ve epoch > 100
 
 ### 6. Çıktı Formatı
