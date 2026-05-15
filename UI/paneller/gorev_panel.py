@@ -16,7 +16,7 @@ from UI.tema import (
     VURGU, METiN, METiN_KOYU, YESiL, KIRMIZI, SARI, TURUNCU,
     PANEL, PANEL_KENAR, GOREV_RENK,
 )
-from UI.kopru import komut_gonder
+from UI.kopru import komut_gonder, seviye_tespit
 
 
 # ── Yardımcı ─────────────────────────────────────────────────────────────────
@@ -144,7 +144,7 @@ class AlanTaramaSekmesi(QWidget):
             f"Alan Tarama → Grup-{g_id} | Alan:({x1},{y1})–({x2},{y2}) "
             f"| D:{derinlik}m | Şerit:{serit}m"
         )
-        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, "ok"))
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
         self.komut_uretildi.emit(komut, aciklama)
 
     def _durdur(self):
@@ -242,7 +242,7 @@ class AramaKurtarmaSekmesi(QWidget):
             f"Arama Kurtarma → Grup-{g_id} | Hedef: {siniflar_raw or 'hepsi'} "
             f"| Model: {model} | Güven: {guven:.2f}"
         )
-        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, "ok"))
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
         self.komut_uretildi.emit(komut, aciklama)
 
     def _durdur(self):
@@ -682,7 +682,7 @@ class HareketSekmesi(QWidget):
         ai = self.chk_ai.isChecked()
         komut    = f"filo.git(rov_id={rid}, x={x}, y={y}, z={z}, ai={ai})"
         aciklama = f"ROV-{rid} → ({x}, {y}, {z})"
-        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, "ok"))
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
         self.komut_uretildi.emit(komut, aciklama)
 
     def _dur(self):
@@ -699,7 +699,7 @@ class HareketSekmesi(QWidget):
             f"for r in (filo.g_rovs.get({g_id}) or []) if r]"
         )
         aciklama = f"Grup-{g_id} → ({x}, {y}, {z})"
-        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, "ok"))
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
         self.komut_uretildi.emit(komut, aciklama)
 
     def _grup_dur(self):

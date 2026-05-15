@@ -12,7 +12,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 
 from UI.tema import VURGU, METiN, METiN_KOYU, YESiL, KIRMIZI, SARI, PANEL_KENAR
-from UI.kopru import komut_gonder
+from UI.kopru import komut_gonder, seviye_tespit
 
 
 class GrupPanel(QWidget):
@@ -99,14 +99,14 @@ class GrupPanel(QWidget):
         aciklama = (
             f"Grup-{g_id} → {'Lider takip modu' if mod == 1 else 'Bağımsız mod'}"
         )
-        komut_gonder(komut, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, "ok"))
+        komut_gonder(komut, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
         self.komut_uretildi.emit(komut, aciklama)
 
     def _oto_formasyon(self):
         g_id  = self.spin_grup_id.value()
         komut = f"filo.formasyon_sec(g_id={g_id})"
         aciklama = f"Grup-{g_id} → Otomatik formasyon seçildi"
-        komut_gonder(komut, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, "ok"))
+        komut_gonder(komut, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
         self.komut_uretildi.emit(komut, aciklama)
 
     def secili_grup_id(self) -> int:

@@ -861,18 +861,24 @@ class Filo(FiloInitMixin):
 
         try:
             self.alan_tarama_guncelle()
+            # Başarılı çalıştıysa sayaç sıfırla — bir sonraki hata raporlanabilsin
+            self._alan_tarama_guncelle_hatasi_sayaci = 0
         except Exception as e:
             self._last_error = e  # type: ignore[assignment]
-            if not getattr(self, "_alan_tarama_guncelle_hatasi_yazildi", False):
+            sayac = getattr(self, "_alan_tarama_guncelle_hatasi_sayaci", 0)
+            # Her 300 başarısız frame'de bir tekrar göster (≈5 sn @ 60 FPS)
+            if sayac == 0:
                 print(f"⚠️ [ALAN_TARAMA] Güncelleme hatası: {e}")
-                self._alan_tarama_guncelle_hatasi_yazildi = True
+            self._alan_tarama_guncelle_hatasi_sayaci = (sayac + 1) % 300
 
         try:
             self.arama_kurtarma_guncelle()
+            self._arama_kurtarma_guncelle_hatasi_sayaci = 0
         except Exception as e:
-            if not getattr(self, "_arama_kurtarma_guncelle_hatasi_yazildi", False):
+            sayac = getattr(self, "_arama_kurtarma_guncelle_hatasi_sayaci", 0)
+            if sayac == 0:
                 print(f"⚠️ [ARAMA_KURTARMA] Güncelleme hatası: {e}")
-                self._arama_kurtarma_guncelle_hatasi_yazildi = True
+            self._arama_kurtarma_guncelle_hatasi_sayaci = (sayac + 1) % 300
 
     def carpisma_enerjisi_hesapla(self, *args, **kwargs):
         """Hasar hesaplamalarını damage_system'a yönlendir."""

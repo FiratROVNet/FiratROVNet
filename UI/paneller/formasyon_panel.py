@@ -15,7 +15,7 @@ from UI.tema import (
     VURGU, METiN, METiN_KOYU, YESiL, KIRMIZI, SARI,
     PANEL, PANEL_KENAR, ARKA_PLAN, BUTON_NORMAL,
 )
-from UI.kopru import komut_gonder
+from UI.kopru import komut_gonder, seviye_tespit
 
 
 # (isim, ikon, açıklama)
@@ -178,5 +178,5 @@ class FormasyonPanel(QWidget):
             komutlar.append((k_mod, "Lider takibi aktif edildi"))
 
         for k, a in komutlar:
-            komut_gonder(k, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, "ok"))
+            komut_gonder(k, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
             self.komut_uretildi.emit(k, a)

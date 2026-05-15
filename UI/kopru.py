@@ -98,6 +98,18 @@ def komut_gonder(komut: str, callback=None):
     threading.Thread(target=_run, daemon=True).start()
 
 
+def seviye_tespit(sonuc: str) -> str:
+    """Komut sonucundan UI durum seviyesini otomatik tespit eder.
+
+    Dönen değer: 'ok', 'warn', 'err'  — durum_guncellendi sinyalinin ikinci argümanı.
+    """
+    if sonuc.startswith("✗"):
+        return "err"
+    if sonuc.startswith("⚠") or sonuc.startswith("📋"):
+        return "warn"
+    return "ok"
+
+
 # ── Simülasyon Durum Sorgu ────────────────────────────────────────────────────
 
 def rov_listesi() -> list[dict]:

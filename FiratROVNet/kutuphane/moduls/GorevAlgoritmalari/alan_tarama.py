@@ -46,9 +46,15 @@ class AlanTaramaGorevi:
     ayni formasyon birden fazla bantta gezdirilir.
     """
 
+    # Sonsuz yaklasma bekleme problemi icin zaman asimi (saniye)
+    _YAKLASMA_TIMEOUT_SN: float = 120.0
+    # A* cagrisinin verimli kalmasi icin maksimum waypoint sayisi
+    _A_STAR_MAKS_WAYPOINT: int = 30
+
     def __init__(self, filo_ref):
         self.filo = filo_ref
         self.aktif_planlar: dict[int, AlanTaramaPlani] = {}
+        self._yaklasma_sure: dict[int, float] = {}  # {grup_id: baslangic_zaman}
 
     def plan_olustur(
         self,
@@ -154,12 +160,20 @@ class AlanTaramaGorevi:
         )
         plan.herkese_rota = herkese_rota
         plan.surekli_tarama = surekli_tarama
+        # Aynı grup için aktif plan varsa temiz kapat — ROVlar orphan kalmasın
+        if grup_id in self.aktif_planlar:
+            try:
+                self.durdur(grup_id, lideri_takip_et=False)
+            except Exception:
+                pass
         self.aktif_planlar[grup_id] = plan
+        self._yaklasma_sure[grup_id] = 0.0  # zaman sayacını sıfırla
         self._yaklasma_baslat(plan, sessiz=sessiz)
         return plan
 
     def durdur(self, grup_id: int, lideri_takip_et: bool = True) -> None:
         plan = self.aktif_planlar.pop(grup_id, None)
+        self._yaklasma_sure.pop(grup_id, None)  # zaman sayacını temizle
         if not plan:
             return
         try:
@@ -179,7 +193,20 @@ class AlanTaramaGorevi:
             tamamlandi = True
             if plan.asama == "yaklasma":
                 self._plan_liderini_sabitle(plan)
-                if self._yaklasma_tamamlandi_mi(plan):
+                # Yaklasma zaman sayacını güncelle
+                try:
+                    from ursina import time as _u_time
+                    self._yaklasma_sure[p_grup_id] = (
+                        self._yaklasma_sure.get(p_grup_id, 0.0) + (_u_time.dt or 0.016)
+                    )
+                except Exception:
+                    pass
+                # Zaman aşımı: ROV hedefe ulaşamadıysa taramayı zorla başlat
+                asimi = self._yaklasma_sure.get(p_grup_id, 0.0) >= self._YAKLASMA_TIMEOUT_SN
+                if self._yaklasma_tamamlandi_mi(plan) or asimi:
+                    if asimi and not self._yaklasma_tamamlandi_mi(plan):
+                        print(f"⚠️ [ALAN_TARAMA] Grup-{p_grup_id} yaklasma zaman asimi ({self._YAKLASMA_TIMEOUT_SN:.0f}s) — tarama zorla baslatiliyor.")
+                    self._yaklasma_sure.pop(p_grup_id, None)
                     self._tarama_baslat(plan, lideri_bagimsiz_yap=True, sessiz=False)
                 continue
             # herkese_rota=True ise dışarıdan (AramaKurtarmaGorevi) yönetilir — burada bitirme
@@ -401,8 +428,8 @@ class AlanTaramaGorevi:
                 if not sessiz:
                     print(f"✅ [ALAN_TARAMA] Genişletilmiş rota: {len(genisletilmis)} waypoint")
 
-                # Görev tamamlanınca başlangıç noktasına dön
-                if plan.baslangic_konum is not None:
+                # Görev tamamlanınca başlangıç noktasına dön (surekli_tarama=True ise atla)
+                if plan.baslangic_konum is not None and not plan.surekli_tarama:
                     son_nokta = genisletilmis[-1] if genisletilmis else baslangic_2d
                     ev_rota = self._a_star_rota_genislet(
                         son_nokta, [plan.baslangic_konum], plan.derinlik
@@ -461,9 +488,13 @@ class AlanTaramaGorevi:
         Ham lawnmower rota waypoint'leri arasını A* ile engel-kaçınmalı
         alt-patikalarla doldurur. Dönen liste düzleştirilmiş (x, y) waypoint listesi.
         A* yoksa veya başarısız olursa orijinal rotayı düz döner.
+        Performans: rota waypoint sayısı _A_STAR_MAKS_WAYPOINT üzerindeyse A* atlanır.
         """
         helper = getattr(self.filo, "helper", None)
         if helper is None or not hasattr(helper, "_a_star_path_planla"):
+            return list(rota)
+        # Çok uzun rotalarda A* çağrısı frame drop yapar — doğrudan döndür
+        if len(rota) > self._A_STAR_MAKS_WAYPOINT:
             return list(rota)
 
         genisletilmis: list[tuple[float, float]] = []
