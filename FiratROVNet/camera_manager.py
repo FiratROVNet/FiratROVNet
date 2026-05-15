@@ -37,11 +37,8 @@ class CameraManager:
     def kamera_ekle(self, rov_id=0, mesafe=(0, -40, 120), aci=(0, 0, 0), fov=75, bolge=(0.02, 0.20, 0.80, 0.98)):
         if not hasattr(builtins, 'base'):
             return None
-        b = builtins.base
+        b = builtins.base  
         if rov_id in self.aktif_kameralar:
-            # YOLO aktif kamerayı yeniden oluşturma — mevcut kamerayı koru
-            if rov_id in self.aktif_yolo_gorevleri:
-                return self.aktif_kameralar[rov_id]
             self.kamera_kaldir(rov_id)
 
         cam_np = b.makeCamera(b.win)
