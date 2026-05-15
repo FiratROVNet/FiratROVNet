@@ -4,20 +4,40 @@ ROV kamera sistemlerinin yönetimi, ayarları ve YOLO Entegrasyonu (Ursina UI De
 """
 
 import builtins
-import cv2
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from direct.task import Task
-from PIL import Image
-from ursina import Entity, camera, Texture, destroy, color, time  # Ursina UI için eklendi
+from ursina import destroy, time
 from FiratROVNet.config import PerformansAyarlari
+
+try:
+    from FiratROVNet.model_paths import YOLOV8N_MODEL, path_str
+except Exception:
+    YOLOV8N_MODEL = "yolov8n.pt"
+
+    def path_str(path):
+        return str(path)
+
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except Exception as exc:
+    cv2 = None
+    CV2_AVAILABLE = False
+    print(f"⚠️ UYARI: OpenCV yüklenemedi. YOLO kamera analizi devre dışı: {exc}")
 
 try:
     from ultralytics import YOLO
     YOLO_AVAILABLE = True
-except ImportError:
+except Exception as exc:
     YOLO_AVAILABLE = False
-    print("⚠️ UYARI: 'ultralytics' kütüphanesi bulunamadı. YOLO özellikleri devre dışı.")
+    print(f"⚠️ UYARI: 'ultralytics' yüklenemedi. YOLO özellikleri devre dışı: {exc}")
+
+try:
+    from FiratROVNet.kutuphane.moduls.Panels import YOLOVisionPanel
+except Exception as exc:
+    YOLOVisionPanel = None
+    print(f"⚠️ UYARI: YOLO paneli yüklenemedi: {exc}")
 
 
 class CameraManager:
@@ -27,7 +47,8 @@ class CameraManager:
         
         self.yolo_modelleri = {}   
         self.aktif_yolo_gorevleri = {} 
-        self.yolo_ui_ekranlari = {} # Yeni: Oyun içi YOLO HUD ekranları
+        self.yolo_panelleri = {}
+        self.yolo_ui_ekranlari = self.yolo_panelleri
         self._yolo_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rov-yolo")
         self._yolo_futures = {}
         self.yolo_son_tespitler = {}
@@ -69,47 +90,23 @@ class CameraManager:
     # YOLO ENTEGRASYON BÖLÜMÜ (UI DESTEKLİ)
     # ==========================================
 
-    def yolo_baslat(self, rov_id, model_path='yolov8n.pt', islem_hizi=3, conf: float = 0.5):
-            if not YOLO_AVAILABLE: return False
-            if rov_id not in self.aktif_kameralar: return False
+    def yolo_baslat(self, rov_id, model_path=None, islem_hizi=3, conf: float = 0.5):
+            if not YOLO_AVAILABLE or not CV2_AVAILABLE or YOLOVisionPanel is None:
+                print("⚠️ YOLO başlatılamadı: ultralytics/OpenCV/YOLO paneli hazır değil.")
+                return False
+            if rov_id not in self.aktif_kameralar and self.kamera_ekle(rov_id=rov_id) is None:
+                print(f"⚠️ YOLO başlatılamadı: ROV-{rov_id} için kamera açılamadı.")
+                return False
             if rov_id in self.aktif_yolo_gorevleri: return True
             self.yolo_conf[rov_id] = float(conf)
+            model_path = path_str(YOLOV8N_MODEL) if model_path is None else model_path
 
             if model_path not in self.yolo_modelleri:
                 print(f"🧠 YOLO Modeli yükleniyor: {model_path}...")
                 self.yolo_modelleri[model_path] = YOLO(model_path)
                 
-            if rov_id not in self.yolo_ui_ekranlari:
-                # 1. ANA EKRAN (Sola kaydırıldı ve daha şeffaf)
-                self.yolo_ui_ekranlari[rov_id] = Entity(
-                    parent=camera.ui,
-                    model='quad',
-                    scale=(0.3, 0.2),      
-                    position=(0.5, 0.39),   # <-- FPS panelinden kurtarmak için Sola ve biraz aşağıya kaydırıldı
-                    z=0,                    
-                    color=color.rgba(255, 255, 255, 130), # <-- Daha şeffaf (Cam etkisi artırıldı)
-                    unlit=True
-                )
-                
-                # 2. ŞIK BİR ÇERÇEVE (Kalınlık azaltıldı, zarif neon çizgi)
-                self.yolo_ui_ekranlari[rov_id].cerceve = Entity(
-                    parent=self.yolo_ui_ekranlari[rov_id],
-                    model='quad',
-                    scale=(1.02, 1.03), # <-- Daha ince çerçeve
-                    color=color.rgba(0, 255, 255, 150), # Saydam siber-mavi
-                    z=0.01 
-                )
-                
-                # 3. KÜÇÜK BİR BAŞLIK (Yazı çerçeveye hizalandı)
-                from ursina import Text
-                self.yolo_ui_ekranlari[rov_id].baslik = Text(
-                    parent=self.yolo_ui_ekranlari[rov_id],
-                    text=f"ROV-{rov_id} AI VISION",
-                    origin=(0, 0),
-                    position=(0, 0.55), # <-- Çerçevenin tam üst hizasına milimetrik oturtuldu
-                    scale=2.2,          # <-- Yazı boyutu dengelendi
-                    color=color.rgba(0, 255, 255, 220)
-                )
+            if rov_id not in self.yolo_panelleri:
+                self.yolo_panelleri[rov_id] = YOLOVisionPanel(rov_id)
                 
             b = builtins.base
             cam_node = self.aktif_kameralar[rov_id].node()
@@ -151,20 +148,10 @@ class CameraManager:
             return cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB), tespitler
 
     def _yolo_texture_guncelle(self, rov_id, annotated_rgb):
-            height, width, _ = annotated_rgb.shape
-            ui_entity = self.yolo_ui_ekranlari.get(rov_id)
-            if not ui_entity:
+            panel = self.yolo_panelleri.get(rov_id)
+            if not panel:
                 return
-
-            if not hasattr(ui_entity, '_p3d_tex') or ui_entity._p3d_tex.getXSize() != width:
-                from panda3d.core import Texture as P3DTexture
-                pt = P3DTexture("yolo_tex")
-                pt.setup2dTexture(width, height, P3DTexture.T_unsigned_byte, P3DTexture.F_rgb)
-                ui_entity._p3d_tex = pt
-                ui_entity.model.setTexture(pt, 1)
-
-            annotated_rgb_flipped = cv2.flip(annotated_rgb, 0)
-            ui_entity._p3d_tex.setRamImage(annotated_rgb_flipped.tobytes())
+            panel.set_rgb_frame(annotated_rgb)
 
     def _yolo_guncelle_task(self, rov_id, region, model, islem_hizi, conf, task):
             task.frame_counter += 1
@@ -216,9 +203,9 @@ class CameraManager:
             self.yolo_conf.pop(rov_id, None)
             
             # Ursina UI Panelini de sahneden sil
-            if rov_id in self.yolo_ui_ekranlari:
-                destroy(self.yolo_ui_ekranlari[rov_id])
-                del self.yolo_ui_ekranlari[rov_id]
+            if rov_id in self.yolo_panelleri:
+                destroy(self.yolo_panelleri[rov_id].root)
+                del self.yolo_panelleri[rov_id]
                 
             print(f"🛑 ROV-{rov_id} için YOLO durduruldu.")
             return True

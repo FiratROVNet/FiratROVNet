@@ -31,14 +31,15 @@ if getattr(app, "rov_label", None) is not None and app.rov_label.background is n
     app.rov_label.background.scale_y = 2.2
 
 shortcut_root = Entity(parent=camera.ui, position=(0.8, 0.28, -9))
-_shortcut_bg_color = color.rgba(25, 35, 50, 180)
-_shortcut_border_color = color.rgba(210, 220, 235, 180)
 shortcut_bg = Entity(
     parent=shortcut_root,
     model="quad",
     scale=(0.18, 0.105),
-    color=_shortcut_bg_color,
+    color=color.black,
+    z=0.04,
 )
+shortcut_bg.alpha = 0.48
+_shortcut_border_color = color.azure
 for _shortcut_border in (
     Entity(parent=shortcut_root, model="quad", position=(0, 0.0525, -0.04), scale=(0.18, 0.002), color=_shortcut_border_color),
     Entity(parent=shortcut_root, model="quad", position=(0, -0.0525, -0.04), scale=(0.18, 0.002), color=_shortcut_border_color),
@@ -514,6 +515,9 @@ def input(key):
     if key in ('g', 'G'):
         grup_idleri = _aktif_grup_idleri()
         if grup_idleri:
+            if not (0 <= bilgi_rov_id < len(filo.rovs)) or filo.rovs[bilgi_rov_id] is None:
+                print("⚠️ Henüz izlenecek ROV yok.")
+                return
             mevcut_grup = getattr(filo.rovs[bilgi_rov_id], "group_id", None)
             if mevcut_grup in grup_idleri:
                 _aktif_grup_index = (grup_idleri.index(mevcut_grup) + 1) % len(grup_idleri)
@@ -527,6 +531,9 @@ def input(key):
                 print(f"🔄 Aktif Grup: {hedef_grup} | İzlenen ROV: {bilgi_rov_id}")
 
     if key == 'p':
+        if not (0 <= bilgi_rov_id < len(filo.rovs)) or filo.rovs[bilgi_rov_id] is None:
+            print("⚠️ Henüz patlatılacak lider yok.")
+            return
         lider_bilgi = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)
         lider_id = lider_bilgi[0] if lider_bilgi else None
         lider_rov = filo.find_rov_by_id(lider_id) if lider_id is not None else None
@@ -551,6 +558,9 @@ def input(key):
     if key == 'left mouse down':
         # Eğer tıklanan nesne minimap ise
         if hasattr(app, 'minimap') and mouse.hovered_entity == app.minimap:
+            if not (0 <= bilgi_rov_id < len(filo.rovs)) or filo.rovs[bilgi_rov_id] is None:
+                print("⚠️ Hedef atamak için önce UI'dan bir ROV ekleyin.")
+                return
             # Tıklanan yerin koordinatını havuz boyutuna göre çevir
             local_pos = mouse.point
             if local_pos is None:

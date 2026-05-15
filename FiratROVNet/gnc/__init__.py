@@ -726,7 +726,14 @@ class Filo(FiloInitMixin):
             if kamera in self.camera_manager.aktif_yolo_gorevleri:
                 continue
             self.camera_manager.kamera_kaldir(kamera)
-        return self.camera_manager.kamera_ekle(*args, **kwargs)
+        kamera = self.camera_manager.kamera_ekle(*args, **kwargs)
+        if kamera is not None:
+            rov_id = kwargs.get("rov_id", args[0] if args else 0)
+            try:
+                self.camera_manager.yolo_baslat(rov_id)
+            except Exception as exc:
+                self._last_yolo_auto_error = exc  # type: ignore[assignment]
+        return kamera
     
     def kamera_kaldir(self, rov_id):
         """Kamera kaldırma işlemini camera_manager'a yönlendir."""
