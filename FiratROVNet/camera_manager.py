@@ -73,6 +73,10 @@ class CameraManager:
             if not YOLO_AVAILABLE: return False
             if rov_id not in self.aktif_kameralar: return False
             if rov_id in self.aktif_yolo_gorevleri: return True
+            maks = int(getattr(PerformansAyarlari, 'MAX_YOLO_AKTIF', 2))
+            if len(self.aktif_yolo_gorevleri) >= maks:
+                print(f"⚠️ YOLO: Eş zamanlı limit ({maks}) doldu. ROV-{rov_id} için başlatılmadı.")
+                return False
             self.yolo_conf[rov_id] = float(conf)
 
             if model_path not in self.yolo_modelleri:

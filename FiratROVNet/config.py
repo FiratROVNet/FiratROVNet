@@ -131,6 +131,8 @@ class PerformansAyarlari:
     LIDER_HZ = 5.0
     OCEAN_HZ = 20.0
     YOLO_CAPTURE_HZ = 5.0
+    # Aynı anda en fazla kaç ROV'un YOLO çalıştırabileceği (GPU bellek koruması)
+    MAX_YOLO_AKTIF = 2
 
     PHYSICS_MAX_SUBSTEPS = 4
     PHYSICS_STEP = 1.0 / 60.0
