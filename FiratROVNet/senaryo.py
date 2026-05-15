@@ -548,19 +548,19 @@ class Senaryo:
                     try:
                         if hasattr(window, 'fullscreen'):
                             window.fullscreen = False
-                    except:
+                    except Exception:
                         pass
                     
                     try:
                         if hasattr(window, 'show'):
                             window.show = False
-                    except:
+                    except Exception:
                         pass
                     
                     try:
                         if hasattr(window, 'fps_counter'):
                             window.fps_counter.enabled = False
-                    except:
+                    except Exception:
                         pass
                         
                 except Exception as e:
@@ -590,14 +590,14 @@ class Senaryo:
                         try:
                             if hasattr(self.ortam.app, 'window'):
                                 self.ortam.app.window.show = False
-                        except:
+                        except Exception:
                             pass
                     
                     # Harita sistemini kapat (headless mod için)
                     if hasattr(self.ortam, 'harita') and self.ortam.harita:
                         try:
                             self.ortam.harita.goster(False)
-                        except:
+                        except Exception:
                             pass
                 except Exception as e:
                     # Ortam sınıfı yüklenemezse minimal ortam objesi oluştur
@@ -661,7 +661,7 @@ class Senaryo:
                         try:
                             if hasattr(rov, 'destroy'):
                                 rov.destroy()
-                        except:
+                        except Exception:
                             pass
             self.ortam.rovs = []
             
@@ -684,7 +684,7 @@ class Senaryo:
                         rov.environment_ref = self.ortam
                         try:
                             rov.visible = False
-                        except:
+                        except Exception:
                             pass
                     else:
                         raise Exception("Ursina app yok")
@@ -982,7 +982,7 @@ class Senaryo:
                 if hasattr(rov, 'destroy'):
                     try:
                         rov.destroy()
-                    except:
+                    except Exception:
                         pass
             self.ortam.rovs = []
             
@@ -992,7 +992,7 @@ class Senaryo:
                     if hasattr(engel, 'destroy'):
                         try:
                             engel.destroy()
-                        except:
+                        except Exception:
                             pass
                 self.ortam.engeller = []
         

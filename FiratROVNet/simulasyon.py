@@ -232,7 +232,7 @@ class ROV(Entity):
                  "gorev": getattr(getattr(self, "gnc", None), "gorev", "idle"),
                  "gorev_hedef": getattr(getattr(self, "gnc", None), "gorev_hedef", None)}
             return np.array(d[veri]) if veri in d and veri not in ["lidar", "sonar", "group_id"] else d.get(veri)
-        except:
+        except Exception:
             return None
 
     # 🔹 MERKEZI LIDAR PROPERTIES — Her çağrıldığında önbellek değeri döner
@@ -304,6 +304,10 @@ class ROV(Entity):
 
                 # Geriye donuk uyumluluk: diger sistemler hala engel_bulutu listesini okuyabilir.
                 ortam.engel_bulutu.append(hit_data)
+                # Rerun icin kırpılmayan tam gecmis (sadece Rerun loglama kullanir)
+                rerun_bulut = getattr(ortam, 'rerun_engel_bulutu', None)
+                if isinstance(rerun_bulut, list):
+                    rerun_bulut.append(hit_data)
                 try:
                     ortam_engel_bulutu = getattr(ortam, 'engel_bulutu', [])
                     if isinstance(ortam_engel_bulutu, list) and len(ortam_engel_bulutu) > 12000:
@@ -840,7 +844,7 @@ class Ortam:
             prefer-parasite-buffer #f
             """
             load_prc_file_data("", prc_data)
-        except:
+        except Exception:
             pass
         
         # Pencere ayarlarını _setup_window içinde yapacağımız için burada temel başlatma yapıyoruz
@@ -882,7 +886,7 @@ class Ortam:
                     for region in regions_to_remove:
                         try:
                             win.remove_display_region(region)
-                        except:
+                        except Exception:
                             pass
                 
                 # [CRITICAL] Tüm auxiliary buffers'ı kapat (depth, shadow, etc.)
@@ -892,7 +896,7 @@ class Ortam:
                         for buf in aux_buffers:
                             if buf and hasattr(buf, 'set_active'):
                                 buf.set_active(False)
-                    except:
+                    except Exception:
                         pass
                 
                 # [CRITICAL] Internal cameras'ı kontrol et
@@ -907,7 +911,7 @@ class Ortam:
                                 child = cam_node.get_child(i)
                                 try:
                                     child.detach_node()
-                                except:
+                                except Exception:
                                     pass
         except Exception as e:
             pass
@@ -939,6 +943,8 @@ class Ortam:
         self._g_rovs_cache_sig: tuple = ()
         self.islands=self.island_entities
         self.engel_bulutu, self.konsol_verileri = [], {}
+        # Rerun için kırpılmayan tam tarama geçmişi (engel_bulutu GNC için sınırlıdır)
+        self.rerun_engel_bulutu: list = []
         self.sonar_cizgiler, self.filo = {}, None
         self.pool_human = None
 
@@ -977,9 +983,9 @@ class Ortam:
                         if child != cam_node:
                             try:
                                 child.detach_node()
-                            except:
+                            except Exception:
                                 pass
-        except:
+        except Exception:
             pass
 
         # [FIX] Window resize event handler - çift render sorunu düzeltmek için camera aspect ratio sıfırla
@@ -1041,7 +1047,7 @@ class Ortam:
                     ui_node = camera.ui.node()
                     if hasattr(ui_node, 'set_active'):
                         ui_node.set_active(True)
-        except:
+        except Exception:
             pass
         
         window.fullscreen = False
@@ -1093,9 +1099,9 @@ class Ortam:
                 if hasattr(pd_base, 'set_fog'):
                     try:
                         pd_base.set_fog(None)
-                    except:
+                    except Exception:
                         pass
-        except:
+        except Exception:
             pass
 
     def _setup_window_resize_handler(self):
@@ -1129,14 +1135,14 @@ class Ortam:
                             # Force render pipeline reset
                             if hasattr(gfx_engine, 'reset_framebuffer'):
                                 gfx_engine.reset_framebuffer()
-                    except:
+                    except Exception:
                         pass
                     
                     # View matrix'i reset et
                     try:
                         if hasattr(camera, 'node') and hasattr(camera.node(), 'reset_projection_mat'):
                             camera.node().reset_projection_mat()
-                    except:
+                    except Exception:
                         pass
                     
             except Exception as e:
@@ -1155,7 +1161,7 @@ class Ortam:
             if hasattr(application, 'win') and application.win:
                 if hasattr(application.win, 'set_stereo'):
                     application.win.set_stereo(False)
-        except:
+        except Exception:
             pass
         
     def konsola_ekle(self, isim, nesne): self.konsol_verileri[isim] = nesne

@@ -377,7 +377,11 @@ def _rr_set_step(step):
 
 
 def rerun_sahne_logla(app, filo, step):
-    engel_points = _engel_bulutu_to_points3d(getattr(app, "engel_bulutu", None))
+    # Rerun icin kırpılmayan tam gecmis tampon tercih edilir; yoksa normal bulut kullanilir
+    engel_kaynak = getattr(app, "rerun_engel_bulutu", None)
+    if not isinstance(engel_kaynak, list) or len(engel_kaynak) == 0:
+        engel_kaynak = getattr(app, "engel_bulutu", None)
+    engel_points = _engel_bulutu_to_points3d(engel_kaynak)
     surface_y = float(getattr(app, "WATER_SURFACE_Y_BASE", 0.0))
     sea_floor_y = float(getattr(app, "SEA_FLOOR_Y", -50.0))
     _rr_set_step(step)

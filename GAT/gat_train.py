@@ -89,7 +89,7 @@ class GAT_Modeli(torch.nn.Module):
                 
                 # Güncellenmiş checkpoint'i yükle
                 self.load_state_dict(checkpoint, strict=False)
-            except: 
+            except Exception:
                 pass
 
     def forward(self, x, edge_index, return_attention=False):
