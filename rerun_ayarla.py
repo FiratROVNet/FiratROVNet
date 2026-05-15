@@ -1,3 +1,4 @@
+import math
 import os
 import socket
 import threading
@@ -333,6 +334,156 @@ def _engel_renkleri_hesapla(yukseklikler, sea_floor_y, surface_y):
     return np.clip(np.rint(renkler), 0, 255).astype(np.uint8)
 
 
+# ---------------------------------------------------------------------------
+# Multibeam sonar 3D zemin haritalama
+# ---------------------------------------------------------------------------
+
+# Bathymetrik renk duraklari (derin → sığ)
+# [0.0] derin = koyu mavi | [0.4] orta = teal | [0.7] sığ = yeşil | [1.0] yüzey = sarı
+_BATI_STOPS = np.array([
+    [0,   10, 100],   # derin mavi
+    [0,  150, 180],   # teal
+    [60, 200,  60],   # yeşil
+    [220, 220,  0],   # sarı
+], dtype=np.float32)
+_BATI_T = np.array([0.0, 0.20, 0.45, 75], dtype=np.float32)
+
+
+def _batimetri_renkleri_hesapla(ursina_y_dizi, sea_floor_y, surface_y):
+    """Ursina Y yükseklik değerlerine göre bathymetrik renk hesapla."""
+    if ursina_y_dizi is None or len(ursina_y_dizi) == 0:
+        return np.empty((0, 3), dtype=np.uint8)
+    yuk = np.asarray(ursina_y_dizi, dtype=np.float32)
+    dip = float(sea_floor_y)
+    yuzey = float(surface_y)
+    if yuzey <= dip:
+        oran = np.ones_like(yuk, dtype=np.float32)
+    else:
+        oran = np.clip((yuk - dip) / (yuzey - dip), 0.0, 1.0)
+    # Dört duraklı doğrusal interpolasyon
+    renkler = np.zeros((len(oran), 3), dtype=np.float32)
+    for i in range(len(_BATI_T) - 1):
+        t0, t1 = _BATI_T[i], _BATI_T[i + 1]
+        mask = (oran >= t0) & (oran <= t1)
+        if not np.any(mask):
+            continue
+        alfa = ((oran[mask] - t0) / (t1 - t0)).reshape(-1, 1)
+        renkler[mask] = _BATI_STOPS[i] * (1 - alfa) + _BATI_STOPS[i + 1] * alfa
+    return np.clip(np.rint(renkler), 0, 255).astype(np.uint8)
+
+
+def _sonar_footprint_noktalari_hesapla(rov, sea_floor_y, swath_acisi_deg,
+                                       nokta_sayisi, along_track_sayi, gurultu_sigma):
+    """
+    Tek bir ROV için multibeam sonar footprint noktaları üret.
+
+    Model:
+    - ROV'un altına bakan sonar konisi, across-track yönünde ±swath_acisi_deg
+      açısıyla zemine çarpar.
+    - Along-track'te küçük bir şerit de eklenir (örtüşme/doku için).
+    - Zemin noktalarına Gaussian gürültü eklenerek gerçekçi deniz tabanı dokusu
+      simüle edilir.
+
+    Döndürür: (N×3 float32) Ursina uzayı (x, y_zemin, z) veya None
+    """
+    try:
+        ux = float(rov.position.x)
+        uy = float(rov.position.y)
+        uz = float(rov.position.z)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    altitude = uy - float(sea_floor_y)
+    if altitude < 0.5:
+        return None
+
+    swath_rad = math.radians(float(swath_acisi_deg))
+    half_width = altitude * math.tan(swath_rad)
+
+    yaw_deg = float(getattr(rov, 'rotation_y', 0.0))
+    yaw_rad = math.radians(yaw_deg)
+
+    # Across-track yönü (swath genişliği boyunca)
+    acx = math.cos(yaw_rad)
+    acz = -math.sin(yaw_rad)
+    # Along-track yönü (hareket yönü)
+    alx = math.sin(yaw_rad)
+    alz = math.cos(yaw_rad)
+
+    # Along-track spread = half_width'in %20'si (ince şerit = gerçekçi süpürme)
+    along_spread = half_width * 0.20
+    t_values = np.linspace(-half_width, half_width, int(nokta_sayisi))
+    s_values = np.linspace(-along_spread, along_spread, int(along_track_sayi))
+
+    rng = np.random.default_rng()
+    n = len(t_values) * len(s_values)
+    noise = rng.normal(0.0, float(gurultu_sigma), n).astype(np.float32)
+
+    points = np.empty((n, 3), dtype=np.float32)
+    idx = 0
+    floor_y = float(sea_floor_y)
+    for s in s_values:
+        for t in t_values:
+            points[idx, 0] = ux + t * acx + s * alx   # Ursina X
+            points[idx, 1] = floor_y + noise[idx]      # Ursina Y (zemin + gürültü)
+            points[idx, 2] = uz + t * acz + s * alz    # Ursina Z
+            idx += 1
+    return points
+
+
+def _sonar_haritasi_guncelle(app):
+    """
+    Tüm aktif ROV'ların sonar footprint noktalarını hesaplayıp
+    app.rerun_tarama_haritasi tamponuna ekler.
+    Yalnızca ROV MIN_HAREKET_ESIGI kadar hareket etmişse yeni nokta üretir.
+    """
+    try:
+        from FiratROVNet.config import SonarHaritalamaAyarlari
+    except ImportError:
+        return
+
+    harita: list = app.rerun_tarama_haritasi
+    son_poz: dict = app._rr_son_tarama_poz
+    sea_floor_y = float(getattr(app, 'SEA_FLOOR_Y', -50.0))
+    esik = float(SonarHaritalamaAyarlari.MIN_HAREKET_ESIGI)
+
+    for rov in getattr(app, 'rovs', []) or []:
+        if rov is None or getattr(rov, 'is_destroyed', False):
+            continue
+        try:
+            rov_id = int(getattr(rov, 'rov_id', id(rov)))
+            ux = float(rov.position.x)
+            uy = float(rov.position.y)
+            uz = float(rov.position.z)
+        except (AttributeError, TypeError, ValueError):
+            continue
+
+        prev = son_poz.get(rov_id)
+        if prev is not None:
+            dx, dy, dz = ux - prev[0], uy - prev[1], uz - prev[2]
+            if math.sqrt(dx * dx + dy * dy + dz * dz) < esik:
+                continue
+
+        yeni = _sonar_footprint_noktalari_hesapla(
+            rov, sea_floor_y,
+            SonarHaritalamaAyarlari.SWATH_ACISI_DERECE,
+            SonarHaritalamaAyarlari.NOKTA_SAYISI,
+            SonarHaritalamaAyarlari.ALONG_TRACK_SAYI,
+            SonarHaritalamaAyarlari.GURULTU_SIGMA,
+        )
+        if yeni is None or len(yeni) == 0:
+            continue
+
+        harita.extend(yeni.tolist())
+        son_poz[rov_id] = (ux, uy, uz)
+
+    # Sliding-window: eski noktaları at
+    max_nokta = SonarHaritalamaAyarlari.MAKSIMUM_NOKTA
+    fazla = len(harita) - max_nokta
+    if fazla > 0:
+        del harita[:fazla]
+
+
 def _rovlar_to_rerun_arrays(rovs):
     centers = []
     colors = []
@@ -476,3 +627,34 @@ def rerun_sahne_logla(app, filo, step):
                 colors=rov_colors,
             ),
         )
+
+    # ------------------------------------------------------------------
+    # Multibeam sonar 3D zemin haritalama (bathymetrik point cloud)
+    # ------------------------------------------------------------------
+    try:
+        from FiratROVNet.config import SonarHaritalamaAyarlari
+        tarama_raw = getattr(app, 'rerun_tarama_haritasi', [])
+        if tarama_raw:
+            tarama_np = np.asarray(tarama_raw, dtype=np.float32)
+            # Ursina (x, y, z) → Rerun (x, z, y) koordinat dönüşümü
+            tarama_rr = tarama_np[:, [0, 2, 1]]
+            tarama_renkler = _batimetri_renkleri_hesapla(
+                tarama_np[:, 1], sea_floor_y=sea_floor_y, surface_y=surface_y
+            )
+            tarama_radii = np.full(
+                (tarama_rr.shape[0],),
+                SonarHaritalamaAyarlari.NOKTA_RADIUS,
+                dtype=np.float32,
+            )
+            rr.log("tarama/zemin_haritasi", rr.Points3D(tarama_rr, colors=tarama_renkler, radii=tarama_radii))
+        else:
+            rr.log(
+                "tarama/zemin_haritasi",
+                rr.Points3D(
+                    np.empty((0, 3), dtype=np.float32),
+                    colors=np.empty((0, 3), dtype=np.uint8),
+                    radii=np.empty((0,), dtype=np.float32),
+                ),
+            )
+    except Exception:
+        pass

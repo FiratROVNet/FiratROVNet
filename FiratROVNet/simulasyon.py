@@ -353,6 +353,55 @@ class ROV(Entity):
                 else:
                     self.son_lidar_mesafeleri[idx] = -1.0
                     self._lidar_cizgi_temizle(idx)
+
+            # ── Multibeam sonar swath (3D harita için) ─────────────────────
+            ortam = self.environment_ref
+            if ortam is not None:
+                from FiratROVNet.config import SonarHaritalamaAyarlari as _SA
+                harita: list = getattr(ortam, 'rerun_tarama_haritasi', None)
+                son_poz: dict = getattr(ortam, '_rr_son_tarama_poz', None)
+                if harita is not None and son_poz is not None:
+                    rov_id = int(getattr(self, 'id', 0))
+                    ux, uy, uz = float(self.world_position.x), float(self.world_position.y), float(self.world_position.z)
+                    prev = son_poz.get(rov_id)
+                    esik = float(_SA.MIN_HAREKET_ESIGI)
+                    hareket_etti = True
+                    if prev is not None:
+                        dx, dy, dz = ux - prev[0], uy - prev[1], uz - prev[2]
+                        hareket_etti = math.sqrt(dx*dx + dy*dy + dz*dz) >= esik
+                    if hareket_etti:
+                        swath_rad = math.radians(float(_SA.SWATH_ACISI_DERECE))
+                        n = int(_SA.NOKTA_SAYISI)
+                        # Across-track yön vektörü (ROV'un sağ ekseni — yaw'a göre döner)
+                        yaw_rad = math.radians(float(self.rotation_y))
+                        # Across-track: ROV'un yan yönü
+                        ac_x = math.cos(yaw_rad)
+                        ac_z = -math.sin(yaw_rad)
+                        beam_origin = self.world_position + Vec3(0, -0.5, 0)
+                        max_dist = max(10.0, abs(uy - float(getattr(ortam, 'SEA_FLOOR_Y', -50.0))) * 1.5)
+                        for i in range(n):
+                            # t: -1.0 .. +1.0 (swath boyunca normalize)
+                            t = (i / max(1, n - 1)) * 2.0 - 1.0
+                            angle = t * swath_rad
+                            # Beam yönü: aşağı + across-track açı
+                            sin_a = math.sin(angle)
+                            cos_a = math.cos(angle)
+                            bx = ac_x * sin_a
+                            by = -cos_a        # aşağı bileşen
+                            bz = ac_z * sin_a
+                            mag = math.sqrt(bx*bx + by*by + bz*bz)
+                            if mag < 1e-9:
+                                continue
+                            beam_dir = Vec3(bx/mag, by/mag, bz/mag)
+                            hit = safe_raycast(beam_origin, beam_dir, max_dist, ignore_tuple)
+                            if hit.hit:
+                                hp = hit.world_point
+                                harita.append((float(hp.x), float(hp.y), float(hp.z)))
+                        son_poz[rov_id] = (ux, uy, uz)
+                        max_nokta = int(_SA.MAKSIMUM_NOKTA)
+                        fazla = len(harita) - max_nokta
+                        if fazla > 0:
+                            del harita[:fazla]
     def set(self, ayar, deger):
         """GNC sistemi tarafından çağrılır."""
         if ayar == "rol":
@@ -945,6 +994,9 @@ class Ortam:
         self.engel_bulutu, self.konsol_verileri = [], {}
         # Rerun için kırpılmayan tam tarama geçmişi (engel_bulutu GNC için sınırlıdır)
         self.rerun_engel_bulutu: list = []
+        # Multibeam sonar ile oluşturulan 3D bathymetrik harita tamponu
+        self.rerun_tarama_haritasi: list = []
+        self._rr_son_tarama_poz: dict = {}  # {rov_id: (ux, uy, uz)}
         self.sonar_cizgiler, self.filo = {}, None
         self.pool_human = None
 

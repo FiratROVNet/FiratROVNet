@@ -272,6 +272,28 @@ class AlanTaramaAyarlari:
     ASAMA = "yaklasma"
 
 
+class SonarHaritalamaAyarlari:
+    """
+    Multibeam sonar temelli 3D zemin haritalama ayarları.
+    ROV'un altına bakan sonar konisi, her hareket adımında deniz tabanı
+    noktaları üretir ve Rerun'da bathymetrik 3D harita oluşturur.
+    """
+    # Sonar koni yarı açısı (her tarafa kaç derece — toplam swath = 2x)
+    SWATH_ACISI_DERECE = 60.0
+    # Across-track örnekleme (swath genişliği boyunca nokta sayısı)
+    NOKTA_SAYISI = 18
+    # Along-track örnekleme (hareket yönünde şerit sayısı)
+    ALONG_TRACK_SAYI = 3
+    # Yeni tarama için minimum hareket eşiği (metre)
+    MIN_HAREKET_ESIGI = 3.0
+    # Tampondaki maksimum nokta sayısı (bellek sınırı)
+    MAKSIMUM_NOKTA = 100_000
+    # Rerun'da görselleştirme noktası yarıçapı
+    NOKTA_RADIUS = 0.55
+    # Zemin yüzey gürültüsü standart sapması (m) — gerçekçi deniz tabanı dokusu
+    GURULTU_SIGMA = 0.35
+
+
 class AramaKurtarmaAyarlari:
     """
     Arama kurtarma görevi için varsayılan ayarlar.
