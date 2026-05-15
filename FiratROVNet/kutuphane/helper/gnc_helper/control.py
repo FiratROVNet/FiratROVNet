@@ -205,11 +205,6 @@ class TemelGNCHelper:
         if isinstance(hedef_vektor, Vec3) and isinstance(engel_vektor, Vec3) and isinstance(rov_vektor, Vec3):
             self._bileske_vektoru_minimapte_ciz(self.rov.id, hedef_vektor*ham_hedef, engel_vektor*ham_engel, rov_vektor*ham_rov)
 
-        if self.rov.group_id==0 and False:
-            if rov_gucu > 0.1:
-                print(f"ROV-id:{self.rov.id}, ROV-Guc:{rov_gucu}, Ham-ROV-Guc:{ham_rov}")
-
-        
         apf_guc_kuyruklari_aktif = self._apf_guc_kuyruklari_aktif_mi()
 
         for i, _motor in enumerate(motorlar):
@@ -619,11 +614,6 @@ class TemelGNCHelper:
 
         # Hedef agirligini yeni etkilerle 1 kere hesapla (kaldirilan cift cagir)
         hedef_vektor, guc1 = self._hedef_vektoru_isle(sonuc, max_engel_etkisi)
-
-        if self.rov.role==1 and self.rov.group_id==0 and False:
-            print("engel_vektor", engel_vektor.length())
-            print("rov_vektor", rov_vektor.length())
-            print("hedef_vektor", hedef_vektor.length())
 
         return {
             'hedef_vektor': hedef_vektor,

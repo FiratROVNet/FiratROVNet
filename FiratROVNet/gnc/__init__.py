@@ -1503,7 +1503,12 @@ class TemelGNC:
     def hedef_atama(self, x, y, z):
         if self.filo_ref is not None and self.rov is not None:
             z = self.filo_ref.rol_derinligini_uygula(self.rov, z)
-        self.hedef = Vec3(x, y, z)
+        yeni_hedef = Vec3(x, y, z)
+        # Hedef Z değiştiğinde depth PID integralini sıfırla (integral wind-up önleme)
+        if self.hedef is not None and abs(float(yeni_hedef.z) - float(self.hedef.z)) > 2.0:
+            if self.temel_gnc_helper is not None and hasattr(self.temel_gnc_helper, 'pid_depth'):
+                self.temel_gnc_helper.pid_depth.reset()
+        self.hedef = yeni_hedef
     
     def guncelle(self, gat_kodu=None):
         filo = self.filo_ref
