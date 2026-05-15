@@ -100,7 +100,8 @@ class ImhaGorevi:
                     return ImhaSonucu(False, tespit=tespit, mesaj="Tespit yapan ROV bulunamadi.")
                 gps = self.filo.get(tespit.rov_id, "gps")
                 z = float(gps[2]) if gps is not None and len(gps) >= 3 else -20.0
-                self.hedef = (float(rov.x), float(rov.z), z)
+                # GPS sim koordinatlarını kullan (rov.x/rov.z Ursina koordinatı olduğundan karışıklık çıkar)
+                self.hedef = (float(gps[0]), float(gps[1]), z)
                 self.hedef_entity = None
                 rov_gorev_ata(rov, "imha", mod=0, gorev_hedef=GorevHedefi(gorev_adi="imha", koordinat=self.hedef))
                 self.filo.git(tespit.rov_id, self.hedef[0], self.hedef[1], self.hedef[2], ai=True, sessiz=True)

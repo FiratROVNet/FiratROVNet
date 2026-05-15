@@ -31,6 +31,8 @@ class CameraManager:
         self._yolo_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rov-yolo")
         self._yolo_futures = {}
         self.yolo_son_tespitler = {}
+        # Her ROV için YOLO tespit eşiği — yolo_baslat() tarafından ayarlanır
+        self.yolo_conf: dict = {}
         
     def kamera_ekle(self, rov_id=0, mesafe=(0, -40, 120), aci=(0, 0, 0), fov=75, bolge=(0.02, 0.20, 0.80, 0.98)):
         if not hasattr(builtins, 'base'):
@@ -67,10 +69,11 @@ class CameraManager:
     # YOLO ENTEGRASYON BÖLÜMÜ (UI DESTEKLİ)
     # ==========================================
 
-    def yolo_baslat(self, rov_id, model_path='yolov8n.pt', islem_hizi=3):
+    def yolo_baslat(self, rov_id, model_path='yolov8n.pt', islem_hizi=3, conf: float = 0.5):
             if not YOLO_AVAILABLE: return False
             if rov_id not in self.aktif_kameralar: return False
             if rov_id in self.aktif_yolo_gorevleri: return True
+            self.yolo_conf[rov_id] = float(conf)
 
             if model_path not in self.yolo_modelleri:
                 print(f"🧠 YOLO Modeli yükleniyor: {model_path}...")
@@ -113,9 +116,10 @@ class CameraManager:
             region = cam_node.get_display_region(0)
             
             task_name = f"yolo_task_rov_{rov_id}"
+            rov_conf = self.yolo_conf.get(rov_id, 0.5)
             task = b.taskMgr.add(
                 self._yolo_guncelle_task, task_name,
-                extraArgs=[rov_id, region, self.yolo_modelleri[model_path], islem_hizi],
+                extraArgs=[rov_id, region, self.yolo_modelleri[model_path], islem_hizi, rov_conf],
                 appendTask=True
             )
             task.frame_counter = 0 
@@ -124,8 +128,8 @@ class CameraManager:
             print(f"🎯 ROV-{rov_id} için Oyun İçi YOLO Tespit Sistemi Başlatıldı!")
             return True
 
-    def _yolo_predict_worker(self, model, img_bgr):
-            results = model.predict(source=img_bgr, conf=0.5, verbose=False)
+    def _yolo_predict_worker(self, model, img_bgr, conf: float = 0.5):
+            results = model.predict(source=img_bgr, conf=float(conf), verbose=False)
             tespitler = []
             names = getattr(model, "names", {}) or {}
             boxes = getattr(results[0], "boxes", None)
@@ -162,7 +166,7 @@ class CameraManager:
             annotated_rgb_flipped = cv2.flip(annotated_rgb, 0)
             ui_entity._p3d_tex.setRamImage(annotated_rgb_flipped.tobytes())
 
-    def _yolo_guncelle_task(self, rov_id, region, model, islem_hizi, task):
+    def _yolo_guncelle_task(self, rov_id, region, model, islem_hizi, conf, task):
             task.frame_counter += 1
             future = self._yolo_futures.get(rov_id)
             if future is not None and future.done():
@@ -197,7 +201,7 @@ class CameraManager:
             # Görüntüyü Panda3D formatından BGR'ye (OpenCV için) çevir
             img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
             img_bgr = cv2.flip(img_bgr, 0)
-            self._yolo_futures[rov_id] = self._yolo_executor.submit(self._yolo_predict_worker, model, img_bgr.copy())
+            self._yolo_futures[rov_id] = self._yolo_executor.submit(self._yolo_predict_worker, model, img_bgr.copy(), conf)
             
             return Task.cont
 
@@ -209,6 +213,7 @@ class CameraManager:
             future = self._yolo_futures.pop(rov_id, None)
             if future is not None:
                 future.cancel()
+            self.yolo_conf.pop(rov_id, None)
             
             # Ursina UI Panelini de sahneden sil
             if rov_id in self.yolo_ui_ekranlari:
@@ -218,6 +223,17 @@ class CameraManager:
             print(f"🛑 ROV-{rov_id} için YOLO durduruldu.")
             return True
         return False
+
+    def kapat(self) -> None:
+        """Tüm kameraları kaldırır ve thread pool'u temizler. Simülasyon kapanınca çağrılmalı."""
+        self.tum_kameralari_kaldir()
+        self._yolo_executor.shutdown(wait=False)
+
+    def __del__(self):
+        try:
+            self._yolo_executor.shutdown(wait=False)
+        except Exception:
+            pass
 
     # ==========================================
     # MEVCUT (ESKİ) YARDIMCI METOTLAR
@@ -236,6 +252,7 @@ class CameraManager:
             del self.aktif_kameralar[rov_id]
             return True
         except Exception as e:
+            print(f"⚠️ [CAMERA] ROV-{rov_id} kamera kaldırma hatası: {e}")
             return False
             
     def kamera_guncelle(self, rov_id, mesafe=None, aci=None, fov=None):

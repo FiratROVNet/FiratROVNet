@@ -59,7 +59,8 @@ class AramaKurtarmaGorevi:
         if kamera_rov_id is not None:
             if not self.filo.camera_manager.kamera_var_mi(kamera_rov_id):
                 self.filo.camera_manager.kamera_ekle(rov_id=kamera_rov_id)
-            self.filo.yolo_baslat(kamera_rov_id, model_path=model_path)
+            # min_confidence'ı YOLO modeline ilet; yoksa model her şeyi 0.5 eşiğiyle filtreler
+            self.filo.yolo_baslat(kamera_rov_id, model_path=model_path, conf=self.min_confidence)
         return plan
 
     def guncelle(self) -> YoloTespit | None:

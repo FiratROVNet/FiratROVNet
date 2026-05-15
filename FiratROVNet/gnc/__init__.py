@@ -172,9 +172,9 @@ class Filo(FiloInitMixin):
 
 # ==================== KAMERA VE YOLO METOTLARI ====================
 
-    def yolo_baslat(self, rov_id, model_path='yolov8n.pt', islem_hizi=3):
+    def yolo_baslat(self, rov_id, model_path='yolov8n.pt', islem_hizi=3, conf: float = 0.5):
         """Seçili ROV kamerasında YOLO nesne tespitini başlatır."""
-        return self.camera_manager.yolo_baslat(rov_id, model_path, islem_hizi)
+        return self.camera_manager.yolo_baslat(rov_id, model_path, islem_hizi, conf=conf)
 
     def yolo_durdur(self, rov_id):
         """Seçili ROV'un YOLO sistemini kapatır."""
