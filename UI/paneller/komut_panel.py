@@ -20,7 +20,8 @@ from UI.kopru import komut_gonder
 
 class KomutPanel(QWidget):
     # Thread-safe log sinyali: (html_metin)
-    _log_ekle_sig = pyqtSignal(str, str)   # renk, metin
+    _log_ekle_sig    = pyqtSignal(str, str)   # renk, metin
+    senkronize_talep = pyqtSignal()            # Sürü panelini UI ↔ Sim senkronize eder
 
     def __init__(self, sinyal=None, parent=None):
         super().__init__(parent)
@@ -78,12 +79,8 @@ class KomutPanel(QWidget):
         hizli_lay  = QVBoxLayout(hizli_kutu)
 
         hizli_komutlar = [
-            ("ROV Listesi",         "filo.rovs",                   "ok"),
-            ("Grup Listesi",        "filo.g_rovs",                 "ok"),
-            ("Tüm ROV Konumları",   "[(r.id, filo.get(r.id,'gps')) for r in filo.rovs]", "ok"),
-            ("Tüm ROV'ları Durdur", "filo.alan_tarama_gorevi.guncelle()", "warn"),
+            ("Tüm ROV'ları Durdur", "[filo.move(r.id, 'dur', 1.0) for r in filo.rovs if r]", "warn"),
             ("APF Temizle",         "filo.apf_temizle()",          "warn"),
-            ("Harita Göster",       "app.harita.goster(True)",     "ok"),
         ]
         for metin, komut, seviye in hizli_komutlar:
             btn = QPushButton(metin)
@@ -92,6 +89,12 @@ class KomutPanel(QWidget):
                 lambda checked, k=komut, s=seviye: self._hizli_calistir(k, s)
             )
             hizli_lay.addWidget(btn)
+
+        btn_sync = QPushButton("🔄  Sürü Panelini Senkronize Et")
+        btn_sync.setFixedHeight(30)
+        btn_sync.setToolTip("UI panel yapısını simülasyondaki mevcut ROV rol/grup değerlerine göre yeniden inşa eder")
+        btn_sync.clicked.connect(self.senkronize_talep.emit)
+        hizli_lay.addWidget(btn_sync)
 
         lay.addWidget(hizli_kutu)
 

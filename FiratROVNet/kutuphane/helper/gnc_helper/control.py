@@ -242,7 +242,7 @@ class TemelGNCHelper:
             filtrelenmis_gucler = birlesik
         if apf_guc_kuyruklari_aktif:
             self._apf_guc_kuyruklarini_guncelle(hedef_gucu, engel_gucu, rov_gucu)
-        self.filo_ref.motorlari_calistir(self.rov.id, birlesik)
+        self.filo_ref.motorlari_calistir(self.rov.id, filtrelenmis_gucler)
 
     def _apf_guc_kuyruklari_aktif_mi(self) -> bool:
         hud = getattr(self.filo_ref, "apf_guc_hud", None) if self.filo_ref is not None else None
@@ -350,10 +350,9 @@ class TemelGNCHelper:
         if not lider:
             return
 
-        if self.rov.gnc.mod == 0:
-            return
-
         if self.rov.role == 1:
+            # Lider her zaman formasyon pozisyonlarını hesaplar (mod=0 olsa bile),
+            # aksi halde takipçiler yeni_pozisyonlar'dan boş değer alır.
             f_obj = Formasyon(filo)
             lider_pos_sim = (lider.x, lider.z, lider.y)
             yeni_pozisyonlar = f_obj.pozisyonlar(
@@ -366,6 +365,10 @@ class TemelGNCHelper:
             if not hasattr(filo, 'yeni_pozisyonlar') or not isinstance(filo.yeni_pozisyonlar, dict):
                 filo.yeni_pozisyonlar = {}
             filo.yeni_pozisyonlar[self.rov.group_id] = yeni_pozisyonlar
+            return
+
+        # Takipçi: mod=0 (bağımsız) ise formasyon hedefini uygulama
+        if self.rov.gnc.mod == 0:
             return
 
         yeni_pozisyonlar = filo.yeni_pozisyonlar

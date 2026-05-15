@@ -7,16 +7,16 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
     QSpinBox, QDoubleSpinBox, QPushButton, QGridLayout,
     QLineEdit, QComboBox, QTabWidget, QFrame, QCheckBox,
-    QSizePolicy,
+    QSizePolicy, QTextBrowser,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QColor, QFont
 
 from UI.tema import (
     VURGU, METiN, METiN_KOYU, YESiL, KIRMIZI, SARI, TURUNCU,
     PANEL, PANEL_KENAR, GOREV_RENK,
 )
-from UI.kopru import komut_gonder
+from UI.kopru import komut_gonder, seviye_tespit
 
 
 # ── Yardımcı ─────────────────────────────────────────────────────────────────
@@ -102,14 +102,14 @@ class AlanTaramaSekmesi(QWidget):
         self.spin_serit.setRange(3.0, 100.0); self.spin_serit.setValue(15.0)
         param_lay.addWidget(self.spin_serit, 1, 1)
 
-        param_lay.addWidget(_etiket("ROV Sayısı (0=hepsi)"), 2, 0)
-        self.spin_rov_say = QSpinBox(); self.spin_rov_say.setRange(0, 20)
-        self.spin_rov_say.setToolTip("0 → gruptaki tüm idle ROV'lar kullanılır")
-        param_lay.addWidget(self.spin_rov_say, 2, 1)
-
         self.chk_sessiz = QCheckBox("Sessiz mod (log kapalı)")
         self.chk_sessiz.setChecked(True)
-        param_lay.addWidget(self.chk_sessiz, 3, 0, 1, 2)
+        param_lay.addWidget(self.chk_sessiz, 2, 0, 1, 2)
+
+        self.chk_surekli = QCheckBox("Sürekli tarama (rota bitince yeniden başlat)")
+        self.chk_surekli.setChecked(True)
+        self.chk_surekli.setToolTip("İşaretliyse ROVlar alana sonsuz döngüde gezinir, görev elle durdurulana kadar durmaz")
+        param_lay.addWidget(self.chk_surekli, 3, 0, 1, 2)
 
         lay.addWidget(param_kutu)
 
@@ -128,27 +128,29 @@ class AlanTaramaSekmesi(QWidget):
 
     def _basla(self):
         x1, y1, x2, y2 = self._alan_al()
-        g_id    = self.spin_grup.value()
+        g_id     = self.spin_grup.value()
         derinlik = self.spin_derinlik.value()
-        serit   = self.spin_serit.value()
-        n_rov   = self.spin_rov_say.value()
-        sessiz  = self.chk_sessiz.isChecked()
+        serit    = self.spin_serit.value()
+        sessiz   = self.chk_sessiz.isChecked()
+        surekli  = self.chk_surekli.isChecked()
 
-        n_rov_str = f"gereken_rov_sayisi={n_rov}, " if n_rov > 0 else ""
         komut = (
             f"filo.alan_tarama_gorevi.baslat("
             f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}), "
             f"derinlik={derinlik}, serit_araligi={serit}, "
-            f"{n_rov_str}sessiz={sessiz})"
+            f"surekli_tarama={surekli}, sessiz={sessiz})"
         )
-        aciklama = f"Alan Tarama → Grup-{g_id} | Alan:({x1},{y1})–({x2},{y2}) | D:{derinlik}m"
-        komut_gonder(komut, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, "ok"))
+        aciklama = (
+            f"Alan Tarama → Grup-{g_id} | Alan:({x1},{y1})–({x2},{y2}) "
+            f"| D:{derinlik}m | Şerit:{serit}m"
+        )
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
         self.komut_uretildi.emit(komut, aciklama)
 
     def _durdur(self):
         g_id  = self.spin_grup.value()
         komut = f"filo.alan_tarama_gorevi.durdur(grup_id={g_id})"
-        komut_gonder(komut, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, "warn"))
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, "warn"))
         self.komut_uretildi.emit(komut, f"Alan Tarama Durduruldu → Grup-{g_id}")
 
 
@@ -189,13 +191,20 @@ class AramaKurtarmaSekmesi(QWidget):
 
         param_lay.addWidget(_etiket("Güven Eşiği"), 3, 0)
         self.spin_guven = QDoubleSpinBox()
-        self.spin_guven.setRange(0.1, 1.0); self.spin_guven.setValue(0.5)
+        self.spin_guven.setRange(0.1, 1.0)
+        self.spin_guven.setValue(0.5)
         self.spin_guven.setSingleStep(0.05)
         param_lay.addWidget(self.spin_guven, 3, 1)
 
         param_lay.addWidget(_etiket("YOLO Model"), 4, 0)
         self.txt_model = QLineEdit("yolov8n.pt")
         param_lay.addWidget(self.txt_model, 4, 1)
+
+        param_lay.addWidget(_etiket("ROV Sayısı (0=otomatik)"), 5, 0)
+        self.spin_rov_say = QSpinBox()
+        self.spin_rov_say.setRange(0, 20)
+        self.spin_rov_say.setToolTip("0 → grup idle ROV'larını otomatik seçer")
+        param_lay.addWidget(self.spin_rov_say, 5, 1)
 
         lay.addWidget(param_kutu)
 
@@ -213,26 +222,32 @@ class AramaKurtarmaSekmesi(QWidget):
 
     def _basla(self):
         x1, y1, x2, y2 = self._alan_al()
-        g_id     = self.spin_grup.value()
-        derinlik = self.spin_derinlik.value()
-        guven    = self.spin_guven.value()
-        model    = self.txt_model.text().strip() or "yolov8n.pt"
+        g_id         = self.spin_grup.value()
+        derinlik     = self.spin_derinlik.value()
+        guven        = self.spin_guven.value()
+        model        = self.txt_model.text().strip() or "yolov8n.pt"
+        n_rov        = self.spin_rov_say.value()
         siniflar_raw = [s.strip() for s in self.txt_sinif.text().split(",") if s.strip()]
         siniflar_str = repr(siniflar_raw) if siniflar_raw else "None"
+        n_rov_str    = f"gereken_rov_sayisi={n_rov}, " if n_rov > 0 else ""
 
         komut = (
             f"filo.arama_kurtarma_gorevi.baslat("
             f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}), "
             f"hedef_siniflari={siniflar_str}, model_path='{model}', "
-            f"derinlik={derinlik}, min_confidence={guven})"
+            f"derinlik={derinlik}, min_confidence={guven}, "
+            f"{n_rov_str}sessiz=True)"
         )
-        aciklama = f"Arama Kurtarma → Grup-{g_id} | Hedef: {siniflar_raw}"
-        komut_gonder(komut, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, "ok"))
+        aciklama = (
+            f"Arama Kurtarma → Grup-{g_id} | Hedef: {siniflar_raw or 'hepsi'} "
+            f"| Model: {model} | Güven: {guven:.2f}"
+        )
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
         self.komut_uretildi.emit(komut, aciklama)
 
     def _durdur(self):
         komut = "filo.arama_kurtarma_gorevi.durdur()"
-        komut_gonder(komut, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, "warn"))
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, "warn"))
         self.komut_uretildi.emit(komut, "Arama Kurtarma Durduruldu")
 
 
@@ -273,13 +288,15 @@ class ImhaSekmesi(QWidget):
         ], start=1):
             k_lay.addWidget(_etiket(lbl), i, 0)
             spin = QDoubleSpinBox()
-            spin.setRange(-500, 500); spin.setValue(val)
+            spin.setRange(-500, 500)
+            spin.setValue(val)
             k_lay.addWidget(spin, i, 1)
             setattr(self, attr, spin)
 
         k_lay.addWidget(_etiket("İmha Mesafesi (m)"), 4, 0)
         self.spin_k_mesafe = QDoubleSpinBox()
-        self.spin_k_mesafe.setRange(1.0, 50.0); self.spin_k_mesafe.setValue(8.0)
+        self.spin_k_mesafe.setRange(1.0, 50.0)
+        self.spin_k_mesafe.setValue(8.0)
         k_lay.addWidget(self.spin_k_mesafe, 4, 1)
         lay.addWidget(self.w_koordinat)
 
@@ -302,6 +319,15 @@ class ImhaSekmesi(QWidget):
         self.spin_a_mesafe = QDoubleSpinBox()
         self.spin_a_mesafe.setRange(1.0, 50.0); self.spin_a_mesafe.setValue(8.0)
         a2_lay.addWidget(self.spin_a_mesafe, 2, 1)
+        a2_lay.addWidget(_etiket("YOLO Model"), 3, 0)
+        self.txt_a_model = QLineEdit("yolov8n.pt")
+        self.txt_a_model.setToolTip("YOLO model dosyası (alan tarama modunda kullanılır)")
+        a2_lay.addWidget(self.txt_a_model, 3, 1)
+        a2_lay.addWidget(_etiket("ROV Sayısı (0=otomatik)"), 4, 0)
+        self.spin_a_rov_say = QSpinBox()
+        self.spin_a_rov_say.setRange(0, 20)
+        self.spin_a_rov_say.setToolTip("0 → grup idle ROV'larını otomatik seçer")
+        a2_lay.addWidget(self.spin_a_rov_say, 4, 1)
         a_lay.addLayout(a2_lay)
         lay.addWidget(self.w_alan)
         self.w_alan.setVisible(False)
@@ -309,13 +335,21 @@ class ImhaSekmesi(QWidget):
         # Butonlar
         btn_lay = QHBoxLayout()
         btn_basla = QPushButton("▶  İmhayı Başlat")
-        btn_basla.setObjectName("btn_durdur")   # kırmızı stil
+        btn_basla.setObjectName("btn_durdur")   # kırmızı stil (yıkıcı eylem)
         btn_basla.clicked.connect(self._basla)
+        btn_durdur_im = QPushButton("■  Durdur")
+        btn_durdur_im.setObjectName("btn_durdur")
+        btn_durdur_im.clicked.connect(self._durdur)
         btn_guncelle = QPushButton("↻  Sonucu Sorgula")
         btn_guncelle.clicked.connect(self._guncelle)
         btn_lay.addWidget(btn_basla)
+        btn_lay.addWidget(btn_durdur_im)
         btn_lay.addWidget(btn_guncelle)
         lay.addLayout(btn_lay)
+        self.lbl_sonuc = QLabel("─")
+        self.lbl_sonuc.setStyleSheet("color:#546e7a; font-family:Consolas; font-size:8pt;")
+        self.lbl_sonuc.setWordWrap(True)
+        lay.addWidget(self.lbl_sonuc)
         lay.addStretch()
 
     def _mod_degisti(self, idx):
@@ -329,25 +363,223 @@ class ImhaSekmesi(QWidget):
             hedef   = (self.spin_hx.value(), self.spin_hy.value(), self.spin_hz.value())
             mesafe  = self.spin_k_mesafe.value()
             komut   = (f"filo.imha_gorevi.koordinat_imha_baslat("
-                       f"grup_id={g_id}, hedef={hedef}, imha_mesafesi={mesafe})")
+                       f"grup_id={g_id}, hedef={hedef}, imha_mesafesi={mesafe}, sessiz=True)")
             aciklama = f"İmha → Grup-{g_id} | Hedef:{hedef} | Mesafe:{mesafe}m"
         else:
             x1, y1, x2, y2 = self._alan_al()
-            g_id    = self.spin_a_grup.value()
+            g_id         = self.spin_a_grup.value()
             siniflar_raw = [s.strip() for s in self.txt_a_sinif.text().split(",") if s.strip()]
-            mesafe  = self.spin_a_mesafe.value()
+            mesafe       = self.spin_a_mesafe.value()
+            model        = self.txt_a_model.text().strip() or "yolov8n.pt"
+            n_rov        = self.spin_a_rov_say.value()
+            n_rov_str    = f"gereken_rov_sayisi={n_rov}, " if n_rov > 0 else ""
             komut   = (f"filo.imha_gorevi.alan_imha_baslat("
                        f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}), "
-                       f"hedef_siniflari={repr(siniflar_raw)}, imha_mesafesi={mesafe})")
-            aciklama = f"Alan İmha → Grup-{g_id} | Hedef:{siniflar_raw}"
-
-        komut_gonder(komut, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, "err"))
+                       f"hedef_siniflari={repr(siniflar_raw)}, model_path='{model}', "
+                       f"imha_mesafesi={mesafe}, {n_rov_str}sessiz=True)")
+            aciklama = f"Alan İmha → Grup-{g_id} | Hedef:{siniflar_raw} | Model:{model}"
+        self.lbl_sonuc.setText("▶ Görev başlatılıyor...")
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, "err"))
         self.komut_uretildi.emit(komut, aciklama)
 
+    def _durdur(self):
+        def _cb(sonuc: str):
+            if self.sinyal:
+                self.sinyal.durum_guncellendi.emit(sonuc, "warn")
+            self.lbl_sonuc.setText("⏹ Görev durduruldu")
+        komut = "filo.imha_gorevi.durdur(lideri_takip_et=True)"
+        komut_gonder(komut, callback=_cb)
+        self.komut_uretildi.emit(komut, "İmha görevi durduruldu")
+
     def _guncelle(self):
-        komut = "sonuc = filo.imha_gorevi.guncelle(); print(sonuc)"
-        komut_gonder(komut, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, "warn"))
+        def _cb(sonuc: str):
+            if self.sinyal:
+                self.sinyal.durum_guncellendi.emit(sonuc, "warn")
+            self.lbl_sonuc.setText(sonuc)
+        komut = "_sonuc=filo.imha_gorevi.guncelle(); print('İmha:', _sonuc)"
+        komut_gonder(komut, callback=_cb)
         self.komut_uretildi.emit(komut, "İmha sonucu sorgulandı")
+
+
+# ── Durum İzleme Sekmesi ──────────────────────────────────────────────────────
+class DurumSekmesi(QWidget):
+    """Simülasyon bağlantı durumunu, tüm ROV ve grup bilgilerini 2 sn'de bir tazeler."""
+    komut_uretildi = pyqtSignal(str, str)
+
+    _GAT_CLS = {0: "ok", 1: "warn", 2: "err", 3: "err", 4: "err", 5: "warn"}
+    _GAT_TXT = {0: "OK", 1: "ENGEL", 2: "ÇARP", 3: "KOPMA", 4: "KAYIP", 5: "UZAK"}
+    _ROL_TXT = {1: "LİDER", 0: "TAKİPÇİ"}
+
+    def __init__(self, sinyal=None, parent=None):
+        super().__init__(parent)
+        self.sinyal = sinyal
+        lay = QVBoxLayout(self)
+        lay.setSpacing(6)
+
+        ctrl = QHBoxLayout()
+        lbl = QLabel("Anlık Sistem Durumu")
+        lbl.setStyleSheet(f"color:{VURGU}; font-weight:bold; font-size:9pt;")
+        ctrl.addWidget(lbl, 1)
+
+        self.btn_yenile = QPushButton("↻ Yenile")
+        self.btn_yenile.setFixedHeight(26)
+        self.btn_yenile.clicked.connect(self._yenile)
+        ctrl.addWidget(self.btn_yenile)
+
+        btn_tum_dur = QPushButton("▪ Tümünü Durdur")
+        btn_tum_dur.setObjectName("btn_durdur")
+        btn_tum_dur.setFixedHeight(26)
+        btn_tum_dur.clicked.connect(self._tum_durdur)
+        ctrl.addWidget(btn_tum_dur)
+        lay.addLayout(ctrl)
+
+        self.tarayici = QTextBrowser()
+        self.tarayici.setOpenExternalLinks(False)
+        self.tarayici.setStyleSheet(
+            "background:#080c11; border:1px solid #1e2d40; border-radius:4px;"
+        )
+        lay.addWidget(self.tarayici, 1)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._yenile)
+        self._timer.start(2000)
+        self._yenile()
+
+    def _yenile(self):
+        from UI.kopru import rov_listesi, grup_bilgisi, sim_bagli_mi, aktif_gorevler_bilgisi
+        bagli   = sim_bagli_mi()
+        rovlar  = rov_listesi()
+        gruplar = grup_bilgisi()
+
+        html: list[str] = [
+            "<style>",
+            "body{background:#080c11;color:#cfd8dc;font-family:Consolas;font-size:8pt;margin:4px}",
+            "table{border-collapse:collapse;width:100%;margin-bottom:10px}",
+            "th{background:#1a2535;color:#00e5ff;padding:4px 8px;text-align:left}",
+            "td{padding:3px 8px;border-bottom:1px solid #1e2d40}",
+            ".ok{color:#00c853}.warn{color:#ffd600}.err{color:#ff1744}.muted{color:#546e7a}",
+            "</style><body>",
+        ]
+
+        bagli_renk = "#00c853" if bagli else "#ff1744"
+        bagli_txt  = "SİMÜLASYON BAĞLI" if bagli else "BAĞLANTI YOK"
+        html.append(f"<p style='color:{bagli_renk};font-weight:bold;margin:0 0 6px'>● {bagli_txt}</p>")
+
+        if not rovlar:
+            html.append("<p class='muted'>Henüz ROV yok veya simülasyon bağlantısı bekleniyor.</p></body>")
+            self.tarayici.setHtml("".join(html))
+            return
+
+        veri_map = {r["id"]: r for r in rovlar}
+
+        html.append("<b style='color:#00e5ff'>ROV DURUMU</b>")
+        html.append(
+            "<table><tr>"
+            "<th>ID</th><th>Rol</th><th>Görev</th><th>GPS</th>"
+            "<th>GAT</th><th>Bat</th><th>Hız</th><th>Grup</th>"
+            "</tr>"
+        )
+        for r in rovlar:
+            gat     = r.get("gat_kodu", 0)
+            bat     = r.get("batarya", 1.0)
+            bat_pct = int(min(max(bat * 100 if bat <= 1.0 else bat, 0), 100))
+            bat_cls = "ok" if bat_pct > 60 else ("warn" if bat_pct > 25 else "err")
+            gps     = r.get("gps", (0, 0, 0))
+            rol_cls = "ok" if r.get("rol") == 1 else "muted"
+            html.append(
+                f"<tr>"
+                f"<td><b>ROV-{r['id']}</b></td>"
+                f"<td class='{rol_cls}'>{self._ROL_TXT.get(r.get('rol', 0), '?')}</td>"
+                f"<td>{r.get('gorev', 'idle').upper()}</td>"
+                f"<td class='muted'>{gps[0]:+.0f},{gps[1]:+.0f},{gps[2]:+.0f}</td>"
+                f"<td class='{self._GAT_CLS.get(gat, 'warn')}'>{self._GAT_TXT.get(gat, str(gat))}</td>"
+                f"<td class='{bat_cls}'>{bat_pct}%</td>"
+                f"<td>{r.get('hiz', 0):.1f} m/s</td>"
+                f"<td class='muted'>G-{r.get('grup_id', 0)}</td>"
+                "</tr>"
+            )
+        html.append("</table>")
+
+        if gruplar:
+            html.append("<b style='color:#00e5ff'>GRUP ÖZETİ</b>")
+            html.append(
+                "<table><tr>"
+                "<th>Grup</th><th>ROV'lar</th><th>Ort. Batarya</th><th>Ort. Hız</th>"
+                "</tr>"
+            )
+            for g_id, g_rovlar in sorted(gruplar.items()):
+                g_batlar = [veri_map[i]["batarya"] for i in g_rovlar if i in veri_map]
+                g_hizlar = [veri_map[i]["hiz"]     for i in g_rovlar if i in veri_map]
+                bat_ort  = (sum(g_batlar) / len(g_batlar)) * 100 if g_batlar else 0
+                hiz_ort  = sum(g_hizlar)  / len(g_hizlar)        if g_hizlar else 0
+                bat_cls  = "ok" if bat_ort > 60 else ("warn" if bat_ort > 25 else "err")
+                rovlar_str = ", ".join(f"ROV-{i}" for i in sorted(g_rovlar))
+                html.append(
+                    f"<tr>"
+                    f"<td><b>Grup-{g_id}</b></td>"
+                    f"<td>{rovlar_str}</td>"
+                    f"<td class='{bat_cls}'>{bat_ort:.0f}%</td>"
+                    f"<td>{hiz_ort:.1f} m/s</td>"
+                    "</tr>"
+                )
+            html.append("</table>")
+
+        # ── Aktif görev özeti ──────────────────────────────────────────────
+        html.append("<b style='color:#00e5ff'>AKTİF GÖREVLER</b>")
+        gorevler = aktif_gorevler_bilgisi()
+        if gorevler:
+            html.append(
+                "<table><tr>"
+                "<th>Görev</th><th>Grup / ROV</th><th>Detay</th>"
+                "</tr>"
+            )
+            # Alan Tarama
+            at = gorevler.get("alan_tarama")
+            if at:
+                for g_id, plan in at.items():
+                    alan = plan.get("alan")
+                    alan_str = (
+                        f"({alan[0]:.0f},{alan[1]:.0f})\u2192({alan[2]:.0f},{alan[3]:.0f})"
+                        if alan else "?"
+                    )
+                    html.append(
+                        f"<tr><td class='ok'>🗺 Alan Tarama</td>"
+                        f"<td>Grup-{g_id}</td>"
+                        f"<td>{alan_str} | {plan.get('rov_sayisi', 0)} ROV"
+                        f" | D:{plan.get('derinlik', 0):.0f}m</td></tr>"
+                    )
+            # Arama Kurtarma
+            ak = gorevler.get("arama_kurtarma")
+            if ak:
+                siniflar = ", ".join(ak.get("hedef_siniflari", [])) or "hepsi"
+                html.append(
+                    f"<tr><td class='warn'>🔍 Arama Kurtarma</td>"
+                    f"<td>Grup-{ak.get('grup_id', '?')}</td>"
+                    f"<td>{ak.get('rov_sayisi', 0)} ROV | Hedef: {siniflar}</td></tr>"
+                )
+            # İmha
+            imha = gorevler.get("imha")
+            if imha:
+                h = imha.get("hedef")
+                h_str = (
+                    f"({h[0]:.0f},{h[1]:.0f},{h[2]:.0f})" if h else "tarama devam ediyor"
+                )
+                html.append(
+                    f"<tr><td class='err'>💥 İmha</td>"
+                    f"<td>ROV-{imha.get('gorevli_rov_id', '?')}</td>"
+                    f"<td>Hedef: {h_str}</td></tr>"
+                )
+            html.append("</table>")
+        else:
+            html.append("<p class='muted'>Aktif görev yok.</p>")
+
+        html.append("</body>")
+        self.tarayici.setHtml("".join(html))
+
+    def _tum_durdur(self):
+        komut = "[filo.move(r.id, 'dur', 1.0) for r in filo.rovs if r]"
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, "warn"))
+        self.komut_uretildi.emit(komut, "Tüm ROV'lar durduruldu")
 
 
 # ── Hareket Sekmesi (Git / Move) ──────────────────────────────────────────────
@@ -361,24 +593,27 @@ class HareketSekmesi(QWidget):
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
 
-        # Tek nokta git
+        # ── Tek ROV hedefe git ──
         git_kutu = QGroupBox("HEDEFE GİT")
         git_lay  = QGridLayout(git_kutu)
         git_lay.setSpacing(8)
         git_lay.setColumnStretch(1, 1)
 
         git_lay.addWidget(_etiket("ROV ID"), 0, 0)
-        self.spin_git_rov = QSpinBox(); self.spin_git_rov.setRange(0, 20)
+        self.spin_git_rov = QSpinBox()
+        self.spin_git_rov.setRange(0, 20)
+        self.spin_git_rov.setToolTip("ROV panelinden seçince otomatik güncellenir")
         git_lay.addWidget(self.spin_git_rov, 0, 1)
 
         for i, (lbl, attr, val) in enumerate([
-            ("X (sağ)", "spin_gx", 100.0),
-            ("Y (ileri)", "spin_gy", 50.0),
-            ("Z (derinlik)", "spin_gz", -20.0),
+            ("X (sağ)",     "spin_gx", 100.0),
+            ("Y (ileri)",   "spin_gy",  50.0),
+            ("Z (derinlik)","spin_gz", -20.0),
         ], start=1):
             git_lay.addWidget(_etiket(lbl), i, 0)
             spin = QDoubleSpinBox()
-            spin.setRange(-500, 500); spin.setValue(val)
+            spin.setRange(-500, 500)
+            spin.setValue(val)
             git_lay.addWidget(spin, i, 1)
             setattr(self, attr, spin)
 
@@ -386,40 +621,60 @@ class HareketSekmesi(QWidget):
         self.chk_ai.setChecked(True)
         git_lay.addWidget(self.chk_ai, 4, 0, 1, 2)
 
-        btn_git = QPushButton("→  ROV'u Hedefe Gönder")
+        git_btn_lay = QHBoxLayout()
+        btn_git = QPushButton("→  Hedefe Gönder")
         btn_git.setObjectName("btn_basla")
         btn_git.clicked.connect(self._git)
-        git_lay.addWidget(btn_git, 5, 0, 1, 2)
+        git_btn_lay.addWidget(btn_git, 3)
+        btn_dur = QPushButton("▪  Dur")
+        btn_dur.setObjectName("btn_durdur")
+        btn_dur.setToolTip("Seçili ROV'u durdur")
+        btn_dur.clicked.connect(self._dur)
+        git_btn_lay.addWidget(btn_dur, 1)
+        git_lay.addLayout(git_btn_lay, 5, 0, 1, 2)
 
         lay.addWidget(git_kutu)
 
-        # Grup hedefe git
+        # ── Grup hedefe git ──
         grup_kutu = QGroupBox("GRUBU HEDEFE GÖNDER")
         grup_lay  = QGridLayout(grup_kutu)
         grup_lay.setSpacing(8)
         grup_lay.setColumnStretch(1, 1)
 
         grup_lay.addWidget(_etiket("Grup ID"), 0, 0)
-        self.spin_gg_grup = QSpinBox(); self.spin_gg_grup.setRange(0, 9)
+        self.spin_gg_grup = QSpinBox()
+        self.spin_gg_grup.setRange(0, 9)
         grup_lay.addWidget(self.spin_gg_grup, 0, 1)
 
         for i, (lbl, attr, val) in enumerate([
-            ("X", "spin_ggx", 100.0),
-            ("Y", "spin_ggy", 100.0),
-            ("Z", "spin_ggz", -15.0),
+            ("X",  "spin_ggx", 100.0),
+            ("Y",  "spin_ggy", 100.0),
+            ("Z",  "spin_ggz", -15.0),
         ], start=1):
             grup_lay.addWidget(_etiket(lbl), i, 0)
-            spin = QDoubleSpinBox(); spin.setRange(-500, 500); spin.setValue(val)
+            spin = QDoubleSpinBox()
+            spin.setRange(-500, 500)
+            spin.setValue(val)
             grup_lay.addWidget(spin, i, 1)
             setattr(self, attr, spin)
 
+        grup_btn_lay = QHBoxLayout()
         btn_grup_git = QPushButton("→→  Grubu Hedefe Gönder")
         btn_grup_git.setObjectName("btn_basla")
         btn_grup_git.clicked.connect(self._grup_git)
-        grup_lay.addWidget(btn_grup_git, 4, 0, 1, 2)
+        grup_btn_lay.addWidget(btn_grup_git, 3)
+        btn_grup_dur = QPushButton("▪  Grubu Durdur")
+        btn_grup_dur.setObjectName("btn_durdur")
+        btn_grup_dur.clicked.connect(self._grup_dur)
+        grup_btn_lay.addWidget(btn_grup_dur, 1)
+        grup_lay.addLayout(grup_btn_lay, 4, 0, 1, 2)
 
         lay.addWidget(grup_kutu)
         lay.addStretch()
+
+        # ROV panel bağlantısı: listeden seçilen ROV'un ID'sini spin'e yansıt
+        if rov_panel_ref is not None:
+            rov_panel_ref.rov_secildi.connect(self.spin_git_rov.setValue)
 
     def _git(self):
         rid = self.spin_git_rov.value()
@@ -427,20 +682,34 @@ class HareketSekmesi(QWidget):
         ai = self.chk_ai.isChecked()
         komut    = f"filo.git(rov_id={rid}, x={x}, y={y}, z={z}, ai={ai})"
         aciklama = f"ROV-{rid} → ({x}, {y}, {z})"
-        komut_gonder(komut, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, "ok"))
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
         self.komut_uretildi.emit(komut, aciklama)
+
+    def _dur(self):
+        rid = self.spin_git_rov.value()
+        komut = f"filo.move({rid}, 'dur', 1.0)"
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, "warn"))
+        self.komut_uretildi.emit(komut, f"ROV-{rid} durduruldu")
 
     def _grup_git(self):
         g_id = self.spin_gg_grup.value()
         x, y, z = self.spin_ggx.value(), self.spin_ggy.value(), self.spin_ggz.value()
-        # filo.git_grup() yok — grup ROV'larını tek tek hedefe gönder
         komut    = (
             f"[filo.git(rov_id=r.id, x={x}, y={y}, z={z}, ai=True) "
             f"for r in (filo.g_rovs.get({g_id}) or []) if r]"
         )
         aciklama = f"Grup-{g_id} → ({x}, {y}, {z})"
-        komut_gonder(komut, callback=lambda s: self.sinyal.durum_guncellendi.emit(s, "ok"))
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
         self.komut_uretildi.emit(komut, aciklama)
+
+    def _grup_dur(self):
+        g_id  = self.spin_gg_grup.value()
+        komut = (
+            f"[filo.move(r.id, 'dur', 1.0) "
+            f"for r in (filo.g_rovs.get({g_id}) or []) if r]"
+        )
+        komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, "warn"))
+        self.komut_uretildi.emit(komut, f"Grup-{g_id} tüm ROV'lar durduruldu")
 
 
 # ── Ana Görev Paneli ──────────────────────────────────────────────────────────
@@ -458,19 +727,20 @@ class GorevPanel(QWidget):
 
         self.sekme = QTabWidget()
 
+        self.durum_sekme    = DurumSekmesi(sinyal)
+        self.hareket_sekme  = HareketSekmesi(sinyal, rov_panel_ref=rov_panel_ref)
         self.alan_sekme     = AlanTaramaSekmesi(sinyal)
         self.arama_sekme    = AramaKurtarmaSekmesi(sinyal)
         self.imha_sekme     = ImhaSekmesi(sinyal)
-        self.hareket_sekme  = HareketSekmesi(sinyal, rov_panel_ref=rov_panel_ref)
 
+        self.sekme.addTab(self.durum_sekme,   "📊 Durum")
         self.sekme.addTab(self.hareket_sekme, "🧭 Hareket")
         self.sekme.addTab(self.alan_sekme,    "🗺 Alan Tarama")
         self.sekme.addTab(self.arama_sekme,   "🔍 Arama Kurtarma")
         self.sekme.addTab(self.imha_sekme,    "💥 İmha")
 
-        # Alt panellerin sinyallerini üst panele ilet
-        for sekme in (self.alan_sekme, self.arama_sekme,
-                      self.imha_sekme, self.hareket_sekme):
+        for sekme in (self.durum_sekme, self.hareket_sekme, self.alan_sekme,
+                      self.arama_sekme, self.imha_sekme):
             sekme.komut_uretildi.connect(self.komut_uretildi)
 
         lay.addWidget(self.sekme)

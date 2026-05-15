@@ -17,9 +17,11 @@ from FiratROVNet.utils import sim_to_ursina
 from FiratROVNet.config import ROVModelleri, GATLimitleri, PerformansAyarlari  # Config dosyanızdan importlar
 
 class EntityLoader:
+
     def __init__(self, ortam_ref):
         self.ortam = ortam_ref
         self.rock_entities = []  # Kaya entity'lerini havuzda tutmak için
+        self.boundary_entities = []  # Havuz sinir entity'lerini takip etmek icin
 
 
 
@@ -69,13 +71,16 @@ class EntityLoader:
 
     def setup_minimap_base(self, minimap_entity):
         """Minimap arka planı ve çerçevesi (Referans koddan alındı)."""
+        # [FIX] Ensure all minimap entities stay in UI space - not rendered to scene
+        
         # 1. Arka Plan: color.rgba(255, 255, 255, 0.01) -> Çok şeffaf beyaz
         minimap_entity.bg = Entity(
             parent=minimap_entity,
             model='quad',
             color=color.rgba(255, 255, 255, 0.01), 
             scale=(1.0, 1.0),
-            z=0.0
+            z=0.0,
+            add_to_scene_entities=False  # [FIX] Keep in UI space only
         )
         
         # 2. Çerçeve: color.white, alpha=0.5, z=0.01
@@ -85,7 +90,8 @@ class EntityLoader:
             color=color.white,
             scale=(1.02, 1.02),
             z=0.01,
-            alpha=0.4
+            alpha=0.4,
+            add_to_scene_entities=False  # [FIX] Keep in UI space only
         )
 
     def create_minimap_grid(self, minimap_entity, havuz_genisligi, grid_sayisi=None):
@@ -114,8 +120,8 @@ class EntityLoader:
         half = havuz_genisligi
         
         # --- Ana Eksenler ---
-        minimap_entity.grid_items.append(Entity(parent=minimap_entity, model='quad', scale=(1, 0.005), color=color.rgba(255,255,255,100), z=grid_z))
-        minimap_entity.grid_items.append(Entity(parent=minimap_entity, model='quad', scale=(0.005, 1), color=color.rgba(255,255,255,100), z=grid_z))
+        minimap_entity.grid_items.append(Entity(parent=minimap_entity, model='quad', scale=(1, 0.005), color=color.rgba(255,255,255,100), z=grid_z, add_to_scene_entities=False))
+        minimap_entity.grid_items.append(Entity(parent=minimap_entity, model='quad', scale=(0.005, 1), color=color.rgba(255,255,255,100), z=grid_z, add_to_scene_entities=False))
 
         # --- Dikey Çizgiler ve X Etiketleri ---
         world_x = -half
@@ -126,7 +132,8 @@ class EntityLoader:
                     parent=minimap_entity, model='quad',
                     position=(local_x, 0, grid_z),
                     scale=(line_thick, 1),
-                    color=grid_color
+                    color=grid_color,
+                    add_to_scene_entities=False
                 ))
             # Etiket (Alt kısım)
             if world_x != -half:
@@ -151,7 +158,8 @@ class EntityLoader:
                     parent=minimap_entity, model='quad',
                     position=(0, local_y, grid_z),
                     scale=(1, line_thick),
-                    color=grid_color
+                    color=grid_color,
+                    add_to_scene_entities=False
                 ))
             # Etiket (Sol kısım)
             lbl = Text(
@@ -187,7 +195,8 @@ class EntityLoader:
                 parent=minimap_entity,
                 model=Circle(resolution=60, radius=0.5 * r, mode='line', thickness=2),
                 color=color.rgba(255,255,0,50),
-                z=grid_z
+                z=grid_z,
+                add_to_scene_entities=False
             ))
 
     def draw_island_polygon(self, minimap_entity, vertices):
@@ -213,18 +222,20 @@ class EntityLoader:
             color=color_val,
             position=(x * factor, z * factor, -0.21),
             scale=(map_scale, map_scale),
-            alpha=0.8
+            alpha=0.8,
+            add_to_scene_entities=False
         )
 
     def create_rov_icon(self, minimap_entity, rov_id, rov_color):
-        """ROV İkonu (Eski koddan birebir kopyalandı)."""
+        """ROV İkonu (Eski koddan birebir kopyaλandı)."""
         # Gövde
         govde = Entity(
             parent=minimap_entity, 
             model='circle', 
             scale=0.022,  # ESKİ KOD DEĞERİ
             color=rov_color,
-            position=(0,0,-0.4)
+            position=(0,0,-0.4),
+            add_to_scene_entities=False
         )
         # Yön Oku
         Entity(
@@ -253,7 +264,8 @@ class EntityLoader:
         self.ortam.water_volume = Entity(
             model='cube', scale=(size, self.ortam.su_hacmi_yuksekligi, size),
             color=color.cyan, alpha=0.2, y=self.ortam.su_hacmi_merkez_y,
-            unlit=False, transparent=True, collider=None
+            unlit=False, transparent=True, collider=None,
+            add_to_scene_entities=True
         )
 
         # Su Yüzeyi
@@ -263,7 +275,8 @@ class EntityLoader:
             position=(0, self.ortam.WATER_SURFACE_Y_BASE, 0),
             texture=tex if os.path.exists(tex) else None, 
             double_sided=True, color=color.rgb(0.5, 0.65, 0.9), 
-            alpha=0.5, transparent=True
+            alpha=0.5, transparent=True,
+            add_to_scene_entities=True
         )
         
         # Basit dalga animasyonu
@@ -297,20 +310,23 @@ class EntityLoader:
             model=fbx_mod, scale=(scalex, scaley, scalez), 
             position=(0, self.ortam.SEA_FLOOR_Y - 4, 16), 
             texture=fbx_tex if os.path.exists(fbx_tex) else None,
-            double_sided=True,collider='mesh', unlit=True
+            double_sided=True,collider='mesh', unlit=True,
+            add_to_scene_entities=True
         )
         
         sk = self.ortam.su_hacmi_yuksekligi * 0.25
         self.ortam.seabed = Entity(
             model='cube', scale=(size, sk, size), 
             y=self.ortam.SEA_FLOOR_Y - (sk/2), color=color.rgb(139, 90, 43), 
-            texture='brick', unlit=True,collider='box'
+            texture='brick', unlit=True,collider='box',
+            add_to_scene_entities=True
         )
         ck = self.ortam.su_hacmi_yuksekligi * 0.5
         self.ortam.cimen_katmani = Entity(
             model='cube', scale=(size, ck, size), 
             y=(self.ortam.SEA_FLOOR_Y - sk) - (ck/2), color=color.rgb(34, 139, 34), 
-            texture='grass', unlit=True,collider="box"
+            texture='grass', unlit=True,collider="box",
+            add_to_scene_entities=True
         )
 
         # --- 3. ADALAR ---
@@ -416,11 +432,12 @@ class EntityLoader:
 
     # --- 6. SINIRLAR ---
     def build_boundaries(self, s):
+        self.clear_boundaries()
         p = {'model': 'cube', 'color': color.clear, 'visible': False, 'collider': 'box'}
-        Entity(x=s+2, scale=(1, 150, s*2.5), position=(s+2, 0, 0), **p)
-        Entity(x=-s-2, scale=(1, 100, s*2.5), position=(-s-2, 0, 0), **p)
-        Entity(z=s+2, scale=(s*2.5, 150, 1), position=(0, 0, s+2), **p)
-        Entity(z=-s-2, scale=(s*2.5, 150, 1), position=(0, 0, -s-2), **p)
+        self.boundary_entities.append(Entity(x=s+2, scale=(1, 150, s*2.5), position=(s+2, 0, 0), **p))
+        self.boundary_entities.append(Entity(x=-s-2, scale=(1, 100, s*2.5), position=(-s-2, 0, 0), **p))
+        self.boundary_entities.append(Entity(z=s+2, scale=(s*2.5, 150, 1), position=(0, 0, s+2), **p))
+        self.boundary_entities.append(Entity(z=-s-2, scale=(s*2.5, 150, 1), position=(0, 0, -s-2), **p))
 
     # --- 7. ROV MODEL YÜKLEME (YENİ) ---
     def setup_rov(self, rov_entity, model_key):
@@ -486,6 +503,20 @@ class EntityLoader:
             print(f"⚠️ Kaya modeli bulunamadı: {model_path}")
             return None
 
+    def clear_rocks(self):
+        """Daha once uretilen tum kayalari temizler."""
+        for ent in list(self.rock_entities):
+            if ent is not None:
+                destroy(ent)
+        self.rock_entities = []
+
+    def clear_boundaries(self):
+        """Daha once uretilen tum havuz sinir entity'lerini temizler."""
+        for ent in list(self.boundary_entities):
+            if ent is not None:
+                destroy(ent)
+        self.boundary_entities = []
+
     def spawn_rocks(self, count=20, havuz_genisligi=200):
         """
         Havuz içinde rastgele konumlarda kayalar oluşturur.
@@ -495,6 +526,9 @@ class EntityLoader:
             havuz_genisligi: Havuz yarıçapı (default: 200m)
         """
         import random
+
+        # Yeniden sim_olustur cagrilarinda kayalari biriktirme.
+        self.clear_rocks()
 
         # Havuz sınırları: ±havuz_genisligi (x ve z için)
         min_coord = -(havuz_genisligi - 20)

@@ -103,9 +103,14 @@ class FiloInitMixin:
         if ilk_calisma:
             self._baslatma_yapildi = True
             self.minimap(scale=1.0)
-            self.motor_sema_kaydet()
-            self.tum_motor_bv_kutuphanelerini_guncelle()
-            self.kamera_ayarla()
+            aktif_rovs = [
+                r for r in (self.ortam_ref.rovs if self.ortam_ref else [])
+                if r and not (hasattr(r, "is_destroyed") and r.is_destroyed)
+            ]
+            if aktif_rovs:
+                self.motor_sema_kaydet()
+                self.tum_motor_bv_kutuphanelerini_guncelle()
+                self.kamera_ayarla()
 
     def _tek_rov_fizik_kur(self, rov):
         """Tek bir ROV için fiziksel gövde, GNC ve motorları kurar."""
@@ -182,7 +187,13 @@ class FiloInitMixin:
                 if not rov or (hasattr(rov, "is_destroyed") and rov.is_destroyed):  # type: ignore[union-attr]
                     continue
                 if getattr(rov, "physics_node", None) and getattr(rov, "physics_np", None):
-                    p = rov.physics_np.getPos()  # type: ignore[union-attr]
+                    _pnp = rov.physics_np
+                    try:
+                        if _pnp.isEmpty():  # type: ignore[union-attr]
+                            continue
+                    except Exception:
+                        continue
+                    p = _pnp.getPos()  # type: ignore[union-attr]
                     v = rov.physics_node.getLinearVelocity()  # type: ignore[union-attr]
                     if (
                         isnan(p.x) or isnan(p.y) or isnan(p.z) or isnan(v.x) or
@@ -237,11 +248,26 @@ class FiloInitMixin:
         for idx, rov in enumerate(ortam_rovs):
             if not rov or (hasattr(rov, "is_destroyed") and rov.is_destroyed):
                 continue
+            # Ursina Entity'nin Panda3D NodePath'i boşsa (destroy() ya da yeni eklenip henüz
+            # sahne grafiğine bağlanmamışsa) bu frame'i atla
+            try:
+                if rov.isEmpty():
+                    continue
+            except Exception:
+                continue
 
             gat_kodu = int(tahminler[idx]) if idx < tahmin_len else 0  # type: ignore[index]
 
             try:
-                p = rov.physics_np.getPos()
+                # physics_np yoksa veya boşsa bu frame'i atla (getPos() öncesinde kontrol et!)
+                _pnp = getattr(rov, 'physics_np', None)
+                if _pnp is None or _pnp.isEmpty():
+                    continue
+                p = _pnp.getPos()
+
+                # physics_np boşsa (ROV geçiş/silme sırasında) bu frame'i atla
+                if not rov.physics_np or rov.physics_np.isEmpty():
+                    continue
 
                 if not (
                     math.isfinite(p.x) and math.isfinite(p.y) and math.isfinite(p.z) and

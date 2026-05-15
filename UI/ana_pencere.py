@@ -350,7 +350,7 @@ class KomutaMerkezi(QMainWindow):
         # ─ Periyodik güncelleme (1 saniye)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._periyodik_guncelle)
-        self._timer.start(1000)
+        self._timer.start(700)
 
         # İlk güncelleme
         self._periyodik_guncelle()
@@ -365,6 +365,7 @@ class KomutaMerkezi(QMainWindow):
         # (find_rov_by_id + group_id + cache mantığı surucu_panel'da merkezi)
         self.rov_panel.lider_talep.connect(self.surucu_panel._lider_olustur)
         self.rov_panel.takipci_talep.connect(self.surucu_panel._us_a_birak)
+        self.komut_panel.senkronize_talep.connect(self.surucu_panel.senkronize_et)
 
     # ── Periyodik güncelleme ──────────────────────────────────────────────────
     def _periyodik_guncelle(self):

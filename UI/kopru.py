@@ -26,6 +26,7 @@ DURUM_DOSYA  = os.path.join(_ROOT, "UI", "_rov_durumu.json")
 _durum_cache: dict = {}
 _durum_cache_ts: float = 0.0
 _CACHE_SURE = 2.0   # saniye — bu süreden eski veri "bağlantı yok" sayılır
+_DURUM_OKU_CACHE_SURE = 0.35  # hizli UI geri bildirimi icin kisa onbellek
 
 
 def filo_bagla(filo):
@@ -39,7 +40,7 @@ def _durum_oku() -> dict:
     """Durum dosyasını okur; önbellekten döner."""
     global _durum_cache, _durum_cache_ts
     now = time.monotonic()
-    if now - _durum_cache_ts < 0.8:
+    if now - _durum_cache_ts < _DURUM_OKU_CACHE_SURE:
         return _durum_cache
     try:
         with open(DURUM_DOSYA, "r", encoding="utf-8") as f:
@@ -97,6 +98,18 @@ def komut_gonder(komut: str, callback=None):
     threading.Thread(target=_run, daemon=True).start()
 
 
+def seviye_tespit(sonuc: str) -> str:
+    """Komut sonucundan UI durum seviyesini otomatik tespit eder.
+
+    Dönen değer: 'ok', 'warn', 'err'  — durum_guncellendi sinyalinin ikinci argümanı.
+    """
+    if sonuc.startswith("✗"):
+        return "err"
+    if sonuc.startswith("⚠") or sonuc.startswith("📋"):
+        return "warn"
+    return "ok"
+
+
 # ── Simülasyon Durum Sorgu ────────────────────────────────────────────────────
 
 def rov_listesi() -> list[dict]:
@@ -122,9 +135,9 @@ def rov_listesi() -> list[dict]:
         except Exception:
             return []
 
-    # Subprocess: durum dosyasından oku
+    # Subprocess: durum dosyasından oku (timestamp kontrolü ile)
     d = _durum_oku()
-    if d.get("bagli") and d.get("rovlar"):
+    if sim_bagli_mi() and d.get("rovlar"):
         return [
             {
                 "id":       r["id"],
@@ -154,9 +167,60 @@ def grup_bilgisi() -> dict[int, list[int]]:
         except Exception:
             return {}
 
-    # Subprocess: durum dosyasından oku
+    # Subprocess: durum dosyasından oku (timestamp kontrolü ile)
     d = _durum_oku()
-    if d.get("gruplar"):
+    if sim_bagli_mi() and d.get("gruplar"):
         return {int(k): v for k, v in d["gruplar"].items()}
 
     return {}
+
+
+def aktif_gorevler_bilgisi() -> dict:
+    """Aktif görev durumlarını döner. Sadece aynı-process bağlantıda çalışır."""
+    if not bagli_mi():
+        return {}
+    try:
+        sonuc: dict = {}
+
+        # Alan Tarama
+        at = getattr(_filo_ref, "alan_tarama_gorevi", None)
+        if at and getattr(at, "aktif_planlar", None):
+            planlar: dict = {}
+            for g_id, plan in at.aktif_planlar.items():
+                alan = getattr(plan, "alan", None)
+                planlar[int(g_id)] = {
+                    "lider_id":   plan.lider_id,
+                    "rov_sayisi": len(plan.rota_by_rov),
+                    "derinlik":   round(float(plan.derinlik), 1),
+                    "alan": (
+                        getattr(alan, "x_min", 0), getattr(alan, "y_min", 0),
+                        getattr(alan, "x_max", 0), getattr(alan, "y_max", 0),
+                    ) if alan else None,
+                    "gorev_adi":  getattr(plan, "gorev_adi", "alan_tarama"),
+                }
+            if planlar:
+                sonuc["alan_tarama"] = planlar
+
+        # Arama Kurtarma
+        ak = getattr(_filo_ref, "arama_kurtarma_gorevi", None)
+        if ak and getattr(ak, "aktif_plan", None):
+            plan = ak.aktif_plan
+            sonuc["arama_kurtarma"] = {
+                "grup_id":        int(plan.grup_id),
+                "rov_sayisi":     len(plan.rota_by_rov),
+                "hedef_siniflari": sorted(getattr(ak, "hedef_siniflari", [])),
+            }
+
+        # İmha
+        imha = getattr(_filo_ref, "imha_gorevi", None)
+        if imha and (getattr(imha, "hedef", None) is not None
+                     or getattr(imha, "gorevli_rov_id", None) is not None):
+            h = getattr(imha, "hedef", None)
+            sonuc["imha"] = {
+                "hedef":          tuple(float(v) for v in h) if h else None,
+                "gorevli_rov_id": getattr(imha, "gorevli_rov_id", None),
+            }
+
+        return sonuc
+    except Exception:
+        return {}
