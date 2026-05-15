@@ -1081,8 +1081,7 @@ class Ortam:
         self.sun = DirectionalLight()  # type: ignore
         self.sun.look_at(Vec3(1, -1, -1))  # type: ignore
         self.ambient = AmbientLight(color=color.rgba(120, 120, 120, 1))  # type: ignore
-        # [FIX] Sky çift render sorunu - devre dışı bıraktım
-        # self.sky = Sky()  # type: ignore
+        self.sky = Sky()  # type: ignore
         
         # [FIX] Shader ve post-processing devre dışı bırak (çift render kaynağı olabilir)
         try:

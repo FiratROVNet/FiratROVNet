@@ -12,17 +12,18 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-# OpenCV'nin Qt eklentileri ile çakışmayı önle:
-# cv2, kendi Qt5 eklentilerini QT_QPA_PLATFORM_PLUGIN_PATH'e ekleyebiliyor;
-# bunu PyQt5'in diziniyle eziyoruz, böylece doğru 'xcb' eklentisi yüklenir.
+# OpenCV, import edilince QT_QPA_PLATFORM_PLUGIN_PATH'i kendi cv2/qt/plugins
+# dizinine ayarlayabiliyor. PyQt5 conda ortamında farklı bir plugin dizini
+# kullanır; doğru dizini Qt'nin kendisinden okuyup cv2 yolunu eziyoruz.
 try:
-    import PyQt5 as _pyqt5
-    _pyqt5_dir = os.path.dirname(_pyqt5.__file__)
-    _qt_plugins = os.path.join(_pyqt5_dir, "Qt5", "plugins")
+    from PyQt5.QtCore import QLibraryInfo
+    _qt_plugins = QLibraryInfo.location(QLibraryInfo.PluginsPath)
     if os.path.isdir(_qt_plugins):
         os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = _qt_plugins
+        os.environ["QT_PLUGIN_PATH"] = _qt_plugins
 except Exception:
-    pass
+    os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+    os.environ.pop("QT_PLUGIN_PATH", None)
 
 from PyQt5.QtWidgets import QApplication
 from UI.ana_pencere import baslat
