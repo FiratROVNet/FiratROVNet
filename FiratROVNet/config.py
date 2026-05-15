@@ -331,6 +331,22 @@ class AramaKurtarmaAyarlari:
     MIN_CONFIDENCE = 0.45
 
 
+class HedefNesneAyarlari:
+    """
+    Arama kurtarma senaryosunda sahneye yerleştirilen renkli hedef nesneler.
+    """
+    # (isim, HSV-yakın BGR renk tuple, boyut)
+    NESNE_TIPLERI: list[tuple[str, tuple[int, int, int], float]] = [
+        ("kirmizi",  (0,   0,   220), 3.0),
+        ("sari",     (0,   220, 220), 3.0),
+        ("mavi",     (220, 60,  0  ), 3.0),
+        ("yesil",    (0,   180, 0  ), 3.0),
+        ("turuncu",  (0,   140, 255), 3.0),
+    ]
+    VARSAYILAN_DERINLIK: float = -18.0   # Sim Z koordinatı (negatif = derin)
+    MAKSIMUM_NESNE: int = 20
+
+
 class ImhaAyarlari:
     """
     İmha görevi için varsayılan ayarlar.

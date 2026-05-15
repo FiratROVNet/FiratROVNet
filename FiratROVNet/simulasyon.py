@@ -18,11 +18,94 @@ if 'lines' not in Mesh._modes:
 # Yerel modül importları
 from FiratROVNet.config import (  # type: ignore[import-not-found]
     SensorAyarlari, GATLimitleri, HareketAyarlari, 
-    FizikSabitleri, ROVModelleri
+    FizikSabitleri, ROVModelleri, HedefNesneAyarlari
 )
 from FiratROVNet.utils import sim_to_ursina, ursina_to_sim  # type: ignore[import-not-found]
 from FiratROVNet.kutuphane.helper.EntityLoader import EntityLoader  # type: ignore[import-not-found]
 from FiratROVNet.kutuphane.helper.simulasyon_helper import OrtamHelper  # type: ignore[import-not-found]
+
+
+# ============================================================
+# ARAMA HEDEF SINIFI — renkli 3D küre
+# ============================================================
+class AramaHedef(Entity):
+    """
+    Arama kurtarma senaryosunda sahneye yerleştirilen renkli hedef nesne.
+    ROV kamerasına bakıldığında HSV renk filtresi ile tespit edilebilir.
+    """
+    _tum_hedefler: list["AramaHedef"] = []
+
+    def __init__(self, nesne_id: int, renk_ismi: str, sim_x: float, sim_y: float,
+                 sim_z: float | None = None, boyut: float = 3.0, **kwargs):
+        # Sim → Ursina koordinat dönüşümü
+        # Spawn koduyla aynı mantık: Vec3(sim_x, sim_z, sim_y)
+        # Ursina Y = sim_z (negatif = derin, örn. -18 = 18m derinlikte)
+        depth = float(sim_z) if sim_z is not None else float(HedefNesneAyarlari.VARSAYILAN_DERINLIK)
+        u_pos = Vec3(float(sim_x), depth, float(sim_y))
+        # Renk bilgisi (BGR → Ursina RGB)
+        ursina_renk = AramaHedef._isimden_renk(renk_ismi)
+        super().__init__(
+            model='sphere',
+            color=ursina_renk,
+            position=u_pos,
+            scale=boyut,
+            collider='sphere',
+            unlit=True,
+            **kwargs
+        )
+        self.nesne_id   = nesne_id
+        self.renk_ismi  = renk_ismi
+        self.sim_x      = sim_x
+        self.sim_y      = sim_y
+        self.sim_z      = sim_z if sim_z is not None else HedefNesneAyarlari.VARSAYILAN_DERINLIK
+        # Etiket
+        self._etiket = Text(
+            text=f"#{nesne_id} {renk_ismi}",
+            parent=self,
+            y=1.2,
+            scale=12,
+            origin=(0, 0),
+            color=color.white,
+            billboard=True,
+        )
+        AramaHedef._tum_hedefler.append(self)
+
+    @staticmethod
+    def _isimden_renk(isim: str):
+        """Renk isminden Ursina color döndürür."""
+        _map = {
+            "kirmizi":  color.red,
+            "sari":     color.yellow,
+            "mavi":     color.blue,
+            "yesil":    color.green,
+            "turuncu":  color.orange,
+            "beyaz":    color.white,
+            "mor":      color.violet,
+        }
+        return _map.get(isim.lower(), color.white)
+
+    def kaldir(self):
+        """Nesneyi sahneden güvenli şekilde kaldır."""
+        try:
+            if self in AramaHedef._tum_hedefler:
+                AramaHedef._tum_hedefler.remove(self)
+            if self._etiket:
+                destroy(self._etiket)
+            destroy(self)
+        except Exception:
+            pass
+
+    @classmethod
+    def tum_hedefleri_kaldir(cls):
+        for h in list(cls._tum_hedefler):
+            try:
+                if h._etiket:
+                    destroy(h._etiket)
+                destroy(h)
+            except Exception:
+                pass
+        cls._tum_hedefler.clear()
+
 
 # ============================================================
 # 1. ROV SINIFI (Mantık ve Fizik)
@@ -1450,6 +1533,45 @@ class Ortam:
 
         print(f"✅ Yeni ROV-{yeni_id} simülasyona eklendi @ ({rx:.1f}, {ry:.1f}, {rz:.1f})")
         return new_rov
+
+    # ── Arama Hedef Nesneleri ──────────────────────────────────────────────────
+
+    def hedef_nesne_ekle(
+        self,
+        renk_ismi: str = "kirmizi",
+        sim_x: float = 0.0,
+        sim_y: float = 0.0,
+        sim_z: float | None = None,
+        boyut: float = 3.0,
+    ) -> "AramaHedef":
+        """Sahneye arama hedefi olarak renkli bir küre ekler."""
+        mevcut_ids = [h.nesne_id for h in AramaHedef._tum_hedefler]
+        nesne_id   = (max(mevcut_ids) + 1) if mevcut_ids else 0
+        hedef = AramaHedef(
+            nesne_id=nesne_id,
+            renk_ismi=renk_ismi,
+            sim_x=sim_x,
+            sim_y=sim_y,
+            sim_z=sim_z,
+            boyut=boyut,
+        )
+        print(f"🎯 Hedef nesne eklendi: #{nesne_id} ({renk_ismi}) @ ({sim_x:.1f}, {sim_y:.1f}, {sim_z or HedefNesneAyarlari.VARSAYILAN_DERINLIK:.1f})")
+        if getattr(self, "minimap", None):
+            self.minimap._statik_yeniden_ciz()
+        return hedef
+
+    def hedef_nesneleri_temizle(self):
+        """Sahnedeki tüm arama hedef nesnelerini kaldırır."""
+        sayi = len(AramaHedef._tum_hedefler)
+        AramaHedef.tum_hedefleri_kaldir()
+        print(f"🗑️  {sayi} hedef nesne kaldırıldı.")
+
+    def hedef_nesneleri_listele(self) -> list[dict]:
+        """Mevcut hedef nesnelerin listesini döndürür."""
+        return [
+            {"id": h.nesne_id, "renk": h.renk_ismi, "x": h.sim_x, "y": h.sim_y, "z": h.sim_z}
+            for h in AramaHedef._tum_hedefler
+        ]
 
     def ROV(self, rov_id, x=None, y=None, z=None):
         """Konsol: ROV rov_id konumunu (x, y, z) yapar. x,y,z verilmezse sadece mevcut ROV döner."""

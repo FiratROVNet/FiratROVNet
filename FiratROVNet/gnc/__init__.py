@@ -190,6 +190,27 @@ class Filo(FiloInitMixin):
                 self.camera_manager.kamera_ekle(rov_id=rov.id)
             self.camera_manager.yolo_baslat(rov.id, mod=mod)
 
+    def hedef_nesne_ekle(self, renk_ismi: str = "kirmizi", sim_x: float = 0.0,
+                         sim_y: float = 0.0, sim_z=None, boyut: float = 3.0):
+        """Sahneye renkli arama hedefi ekler. Konsol: filo.hedef_nesne_ekle('sari', 50, 80)"""
+        ortam = getattr(self, 'ortam', None)
+        if ortam is None:
+            print("⚠️ Ortam referansı bulunamadı.")
+            return None
+        return ortam.hedef_nesne_ekle(renk_ismi=renk_ismi, sim_x=sim_x, sim_y=sim_y,
+                                       sim_z=sim_z, boyut=boyut)
+
+    def hedef_nesneleri_temizle(self):
+        """Sahnedeki tüm arama hedef nesnelerini kaldırır."""
+        ortam = getattr(self, 'ortam', None)
+        if ortam:
+            ortam.hedef_nesneleri_temizle()
+
+    def hedef_nesneleri_listele(self) -> list:
+        """Mevcut hedef nesnelerin listesini döndürür."""
+        ortam = getattr(self, 'ortam', None)
+        return ortam.hedef_nesneleri_listele() if ortam else []
+
     def yolo_durdur(self, rov_id):
         """Seçili ROV'un YOLO sistemini kapatır."""
         return self.camera_manager.yolo_durdur(rov_id)
