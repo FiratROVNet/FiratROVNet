@@ -172,9 +172,23 @@ class Filo(FiloInitMixin):
 
 # ==================== KAMERA VE YOLO METOTLARI ====================
 
-    def yolo_baslat(self, rov_id, model_path='yolov8n.pt', islem_hizi=3, conf: float = 0.5):
-        """Seçili ROV kamerasında YOLO nesne tespitini başlatır."""
-        return self.camera_manager.yolo_baslat(rov_id, model_path, islem_hizi, conf=conf)
+    def yolo_baslat(self, rov_id, model_path='yolov8n.pt', islem_hizi=3, conf: float = 0.5, mod=None):
+        """Seçili ROV kamerasında tespit sistemini başlatır."""
+        return self.camera_manager.yolo_baslat(rov_id, model_path, islem_hizi, conf=conf, mod=mod)
+
+    def tespit_modu_sec(self, rov_id, mod: str):
+        """Çalışma anında tespit modunu değiştirir ('renk'|'model'|'hibrit')."""
+        return self.camera_manager.tespit_modu_sec(rov_id, mod)
+
+    def tespit_baslat_grup(self, g_id, mod=None):
+        """Gruptaki tüm ROV'lar için tespit sistemini başlatır."""
+        rovlar = self.g_rovs.get(g_id) or []
+        for rov in rovlar:
+            if rov is None:
+                continue
+            if rov.id not in self.camera_manager.aktif_kameralar:
+                self.camera_manager.kamera_ekle(rov_id=rov.id)
+            self.camera_manager.yolo_baslat(rov.id, mod=mod)
 
     def yolo_durdur(self, rov_id):
         """Seçili ROV'un YOLO sistemini kapatır."""
@@ -720,20 +734,27 @@ class Filo(FiloInitMixin):
     
     def kamera_ayarla(self, *args, **kwargs):
         """Kamera yönetimini camera_manager'a yönlendir (kamera_ekle ile aynı API)."""
-        kamera_id = self.camera_manager.aktif_kamera_listesi()
-        for kamera in kamera_id:
-            # YOLO aktif olan kameraları silme
-            if kamera in self.camera_manager.aktif_yolo_gorevleri:
-                continue
-            self.camera_manager.kamera_kaldir(kamera)
-        kamera = self.camera_manager.kamera_ekle(*args, **kwargs)
-        if kamera is not None:
+        cm = self.camera_manager
+        # Tespit aktifse → kamerayı kapatırken global'i sıfırlama, yeni ROV'a taşı
+        tespit_aktifti = cm._global_tespit_aktif
+        eski_mod       = cm._global_tespit_mod
+        eski_conf      = cm._global_tespit_conf
+        # Tüm eski kameraları temizle (tespit dahil, ama global bayrak korunuyor)
+        for kamera in list(cm.aktif_kamera_listesi()):
+            cm.kamera_kaldir(kamera)
+        # Yeni kamerayı ekle
+        result = cm.kamera_ekle(*args, **kwargs)
+        # Tespit aktifti → yeni ROV'da yeniden başlat
+        if tespit_aktifti and result is not None:
             rov_id = kwargs.get("rov_id", args[0] if args else 0)
+            cm._global_tespit_aktif = True  # kamera_kaldir sıfırlamış olabilir
+            cm._global_tespit_mod   = eski_mod
+            cm._global_tespit_conf  = eski_conf
             try:
-                self.camera_manager.yolo_baslat(rov_id)
+                cm.yolo_baslat(rov_id, mod=eski_mod, conf=eski_conf)
             except Exception as exc:
-                self._last_yolo_auto_error = exc  # type: ignore[assignment]
-        return kamera
+                print(f"⚠️ [KAMERA] Tespit yeniden başlatılamadı: {exc}")
+        return result
     
     def kamera_kaldir(self, rov_id):
         """Kamera kaldırma işlemini camera_manager'a yönlendir."""

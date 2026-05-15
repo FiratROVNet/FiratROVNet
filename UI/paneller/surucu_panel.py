@@ -481,6 +481,25 @@ class LiderGrubu(_DropAlan):
         gorev_ust.addWidget(btn_dur)
         lay.addLayout(gorev_ust)
 
+        # ── Arama & Kurtarma: Tespit modu satırı ─────────────────────────
+        self._tespit_satiri = QWidget()
+        tespit_lay = QHBoxLayout(self._tespit_satiri)
+        tespit_lay.setContentsMargins(0, 0, 0, 0)
+        tespit_lay.setSpacing(3)
+        tespit_lbl = QLabel("🎯 Tespit:")
+        tespit_lbl.setFont(QFont("Consolas", 7))
+        tespit_lbl.setStyleSheet(f"color:{METiN_KOYU}; border:none;")
+        self._cmb_tespit = QComboBox()
+        for ad in ("Hibrit (renk+model)", "Sadece Renk", "Sadece Model"):
+            self._cmb_tespit.addItem(ad)
+        self._cmb_tespit.setStyleSheet(_COMBO_CSS)
+        self._cmb_tespit.setFixedHeight(22)
+        tespit_lay.addWidget(tespit_lbl)
+        tespit_lay.addWidget(self._cmb_tespit, 1)
+        self._tespit_satiri.setVisible(False)
+        lay.addWidget(self._tespit_satiri)
+        self._cmb_gorev.currentIndexChanged.connect(self._gorev_secildi)
+
         # Alan koordinatları (X1,Y1 → X2,Y2)
         alan_lbl = QLabel("  Alan: X1  Y1  →  X2  Y2")
         alan_lbl.setFont(QFont("Consolas", 7))
@@ -610,6 +629,16 @@ class LiderGrubu(_DropAlan):
         self._mod_lbl.setText("⚙ Lider Takip")
         self.komut_uretildi.emit(k, f"Grup-{g_id} → Formasyon: {isim} | mod=1 (Lider Takip)")
 
+    def _gorev_secildi(self, idx: int):
+        """Görev ComboBox değişince arama kurtarma'ya özel alanları göster/gizle."""
+        _, tp = _GOREVLER[idx]
+        self._tespit_satiri.setVisible(tp == "arama_kurtarma")
+
+    def _tespit_mod_str(self) -> str:
+        """Tespit modu ComboBox'ından 'hibrit'|'renk'|'model' döndürür."""
+        i = self._cmb_tespit.currentIndex()
+        return ("hibrit", "renk", "model")[i]
+
     def _alan_oku(self) -> tuple[float, float, float, float] | None:
         """X1,Y1,X2,Y2 alanlarını oku. Eksikse None döner."""
         def _f(w: QLineEdit) -> float | None:
@@ -627,6 +656,7 @@ class LiderGrubu(_DropAlan):
         idx   = self._cmb_gorev.currentIndex()
         _, tp = _GOREVLER[idx]
         g_id  = self.g_idx
+        mod   = None  # tespit modu (sadece arama_kurtarma için)
         alan  = self._alan_oku()
         if alan is None:
             for w in (self._ax1, self._ay1, self._ax2, self._ay2):
@@ -642,6 +672,7 @@ class LiderGrubu(_DropAlan):
                         f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}), "
                         f"surekli_tarama=True, sessiz=True)")
         elif tp == "arama_kurtarma":
+            mod = self._tespit_mod_str()
             k_baslat = (f"filo.arama_kurtarma_gorevi.baslat("
                         f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}), "
                         f"min_confidence=0.45, sessiz=True)")
@@ -662,6 +693,8 @@ class LiderGrubu(_DropAlan):
             f"[filo._rov_hedefleri.pop(r.id, None) for r in (filo.g_rovs.get({g_id}) or []) if r]",
             k_baslat,
         ]
+        if tp == "arama_kurtarma":
+            komutlar.append(f"filo.tespit_baslat_grup(g_id={g_id}, mod='{mod}')")
         komut_gonder("\n".join(komutlar))
         self.komut_uretildi.emit(
             k_baslat, f"Grup-{g_id} → Görev: {_GOREVLER[idx][0]} | Eski görevler durduruldu"

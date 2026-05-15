@@ -294,6 +294,36 @@ class SonarHaritalamaAyarlari:
     GURULTU_SIGMA = 0.35
 
 
+class TespitAyarlari:
+    """
+    ROV kamera tespit sistemi ayarları.
+    MOD seçenekleri: 'renk' | 'model' | 'hibrit'
+      - renk   : Sadece HSV renk maskesi ile tespit
+      - model  : Sadece YOLO modeli ile tespit
+      - hibrit : Önce YOLO; güven < HIBRIT_MIN_CONF ise renk filtresi devreye girer
+    """
+    MOD = "hibrit"            # Aktif tespit modu
+    HIBRIT_MIN_CONF = 0.40    # Hibrit modda YOLO güveni bu değerin altındaysa renk filtresi çalışır
+
+    # Offscreen render buffer çözünürlüğü
+    KAMERA_GENISLIK = 640
+    KAMERA_YUKSEKLIK = 480
+
+    # HSV renk aralıkları — her giriş (isim, lower_hsv, upper_hsv) tuple'ı
+    # H: 0-179, S: 0-255, V: 0-255  (OpenCV HSV)
+    RENK_ARALIKLAR = [
+        ("kirmizi",  (0,   120,  70),  (10,  255, 255)),
+        ("kirmizi2", (170, 120,  70),  (179, 255, 255)),  # kırmızı wrap-around
+        ("sari",     (20,  100,  100), (35,  255, 255)),
+        ("mavi",     (100, 120,  70),  (130, 255, 255)),
+        ("yesil",    (40,  70,   70),  (80,  255, 255)),
+        ("turuncu",  (10,  150,  100), (20,  255, 255)),
+    ]
+
+    # Kontur minimum piksel alanı (gürültü filtresi)
+    MIN_KONTUR_ALANI = 400
+
+
 class AramaKurtarmaAyarlari:
     """
     Arama kurtarma görevi için varsayılan ayarlar.

@@ -208,6 +208,37 @@ class AramaKurtarmaSekmesi(QWidget):
 
         lay.addWidget(param_kutu)
 
+        # ── Tespit Modu Kartı ─────────────────────────────────────────────
+        tespit_kutu = QGroupBox("🎯 TESPİT MODU")
+        tespit_lay  = QGridLayout(tespit_kutu)
+        tespit_lay.setSpacing(8)
+        tespit_lay.setColumnStretch(1, 1)
+
+        tespit_lay.addWidget(_etiket("Mod"), 0, 0)
+        self.cmb_mod = QComboBox()
+        self.cmb_mod.addItem("🔀 Hibrit (renk + model)", "hibrit")
+        self.cmb_mod.addItem("🎨 Sadece Renk Filtresi",  "renk")
+        self.cmb_mod.addItem("🤖 Sadece YOLO Modeli",    "model")
+        tespit_lay.addWidget(self.cmb_mod, 0, 1)
+
+        tespit_lay.addWidget(_etiket("Güven Eşiği (hibrit)"), 1, 0)
+        self.spin_hibrit_conf = QDoubleSpinBox()
+        self.spin_hibrit_conf.setRange(0.05, 1.0)
+        self.spin_hibrit_conf.setValue(0.40)
+        self.spin_hibrit_conf.setSingleStep(0.05)
+        tespit_lay.addWidget(self.spin_hibrit_conf, 1, 1)
+
+        btn_mod_uygula = QPushButton("⚡ Modu Anında Uygula")
+        btn_mod_uygula.setToolTip("Tespit modunu çalışan simülasyona hemen uygular")
+        btn_mod_uygula.clicked.connect(self._tespit_mod_uygula)
+        tespit_lay.addWidget(btn_mod_uygula, 2, 0, 1, 2)
+
+        self.lbl_mod_durum = QLabel("—")
+        self.lbl_mod_durum.setStyleSheet(f"color: {VURGU}; font-size: 8pt;")
+        tespit_lay.addWidget(self.lbl_mod_durum, 3, 0, 1, 2)
+
+        lay.addWidget(tespit_kutu)
+
         btn_lay = QHBoxLayout()
         btn_basla = QPushButton("▶  Aramayı Başlat")
         btn_basla.setObjectName("btn_basla")
@@ -219,6 +250,22 @@ class AramaKurtarmaSekmesi(QWidget):
         btn_lay.addWidget(btn_durdur)
         lay.addLayout(btn_lay)
         lay.addStretch()
+
+    def _tespit_mod_uygula(self):
+        """Seçilen tespit modunu anında çalışan tüm tespit görevlerine uygular."""
+        mod  = self.cmb_mod.currentData()
+        conf = self.spin_hibrit_conf.value()
+        g_id = self.spin_grup.value()
+        k = (
+            f"[filo.camera_manager.tespit_modu_sec(r.id, '{mod}') "
+            f"for r in (filo.g_rovs.get({g_id}) or []) if r is not None "
+            f"and r.id in filo.camera_manager.aktif_yolo_gorevleri];"
+            f"filo.camera_manager._global_tespit_mod='{mod}';"
+            f"filo.camera_manager._global_tespit_conf={conf:.2f}"
+        )
+        komut_gonder(k)
+        self.lbl_mod_durum.setText(f"✔ Uygulandı → {mod}  (eşik: {conf:.2f})")
+        self.komut_uretildi.emit(k, f"Tespit modu → {mod}")
 
     def _basla(self):
         x1, y1, x2, y2 = self._alan_al()
@@ -242,7 +289,12 @@ class AramaKurtarmaSekmesi(QWidget):
             f"Arama Kurtarma → Grup-{g_id} | Hedef: {siniflar_raw or 'hepsi'} "
             f"| Model: {model} | Güven: {guven:.2f}"
         )
+        # Tespit sistemini de başlat (seçilen modla)
+        mod_veri = self.cmb_mod.currentData()
+        tespit_komutu = f"filo.tespit_baslat_grup(g_id={g_id}, mod='{mod_veri}')"
         komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
+        komut_gonder(tespit_komutu)
+        self.lbl_mod_durum.setText(f"▶ Tespit başlatıldı → {mod_veri}")
         self.komut_uretildi.emit(komut, aciklama)
 
     def _durdur(self):
