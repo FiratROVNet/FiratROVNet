@@ -22,8 +22,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from FiratROVNet.gnc import Filo
+from FiratROVNet.model_paths import GAT_MODEL, path_str
 
-MODEL_DOSYA_ADI = "rov_modeli_multi.pth"
+MODEL_DOSYA_ADI = path_str(GAT_MODEL)
 GRAFIK_DOSYA_ADI = "gat_egitim_grafigi.png"
 
 

@@ -31,7 +31,7 @@ class AramaKurtarmaGorevi:
         grup_id: int,
         alan,
         hedef_siniflari: Iterable[str] | None = None,
-        model_path: str = "yolov8n.pt",
+        model_path: str | None = None,
         derinlik: float = -20.0,
         min_confidence: float = AramaKurtarmaAyarlari.MIN_CONFIDENCE,
         gereken_rov_sayisi: int | None = None,

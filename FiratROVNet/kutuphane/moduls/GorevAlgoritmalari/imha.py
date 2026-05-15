@@ -68,7 +68,7 @@ class ImhaGorevi:
         grup_id: int,
         alan,
         hedef_siniflari: Iterable[str] | None = None,
-        model_path: str = "yolov8n.pt",
+        model_path: str | None = None,
         derinlik: float = -20.0,
         imha_mesafesi: float = 8.0,
         gereken_rov_sayisi: int | None = None,

@@ -5,6 +5,7 @@ import numpy as np
 
 from .replay_buffer import ReplayBuffer
 from .sac_agent import SACAgent
+from FiratROVNet.model_paths import SAC_ROLL_PITCH_DIR
 
 
 class SAC:
@@ -61,7 +62,7 @@ class SAC:
         self._done_since_last_step = set()
 
         # --- Dosya Kayıt Yolları ---
-        self.checkpoint_dir = Path(__file__).resolve().parent / "checkpoints"
+        self.checkpoint_dir = SAC_ROLL_PITCH_DIR
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.best_model_path = self.checkpoint_dir / "sac_roll_pitch_best.pt"
         self.latest_model_path = self.checkpoint_dir / "sac_roll_pitch_latest.pt"

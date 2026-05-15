@@ -16,6 +16,7 @@ from panda3d.bullet import BulletWorld  # type: ignore[import]
 
 # Yerel modül importları
 from ..config import cfg, GATLimitleri, SensorAyarlari, HareketAyarlari, BasitKalmanFiltresi, HavuzAyarlari, Hidrodinamik, RolDerinlikAyarlari  # type: ignore[import]
+from ..model_paths import GAT_MODEL, YOLOV8N_MODEL, path_str  # type: ignore[import]
 from ..kutuphane.helper.gnc_helper.mixins.formation import Formasyon  # type: ignore[import]
 from ..hull import HullManager  # type: ignore[import]
 from FiratROVNet.kutuphane.helper.gnc_helper import FiloHelper, TemelGNCHelper  # type: ignore[import]
@@ -24,6 +25,7 @@ from FiratROVNet.kutuphane.moduls import (  # type: ignore[import]
     MotorDuzeni,
     PID,
     BARUI,
+    PanelManager,
     AlanTaramaGorevi,
     AramaKurtarmaGorevi,
     ImhaGorevi,
@@ -65,11 +67,12 @@ class Filo(FiloInitMixin):
         self.modul = ModulYardimcisi(self)
         self.motor_duzeni = MotorDuzeni(self)
         self.pid = PID()
+        self.panels = PanelManager()
         # PID barlarinin acilis degerleri — PIDAyarlari'dan al (yaw ekseni referans)
         from ..config import PIDAyarlari as _PA
         self.pid_default_params = {"Kp": _PA.STAB_Kp, "Ki": _PA.STAB_Ki, "Kd": _PA.STAB_Kd}
         self.pid_params = dict(self.pid_default_params)
-        self.pid_ui = BARUI()
+        self.pid_ui = self.panels.register("pid", BARUI())
         self.alan_tarama_gorevi = AlanTaramaGorevi(self)
         self.arama_kurtarma_gorevi = AramaKurtarmaGorevi(self)
         self.imha_gorevi = ImhaGorevi(self)
@@ -169,8 +172,9 @@ class Filo(FiloInitMixin):
 
 # ==================== KAMERA VE YOLO METOTLARI ====================
 
-    def yolo_baslat(self, rov_id, model_path='yolov8n.pt', islem_hizi=3):
+    def yolo_baslat(self, rov_id, model_path=None, islem_hizi=3):
         """Seçili ROV kamerasında YOLO nesne tespitini başlatır."""
+        model_path = path_str(YOLOV8N_MODEL) if model_path is None else model_path
         return self.camera_manager.yolo_baslat(rov_id, model_path, islem_hizi)
 
     def yolo_durdur(self, rov_id):
@@ -459,7 +463,7 @@ class Filo(FiloInitMixin):
         try:
             # Lazy import: Circular import sorununu önle
             from GAT.gat_test import FiratAnalizci  # type: ignore[import]
-            self.gat = FiratAnalizci(model_yolu="rov_modeli_multi.pth")  # type: ignore[assignment]
+            self.gat = FiratAnalizci(model_yolu=path_str(GAT_MODEL))  # type: ignore[assignment]
             print("✅ GAT modeli yüklendi.")
         except Exception as e:
             print(f"⚠️ GAT modeli yüklenemedi, AI devre dışı: {e}")
@@ -867,8 +871,8 @@ class Filo(FiloInitMixin):
     def _apf_guc_hud_guncelle(self, process_input: bool = True, draw: bool = True):
         try:
             if self.apf_guc_hud is None:
-                from FiratROVNet.apf_guc_hud import APFGucHUD  # type: ignore[import-not-found]
-                self.apf_guc_hud = APFGucHUD(self)
+                from FiratROVNet.kutuphane.moduls.Panels import APFGucHUD  # type: ignore[import-not-found]
+                self.apf_guc_hud = self.panels.register("apf_guc", APFGucHUD(self))
                 if self._apf_guc_hud_rov_ids is not None:
                     self.apf_guc_hud.set_rov_ids(self._apf_guc_hud_rov_ids)
             self.apf_guc_hud.update(process_input=process_input, draw=draw)
