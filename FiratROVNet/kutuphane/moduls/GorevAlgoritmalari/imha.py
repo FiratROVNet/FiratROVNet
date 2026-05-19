@@ -132,6 +132,8 @@ class ImhaGorevi:
         self.gorevli_rov_id = None
         self.tespit = None
         self.hedef_entity = None
+        from FiratROVNet.kutuphane.moduls.GorevAlgoritmalari.ortak import minimap_gorev_alanini_temizle
+        minimap_gorev_alanini_temizle(self.filo)
 
     def _en_yakin_rov(self, grup_id: int, hedef: tuple[float, float, float]):
         adaylar = en_iyi_rovlari_sec(

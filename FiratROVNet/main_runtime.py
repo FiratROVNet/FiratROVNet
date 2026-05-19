@@ -1,3 +1,4 @@
+import math
 import os
 import json
 import subprocess
@@ -101,6 +102,8 @@ def konsol_komutlari_ekle(app, filo):
         if rov is None:
             print(f"⚠️ ROV-{rov_id} bulunamadı.")
             return False
+        if group_id is None or (isinstance(group_id, str) and str(group_id).strip().lower() in ("", "none")):
+            return filo.rov_usye_al(int(rov_id))
         yeni_grup = int(group_id)
         rov.group_id = yeni_grup
         if role is not None:
@@ -109,7 +112,7 @@ def konsol_komutlari_ekle(app, filo):
                 rov._etiket_guncelle()
         if mod is not None and getattr(rov, "gnc", None) is not None:
             rov.gnc.mod = int(mod)
-        if yeni_grup > 0:
+        if yeni_grup >= 0:
             if not isinstance(getattr(filo, "aktif_formasyon", None), dict):
                 filo.aktif_formasyon = {}
             filo.aktif_formasyon.setdefault(
@@ -128,6 +131,7 @@ def konsol_komutlari_ekle(app, filo):
     app.konsola_ekle("get", lambda rov_id, veri_tipi: filo.get(rov_id, veri_tipi))
     app.konsola_ekle("set", lambda rov_id, ayar_adi, deger: filo.set(rov_id, ayar_adi, deger))
     app.konsola_ekle("grup_degistir", grup_degistir)
+    app.konsola_ekle("rov_usye_al", filo.rov_usye_al)
     app.konsola_ekle("Ada", lambda ada_id, x=None, y=None: app.Ada(ada_id, x, y))
     app.konsola_ekle("ROV", lambda rov_id, x=None, y=None, z=None: app.ROV(rov_id, x, y, z))
     app.konsola_ekle("filo", filo)
@@ -243,7 +247,7 @@ class KomutaArayuzu:
                             "gat_kodu": int(getattr(rov, "gat_kodu", 0)),
                             "batarya": round(batarya, 2),
                             "hiz": round(hiz, 2),
-                            "grup_id": int(getattr(rov, "group_id", 0)),
+                            "grup_id": getattr(rov, "group_id", None),
                         }
                     )
                 except Exception:
@@ -251,6 +255,8 @@ class KomutaArayuzu:
 
             gruplar = {}
             for g_id, grup in self.filo.g_rovs.items():
+                if g_id is None:
+                    continue
                 aktif = [
                     int(rov.id)
                     for rov in (grup or [])
@@ -286,6 +292,10 @@ class KomutaArayuzu:
                 "ROV": ROV,
                 "ui_rov_ekle": self.rov_ekle,
                 "ui_rov_cikar": self.rov_cikar,
+                "ui_minimap_secim_baslat": ui_minimap_secim_baslat,
+                "ui_minimap_secim_iptal": ui_minimap_secim_iptal,
+                "ui_minimap_secim_mod_kapat": ui_minimap_secim_mod_kapat,
+                "ui_minimap_gorev_alan_temizle": ui_minimap_gorev_alan_temizle,
                 "grup_degistir": getattr(self.app, "konsol_verileri", {}).get("grup_degistir"),
             }
             yasakli_oruntuler = (
@@ -376,6 +386,8 @@ def aktif_grup_idleri(filo):
     gruplar = []
     try:
         for g_id, grup in filo.g_rovs.items():
+            if g_id is None:
+                continue
             aktif = [rov for rov in (grup or []) if rov and not getattr(rov, "is_destroyed", False)]
             if aktif:
                 gruplar.append(g_id)
@@ -469,14 +481,252 @@ def sonraki_rov(filo, bilgi_rov_id):
     return bilgi_rov_id
 
 
+def minimap_secim_dosya_yolu(app) -> str:
+    script_dir = getattr(app, "_firat_script_dir", None)
+    if not script_dir:
+        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(script_dir, "UI", "_minimap_secim.json")
+
+
+def _minimap_secim_yaz(app, payload: dict):
+    yol = minimap_secim_dosya_yolu(app)
+    payload = {**payload, "timestamp": time.time()}
+    os.makedirs(os.path.dirname(yol), exist_ok=True)
+    tmp = yol + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as dosya:
+        json.dump(payload, dosya, ensure_ascii=False)
+    os.replace(tmp, yol)
+
+
+def ui_minimap_secim_aktif(app) -> bool:
+    """UI harita seçim modu açıkken minimap tıklaması navigasyon/A* tetiklemez."""
+    return getattr(app, "_ui_minimap_picker", None) is not None
+
+
+def _poligon_kapat_yakin_mi(yeni: tuple[float, float], ilk: tuple[float, float], n_kose: int, havuz_gen: float) -> bool:
+    if n_kose < 3:
+        return False
+    esik = max(12.0, float(havuz_gen) * 0.06)
+    return math.hypot(yeni[0] - ilk[0], yeni[1] - ilk[1]) <= esik
+
+
+def _poligon_ozet(noktalar: list) -> tuple[float, float, float, float, float, float]:
+    xs = [float(p[0]) for p in noktalar]
+    ys = [float(p[1]) for p in noktalar]
+    x_min, x_max = min(xs), max(xs)
+    y_min, y_max = min(ys), max(ys)
+    cx = sum(xs) / len(xs)
+    cy = sum(ys) / len(ys)
+    return x_min, y_min, x_max, y_max, cx, cy
+
+
+def minimap_tiklama_to_sim(app, local_pos) -> tuple[float, float] | None:
+    """Minimap yerel tıklamayı simülasyon X,Y (düzlem) koordinatına çevirir."""
+    if local_pos is None:
+        return None
+    havuz = float(getattr(app, "havuz_genisligi", 200) or 200)
+    olcek = havuz * 2.0
+    return float(local_pos.x) * olcek, float(local_pos.y) * olcek
+
+
+def ui_minimap_secim_baslat(app, mod: str = "alan", serit_araligi: float = 15.0):
+    mod = "nokta" if str(mod).strip().lower() == "nokta" else "alan"
+    serit = max(1.0, float(serit_araligi or 15.0))
+    setattr(app, "_ui_minimap_serit_araligi", serit)
+    app._ui_minimap_picker = {"mod": mod, "noktalar": [], "serit_araligi": serit}
+    mm = getattr(app, "minimap", None)
+    if mm is not None:
+        mm.visible = True
+        mm.update_path([])
+        if mod == "alan" and hasattr(mm, "alan_secim_baslat"):
+            mm.alan_secim_baslat()
+    mesaj = (
+        "Minimap: köşeleri tıklayın, kapatmak için 1. noktaya tekrar tıklayın (A* kapalı)"
+        if mod == "alan"
+        else "Minimap: hedef noktaya sol tıklayın (A* kapalı)"
+    )
+    _minimap_secim_yaz(
+        app,
+        {
+            "aktif": True,
+            "tamamlandi": False,
+            "iptal": False,
+            "mod": mod,
+            "noktalar": [],
+            "mesaj": mesaj,
+        },
+    )
+    print(f"🗺️ [UI] Haritadan seçim: {mesaj} (Esc = iptal)")
+
+
+def ui_minimap_gorev_alan_temizle(app):
+    """Aktif görev minimap alan çizimini kaldırır."""
+    mm = getattr(app, "minimap", None)
+    if mm is not None and hasattr(mm, "alan_gorev_temizle"):
+        mm.alan_gorev_temizle()
+    setattr(app, "_ui_minimap_gorev_poligon", None)
+
+
+def ui_minimap_secim_mod_kapat(app):
+    """Seçim modunu kapatır; tamamlanmış alan çizimine dokunmaz (JSON iptal yazmaz)."""
+    app._ui_minimap_picker = None
+    mm = getattr(app, "minimap", None)
+    if mm is not None and hasattr(mm, "alan_secim_gecici_temizle"):
+        mm.alan_secim_gecici_temizle()
+    poligon = getattr(app, "_ui_minimap_gorev_poligon", None)
+    if mm is not None and poligon and hasattr(mm, "alan_gorev_goster"):
+        serit = float(getattr(app, "_ui_minimap_serit_araligi", 15.0) or 15.0)
+        mm.alan_gorev_goster(poligon, serit_araligi=serit)
+
+
+def ui_minimap_secim_iptal(app, gorev_gorselini_temizle: bool = False):
+    app._ui_minimap_picker = None
+    mm = getattr(app, "minimap", None)
+    if mm is not None:
+        if gorev_gorselini_temizle:
+            if hasattr(mm, "alan_secim_temizle"):
+                mm.alan_secim_temizle()
+        elif hasattr(mm, "alan_secim_gecici_temizle"):
+            mm.alan_secim_gecici_temizle()
+        mm.update_path([])
+    if gorev_gorselini_temizle:
+        ui_minimap_gorev_alan_temizle(app)
+    _minimap_secim_yaz(
+        app,
+        {
+            "aktif": False,
+            "tamamlandi": False,
+            "iptal": True,
+            "mod": None,
+            "noktalar": [],
+            "mesaj": "Seçim iptal edildi.",
+        },
+    )
+    print("🗺️ [UI] Haritadan seçim iptal edildi.")
+
+
+def minimap_ui_secim_isle(app, filo, bilgi_rov_id) -> bool:
+    """Aktif UI seçim modundaysa tıklamayı işler ve True döner."""
+    picker = getattr(app, "_ui_minimap_picker", None)
+    if not picker or not (hasattr(app, "minimap") and mouse.hovered_entity == app.minimap):
+        return False
+
+    sim_xy = minimap_tiklama_to_sim(app, mouse.point)
+    if sim_xy is None:
+        return True
+
+    sx, sy = sim_xy
+    mod = picker.get("mod", "alan")
+    mm = getattr(app, "minimap", None)
+
+    if mod == "nokta":
+        app._ui_minimap_picker = None
+        _minimap_secim_yaz(
+            app,
+            {
+                "aktif": False,
+                "tamamlandi": True,
+                "iptal": False,
+                "mod": "nokta",
+                "x": sx,
+                "y": sy,
+                "merkez_x": sx,
+                "merkez_y": sy,
+                "noktalar": [[sx, sy]],
+                "mesaj": f"Nokta: ({sx:.1f}, {sy:.1f})",
+            },
+        )
+        print(f"🗺️ [UI] Seçilen nokta: X={sx:.1f}  Y={sy:.1f}")
+        return True
+
+    # ── Çokgen alan: köşe ekle veya 1. noktaya dönünce kapat ──
+    havuz = float(getattr(app, "havuz_genisligi", 200) or 200)
+    mevcut = list(picker.get("noktalar") or [])
+
+    if len(mevcut) >= 3 and _poligon_kapat_yakin_mi((sx, sy), tuple(mevcut[0]), len(mevcut), havuz):
+        poligon = mevcut
+        x_min, y_min, x_max, y_max, cx, cy = _poligon_ozet(poligon)
+        app._ui_minimap_picker = None
+        if mm is not None and hasattr(mm, "alan_gorev_goster"):
+            serit = float(picker.get("serit_araligi", getattr(app, "_ui_minimap_serit_araligi", 15.0)) or 15.0)
+            mm.alan_gorev_goster(poligon, serit_araligi=serit)
+            setattr(app, "_ui_minimap_gorev_poligon", poligon)
+            setattr(app, "_ui_minimap_serit_araligi", serit)
+        _minimap_secim_yaz(
+            app,
+            {
+                "aktif": False,
+                "tamamlandi": True,
+                "iptal": False,
+                "mod": "alan",
+                "x_min": x_min,
+                "y_min": y_min,
+                "x_max": x_max,
+                "y_max": y_max,
+                "merkez_x": cx,
+                "merkez_y": cy,
+                "noktalar": poligon,
+                "mesaj": (
+                    f"Alan merkezi: ({cx:.1f}, {cy:.1f}) | "
+                    f"Tarama kutusu: ({x_min:.0f},{y_min:.0f})–({x_max:.0f},{y_max:.0f})"
+                ),
+            },
+        )
+        print(
+            f"🗺️ [UI] Alan seçildi | merkez=({cx:.1f},{cy:.1f}) | "
+            f"kutu=[{x_min:.1f}–{x_max:.1f}]×[{y_min:.1f}–{y_max:.1f}]"
+        )
+        return True
+
+    mevcut.append([round(sx, 1), round(sy, 1)])
+    picker["noktalar"] = mevcut
+    if mm is not None and hasattr(mm, "alan_secim_ciz"):
+        mm.alan_secim_ciz(mevcut, kapatildi=False)
+
+    if len(mevcut) == 1:
+        mesaj = f"Köşe 1: ({sx:.1f}, {sy:.1f}) — diğer köşeleri tıklayın"
+    elif len(mevcut) == 2:
+        mesaj = f"Köşe {len(mevcut)} eklendi — en az 3 köşe, sonra 1. noktaya tıklayarak kapatın"
+    else:
+        mesaj = (
+            f"Köşe {len(mevcut)} eklendi — alanı kapatmak için "
+            f"1. noktaya ({mevcut[0][0]:.0f}, {mevcut[0][1]:.0f}) tekrar tıklayın"
+        )
+    _minimap_secim_yaz(
+        app,
+        {
+            "aktif": True,
+            "tamamlandi": False,
+            "iptal": False,
+            "mod": "alan",
+            "noktalar": mevcut,
+            "mesaj": mesaj,
+        },
+    )
+    print(f"🗺️ [UI] Köşe {len(mevcut)}: ({sx:.1f}, {sy:.1f})")
+    return True
+
+
+def minimap_tiklama_isle(app, filo, bilgi_rov_id):
+    """Sol tık: önce UI koordinat seçimi, yoksa normal navigasyon hedefi."""
+    if minimap_ui_secim_isle(app, filo, bilgi_rov_id):
+        dirty = getattr(app, "mark_ui_state_dirty", None)
+        if callable(dirty):
+            dirty()
+        return
+    minimap_hedef_ata(app, filo, bilgi_rov_id)
+
+
 def minimap_hedef_ata(app, filo, bilgi_rov_id):
+    if ui_minimap_secim_aktif(app):
+        return
     if not (hasattr(app, "minimap") and mouse.hovered_entity == app.minimap):
         return
-    local_pos = mouse.point
-    if local_pos is None:
+    sim_xy = minimap_tiklama_to_sim(app, mouse.point)
+    if sim_xy is None:
         return
-
-    sim_x, sim_y, mevcut_z = local_pos.x * 400, local_pos.y * 400, -20
+    sim_x, sim_y = sim_xy
+    mevcut_z = -20
     rov = filo.find_rov_by_id(bilgi_rov_id)
     if rov is None:
         return

@@ -202,19 +202,20 @@ except Exception as e:
 # _lider_olustur TTL token
 try:
     sp2 = SurucuPanel(None)
-    _veri = {"id": 0, "rol": 0, "grup_id": 0, "batarya": 1.0,
+    _veri = {"id": 0, "rol": 0, "grup_id": None, "batarya": 1.0,
              "hiz": 0.0, "gps": (0, 0, 0), "gat_kodu": 0, "gorev": "idle"}
     sp2._veri = {0: _veri}
     sp2._base.add(0)
     sp2._us.rov_ekle(0, _veri)
-    sp2._son_sim_state[0] = (0, 0)
+    sp2._son_sim_state[0] = (0, None)
     sp2._init_ok = True  # İlk bağlantı zaten yapıldı
 
     sp2._lider_olustur(0, emit_komut=True)
     assert 0 in sp2._liderler, "ROV-0 lider olmalı"
     assert 0 in sp2._bekleyen_hareket, "Token set edilmeli"
-    expire = sp2._bekleyen_hareket[0]
+    expire, beklenen = sp2._bekleyen_hareket[0]
     assert expire > time.monotonic(), "Token gelecekte bitmeli"
+    assert beklenen == (1, 1), f"Beklenen state yanlış: {beklenen}"
     _pass("_lider_olustur: ROV lider + TTL token set")
 except Exception as e:
     _fail("_lider_olustur TTL token", e)
@@ -241,8 +242,8 @@ except Exception as e:
 # TTL süresi dolan token temizlenmeli
 try:
     sp3 = SurucuPanel(None)
-    sp3._bekleyen_hareket[99] = time.monotonic() - 1.0  # Süresi dolmuş
-    sp3._bekleyen_hareket[100] = time.monotonic() + 30.0  # Geçerli
+    sp3._bekleyen_hareket[99] = (time.monotonic() - 1.0, (0, None))
+    sp3._bekleyen_hareket[100] = (time.monotonic() + 30.0, (0, 1))
     sp3._init_ok = True
     sp3.rov_listesini_guncelle([])  # Boş update — temizlik tetiklenmeli
     assert 99 not in sp3._bekleyen_hareket, "Süresi dolmuş token temizlenmeli"
@@ -400,7 +401,7 @@ print("\n" + "=" * 60)
 print("TEST 5: SurucuPanel grup davranışı")
 print("=" * 60)
 
-def _make_rov(rid, rol=0, gid=0):
+def _make_rov(rid, rol=0, gid=None):
     return {"id": rid, "rol": rol, "grup_id": gid, "batarya": 1.0,
             "hiz": 0.0, "gps": (rid * 10, 0, 0), "gat_kodu": 0, "gorev": "idle"}
 

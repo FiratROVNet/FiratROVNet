@@ -17,6 +17,7 @@ from UI.tema import (
     PANEL, PANEL_KENAR, GOREV_RENK,
 )
 from UI.kopru import komut_gonder, seviye_tespit
+from UI.minimap_secim import haritadan_sec_butonu
 
 
 # ── Yardımcı ─────────────────────────────────────────────────────────────────
@@ -26,8 +27,13 @@ def _etiket(metin: str, renk: str = METiN_KOYU) -> QLabel:
     return lbl
 
 
-def _alan_widget() -> tuple[QWidget, callable]:
-    """(x_min, y_min, x_max, y_max) alan giriş grubu döner."""
+def _alan_widget(sinyal=None, serit_araligi_al=None) -> tuple[QWidget, callable]:
+    """(x_min, y_min, x_max, y_max) alan giriş grubu + haritadan seç butonu."""
+    kutu = QWidget()
+    kutu_lay = QVBoxLayout(kutu)
+    kutu_lay.setContentsMargins(0, 0, 0, 0)
+    kutu_lay.setSpacing(4)
+
     w = QWidget()
     lay = QGridLayout(w)
     lay.setContentsMargins(0, 0, 0, 0)
@@ -57,7 +63,23 @@ def _alan_widget() -> tuple[QWidget, callable]:
             spins["x_max"].value(), spins["y_max"].value(),
         )
 
-    return w, deger_al
+    def deger_yaz(x1, y1, x2, y2):
+        spins["x_min"].setValue(x1)
+        spins["y_min"].setValue(y1)
+        spins["x_max"].setValue(x2)
+        spins["y_max"].setValue(y2)
+
+    kutu_lay.addWidget(w)
+    btn_satir = QHBoxLayout()
+    btn_satir.addStretch()
+    btn_satir.addWidget(
+        haritadan_sec_butonu(
+            "alan", deger_yaz, sinyal=sinyal, serit_araligi_al=serit_araligi_al
+        )
+    )
+    kutu_lay.addLayout(btn_satir)
+
+    return kutu, deger_al
 
 
 # ── Alan Tarama Sekmesi ───────────────────────────────────────────────────────
@@ -70,10 +92,16 @@ class AlanTaramaSekmesi(QWidget):
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
 
+        self.spin_serit = QDoubleSpinBox()
+        self.spin_serit.setRange(3.0, 100.0)
+        self.spin_serit.setValue(15.0)
+
         # Alan
         alan_kutu = QGroupBox("TARAMA ALANI")
         alan_lay  = QVBoxLayout(alan_kutu)
-        self._alan_w, self._alan_al = _alan_widget()
+        self._alan_w, self._alan_al = _alan_widget(
+            sinyal, serit_araligi_al=lambda: self.spin_serit.value()
+        )
         alan_lay.addWidget(self._alan_w)
 
         # Z derinliği satırı
@@ -98,8 +126,6 @@ class AlanTaramaSekmesi(QWidget):
         param_lay.addWidget(self.spin_grup, 0, 1)
 
         param_lay.addWidget(_etiket("Şerit Aralığı (m)"), 1, 0)
-        self.spin_serit = QDoubleSpinBox()
-        self.spin_serit.setRange(3.0, 100.0); self.spin_serit.setValue(15.0)
         param_lay.addWidget(self.spin_serit, 1, 1)
 
         self.chk_sessiz = QCheckBox("Sessiz mod (log kapalı)")
@@ -149,7 +175,10 @@ class AlanTaramaSekmesi(QWidget):
 
     def _durdur(self):
         g_id  = self.spin_grup.value()
-        komut = f"filo.alan_tarama_gorevi.durdur(grup_id={g_id})"
+        komut = (
+            f"filo.alan_tarama_gorevi.durdur(grup_id={g_id})\n"
+            f"ui_minimap_gorev_alan_temizle(app)"
+        )
         komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, "warn"))
         self.komut_uretildi.emit(komut, f"Alan Tarama Durduruldu → Grup-{g_id}")
 
@@ -166,7 +195,7 @@ class AramaKurtarmaSekmesi(QWidget):
 
         alan_kutu = QGroupBox("ARAMA ALANI")
         alan_lay  = QVBoxLayout(alan_kutu)
-        self._alan_w, self._alan_al = _alan_widget()
+        self._alan_w, self._alan_al = _alan_widget(sinyal)
         alan_lay.addWidget(self._alan_w)
         lay.addWidget(alan_kutu)
 
@@ -246,7 +275,10 @@ class AramaKurtarmaSekmesi(QWidget):
         self.komut_uretildi.emit(komut, aciklama)
 
     def _durdur(self):
-        komut = "filo.arama_kurtarma_gorevi.durdur()"
+        komut = (
+            "filo.arama_kurtarma_gorevi.durdur()\n"
+            "ui_minimap_gorev_alan_temizle(app)"
+        )
         komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, "warn"))
         self.komut_uretildi.emit(komut, "Arama Kurtarma Durduruldu")
 
@@ -298,12 +330,23 @@ class ImhaSekmesi(QWidget):
         self.spin_k_mesafe.setRange(1.0, 50.0)
         self.spin_k_mesafe.setValue(8.0)
         k_lay.addWidget(self.spin_k_mesafe, 4, 1)
+
+        def _hedef_yaz(x, y):
+            self.spin_hx.setValue(x)
+            self.spin_hy.setValue(y)
+
+        harita_satir = QHBoxLayout()
+        harita_satir.addStretch()
+        harita_satir.addWidget(
+            haritadan_sec_butonu("nokta", _hedef_yaz, sinyal=sinyal, metin="🗺  Hedefi Haritadan Seç")
+        )
+        k_lay.addLayout(harita_satir, 5, 0, 1, 2)
         lay.addWidget(self.w_koordinat)
 
         # ── Alan modu ──
         self.w_alan = QGroupBox("ALAN VE HEDEF SINIF")
         a_lay = QVBoxLayout(self.w_alan)
-        self._alan_w, self._alan_al = _alan_widget()
+        self._alan_w, self._alan_al = _alan_widget(sinyal)
         a_lay.addWidget(self._alan_w)
 
         a2_lay = QGridLayout()
@@ -387,7 +430,10 @@ class ImhaSekmesi(QWidget):
             if self.sinyal:
                 self.sinyal.durum_guncellendi.emit(sonuc, "warn")
             self.lbl_sonuc.setText("⏹ Görev durduruldu")
-        komut = "filo.imha_gorevi.durdur(lideri_takip_et=True)"
+        komut = (
+            "filo.imha_gorevi.durdur(lideri_takip_et=True)\n"
+            "ui_minimap_gorev_alan_temizle(app)"
+        )
         komut_gonder(komut, callback=_cb)
         self.komut_uretildi.emit(komut, "İmha görevi durduruldu")
 
@@ -633,6 +679,17 @@ class HareketSekmesi(QWidget):
         git_btn_lay.addWidget(btn_dur, 1)
         git_lay.addLayout(git_btn_lay, 5, 0, 1, 2)
 
+        def _git_xy(x, y):
+            self.spin_gx.setValue(x)
+            self.spin_gy.setValue(y)
+
+        git_harita = QHBoxLayout()
+        git_harita.addStretch()
+        git_harita.addWidget(
+            haritadan_sec_butonu("nokta", _git_xy, sinyal=sinyal, metin="🗺  Hedefi Haritadan Seç")
+        )
+        git_lay.addLayout(git_harita, 6, 0, 1, 2)
+
         lay.addWidget(git_kutu)
 
         # ── Grup hedefe git ──
@@ -668,6 +725,17 @@ class HareketSekmesi(QWidget):
         btn_grup_dur.clicked.connect(self._grup_dur)
         grup_btn_lay.addWidget(btn_grup_dur, 1)
         grup_lay.addLayout(grup_btn_lay, 4, 0, 1, 2)
+
+        def _grup_xy(x, y):
+            self.spin_ggx.setValue(x)
+            self.spin_ggy.setValue(y)
+
+        grup_harita = QHBoxLayout()
+        grup_harita.addStretch()
+        grup_harita.addWidget(
+            haritadan_sec_butonu("nokta", _grup_xy, sinyal=sinyal, metin="🗺  Grup Hedefini Haritadan Seç")
+        )
+        grup_lay.addLayout(grup_harita, 5, 0, 1, 2)
 
         lay.addWidget(grup_kutu)
         lay.addStretch()

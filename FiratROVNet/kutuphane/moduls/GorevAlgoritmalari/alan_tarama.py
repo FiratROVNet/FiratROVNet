@@ -182,6 +182,8 @@ class AlanTaramaGorevi:
             pass
         for rov_id in plan.rota_by_rov:
             rov_gorev_bosalt(self.filo, rov_id, lideri_takip_et=lideri_takip_et)
+        from FiratROVNet.kutuphane.moduls.GorevAlgoritmalari.ortak import minimap_gorev_alanini_temizle
+        minimap_gorev_alanini_temizle(self.filo)
 
     def guncelle(self, grup_id: int | None = None, lideri_takip_et: bool = True) -> list[int]:
         """Rotasi biten plan ROV'larini idle'a alir. Donus: biten grup idleri."""

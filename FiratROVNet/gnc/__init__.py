@@ -725,7 +725,24 @@ class Filo(FiloInitMixin):
                     if not (hasattr(rov, 'is_destroyed') and rov.is_destroyed) and not bos_node:
                         return rov
         return None
-    
+
+    def rov_usye_al(self, rov_id, *, sessiz: bool = False) -> bool:
+        """ROV'u gruptan çıkarır: group_id=None, role=0, navigasyon hedefi temizlenir."""
+        rov = self.find_rov_by_id(int(rov_id))
+        if rov is None:
+            if not sessiz:
+                print(f"⚠️ ROV-{rov_id} bulunamadı.")
+            return False
+        getattr(self, '_rov_hedefleri', {}).pop(int(rov_id), None)
+        rov.group_id = None
+        ortam = getattr(self, 'ortam_ref', None)
+        dirty = getattr(ortam, 'mark_ui_state_dirty', None) if ortam is not None else None
+        if callable(dirty):
+            dirty()
+        if not sessiz:
+            print(f"✅ ROV-{rov.id} üsse alındı (group_id=None).")
+        return True
+
     def _get_all_rovs_positions(self):
         """Tüm ROV'ların güncel konumlarını döner. {rov_id: (x, y, z)} formatında."""
         if not self.ortam_ref or not hasattr(self.ortam_ref, 'rovs'):

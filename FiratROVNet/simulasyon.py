@@ -95,12 +95,7 @@ class ROV(Entity):
         # ID'yi mevcut maksimumdan bir ileri ata (yeniden numaralandirma yok)
         mevcut_ids = [getattr(r, 'id') for r in getattr(ortam_ref, 'rovs', []) if rov_aktif_mi(r) and hasattr(r, 'id')]
         self.id = (max(mevcut_ids) + 1) if mevcut_ids else 0
-        if self.group_id is None:
-            mevcut_grup_ids = [
-                getattr(r, 'group_id') for r in getattr(ortam_ref, 'rovs', [])
-                if r is not None and hasattr(r, 'group_id') and getattr(r, 'group_id') is not None
-            ]
-            self.group_id = (max(mevcut_grup_ids) + 1) if mevcut_grup_ids else 0
+        # group_id None → üs (grupsuz); UI veya kullanıcı gruplama yapana kadar atanmaz
         if hasattr(ortam_ref, 'rovs') and isinstance(ortam_ref.rovs, list):
             ortam_ref.rovs.append(self)
         
@@ -116,13 +111,31 @@ class ROV(Entity):
     def group_id(self):
         return self._group_id
 
+    def _usye_normalize(self):
+        """group_id=None iken rol/mod ve filo hedeflerini üs (grupsuz) durumuna çeker."""
+        if int(getattr(self, 'role', 0) or 0) != 0:
+            self.role = 0
+        gnc = getattr(self, 'gnc', None)
+        if gnc is not None and int(getattr(gnc, 'mod', 0) or 0) != 0:
+            gnc.mod = 0
+        ortam = getattr(self, 'environment_ref', None)
+        filo = getattr(ortam, 'filo', None) if ortam is not None else None
+        if filo is not None:
+            rid = getattr(self, 'id', None)
+            if rid is not None:
+                getattr(filo, '_rov_hedefleri', {}).pop(int(rid), None)
+        if hasattr(self, '_etiket_guncelle'):
+            self._etiket_guncelle()
+
     @group_id.setter
     def group_id(self, deger):
         eski = getattr(self, '_group_id', None)
         yeni = None if deger is None else int(deger)
-        self._group_id = yeni
         if eski == yeni:
             return
+        self._group_id = yeni
+        if yeni is None:
+            self._usye_normalize()
         ortam = getattr(self, 'environment_ref', None)
         dirty = getattr(ortam, 'mark_ui_state_dirty', None) if ortam is not None else None
         if callable(dirty):
@@ -473,6 +486,10 @@ class Minimap(Entity):
         # APF vektor havuzu: create-once, her karede sadece mesh/renk güncellenir
         self._apf_vektor_pool = None
         self._apf_vektor_pool_size = 128
+        self._alan_secim_gecici_gorseller = []
+        self._alan_gorev_gorseller = []
+        self.alan_secim_noktalari = []
+        self.alan_gorev_noktalari = []
 
     # --- KRİTİK GÜNCELLEME: goster metodu ---
     def goster(self, durum=True, convex=False, a_star=False, scale=None, **kwargs):
@@ -827,6 +844,217 @@ class Minimap(Entity):
             destroy(self.gecici_hedef_ikonu)
             self.gecici_hedef_ikonu = None
 
+    # ── UI alan seçimi (çokgen) ─────────────────────────────────────────────
+    _ALAN_CIZGI_KALINLIK = 2.0   # seçim/görev çizgisi (önceki 4/5 değerinin ~0.5 katı)
+    _ALAN_DOLGU_KALINLIK = 0.5
+    _ALAN_Z_KENAR = -0.15        # grid (-0.1) üstünde görünsün
+    _ALAN_Z_TARAMA = -0.16
+    _ALAN_Z_NOKTA = -0.17
+    _ALAN_TARAMA_CIZGI_KALINLIK = 1.0
+
+    @staticmethod
+    def _poligon_x_kesim_y_degerleri(noktalar: list, x: float) -> list[float]:
+        """Dikey doğrunun çokgenle kesişim y değerleri (sim düzlemi)."""
+        ys: list[float] = []
+        n = len(noktalar)
+        for i in range(n):
+            x1, y1 = float(noktalar[i][0]), float(noktalar[i][1])
+            x2, y2 = float(noktalar[(i + 1) % n][0]), float(noktalar[(i + 1) % n][1])
+            if abs(x1 - x2) < 1e-9:
+                if abs(x - x1) < 1e-6:
+                    ys.extend([y1, y2])
+                continue
+            if x < min(x1, x2) - 1e-9 or x > max(x1, x2) + 1e-9:
+                continue
+            t = (x - x1) / (x2 - x1)
+            if -1e-9 <= t <= 1.0 + 1e-9:
+                ys.append(y1 + t * (y2 - y1))
+        ys.sort()
+        return ys
+
+    def _poligon_tarama_seritleri(
+        self, noktalar: list, serit_araligi: float = 15.0
+    ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+        """Alan tarama ile aynı mantıkta dikey boustrophedon şeritleri (sim XY)."""
+        if len(noktalar) < 3:
+            return []
+        xs = [float(p[0]) for p in noktalar]
+        x_min, x_max = min(xs), max(xs)
+        aralik = max(1.0, float(serit_araligi))
+        segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        x = x_min + aralik * 0.5
+        ters = False
+        while x <= x_max + 1e-6:
+            ys = self._poligon_x_kesim_y_degerleri(noktalar, x)
+            for j in range(0, len(ys) - 1, 2):
+                if j + 1 >= len(ys):
+                    break
+                ya, yb = ys[j], ys[j + 1]
+                if abs(yb - ya) < 0.5:
+                    continue
+                if ters:
+                    segments.append(((x, yb), (x, ya)))
+                else:
+                    segments.append(((x, ya), (x, yb)))
+            x += aralik
+            ters = not ters
+        return segments
+
+    def _alan_tarama_deseni_ciz(self, noktalar: list, serit_araligi: float = 15.0) -> list:
+        """Çokgen içine lawnmower tarama çizgileri."""
+        from ursina import Entity, Mesh, color  # type: ignore[import-not-found]
+
+        segmentler = self._poligon_tarama_seritleri(noktalar, serit_araligi)
+        if not segmentler:
+            return []
+        verts: list[tuple[float, float, float]] = []
+        for (x0, y0), (x1, y1) in segmentler:
+            p0 = self.dunya_to_harita(x0, y0)
+            p1 = self.dunya_to_harita(x1, y1)
+            verts.append((p0.x, p0.y, self._ALAN_Z_TARAMA))
+            verts.append((p1.x, p1.y, self._ALAN_Z_TARAMA))
+        if len(verts) < 2:
+            return []
+        return [
+            Entity(
+                parent=self,
+                model=Mesh(vertices=verts, mode="line", thickness=self._ALAN_TARAMA_CIZGI_KALINLIK),
+                color=color.rgba(0, 220, 200, 140),
+                enabled=self.visible,
+                unlit=True,
+            )
+        ]
+
+    def alan_secim_baslat(self):
+        """Haritadan çokgen seçimi — yalnızca geçici köşe çizimini sıfırlar."""
+        self.alan_secim_gecici_temizle()
+        self.alan_secim_noktalari = []
+
+    def alan_secim_gecici_temizle(self):
+        from ursina import destroy  # type: ignore[import-not-found]
+        for ent in list(getattr(self, "_alan_secim_gecici_gorseller", []) or []):
+            if ent is not None:
+                destroy(ent)
+        self._alan_secim_gecici_gorseller = []
+
+    def alan_gorev_temizle(self):
+        """Aktif görev alanı çizimini minimap'ten kaldırır (görev durdurulunca)."""
+        from ursina import destroy  # type: ignore[import-not-found]
+        for ent in list(getattr(self, "_alan_gorev_gorseller", []) or []):
+            if ent is not None:
+                destroy(ent)
+        self._alan_gorev_gorseller = []
+        self.alan_gorev_noktalari = []
+
+    def alan_secim_temizle(self):
+        """Seçim + görev alanı çizimlerinin tamamını temizler."""
+        self.alan_secim_gecici_temizle()
+        self.alan_gorev_temizle()
+        self.alan_secim_noktalari = []
+
+    def _alan_poligon_ciz(
+        self,
+        noktalar: list,
+        *,
+        kapatildi: bool,
+        kenar_kalinlik: float,
+        dolgu_kalinlik: float,
+    ) -> list:
+        from ursina import Entity, Mesh, Text, color  # type: ignore[import-not-found]
+
+        gorseller = []
+        if not noktalar:
+            return gorseller
+
+        kenar_renk = color.rgba(255, 210, 0, 255) if kapatildi else color.rgba(0, 235, 255, 255)
+        nokta_renk = color.rgba(120, 255, 200, 255) if kapatildi else color.rgba(0, 200, 255, 255)
+
+        mp_noktalar = [self.dunya_to_harita(float(p[0]), float(p[1])) for p in noktalar]
+
+        for i, mp in enumerate(mp_noktalar):
+            ilk = i == 0
+            olcek = (0.021 if ilk else 0.014)
+            nokta = Entity(
+                parent=self,
+                model="circle",
+                color=nokta_renk,
+                scale=olcek,
+                position=(mp.x, mp.y, self._ALAN_Z_NOKTA),
+                enabled=self.visible,
+                unlit=True,
+            )
+            gorseller.append(nokta)
+            if ilk and kapatildi and len(mp_noktalar) >= 3:
+                gorseller.append(
+                    Text(
+                        parent=nokta,
+                        text="◎",
+                        scale=22,
+                        color=color.rgba(255, 230, 120, 255),
+                        origin=(0, 0),
+                    )
+                )
+
+        if len(mp_noktalar) >= 2:
+            cizilecek = list(mp_noktalar)
+            if kapatildi and len(cizilecek) >= 3:
+                cizilecek = cizilecek + [cizilecek[0]]
+            verts = [(v.x, v.y, self._ALAN_Z_KENAR) for v in cizilecek]
+            gorseller.append(
+                Entity(
+                    parent=self,
+                    model=Mesh(vertices=verts, mode="line", thickness=kenar_kalinlik),
+                    color=kenar_renk,
+                    enabled=self.visible,
+                    unlit=True,
+                )
+            )
+
+        if kapatildi and len(mp_noktalar) >= 3:
+            dolgu_verts = [(v.x, v.y, self._ALAN_Z_KENAR + 0.01) for v in mp_noktalar]
+            dolgu_verts.append(dolgu_verts[0])
+            gorseller.append(
+                Entity(
+                    parent=self,
+                    model=Mesh(vertices=dolgu_verts, mode="line", thickness=dolgu_kalinlik),
+                    color=color.rgba(0, 255, 180, 90),
+                    enabled=self.visible,
+                    unlit=True,
+                )
+            )
+        return gorseller
+
+    def alan_secim_ciz(self, noktalar: list, kapatildi: bool = False):
+        """Seçim sırasında geçici köşe/kenar çizimi (görev alanına dokunmaz)."""
+        self.alan_secim_gecici_temizle()
+        self.alan_secim_noktalari = [list(p) for p in (noktalar or [])]
+        if not self.alan_secim_noktalari:
+            return
+        self._alan_secim_gecici_gorseller = self._alan_poligon_ciz(
+            self.alan_secim_noktalari,
+            kapatildi=kapatildi,
+            kenar_kalinlik=self._ALAN_CIZGI_KALINLIK,
+            dolgu_kalinlik=self._ALAN_DOLGU_KALINLIK,
+        )
+
+    def alan_gorev_goster(self, noktalar: list, serit_araligi: float = 15.0):
+        """Seçim tamamlandıktan sonra görev bitene kadar kalıcı alan + tarama çizgileri."""
+        self.alan_secim_gecici_temizle()
+        self.alan_secim_noktalari = []
+        self.alan_gorev_noktalari = [list(p) for p in (noktalar or [])]
+        self.alan_gorev_temizle()
+        if not self.alan_gorev_noktalari:
+            return
+        self._alan_gorev_gorseller = self._alan_poligon_ciz(
+            self.alan_gorev_noktalari,
+            kapatildi=True,
+            kenar_kalinlik=self._ALAN_CIZGI_KALINLIK,
+            dolgu_kalinlik=self._ALAN_DOLGU_KALINLIK,
+        )
+        self._alan_gorev_gorseller.extend(
+            self._alan_tarama_deseni_ciz(self.alan_gorev_noktalari, serit_araligi=serit_araligi)
+        )
+
 # ============================================================
 # 3. ORTAM SINIFI (Simülasyon Dünyası)
 # ============================================================
@@ -894,7 +1122,7 @@ class Ortam:
         for rov in self.rovs:
             if not rov_aktif_mi(rov):
                 continue
-            __group_id=getattr(rov, 'group_id', 0)
+            __group_id=getattr(rov, 'group_id', None)
             if not self._g_rovs.get(__group_id,False):
                 self._g_rovs[__group_id]=[]
             self._g_rovs[__group_id].append(rov)

@@ -16,7 +16,8 @@ from FiratROVNet.main_runtime import (
     kisayol_paneli_olustur,
     konsol_komutlari_ekle,
     lider_patlat,
-    minimap_hedef_ata,
+    minimap_tiklama_isle,
+    ui_minimap_secim_iptal,
     sac_hud_toggle,
     sonraki_grup,
     sonraki_rov,
@@ -33,6 +34,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
+app._firat_script_dir = script_dir
 #app.sim_olustur(n_rovs=(6, 4), n_islands=4, havuz_genisligi=200, rov_model="submarine")
 app.sim_olustur(n_islands=4, havuz_genisligi=200, rov_model="submarine",seed=1)
 
@@ -52,7 +54,10 @@ app.konsola_ekle("ui_ac", ui.open)
 app.konsola_ekle("ui_kapat", ui.close)
 app.konsola_ekle("ui_rov_ekle", ui.rov_ekle)
 
-print("✅ Sistem aktif. Minimap: sol tıkla. Ekran görüntüsü (makale kalitesi): F tuşu → Pictures/")
+print(
+    "✅ Sistem aktif. Minimap sol tık = hedef (A*) | "
+    "'Haritadan Seç' = çokgen alan (A* kapalı) | Esc = iptal"
+)
 
 fps_history = []
 FPS_HISTORY_SIZE = 10
@@ -209,8 +214,11 @@ def input(key):
         grup_idleri = aktif_grup_idleri(filo)
         if mevcut_grup in grup_idleri:
             aktif_grup_index = grup_idleri.index(mevcut_grup)
+    if key == "escape":
+        if getattr(app, "_ui_minimap_picker", None):
+            ui_minimap_secim_iptal(app)
     if key == "left mouse down":
-        minimap_hedef_ata(app, filo, bilgi_rov_id)
+        minimap_tiklama_isle(app, filo, bilgi_rov_id)
 
 
 if __name__ == "__main__":

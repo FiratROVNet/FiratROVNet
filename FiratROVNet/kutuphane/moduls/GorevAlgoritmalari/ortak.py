@@ -151,10 +151,11 @@ def gorev_grubu_olustur(filo, rovs: list[Any]) -> int | None:
     if not rovs:
         return None
     try:
-        mevcut_gruplar = [int(g) for g in filo.g_rovs.keys()]
+        from UI.kopru import ilk_bos_grup_id
+        mevcut_gruplar = [g for g in filo.g_rovs.keys() if g is not None]
+        yeni_grup_id = ilk_bos_grup_id(mevcut_gruplar)
     except Exception:
-        mevcut_gruplar = []
-    yeni_grup_id = (max(mevcut_gruplar) + 1) if mevcut_gruplar else 1
+        yeni_grup_id = 0
     for rov in rovs:
         gnc = getattr(rov, "gnc", None)
         if gnc is not None and getattr(gnc, "onceki_group_id", None) is None:
@@ -172,6 +173,17 @@ def gorev_grubu_olustur(filo, rovs: list[Any]) -> int | None:
 
 def mesafe_2d(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1]))
+
+
+def minimap_gorev_alanini_temizle(filo) -> None:
+    """Görev bittiğinde minimap üzerindeki kalıcı alan çokgenini kaldırır."""
+    ortam = getattr(filo, "ortam_ref", None)
+    if ortam is None:
+        return
+    mm = getattr(ortam, "minimap", None)
+    if mm is not None and hasattr(mm, "alan_gorev_temizle"):
+        mm.alan_gorev_temizle()
+    setattr(ortam, "_ui_minimap_gorev_poligon", None)
 
 
 def kopma_menzili(default: float | None = None) -> float:
