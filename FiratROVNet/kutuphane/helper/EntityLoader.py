@@ -500,16 +500,27 @@ class EntityLoader:
         min_coord = -(havuz_genisligi - 20)
         max_coord = (havuz_genisligi - 20)
         
-        for _ in range(count):
+        spawned = 0
+        max_attempts = max(count * 30, 60)
+        attempts = 0
+        while spawned < count and attempts < max_attempts:
+            attempts += 1
             # Scale: 10-30 arası rastgele
             scale = random.uniform(20, 50)
             
             # Position: x ve z havuz içinde, y=-30 sabit (derinlik)
             x = random.uniform(min_coord, max_coord)
             z = random.uniform(min_coord, max_coord)
+            karakol_icinde_mi = getattr(self.ortam, '_ileri_karakol_icinde_mi', None)
+            if callable(karakol_icinde_mi) and karakol_icinde_mi(x, z, margin=(scale * 0.5) + 8.0):
+                continue
             y = -40-4*(40/scale)  # Sabit derinlik
             
             position = Vec3(x, y, z)
             self.rock(scale=scale, position=position)
+            spawned += 1
         
-        print(f"✅ {count} adet kaya oluşturuldu (derinlik: -30m)")
+        if spawned < count:
+            print(f"⚠️ {spawned}/{count} kaya oluşturuldu; ileri karakol güvenlik alanı nedeniyle bazı konumlar atlandı.")
+        else:
+            print(f"✅ {count} adet kaya oluşturuldu (derinlik: -30m)")
