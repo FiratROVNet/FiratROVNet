@@ -8,6 +8,7 @@ from FiratROVNet.gnc import Filo
 from FiratROVNet.kutuphane.moduls.profiler import Profiler
 from FiratROVNet.main_runtime import (
     FrameScheduler,
+    KomutaArayuzu,
     RerunRecorder,
     akademik_gorsel_kaydet,
     aktif_grup_idleri,
@@ -46,6 +47,10 @@ if getattr(app, "rov_label", None) is not None and app.rov_label.background is n
 kisayol_paneli_olustur()
 konsol_komutlari_ekle(app, filo)
 rerun = RerunRecorder(script_dir)
+ui = KomutaArayuzu(script_dir, app, filo)
+app.konsola_ekle("ui_ac", ui.open)
+app.konsola_ekle("ui_kapat", ui.close)
+app.konsola_ekle("ui_rov_ekle", ui.rov_ekle)
 
 print("✅ Sistem aktif. Minimap: sol tıkla. Ekran görüntüsü (makale kalitesi): F tuşu → Pictures/")
 
@@ -168,6 +173,8 @@ def update():
         Profiler.end("0_rerun_sahne_logla")
     rerun_step += 1
 
+    ui.guncelle(scheduler, dt)
+
 
 app.set_update_function(update)
 
@@ -184,6 +191,8 @@ def input(key):
         filo.toggle_pid_ui()
     if key in ("v", "V"):
         rerun.toggle()
+    if key in ("u", "U"):
+        ui.toggle()
     if key in ("e", "E"):
         sac_hud_toggle(filo, sac_hud, bilgi_rov_id)
     if key in ("2", "num 2") and sac_hud.visible:

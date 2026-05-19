@@ -10,3 +10,6 @@ __pycache__/
 Models-3D/BlueRov2/Bluerov2.glb
 *.rrd
 Videos/
+KOMUT_KUYRUĞU.txt
+UI/_rov_durumu.json
+UI/_rov_durumu.json.tmp
