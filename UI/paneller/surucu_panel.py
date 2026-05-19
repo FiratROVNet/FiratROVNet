@@ -15,7 +15,7 @@ import time as _time
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
     QFrame, QLabel, QPushButton, QSizePolicy, QMenu, QAction,
-    QComboBox, QLineEdit, QDialog, QFormLayout, QDialogButtonBox,
+    QComboBox, QLineEdit, QDialog, QFormLayout, QDialogButtonBox, QCheckBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QMimeData, QPoint
 from PyQt5.QtGui import QDrag, QFont, QDoubleValidator, QIntValidator
@@ -1340,14 +1340,37 @@ class SurucuPanel(QWidget):
         x_edit = _line("0", dbl)
         y_edit = _line("-10", dbl)
         z_edit = _line("0", dbl)
-        group_edit = _line("", QIntValidator(0, 999999))
-        group_edit.setPlaceholderText("Boş: yeni grup")
+        manuel_check = QCheckBox("Manuel koordinat kullan")
+        manuel_check.setChecked(False)
+        manuel_check.setToolTip("Kapalıyken ROV otomatik olarak ileri karakol bölgesinde doğar")
+        manuel_check.setStyleSheet(f"""
+            QCheckBox {{
+                color:{SARI};
+                font-family: Consolas;
+                font-size: 9pt;
+                font-weight: bold;
+                padding: 6px;
+                border: 1px solid {PANEL_KENAR};
+                border-radius: 4px;
+                background: #111821;
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+            }}
+        """)
+        for edit in (x_edit, y_edit, z_edit):
+            edit.setEnabled(False)
+        manuel_check.toggled.connect(lambda aktif: [edit.setEnabled(aktif) for edit in (x_edit, y_edit, z_edit)])
+        group_edit = _line("0", QIntValidator(0, 999999))
+        group_edit.setPlaceholderText("Varsayılan: 0")
         model_edit = _line("submarine")
         rol_combo = QComboBox()
         rol_combo.addItem("Takipçi / normal (rol=0)", 0)
         rol_combo.addItem("Lider (rol=1)", 1)
         rol_combo.setStyleSheet(_COMBO_CSS)
 
+        form.addRow("", manuel_check)
         form.addRow("X", x_edit)
         form.addRow("Y", y_edit)
         form.addRow("Z", z_edit)
@@ -1367,15 +1390,14 @@ class SurucuPanel(QWidget):
             return float(text) if text else default
 
         group_text = group_edit.text().strip()
-        group_id = int(group_text) if group_text else None
-        position = (_float(x_edit, 0.0), _float(y_edit, -10.0), _float(z_edit, 0.0))
+        group_id = int(group_text) if group_text else 0
         model_key = model_edit.text().strip() or "submarine"
         rol = int(rol_combo.currentData())
-        k = (
-            "ui_rov_ekle("
-            f"group_id={group_id!r}, position={position!r}, "
-            f"model_key={model_key!r}, rol={rol})"
-        )
+        position_arg = ""
+        if manuel_check.isChecked():
+            position = (_float(x_edit, 0.0), _float(y_edit, -10.0), _float(z_edit, 0.0))
+            position_arg = f", position={position!r}"
+        k = f"ui_rov_ekle(group_id={group_id!r}{position_arg}, model_key={model_key!r}, rol={rol})"
         komut_gonder(k)
         self.komut_uretildi.emit(k, "Yeni ROV sim\u00fclasyona ekleniyor...")
 

@@ -96,10 +96,38 @@ class RerunRecorder:
 
 
 def konsol_komutlari_ekle(app, filo):
+    def grup_degistir(rov_id, group_id, role=None, mod=None):
+        rov = filo.find_rov_by_id(int(rov_id))
+        if rov is None:
+            print(f"⚠️ ROV-{rov_id} bulunamadı.")
+            return False
+        yeni_grup = int(group_id)
+        rov.group_id = yeni_grup
+        if role is not None:
+            rov.role = int(role)
+            if hasattr(rov, "_etiket_guncelle"):
+                rov._etiket_guncelle()
+        if mod is not None and getattr(rov, "gnc", None) is not None:
+            rov.gnc.mod = int(mod)
+        if yeni_grup > 0:
+            if not isinstance(getattr(filo, "aktif_formasyon", None), dict):
+                filo.aktif_formasyon = {}
+            filo.aktif_formasyon.setdefault(
+                yeni_grup,
+                {"id": "LINE", "aralik": 10, "is_3d": False, "yaw": 0, "g_id": yeni_grup},
+            )
+        dirty = getattr(app, "mark_ui_state_dirty", None)
+        if callable(dirty):
+            dirty()
+        rol_metni = f", role={getattr(rov, 'role', None)}"
+        print(f"✅ ROV-{rov.id} Grup-{yeni_grup} olarak güncellendi{rol_metni}.")
+        return True
+
     app.konsola_ekle("git", lambda rov_id, x, z, y=None, ai=True: filo.git(rov_id, x, z, y, ai))
     app.konsola_ekle("move", lambda rov_id, yon, guc=1.0: filo.move(rov_id, yon, guc))
     app.konsola_ekle("get", lambda rov_id, veri_tipi: filo.get(rov_id, veri_tipi))
     app.konsola_ekle("set", lambda rov_id, ayar_adi, deger: filo.set(rov_id, ayar_adi, deger))
+    app.konsola_ekle("grup_degistir", grup_degistir)
     app.konsola_ekle("Ada", lambda ada_id, x=None, y=None: app.Ada(ada_id, x, y))
     app.konsola_ekle("ROV", lambda rov_id, x=None, y=None, z=None: app.ROV(rov_id, x, y, z))
     app.konsola_ekle("filo", filo)
@@ -159,7 +187,7 @@ class KomutaArayuzu:
             return
         self.open()
 
-    def rov_ekle(self, group_id=None, position=None, x=0, y=-10, z=0, model_key=None, rol=0, role=None):
+    def rov_ekle(self, group_id=None, position=None, x=None, y=None, z=None, model_key=None, rol=0, role=None):
         from FiratROVNet.simulasyon import ROV
 
         group_id = self._opsiyonel_int(group_id)
@@ -167,7 +195,15 @@ class KomutaArayuzu:
         if rol_degeri is None:
             rol_degeri = 0
         if position is None:
-            position = (float(x), float(y), float(z))
+            spawn_al = getattr(self.app, "ileri_karakol_spawn_pozisyonu", None)
+            if x is None and y is None and z is None and callable(spawn_al):
+                position = spawn_al(rastgele=True)
+            else:
+                position = (
+                    float(0 if x is None else x),
+                    float(-10 if y is None else y),
+                    float(0 if z is None else z),
+                )
         model = model_key or getattr(self.app, "rov_model", "submarine")
         rov = ROV(
             group_id=group_id,
@@ -250,6 +286,7 @@ class KomutaArayuzu:
                 "ROV": ROV,
                 "ui_rov_ekle": self.rov_ekle,
                 "ui_rov_cikar": self.rov_cikar,
+                "grup_degistir": getattr(self.app, "konsol_verileri", {}).get("grup_degistir"),
             }
             yasakli_oruntuler = (
                 "Ortam(",

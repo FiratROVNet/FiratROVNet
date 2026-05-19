@@ -48,6 +48,7 @@ class ROV(Entity):
         self.motorlar = []
         self.id = rov_id
         self.environment_ref = None
+        self._group_id = group_id
         
         # Fiziksel ve Durumsal Durum
         self.velocity = Vec3(0, 0, 0)
@@ -110,6 +111,22 @@ class ROV(Entity):
                 print(f"⚠️ ROV-{self.id} ortama eklendi ancak Filo sistem kurulumu tamamlanamadi.")
                 return False
         return True
+
+    @property
+    def group_id(self):
+        return self._group_id
+
+    @group_id.setter
+    def group_id(self, deger):
+        eski = getattr(self, '_group_id', None)
+        yeni = None if deger is None else int(deger)
+        self._group_id = yeni
+        if eski == yeni:
+            return
+        ortam = getattr(self, 'environment_ref', None)
+        dirty = getattr(ortam, 'mark_ui_state_dirty', None) if ortam is not None else None
+        if callable(dirty):
+            dirty()
 
     def cikar(self):
             """ROV'u siler ve tüm sistemlerden izlerini temizler."""
@@ -550,6 +567,46 @@ class Minimap(Entity):
         if hasattr(self.ortam_ref, 'island_positions'):
             for pos in [p for p in self.ortam_ref.island_positions if p]:
                 self.statik_nesneler.append(self.loader.draw_static_circle(self, pos[0], pos[1], pos[2], self.havuz_genisligi))
+        alan = getattr(self.ortam_ref, 'ileri_karakol_alani', None)
+        if alan:
+            x_min, x_max = alan.get("x", (150.0, 200.0))
+            y_min, y_max = alan.get("y", (150.0, 200.0))
+            f = 1.0 / (self.havuz_genisligi * 2)
+            cx, cy = ((x_min + x_max) / 2.0) * f, ((y_min + y_max) / 2.0) * f
+            sx, sy = (x_max - x_min) * f, (y_max - y_min) * f
+            dolgu = Entity(
+                parent=self, model='quad',
+                position=(cx, cy, -0.235), scale=(sx, sy),
+                color=color.rgb(22/255, 130/255, 145/255), unlit=True, transparent=True, alpha=0.36
+            )
+            cekirdek = Entity(
+                parent=self, model='quad',
+                position=(cx, cy, -0.252), scale=(sx * 0.42, sy * 0.42),
+                color=color.rgb(238/255, 244/255, 236/255), unlit=True, transparent=True, alpha=0.58
+            )
+            verts = [
+                (x_min * f, y_min * f, -0.245),
+                (x_max * f, y_min * f, -0.245),
+                (x_max * f, y_max * f, -0.245),
+                (x_min * f, y_max * f, -0.245),
+                (x_min * f, y_min * f, -0.245),
+            ]
+            kontur = Entity(
+                parent=self,
+                model=Mesh(vertices=verts, mode='line', thickness=3),
+                color=color.rgb(54/255, 220/255, 210/255),
+                alpha=0.9,
+                unlit=True,
+            )
+            etiket = Text(
+                text="KARAKOL",
+                parent=self,
+                position=(cx, cy + sy * 0.62, -0.255),
+                scale=0.65,
+                color=color.azure,
+                origin=(0, 0),
+            )
+            self.statik_nesneler.extend([dolgu, cekirdek, kontur, etiket])
 
     def gorsel_guncelle(self):
             if not self.visible or not self.ortam_ref: return
@@ -805,6 +862,8 @@ class Ortam:
         self.su_hacmi_yuksekligi, self.su_hacmi_merkez_y = 50, -25
         self.WATER_SURFACE_Y_BASE, self.SEA_FLOOR_Y = 0.0, -50.0
         self.SONAR_MENZILI = GATLimitleri.ILETISIM_MENZILI
+        self.ileri_karakol_alani = {"x": (125.0, 200.0), "y": (125.0, 200.0), "depth": 0.0}
+        self.ileri_karakol_gorselleri = []
 
         self.loader = EntityLoader(self)
         self.helper = OrtamHelper(self)
@@ -847,7 +906,7 @@ class Ortam:
         window.exit_button.visible = False
         window.size = (1280, 720)
         window.center_on_screen()
-        window.color = color.rgb(10, 30, 50)
+        window.color = color.rgb(10/255, 30/255, 50/255)
         # application.run_in_background = True  # Ursina'da bu özellik yok veya farklı şekilde ayarlanıyor
         try: window.context_menu = False
         except: pass
@@ -873,7 +932,9 @@ class Ortam:
     def _setup_lighting(self):
         self.sun = DirectionalLight()  # type: ignore
         self.sun.look_at(Vec3(1, -1, -1))  # type: ignore
-        self.ambient = AmbientLight(color=color.rgba(120, 120, 120, 1))  # type: ignore
+        # Gunesin maksimum parlakligini kisarak acik renkli yuzeylerde detay kaybini azalt.
+        self.sun.color = color.rgba(0.75, 0.75, 0.75, 1.0)
+        self.ambient = AmbientLight(color=color.rgba(120/255, 120/255, 120/255, 1.0))  # type: ignore
         self.sky = Sky()  # type: ignore
         
     def konsola_ekle(self, isim, nesne): self.konsol_verileri[isim] = nesne
@@ -1004,9 +1065,16 @@ class Ortam:
             n_rovs = self._rov_grup_konfig_normalize(n_rovs)
             
             # Temizlik
-            for obj in [r for r in self.rovs if r] + [i for i in self.island_entities if i]: 
+            for obj in (
+                [r for r in self.rovs if r]
+                + [i for i in self.island_entities if i]
+                + [e for e in getattr(self, 'ileri_karakol_gorselleri', []) if e]
+                + [k for k in getattr(self.loader, 'rock_entities', []) if k]
+            ):
                 if obj: destroy(obj)
             self.rovs, self.island_entities, self.island_positions, self.engel_bulutu = [], [], [], []
+            self.ileri_karakol_gorselleri = []
+            self.loader.rock_entities = []
             
             # Dünya İnşası
             size = havuz_genisligi * 2
@@ -1016,11 +1084,17 @@ class Ortam:
             self.loader.build_boundaries(havuz_genisligi)
             
             # 1. Adaları Sabit Noktalardan Yerleştir
-            count = min(n_islands, len(self.FIXED_ISLAND_POSITIONS))
-            chosen_islands = random.sample(self.FIXED_ISLAND_POSITIONS, count)
+            uygun_ada_pozisyonlari = [
+                pos for pos in self.FIXED_ISLAND_POSITIONS
+                if not self._ileri_karakol_icinde_mi(pos[0], pos[1], margin=20.0)
+            ]
+            count = min(n_islands, len(uygun_ada_pozisyonlari))
+            chosen_islands = random.sample(uygun_ada_pozisyonlari, count)
             chosen_islands.insert(0,(0,0))
             for i, pos in enumerate(chosen_islands):
                 self.Ada(i, x="ekle", y=pos)
+
+            self.ileri_karakol_olustur()
 
             # Kayaları ekle (n_rocks parametresi ile)
             if n_rocks > 0:
@@ -1052,6 +1126,135 @@ class Ortam:
         finally:
             if random_state is not None:
                 random.setstate(random_state)
+
+    def _ileri_karakol_icinde_mi(self, x, y, margin=0.0):
+        alan = getattr(self, 'ileri_karakol_alani', None) or {}
+        x_min, x_max = alan.get("x", (150.0, 200.0))
+        y_min, y_max = alan.get("y", (150.0, 200.0))
+        return (x_min - margin) <= float(x) <= (x_max + margin) and (y_min - margin) <= float(y) <= (y_max + margin)
+
+    def ileri_karakol_spawn_pozisyonu(self, rastgele=True):
+        alan = getattr(self, 'ileri_karakol_alani', None) or {}
+        x_min, x_max = alan.get("x", (150.0, 200.0))
+        y_min, y_max = alan.get("y", (150.0, 200.0))
+        depth = float(alan.get("depth", 0.0))
+        if not rastgele:
+            return ((x_min + x_max) / 2.0, (y_min + y_max) / 2.0, depth)
+        return (random.uniform(x_min + 5.0, x_max - 5.0), random.uniform(y_min + 5.0, y_max - 5.0), depth)
+
+    def ileri_karakol_olustur(self):
+        for ent in list(getattr(self, 'ileri_karakol_gorselleri', [])):
+            if ent:
+                destroy(ent)
+        self.ileri_karakol_gorselleri = []
+
+        alan = getattr(self, 'ileri_karakol_alani', None) or {}
+        x_min, x_max = alan.get("x", (150.0, 200.0))
+        y_min, y_max = alan.get("y", (150.0, 200.0))
+        cx, cz = (x_min + x_max) / 2.0, (y_min + y_max) / 2.0
+        sx, sz = x_max - x_min, y_max - y_min
+        surface_y = float(getattr(self, 'WATER_SURFACE_Y_BASE', 0.0)) + 2
+        sea_floor_y = float(getattr(self, 'SEA_FLOOR_Y', -50.0))
+        core_lift = 5.0
+        elevated_y = surface_y + core_lift
+
+        root = Entity(position=(0, 0, 0), name="ileri_karakol", add_to_scene_entities=True)
+        self.ileri_karakol_gorselleri.append(root)
+
+        def ekle(model, position, scale, renk, alpha=1.0, **kwargs):
+            ent = Entity(parent=root, model=model, position=position, scale=scale, color=renk, **kwargs)
+            if alpha < 1.0:
+                ent.alpha = alpha
+                ent.transparent = True
+            self.ileri_karakol_gorselleri.append(ent)
+            return ent
+
+        govde_renk = color.rgb(18/255, 28/255, 34/255)
+        guverte_renk = color.rgb(72/255, 86/255, 90/255)
+        kenar_renk = color.rgb(44/255, 210/255, 198/255)
+        cam_renk = color.rgb(105/255, 205/255, 232/255)
+        cati_renk = color.rgb(230/255, 238/255, 230/255)
+        panel_renk = color.rgb(20/255, 48/255, 78/255)
+        isik_renk = color.rgb(255/255, 205/255, 82/255)
+
+        platform = Entity(
+            parent=root,
+            model='cube',
+            position=(cx, surface_y + 0.02, cz),
+            scale=(sx, 0.16, sz),
+            color=color.rgb(36/255, 58/255, 64/255),
+            unlit=False,
+            transparent=True,
+            alpha=0.62,
+            collider='box',
+        )
+        platform.double_sided = True
+        self.ileri_karakol_gorselleri.append(platform)
+
+        ekle('cube', (cx, elevated_y + 0.33, cz), (sx * 0.72, 0.36, sz * 0.72), govde_renk, unlit=False, collider='box')
+        ekle('cube', (cx, elevated_y + 0.62, cz), (sx * 0.68, 0.18, sz * 0.68), guverte_renk, unlit=False)
+
+        # Ince korkuluklar ve guvenlik seridi.
+        kenarlar = (
+            ((cx, elevated_y + 1.05, y_min + 1.0), (sx - 2.0, 0.32, 0.34)),
+            ((cx, elevated_y + 1.05, y_max - 1.0), (sx - 2.0, 0.32, 0.34)),
+            ((x_min + 1.0, elevated_y + 1.05, cz), (0.34, 0.32, sz - 2.0)),
+            ((x_max - 1.0, elevated_y + 1.05, cz), (0.34, 0.32, sz - 2.0)),
+        )
+        for pos, scale in kenarlar:
+            ekle('cube', pos, scale, kenar_renk, unlit=True)
+
+        # Deniz tabanina inen ayaklar karakolu su ustunde daha inandirici gosterir.
+        leg_top_y = elevated_y + 0.55
+        leg_height = max(1.0, leg_top_y - sea_floor_y)
+        leg_center_y = sea_floor_y + (leg_height / 2.0)
+        for px in (x_min + 6.0, x_max - 6.0):
+            for pz in (y_min + 6.0, y_max - 6.0):
+                ekle('cube', (px, leg_center_y, pz), (1.35, leg_height, 1.35), color.rgb(42/255, 58/255, 60/255), alpha=0.76, unlit=False, collider='box')
+                ekle('sphere', (px, elevated_y + 2.45, pz), (1.55, 1.55, 1.55), isik_renk, unlit=True)
+
+        # Ana kontrol binasi: cam bantli, duz catili modern modul.
+        bina_z = cz + sz * 0.08
+        duvar_renk = color.rgb(160/255, 170/255, 175/255)
+        cati_renk_yeni = color.rgb(110/255, 120/255, 130/255)
+
+        ekle('cube', (cx - sx * 0.05, elevated_y + 2.15, bina_z), (sx * 0.34, 3.0, sz * 0.22), duvar_renk, unlit=False, collider='box')
+        ekle('cube', (cx - sx * 0.05, elevated_y + 2.58, bina_z - sz * 0.115), (sx * 0.31, 0.78, 0.6), cam_renk, alpha=0.7, unlit=True)
+        ekle('cube', (cx - sx * 0.05, elevated_y + 2.58, bina_z + sz * 0.115), (sx * 0.31, 0.78, 0.6), cam_renk, alpha=0.7, unlit=True)
+        ekle('cube', (cx - sx * 0.05, elevated_y + 3.86, bina_z), (sx * 0.39, 0.35, sz * 0.27), cati_renk_yeni, unlit=False)
+
+        # Gunes panelleri ve servis ekipmani.
+        for px in (cx + sx * 0.15, cx + sx * 0.29):
+            panel = ekle('cube', (px, elevated_y + 1.65, cz - sz * 0.20), (sx * 0.16, 0.12, sz * 0.18), panel_renk, unlit=False)
+            panel.rotation_x = -10
+            ekle('cube', (px, elevated_y + 1.73, cz - sz * 0.20), (sx * 0.14, 0.035, 0.18), color.rgb(82/255, 176/255, 220/255), unlit=True)
+            ekle('cube', (px, elevated_y + 1.74, cz - sz * 0.155), (sx * 0.14, 0.032, 0.12), color.rgb(82/255, 176/255, 220/255), alpha=0.82, unlit=True)
+            ekle('cube', (px, elevated_y + 1.75, cz - sz * 0.245), (sx * 0.14, 0.032, 0.12), color.rgb(82/255, 176/255, 220/255), alpha=0.82, unlit=True)
+
+        # ROV cikis/iskele koridoru.
+        ekle('cube', (cx, elevated_y + 0.82, y_min + 3.2), (sx * 0.36, 0.18, 5.8), color.rgb(92/255, 105/255, 104/255), unlit=False, collider='box')
+        ekle('cube', (cx, elevated_y + 0.95, y_min + 0.5), (sx * 0.26, 0.14, 1.1), kenar_renk, unlit=True)
+        ekle('cube', (cx - sx * 0.12, elevated_y + 0.94, y_min + 3.4), (0.32, 0.72, 5.6), color.rgb(38/255, 170/255, 160/255), alpha=0.74, unlit=True)
+        ekle('cube', (cx + sx * 0.12, elevated_y + 0.94, y_min + 3.4), (0.32, 0.72, 5.6), color.rgb(38/255, 170/255, 160/255), alpha=0.74, unlit=True)
+
+        # Haberlesme/sensor kulesi.
+        kule_x, kule_z = cx + sx * 0.26, cz + sz * 0.22
+        ekle('cube', (kule_x, elevated_y + 3.15, kule_z), (1.0, 5.2, 1.0), color.rgb(205/255, 214/255, 212/255), unlit=False)
+        ekle('cube', (kule_x, elevated_y + 5.05, kule_z), (5.4, 0.18, 0.34), color.rgb(54/255, 220/255, 210/255), unlit=True)
+        ekle('cube', (kule_x, elevated_y + 5.05, kule_z), (0.34, 0.18, 5.4), color.rgb(54/255, 220/255, 210/255), unlit=True)
+        ekle('sphere', (kule_x, elevated_y + 6.05, kule_z), (2.2, 1.05, 2.2), color.rgb(158/255, 226/255, 234/255), alpha=0.8, unlit=True)
+
+        self.ileri_karakol_gorselleri.append(
+            Text(
+                text="ILERI KARAKOL",
+                parent=root,
+                position=(cx, elevated_y + 7.25, cz),
+                origin=(0, 0),
+                scale=6,
+                billboard=True,
+                color=color.rgb(160/255, 240/255, 255/255),
+            )
+        )
 
 
     def ROV(self, rov_id, x=None, y=None, z=None):

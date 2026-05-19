@@ -116,16 +116,16 @@ def komut_gonder(komut: str, callback=None):
     threading.Thread(target=_run, daemon=True).start()
 
 
-def rov_ekle(group_id=None, position=(0, -10, 0), model_key="submarine", rol=0):
+def rov_ekle(group_id=None, position=None, model_key="submarine", rol=0):
     """Güncel runtime API üzerinden yeni ROV ekler."""
     if not bagli_mi() or _app_ref is None:
-        return _calistir(
-            "ui_rov_ekle("
-            f"group_id={group_id!r}, position={position!r}, "
-            f"model_key={model_key!r}, rol={int(rol)})"
-        )
+        position_arg = "" if position is None else f", position={position!r}"
+        return _calistir(f"ui_rov_ekle(group_id={group_id!r}{position_arg}, model_key={model_key!r}, rol={int(rol)})")
     from FiratROVNet.simulasyon import ROV
 
+    if position is None:
+        spawn_al = getattr(_app_ref, "ileri_karakol_spawn_pozisyonu", None)
+        position = spawn_al(rastgele=True) if callable(spawn_al) else (0, -10, 0)
     rov = ROV(
         group_id=group_id,
         position=position,
