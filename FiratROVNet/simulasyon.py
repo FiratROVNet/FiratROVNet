@@ -18,94 +18,23 @@ if 'lines' not in Mesh._modes:
 # Yerel modül importları
 from FiratROVNet.config import (  # type: ignore[import-not-found]
     SensorAyarlari, GATLimitleri, HareketAyarlari, 
-    FizikSabitleri, ROVModelleri, HedefNesneAyarlari
+    FizikSabitleri, ROVModelleri
 )
 from FiratROVNet.utils import sim_to_ursina, ursina_to_sim  # type: ignore[import-not-found]
 from FiratROVNet.kutuphane.helper.EntityLoader import EntityLoader  # type: ignore[import-not-found]
 from FiratROVNet.kutuphane.helper.simulasyon_helper import OrtamHelper  # type: ignore[import-not-found]
 
 
-# ============================================================
-# ARAMA HEDEF SINIFI — renkli 3D küre
-# ============================================================
-class AramaHedef(Entity):
-    """
-    Arama kurtarma senaryosunda sahneye yerleştirilen renkli hedef nesne.
-    ROV kamerasına bakıldığında HSV renk filtresi ile tespit edilebilir.
-    """
-    _tum_hedefler: list["AramaHedef"] = []
-
-    def __init__(self, nesne_id: int, renk_ismi: str, sim_x: float, sim_y: float,
-                 sim_z: float | None = None, boyut: float = 3.0, **kwargs):
-        # Sim → Ursina koordinat dönüşümü
-        # Spawn koduyla aynı mantık: Vec3(sim_x, sim_z, sim_y)
-        # Ursina Y = sim_z (negatif = derin, örn. -18 = 18m derinlikte)
-        depth = float(sim_z) if sim_z is not None else float(HedefNesneAyarlari.VARSAYILAN_DERINLIK)
-        u_pos = Vec3(float(sim_x), depth, float(sim_y))
-        # Renk bilgisi (BGR → Ursina RGB)
-        ursina_renk = AramaHedef._isimden_renk(renk_ismi)
-        super().__init__(
-            model='sphere',
-            color=ursina_renk,
-            position=u_pos,
-            scale=boyut,
-            collider='sphere',
-            unlit=True,
-            **kwargs
-        )
-        self.nesne_id   = nesne_id
-        self.renk_ismi  = renk_ismi
-        self.sim_x      = sim_x
-        self.sim_y      = sim_y
-        self.sim_z      = sim_z if sim_z is not None else HedefNesneAyarlari.VARSAYILAN_DERINLIK
-        # Etiket
-        self._etiket = Text(
-            text=f"#{nesne_id} {renk_ismi}",
-            parent=self,
-            y=1.2,
-            scale=12,
-            origin=(0, 0),
-            color=color.white,
-            billboard=True,
-        )
-        AramaHedef._tum_hedefler.append(self)
-
-    @staticmethod
-    def _isimden_renk(isim: str):
-        """Renk isminden Ursina color döndürür."""
-        _map = {
-            "kirmizi":  color.red,
-            "sari":     color.yellow,
-            "mavi":     color.blue,
-            "yesil":    color.green,
-            "turuncu":  color.orange,
-            "beyaz":    color.white,
-            "mor":      color.violet,
-        }
-        return _map.get(isim.lower(), color.white)
-
-    def kaldir(self):
-        """Nesneyi sahneden güvenli şekilde kaldır."""
-        try:
-            if self in AramaHedef._tum_hedefler:
-                AramaHedef._tum_hedefler.remove(self)
-            if self._etiket:
-                destroy(self._etiket)
-            destroy(self)
-        except Exception:
-            pass
-
-    @classmethod
-    def tum_hedefleri_kaldir(cls):
-        for h in list(cls._tum_hedefler):
-            try:
-                if h._etiket:
-                    destroy(h._etiket)
-                destroy(h)
-            except Exception:
-                pass
-        cls._tum_hedefler.clear()
-
+def rov_aktif_mi(rov):
+    if rov is None or getattr(rov, 'is_destroyed', False):
+        return False
+    try:
+        is_empty = getattr(rov, 'is_empty', None)
+        if callable(is_empty) and is_empty():
+            return False
+    except Exception:
+        return False
+    return True
 
 # ============================================================
 # 1. ROV SINIFI (Mantık ve Fizik)
@@ -114,7 +43,7 @@ class ROV(Entity):
     """Kesikli çizgi segment sayısı (havuz boyutu). Create-once, sonra sadece gösterme/gizleme."""
     CIZGI_HAVUZ_SEGMENT = 25
 
-    def __init__(self, rov_id,group_id, loader_ref=None, model_key='submarine', **kwargs):
+    def __init__(self, rov_id=None, group_id=None, loader_ref=None, model_key='submarine', role=None, rol=None, **kwargs):
         super().__init__()
         self.motorlar = []
         self.id = rov_id
@@ -122,7 +51,8 @@ class ROV(Entity):
         
         # Fiziksel ve Durumsal Durum
         self.velocity = Vec3(0, 0, 0)
-        self.battery, self.role, self.gat_kodu = 1.0, 0, 0
+        ilk_rol = role if role is not None else rol
+        self.battery, self.role, self.gat_kodu = 1.0, int(ilk_rol) if ilk_rol is not None else 0, 0
         self.rotation_y = 0.0
         
         # Sensör Verileri
@@ -148,63 +78,37 @@ class ROV(Entity):
         if loader_ref:
             loader_ref.setup_rov(self, model_key)
 
-        # Grup ID: her ROV dünyaya group_id=0 (üs) ile başlar;
-        # GNC/UI tarafından gruba atandığında güncellenir
-        self.group_id = group_id  # Grup ID bilgisi
+        self.group_id = group_id # Grup ID bilgisi
 
         # Havuz: sonar ve lidar kesikli çizgileri tek sefer oluştur; çizimde sadece güncelle/göster/gizle
         self._cizgi_havuzlari_olustur()
-
-    def _ui_durumu_kirlet(self):
-        """UI durum yazimini hizlandirmak icin ortam seviyesinde dirty tetigi yollar."""
-        env = getattr(self, 'environment_ref', None)
-        if env is not None and hasattr(env, 'mark_ui_state_dirty'):
-            try:
-                env.mark_ui_state_dirty()
-            except Exception:
-                pass
-
-    @property
-    def group_id(self):
-        """ROV grup kimligi (tek kaynak alan)."""
-        return int(getattr(self, '_group_id', 0))
-
-    @group_id.setter
-    def group_id(self, value):
-        """group_id degisince grup cache'i ve UI durumu aninda guncellenir."""
-        self._group_id = int(value)
-        env = getattr(self, 'environment_ref', None)
-        if env is not None and hasattr(env, '_invalidate_g_rovs_cache'):
-            env._invalidate_g_rovs_cache()
-        self._ui_durumu_kirlet()
-
-    @property
-    def grup_id(self):
-        """`group_id` ile geriye dönük uyumlu alias."""
-        return self.group_id
-
-    @grup_id.setter
-    def grup_id(self, value):
-        """Konsoldan `grup_id` yazıldığında gerçek `group_id` alanını günceller."""
-        # Konsol akisi: filo.find_rov_by_id(4).grup_id = 0 -> bu setter calisir.
-        self.group_id = int(value)
 
     def ekle(self, ortam_ref):
         if not ortam_ref: return False
         self.environment_ref = ortam_ref
         if not hasattr(ortam_ref, 'rovs'): ortam_ref.rovs = []
+        if any(r is self and rov_aktif_mi(r) for r in getattr(ortam_ref, 'rovs', [])):
+            print(f"ℹ️ ROV-{self.id} zaten ortama ekli; tekrar ekleme atlandi.")
+            return True
         
         # ID'yi mevcut maksimumdan bir ileri ata (yeniden numaralandirma yok)
-        mevcut_ids = [getattr(r, 'id') for r in getattr(ortam_ref, 'rovs', []) if r is not None and hasattr(r, 'id')]
+        mevcut_ids = [getattr(r, 'id') for r in getattr(ortam_ref, 'rovs', []) if rov_aktif_mi(r) and hasattr(r, 'id')]
         self.id = (max(mevcut_ids) + 1) if mevcut_ids else 0
+        if self.group_id is None:
+            mevcut_grup_ids = [
+                getattr(r, 'group_id') for r in getattr(ortam_ref, 'rovs', [])
+                if r is not None and hasattr(r, 'group_id') and getattr(r, 'group_id') is not None
+            ]
+            self.group_id = (max(mevcut_grup_ids) + 1) if mevcut_grup_ids else 0
         if hasattr(ortam_ref, 'rovs') and isinstance(ortam_ref.rovs, list):
             ortam_ref.rovs.append(self)
         
-        # g_rovs cache'ini geçersiz kıl
-        if hasattr(ortam_ref, '_invalidate_g_rovs_cache'):
-            ortam_ref._invalidate_g_rovs_cache()
-        
         self._etiket_guncelle()
+        filo_attr = getattr(ortam_ref, 'filo', None)
+        if filo_attr is not None and hasattr(filo_attr, 'rov_sisteme_ekle'):
+            if not filo_attr.rov_sisteme_ekle(self):
+                print(f"⚠️ ROV-{self.id} ortama eklendi ancak Filo sistem kurulumu tamamlanamadi.")
+                return False
         return True
 
     def cikar(self):
@@ -242,51 +146,28 @@ class ROV(Entity):
             rovs = getattr(ortam, 'rovs', None)
             if isinstance(rovs, list):
                 for idx, r in enumerate(rovs):
-                    if r and getattr(r, 'id', None) == silinen_id:
+                    if r and (r is self or getattr(r, 'id', None) == silinen_id):
                         rovs[idx] = None
-                        break
 
-            # g_rovs cache'ini geçersiz kıl
-            if hasattr(ortam, '_invalidate_g_rovs_cache'):
-                ortam._invalidate_g_rovs_cache()
-
-            # 2. Fizik gövdesini BulletWorld'den temizle (KRİTİK: bu yapılmazsa doPhysics()
-            #    her frame'de ölü NodePath'e setPos/setHpr çağırır → !is_empty() assertion)
-            filo_ref = getattr(ortam, 'filo', None)
-            _world = getattr(filo_ref, 'world', None)
-            _physics_node = getattr(self, 'physics_node', None)
-            _physics_np   = getattr(self, 'physics_np',   None)
-            if _world is not None and _physics_node is not None:
-                try:
-                    _world.removeRigidBody(_physics_node)
-                except Exception:
-                    pass
-            if _physics_np is not None:
-                try:
-                    _physics_np.removeNode()
-                except Exception:
-                    pass
-            self.physics_node = None  # type: ignore[assignment]
-            self.physics_np   = None  # type: ignore[assignment]
-
-            # Filo'nun motor ve ID haritalarından temizle
-            if filo_ref is not None:
-                try:
-                    filo_ref.motorlar.pop(silinen_id, None)
-                except Exception:
-                    pass
-                try:
-                    if hasattr(filo_ref, '_rov_id_map'):
-                        filo_ref._rov_id_map.pop(silinen_id, None)
-                except Exception:
-                    pass
-
-            # 3. Görselleri temizle (havuz konteynerleri)
+            # 2. Görselleri temizle (havuz konteynerleri)
             if hasattr(self, 'label') and self.label: destroy(self.label)
             if hasattr(self, 'engel_cizgi') and self.engel_cizgi: destroy(self.engel_cizgi)
             for lidar_id in (0, 1, 2, 3):
                 cont = getattr(self, 'lidar_cizgileri', {}).get(lidar_id)
                 if cont: destroy(cont)
+            physics_node = getattr(self, 'physics_node', None)
+            physics_np = getattr(self, 'physics_np', None)
+            filo_attr = getattr(ortam, 'filo', None)
+            if filo_attr is not None and physics_node is not None:
+                try:
+                    filo_attr.world.removeRigidBody(physics_node)
+                except Exception:
+                    pass
+            if physics_np is not None:
+                try:
+                    physics_np.removeNode()
+                except Exception:
+                    pass
 
             # 3. Listeyi yeniden numaralandirma yok
             print(f"✅ ROV-{silinen_id} ve tum gorsel izleri temizlendi.")
@@ -315,7 +196,7 @@ class ROV(Entity):
                  "gorev": getattr(getattr(self, "gnc", None), "gorev", "idle"),
                  "gorev_hedef": getattr(getattr(self, "gnc", None), "gorev_hedef", None)}
             return np.array(d[veri]) if veri in d and veri not in ["lidar", "sonar", "group_id"] else d.get(veri)
-        except Exception:
+        except:
             return None
 
     # 🔹 MERKEZI LIDAR PROPERTIES — Her çağrıldığında önbellek değeri döner
@@ -387,10 +268,6 @@ class ROV(Entity):
 
                 # Geriye donuk uyumluluk: diger sistemler hala engel_bulutu listesini okuyabilir.
                 ortam.engel_bulutu.append(hit_data)
-                # Rerun icin kırpılmayan tam gecmis (sadece Rerun loglama kullanir)
-                rerun_bulut = getattr(ortam, 'rerun_engel_bulutu', None)
-                if isinstance(rerun_bulut, list):
-                    rerun_bulut.append(hit_data)
                 try:
                     ortam_engel_bulutu = getattr(ortam, 'engel_bulutu', [])
                     if isinstance(ortam_engel_bulutu, list) and len(ortam_engel_bulutu) > 12000:
@@ -436,55 +313,6 @@ class ROV(Entity):
                 else:
                     self.son_lidar_mesafeleri[idx] = -1.0
                     self._lidar_cizgi_temizle(idx)
-
-            # ── Multibeam sonar swath (3D harita için) ─────────────────────
-            ortam = self.environment_ref
-            if ortam is not None:
-                from FiratROVNet.config import SonarHaritalamaAyarlari as _SA
-                harita: list = getattr(ortam, 'rerun_tarama_haritasi', None)
-                son_poz: dict = getattr(ortam, '_rr_son_tarama_poz', None)
-                if harita is not None and son_poz is not None:
-                    rov_id = int(getattr(self, 'id', 0))
-                    ux, uy, uz = float(self.world_position.x), float(self.world_position.y), float(self.world_position.z)
-                    prev = son_poz.get(rov_id)
-                    esik = float(_SA.MIN_HAREKET_ESIGI)
-                    hareket_etti = True
-                    if prev is not None:
-                        dx, dy, dz = ux - prev[0], uy - prev[1], uz - prev[2]
-                        hareket_etti = math.sqrt(dx*dx + dy*dy + dz*dz) >= esik
-                    if hareket_etti:
-                        swath_rad = math.radians(float(_SA.SWATH_ACISI_DERECE))
-                        n = int(_SA.NOKTA_SAYISI)
-                        # Across-track yön vektörü (ROV'un sağ ekseni — yaw'a göre döner)
-                        yaw_rad = math.radians(float(self.rotation_y))
-                        # Across-track: ROV'un yan yönü
-                        ac_x = math.cos(yaw_rad)
-                        ac_z = -math.sin(yaw_rad)
-                        beam_origin = self.world_position + Vec3(0, -0.5, 0)
-                        max_dist = max(10.0, abs(uy - float(getattr(ortam, 'SEA_FLOOR_Y', -50.0))) * 1.5)
-                        for i in range(n):
-                            # t: -1.0 .. +1.0 (swath boyunca normalize)
-                            t = (i / max(1, n - 1)) * 2.0 - 1.0
-                            angle = t * swath_rad
-                            # Beam yönü: aşağı + across-track açı
-                            sin_a = math.sin(angle)
-                            cos_a = math.cos(angle)
-                            bx = ac_x * sin_a
-                            by = -cos_a        # aşağı bileşen
-                            bz = ac_z * sin_a
-                            mag = math.sqrt(bx*bx + by*by + bz*bz)
-                            if mag < 1e-9:
-                                continue
-                            beam_dir = Vec3(bx/mag, by/mag, bz/mag)
-                            hit = safe_raycast(beam_origin, beam_dir, max_dist, ignore_tuple)
-                            if hit.hit:
-                                hp = hit.world_point
-                                harita.append((float(hp.x), float(hp.y), float(hp.z)))
-                        son_poz[rov_id] = (ux, uy, uz)
-                        max_nokta = int(_SA.MAKSIMUM_NOKTA)
-                        fazla = len(harita) - max_nokta
-                        if fazla > 0:
-                            del harita[:fazla]
     def set(self, ayar, deger):
         """GNC sistemi tarafından çağrılır."""
         if ayar == "rol":
@@ -492,14 +320,11 @@ class ROV(Entity):
             if getattr(self, 'label', None):
                 self.label.text = f"{'LIDER' if self.role == 1 else 'ROV'}-{self.id}"  # type: ignore
                 self.color = color.red if self.role == 1 else color.white
-            self._ui_durumu_kirlet()
         elif ayar == "yaw":
             self.rotation_y = float(deger)
             self.rotation = Vec3(0, self.rotation_y, 0)
-            self._ui_durumu_kirlet()
         elif ayar in self.sensor_config:
             self.sensor_config[ayar] = deger
-            self._ui_durumu_kirlet()
 
     def move(self, komut, guc=1.0):
         if self.battery <= 0: return
@@ -730,7 +555,7 @@ class Minimap(Entity):
             if not self.visible or not self.ortam_ref: return
             
             if hasattr(self.ortam_ref, 'rovs'):
-                mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) if r and not (getattr(r, 'is_destroyed', False))]
+                mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) if rov_aktif_mi(r)]
                 active_ids = {getattr(r, 'id', -1) for r in mevcut_rovlar}
                 
                 # --- ÖNCE SİLİNENLERİ KALDIR ---
@@ -741,7 +566,10 @@ class Minimap(Entity):
 
                 # --- SONRA MEVCUTLARI GÜNCELLE ---
                 for rov in mevcut_rovlar:
-                    target = self.dunya_to_harita(rov.x, rov.z)  # type: ignore
+                    try:
+                        target = self.dunya_to_harita(rov.x, rov.z)  # type: ignore
+                    except AssertionError:
+                        continue
 
                     if getattr(rov, 'id', -1) not in self.rov_ikonlari:
                         self.rov_ikonlari[getattr(rov, 'id', -1)] = self.loader.create_rov_icon(self, getattr(rov, 'id', -1), getattr(rov, 'color', color.white))
@@ -949,36 +777,8 @@ class Minimap(Entity):
 # 3. ORTAM SINIFI (Dünya ve Simülasyon Yönetimi)
 # ============================================================
 class Ortam:
-    _active_instance = None
-
     def __init__(self, verbose=False):
-        # Tek proses/tek sahne garantisi: yan-etkili importlar ikinci Ortam yaratmaya
-        # kalkarsa mevcut ornegi yeniden kullan.
-        mevcut = Ortam._active_instance
-        if mevcut is not None and getattr(mevcut, 'app', None) is not None:
-            self.__dict__ = mevcut.__dict__
-            return
-
         self.verbose = verbose
-        
-        # [FIX] Render debug mode - entity double-rendering sorunu tanısı
-        self._entity_render_count = {}
-        
-        # [CRITICAL PRE-FIX] Ursina'nın Panda3D config'ini önceden set et
-        # Stereo rendering disable, shadow mapping disable
-        try:
-            from panda3d.core import load_prc_file_data
-            prc_data = """
-            framebuffer-stereo #f
-            framebuffer-srgb #f
-            gl-force-depth-write 1
-            gl-depth-test 1
-            prefer-parasite-buffer #f
-            """
-            load_prc_file_data("", prc_data)
-        except Exception:
-            pass
-        
         # Pencere ayarlarını _setup_window içinde yapacağımız için burada temel başlatma yapıyoruz
         self.app = Ursina(
             vsync=False, 
@@ -987,66 +787,6 @@ class Ortam:
             borderless=False,
             title="FıratROVNet Simülasyonu"
         )
-        
-        # [FIX] AGGRESSIVE: Panda3D'nin tüm secondary render pass'larını devre dışı bırak
-        try:
-            from panda3d.core import GraphicsOutput
-            from direct.showbase.ShowBase import globalShowBase
-            
-            pd_base = globalShowBase
-            if pd_base and hasattr(pd_base, 'win'):
-                win = pd_base.win
-                
-                # [CRITICAL] render2d (2D rendering layer) deaktivate et
-                # Ursina render + render2d = dual render!
-                if hasattr(pd_base, 'render2d'):
-                    pd_base.render2d.hide()
-                    if hasattr(pd_base.render2d, 'set_active'):
-                        pd_base.render2d.set_active(False)
-                
-                # [CRITICAL] Tüm extra buffers/regions kaldır
-                if hasattr(win, 'get_num_display_regions'):
-                    num_regions = win.get_num_display_regions()
-                    regions_to_remove = []
-                    
-                    # Region 0 = main view, tüm kalanları sil
-                    for i in range(1, num_regions):
-                        region = win.get_display_region(i)
-                        if region:
-                            regions_to_remove.append(region)
-                    
-                    for region in regions_to_remove:
-                        try:
-                            win.remove_display_region(region)
-                        except Exception:
-                            pass
-                
-                # [CRITICAL] Tüm auxiliary buffers'ı kapat (depth, shadow, etc.)
-                if hasattr(pd_base, 'get_all_aux_buffers'):
-                    try:
-                        aux_buffers = pd_base.get_all_aux_buffers()
-                        for buf in aux_buffers:
-                            if buf and hasattr(buf, 'set_active'):
-                                buf.set_active(False)
-                    except Exception:
-                        pass
-                
-                # [CRITICAL] Internal cameras'ı kontrol et
-                if hasattr(pd_base, 'camera'):
-                    cam_node = pd_base.camera
-                    # Camera parent'ı check et - hiçbir secondary camera olmamalı
-                    if hasattr(cam_node, 'get_num_children'):
-                        num_children = cam_node.get_num_children()
-                        if num_children > 1:
-                            # Secondary cameras'ı detach et
-                            for i in range(1, num_children):
-                                child = cam_node.get_child(i)
-                                try:
-                                    child.detach_node()
-                                except Exception:
-                                    pass
-        except Exception as e:
-            pass
 
 
         # --- ESKİ AYARLAR: SABİT ADA VE ROV KONUMLARI ---
@@ -1070,121 +810,39 @@ class Ortam:
         self.helper = OrtamHelper(self)
         
         self.rovs, self.island_positions, self.island_entities = [], [], []
-        self._g_rovs: dict = {}
-        self._g_rovs_cache_len: int = -1   # cache invalidation: rovs listesi boyutu
-        self._g_rovs_cache_sig: tuple = ()
+        self._g_rovs={}
         self.islands=self.island_entities
         self.engel_bulutu, self.konsol_verileri = [], {}
-        # Rerun için kırpılmayan tam tarama geçmişi (engel_bulutu GNC için sınırlıdır)
-        self.rerun_engel_bulutu: list = []
-        # Multibeam sonar ile oluşturulan 3D bathymetrik harita tamponu
-        self.rerun_tarama_haritasi: list = []
-        self._rr_son_tarama_poz: dict = {}  # {rov_id: (ux, uy, uz)}
         self.sonar_cizgiler, self.filo = {}, None
         self.pool_human = None
 
         # --- KURULUM ---
         self._setup_window()
         self._setup_lighting()
-        # [FIX] Minimap re-enabled with proper parent hierarchy  
         self.minimap = Minimap(ortam_ref=self)
-        self.minimap.visible = True
         
-        # [FIX] EditorCamera re-enabled 
         self.camera = EditorCamera(
             enabled=True, rotate_speed=15, pan_speed=(10, 10),
             zoom_speed=1, position=(0, 0, -50), rotation=(20, 0, 0)
         )
-        # EditorCamera'nın 'r' (reset) kısayolunu devre dışı bırak — biz kullanıyoruz
-        try:
-            self.camera.shortcuts = {k: v for k, v in self.camera.shortcuts.items() if k != 'r'}
-        except Exception:
-            pass
-        
         mouse.visible, mouse.locked = True, False
-
-        # [FINAL FIX] Panda3D'nin kamera node'unda sadece BİR camera olduğundan emin ol
-        try:
-            from direct.showbase.ShowBase import globalShowBase
-            pd_base = globalShowBase
-            if pd_base and hasattr(pd_base, 'camera_node'):
-                cam_node = pd_base.camera_node()
-                # Parent'taki tüm child'ları kontrol et ve duplicate camera'ları sil
-                parent = cam_node.get_parent()
-                if parent and hasattr(parent, 'get_num_children'):
-                    for i in range(parent.get_num_children()):
-                        child = parent.get_child(i)
-                        # Ana camera node dışındakini sil (gizli debug camera'ları)
-                        if child != cam_node:
-                            try:
-                                child.detach_node()
-                            except Exception:
-                                pass
-        except Exception:
-            pass
-
-        # [FIX] Window resize event handler - çift render sorunu düzeltmek için camera aspect ratio sıfırla
-        self._setup_window_resize_handler()
-
-        # Ilk basarili kurulumdan sonra aktif instance'i sabitle.
-        Ortam._active_instance = self
         
 
 
     @property
     def g_rovs(self):
-        # Cache: ROV listesi ve grup dağılımı değişmedikçe yeniden inşa etme
-        current_len = len(self.rovs)
-        current_sig = tuple(
-            (int(getattr(rov, 'id', -1)), int(getattr(rov, 'group_id', 0)))
-            for rov in self.rovs
-            if rov and not getattr(rov, 'is_destroyed', False)
-        )
-        if (
-            current_len == self._g_rovs_cache_len
-            and current_sig == self._g_rovs_cache_sig
-            and self._g_rovs
-        ):
-            return self._g_rovs
-        self._g_rovs = {}
+        self._g_rovs={}
         for rov in self.rovs:
-            if not rov or getattr(rov, 'is_destroyed', False):
+            if not rov_aktif_mi(rov):
                 continue
             __group_id=getattr(rov, 'group_id', 0)
-            if not self._g_rovs.get(__group_id, False):
+            if not self._g_rovs.get(__group_id,False):
                 self._g_rovs[__group_id]=[]
             self._g_rovs[__group_id].append(rov)
-        self._g_rovs_cache_len = current_len
-        self._g_rovs_cache_sig = current_sig
         return self._g_rovs
-
-    def _invalidate_g_rovs_cache(self):
-        """ROV eklendiğinde veya çıkartıldığında cache'i geçersiz kıl."""
-        self._g_rovs_cache_len = -1
-        self._g_rovs_cache_sig = ()
 
     def _setup_window(self):
         """ESKİ AYARLAR: Pencere konfigürasyonu."""
-        
-        # [CRITICAL] Ursina'nın camera.ui setup'ını kontrol et
-        # camera.ui Ursina'nın 2D overlay camera'sı (orthogonal projection)
-        # Bu ile main 3D camera'nın conflict'ı "iki dünya" görünümü yaratabilir
-        try:
-            # camera.ui ortho-projection'ını explicitly set et
-            from panda3d.core import OrthographicLens
-            if hasattr(camera, 'ui') and hasattr(camera.ui, 'lens'):
-                ui_lens = camera.ui.lens()
-                if isinstance(ui_lens, OrthographicLens):
-                    # Ortho camera'nın aspect ratio'yu pencereyle senkronize et
-                    ui_lens.set_film_size(1280, 720)  # Default match
-                # Make sure UI camera render order is AFTER main camera
-                if hasattr(camera.ui, 'node'):
-                    ui_node = camera.ui.node()
-                    if hasattr(ui_node, 'set_active'):
-                        ui_node.set_active(True)
-        except Exception:
-            pass
-        
         window.fullscreen = False
         window.exit_button.visible = False
         window.size = (1280, 720)
@@ -1218,91 +876,7 @@ class Ortam:
         self.ambient = AmbientLight(color=color.rgba(120, 120, 120, 1))  # type: ignore
         self.sky = Sky()  # type: ignore
         
-        # [FIX] Shader ve post-processing devre dışı bırak (çift render kaynağı olabilir)
-        try:
-            from panda3d.core import ShaderAttrib
-            from direct.showbase.ShowBase import globalShowBase
-            
-            pd_base = globalShowBase
-            if pd_base:
-                # Shadow mapping devre dışı bırak
-                if hasattr(pd_base, 'render'):
-                    pd_base.render.set_attrib(ShaderAttrib.make())
-                
-                # Fog render pass devre dışı bırak
-                if hasattr(pd_base, 'set_fog'):
-                    try:
-                        pd_base.set_fog(None)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-    def _setup_window_resize_handler(self):
-        """
-        [FIX] COMPREHENSIVE: Window resize sırasında Panda3D render state'ini reset et.
-        Resize sırasında internal viewport/framebuffer corruption oluşabilir.
-        """
-        last_window_size = [window.size[0], window.size[1]]
-        
-        def on_render_frame_task(task):
-            """Her frame'de window size değişim kontrol et."""
-            try:
-                current_size = window.size
-                if (current_size[0] != last_window_size[0] or 
-                    current_size[1] != last_window_size[1]):
-                    
-                    # [CRITICAL] Resize detected - render state reset
-                    last_window_size[0] = current_size[0]
-                    last_window_size[1] = current_size[1]
-                    
-                    # Camera lens aspect ratio güncelle
-                    if hasattr(camera, 'lens') and camera.lens:
-                        aspect = current_size[0] / max(current_size[1], 1)
-                        camera.lens.set_aspect_ratio(aspect)
-                    
-                    # Panda3D internal render target'ı force-invalidate et
-                    try:
-                        from panda3d.core import GraphicsEngine
-                        if hasattr(application, 'engine') and hasattr(application.engine, 'engine'):
-                            gfx_engine = application.engine.engine
-                            # Force render pipeline reset
-                            if hasattr(gfx_engine, 'reset_framebuffer'):
-                                gfx_engine.reset_framebuffer()
-                    except Exception:
-                        pass
-                    
-                    # View matrix'i reset et
-                    try:
-                        if hasattr(camera, 'node') and hasattr(camera.node(), 'reset_projection_mat'):
-                            camera.node().reset_projection_mat()
-                    except Exception:
-                        pass
-                    
-            except Exception as e:
-                pass
-            
-            return task.cont
-        
-        # Ursina's task manager ile frame-per-frame resize check
-        try:
-            application.task_mgr.add(on_render_frame_task, 'frame_resize_check')
-        except Exception:
-            pass
-        
-        # Also setup stereo rendering disable (in case it's enabled by default)
-        try:
-            if hasattr(application, 'win') and application.win:
-                if hasattr(application.win, 'set_stereo'):
-                    application.win.set_stereo(False)
-        except Exception:
-            pass
-        
     def konsola_ekle(self, isim, nesne): self.konsol_verileri[isim] = nesne
-
-    def mark_ui_state_dirty(self):
-        """Main tarafi override etmediyse no-op kalir."""
-        return None
     
     def set_update_function(self, func):
         """Günceleme fonksiyonunu kaydet. Ursina'da doğrudan update attribute atanamaz."""
@@ -1406,172 +980,79 @@ class Ortam:
 
         return all_groups_rovs
 
-    def _guvenli_rov_konumu(self, min_ada_mesafesi=35.0, sinir=160.0) -> tuple:
-        """Ada konumlarından uzak, rastgele güvenli bir (x, z) noktası döndürür (Ursina koordinatı)."""
-        import random
-        ada_konumlari = [p for p in self.island_positions if p]
-        for _ in range(200):
-            rx = random.uniform(-sinir, sinir)
-            rz = random.uniform(-sinir, sinir)
-            cakisiyor = False
-            for pos in ada_konumlari:
-                # island_positions sim koordinatında (x, y) → Ursina x=x, z=y
-                ada_x = float(pos[0]) if hasattr(pos, '__getitem__') else 0.0
-                ada_z = float(pos[1]) if hasattr(pos, '__getitem__') else 0.0
-                if ((rx - ada_x) ** 2 + (rz - ada_z) ** 2) ** 0.5 < min_ada_mesafesi:
-                    cakisiyor = True
-                    break
-            if not cakisiyor:
-                return rx, rz
-        # 200 denemede bulunamazsa güvenli merkez
-        return 0.0, -80.0
+    def _rov_grup_konfig_normalize(self, n_rovs):
+        if n_rovs is None:
+            return ()
+        if isinstance(n_rovs, int):
+            return (n_rovs,) if n_rovs > 0 else ()
+        try:
+            return tuple(int(n) for n in n_rovs if int(n) > 0)
+        except (TypeError, ValueError):
+            return ()
 
-    def sim_olustur(self, n_rovs=(6,), n_islands=5, n_rocks=20, havuz_genisligi=200, rov_model='submarine'):
-        self.havuz_genisligi = havuz_genisligi
+    def sim_olustur(self, n_rovs=None, n_islands=5, n_rocks=20, havuz_genisligi=200, rov_model='submarine', seed=False):
+        random_state = None
+        if seed is not False and seed is not None:
+            random_state = random.getstate()
+            random.seed(seed)
+            self.seed = seed
+        else:
+            self.seed = None
 
-        # Dunya katmanlarini yeniden kurmadan once eski entity'leri temizle.
-        for attr_name in ("water_volume", "ocean_surface", "ocean_taban", "seabed", "cimen_katmani", "pool_human"):
-            ent = getattr(self, attr_name, None)
-            if ent is not None:
-                try:
-                    destroy(ent)
-                except Exception:
-                    pass
-                setattr(self, attr_name, None)
+        try:
+            self.havuz_genisligi = havuz_genisligi
+            n_rovs = self._rov_grup_konfig_normalize(n_rovs)
+            
+            # Temizlik
+            for obj in [r for r in self.rovs if r] + [i for i in self.island_entities if i]: 
+                if obj: destroy(obj)
+            self.rovs, self.island_entities, self.island_positions, self.engel_bulutu = [], [], [], []
+            
+            # Dünya İnşası
+            size = havuz_genisligi * 2
+            self.loader.build_ocean(size=size)
+            self.loader.build_seabed(size=size)
+            self.loader.load_pool_human(havuz_genisligi=havuz_genisligi)
+            self.loader.build_boundaries(havuz_genisligi)
+            
+            # 1. Adaları Sabit Noktalardan Yerleştir
+            count = min(n_islands, len(self.FIXED_ISLAND_POSITIONS))
+            chosen_islands = random.sample(self.FIXED_ISLAND_POSITIONS, count)
+            chosen_islands.insert(0,(0,0))
+            for i, pos in enumerate(chosen_islands):
+                self.Ada(i, x="ekle", y=pos)
 
-        # Loader tarafinda biriken dinamik engeller/sinirlar da temizlensin.
-        if hasattr(self.loader, "clear_rocks"):
-            try:
-                self.loader.clear_rocks()
-            except Exception:
-                pass
-        if hasattr(self.loader, "clear_boundaries"):
-            try:
-                self.loader.clear_boundaries()
-            except Exception:
-                pass
-        
-        # Temizlik
-        for obj in [r for r in self.rovs if r] + [i for i in self.island_entities if i]: 
-            if obj: destroy(obj)
-        self.rovs, self.island_entities, self.island_positions, self.engel_bulutu = [], [], [], []
-        
-        # Dünya İnşası - HER ŞEY AÇIK
-        size = havuz_genisligi * 2
-        self.loader.build_ocean(size=size)
-        self.loader.build_seabed(size=size)
-        self.loader.load_pool_human(havuz_genisligi=havuz_genisligi)
-        self.loader.build_boundaries(havuz_genisligi)
-        
-        # Kayaları ekle (n_rocks parametresi ile)
-        if n_rocks > 0:
-            self.loader.spawn_rocks(count=n_rocks, havuz_genisligi=havuz_genisligi)
-        
-        # 1. Adaları Sabit Noktalardan Yerleştir
-        count = min(n_islands, len(self.FIXED_ISLAND_POSITIONS))
-        chosen_islands = random.sample(self.FIXED_ISLAND_POSITIONS, count)
-        chosen_islands.insert(0,(0,0))
-        for i, pos in enumerate(chosen_islands):
-            self.Ada(i, x="ekle", y=pos)
+            # Kayaları ekle (n_rocks parametresi ile)
+            if n_rocks > 0:
+                self.loader.spawn_rocks(count=n_rocks, havuz_genisligi=havuz_genisligi)
 
-        # 2. ROV'ları Güvenli Noktalara Yerleştir
-        # n_rovs tuple'ından toplam ROV sayısını hesapla
-        toplam_rov_sayisi = sum(n_rovs)
-        print(f"🌊 Simülasyon Başlatılıyor: {toplam_rov_sayisi} ROV, {count} Ada")
+            # 2. ROV'ları Güvenli Noktalara Yerleştir
+            # n_rovs tuple'ından toplam ROV sayısını hesapla
+            toplam_rov_sayisi = sum(n_rovs)
+            seed_metni = f", seed={seed}" if seed is not False and seed is not None else ""
+            print(f"🌊 Simülasyon Başlatılıyor: {toplam_rov_sayisi} ROV, {count} Ada{seed_metni}")
 
-        all_group = self._find_safe_rov_spawn_pos(n_rovs)
+            all_group = self._find_safe_rov_spawn_pos(n_rovs) if toplam_rov_sayisi > 0 else []
 
-        # Global ROV ID counter
-        global_rov_id: int = 0
-        
-        for group_id, rovlar in enumerate(all_group):
-            for local_rov_id, rov_koordinat in enumerate(rovlar):
-                # sim_pos: (x, z_depth, y_coordinate) -> ursina: (x, y, z)
-                u_pos = Vec3(rov_koordinat[0], rov_koordinat[2], rov_koordinat[1])
+            # Global ROV ID counter
+            global_rov_id: int = 0
+            
+            for group_id, rovlar in enumerate(all_group):
+                for local_rov_id, rov_koordinat in enumerate(rovlar):
+                    # sim_pos: (x, z_depth, y_coordinate) -> ursina: (x, y, z)
+                    u_pos = Vec3(rov_koordinat[0], rov_koordinat[2], rov_koordinat[1])
+                        
+                    new_rov = ROV(rov_id=global_rov_id, group_id=group_id, position=u_pos, loader_ref=self.loader, model_key=rov_model)
+                    new_rov.ekle(self)
                     
-                new_rov = ROV(rov_id=global_rov_id, group_id=group_id, position=u_pos, loader_ref=self.loader, model_key=rov_model)
-                new_rov.ekle(self)
-                
-                global_rov_id = int(global_rov_id + 1)  # type: ignore
+                    global_rov_id = int(global_rov_id + 1)  # type: ignore
 
-        if getattr(self, "minimap", None):
-            self.minimap._statik_yeniden_ciz()
-        
+            if getattr(self, "minimap", None):
+                self.minimap._statik_yeniden_ciz()
+        finally:
+            if random_state is not None:
+                random.setstate(random_state)
 
-
-    def yeni_rov_ekle(self, rov_model='submarine'):
-        """UI'dan tek bir yeni ROV ekler. Ada olmayan güvenli bir konuma yerleştirir."""
-        import random
-        from ursina import Vec3
-
-        # Yeni ID: mevcut maksimum + 1
-        mevcut_ids = [getattr(r, 'id', 0) for r in self.rovs if r is not None]
-        yeni_id = (max(mevcut_ids) + 1) if mevcut_ids else 0
-
-        # Ada çakışması olmayan güvenli konum bul
-        rx, rz = self._guvenli_rov_konumu()
-        ry = -5.0  # Ursina Y = derinlik (su yüzeyinin altı)
-
-        new_rov = ROV(rov_id=yeni_id, group_id=0, position=Vec3(rx, ry, rz),
-                      loader_ref=self.loader, model_key=rov_model)
-        new_rov.ekle(self)
-
-        # Filo'ya sadece bu ROV'u ekle (tüm sistemi yeniden kurma)
-        filo_ref = getattr(self, 'filo', None)
-        if filo_ref is not None and hasattr(filo_ref, '_tek_rov_fizik_kur'):
-            try:
-                filo_ref._tek_rov_fizik_kur(new_rov)
-                filo_ref.mevcut_rov_sayisi = len([r for r in self.rovs if r is not None])
-                filo_ref.motor_sema_kaydet()
-                filo_ref.tum_motor_bv_kutuphanelerini_guncelle()
-            except Exception:
-                import traceback
-                traceback.print_exc()
-
-        if getattr(self, "minimap", None):
-            self.minimap._statik_yeniden_ciz()
-
-        print(f"✅ Yeni ROV-{yeni_id} simülasyona eklendi @ ({rx:.1f}, {ry:.1f}, {rz:.1f})")
-        return new_rov
-
-    # ── Arama Hedef Nesneleri ──────────────────────────────────────────────────
-
-    def hedef_nesne_ekle(
-        self,
-        renk_ismi: str = "kirmizi",
-        sim_x: float = 0.0,
-        sim_y: float = 0.0,
-        sim_z: float | None = None,
-        boyut: float = 3.0,
-    ) -> "AramaHedef":
-        """Sahneye arama hedefi olarak renkli bir küre ekler."""
-        mevcut_ids = [h.nesne_id for h in AramaHedef._tum_hedefler]
-        nesne_id   = (max(mevcut_ids) + 1) if mevcut_ids else 0
-        hedef = AramaHedef(
-            nesne_id=nesne_id,
-            renk_ismi=renk_ismi,
-            sim_x=sim_x,
-            sim_y=sim_y,
-            sim_z=sim_z,
-            boyut=boyut,
-        )
-        print(f"🎯 Hedef nesne eklendi: #{nesne_id} ({renk_ismi}) @ ({sim_x:.1f}, {sim_y:.1f}, {sim_z or HedefNesneAyarlari.VARSAYILAN_DERINLIK:.1f})")
-        if getattr(self, "minimap", None):
-            self.minimap._statik_yeniden_ciz()
-        return hedef
-
-    def hedef_nesneleri_temizle(self):
-        """Sahnedeki tüm arama hedef nesnelerini kaldırır."""
-        sayi = len(AramaHedef._tum_hedefler)
-        AramaHedef.tum_hedefleri_kaldir()
-        print(f"🗑️  {sayi} hedef nesne kaldırıldı.")
-
-    def hedef_nesneleri_listele(self) -> list[dict]:
-        """Mevcut hedef nesnelerin listesini döndürür."""
-        return [
-            {"id": h.nesne_id, "renk": h.renk_ismi, "x": h.sim_x, "y": h.sim_y, "z": h.sim_z}
-            for h in AramaHedef._tum_hedefler
-        ]
 
     def ROV(self, rov_id, x=None, y=None, z=None):
         """Konsol: ROV rov_id konumunu (x, y, z) yapar. x,y,z verilmezse sadece mevcut ROV döner."""
@@ -1594,12 +1075,6 @@ class Ortam:
                 return
             while len(self.island_positions) <= ada_id: self.island_positions.append(None)
             while len(self.island_entities) <= ada_id: self.island_entities.append(None)
-            eski_ada = self.island_entities[ada_id]
-            if eski_ada is not None:
-                try:
-                    destroy(eski_ada)
-                except Exception:
-                    pass
             ent, radius = self.loader.create_island(y[0], y[1])
             self.island_entities[ada_id], self.island_positions[ada_id] = ent, (y[0], y[1], radius)
             
@@ -1608,7 +1083,7 @@ class Ortam:
             ROV'lar arası sonar iletişimini KESİKLİ ÇİZGİ Mesh'leri ile gösterir.
             Create-once per pair: her çift için tekil Mesh oluşturulur, her karede güncellenir.
             """
-            active_rovs = [r for r in self.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
+            active_rovs = [r for r in self.rovs if rov_aktif_mi(r)]
             bu_frame_aktif_olanlar = set()
             
             BASE_KALINLIK = 2  # Kalınlık 0.5 oranında inceltildi
@@ -1700,21 +1175,4 @@ class Ortam:
         print("\n🚀 FIRAT ROVNET CANLI KONSOL AKTİF")
         vars = {'rovs': self.rovs, 'app': self, 'filo': self.filo}
         vars.update(self.konsol_verileri)
-        local_ns = dict(globals(), **vars)
-
-        class _DirtyConsole(code.InteractiveConsole):
-            def __init__(self, locals=None, ortam_ref=None):
-                super().__init__(locals=locals)
-                self._ortam_ref = ortam_ref
-
-            def runcode(self, code):
-                try:
-                    super().runcode(code)
-                finally:
-                    try:
-                        if self._ortam_ref is not None:
-                            self._ortam_ref.mark_ui_state_dirty()
-                    except Exception:
-                        pass
-
-        _DirtyConsole(locals=local_ns, ortam_ref=self).interact(banner="")
+        code.interact(local=dict(globals(), **vars))

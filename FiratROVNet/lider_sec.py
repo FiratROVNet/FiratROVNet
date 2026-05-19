@@ -67,9 +67,7 @@ class LiderSecimModulu:
             # --- DURUM A: HEDEF YOKSA (Mevcut lideri koru veya random seç) ---
             if grup_hedef is None:
                 lider_id = random.choice(rov_listesi)["id"]
-                _oto = getattr(getattr(self.filo_ref, 'leader_manager', None), 'oto_lider_etkin', True)
-                if _oto:
-                    print(f"🎲 Grup-{g_id} için rastgele lider atandı.")
+                print(f"🎲 Grup-{g_id} için rastgele lider atandı.")
 
                 secilen_rov_id[g_id] = lider_id
                 lider_skorlari[g_id] = 1.0
@@ -102,7 +100,7 @@ class LiderSecimModulu:
                     if skor > max_lider_skor:
                         max_lider_skor = skor
                         en_uygun_id = rov['id']
-                except Exception:
+                except:
                     continue
 
             secilen_rov_id[g_id] = en_uygun_id
@@ -172,18 +170,21 @@ class LeaderManager:
         """
         self.filo_ref = filo_ref
         self.mevcut_lider_id = {}
-        self.oto_lider_etkin = False  # Başlangıçta otomatik lider ataması devre dışı
 
+    def _gnc_mod_ata(self, rov, mod):
+        if hasattr(rov, "gnc") and rov.gnc is not None:
+            try:
+                rov.gnc.mod = int(mod)
+            except Exception:
+                pass
+    
     def guncelle_liderler(self, yeni_lider_ids):
         """
         Lider bilgisini günceller ve rol atamalarını yapar.
-        oto_lider_etkin=False iken rol ataması yapılmaz.
-
+        
         Args:
             yeni_lider_ids: {g_id: lider_id} veya {g_id: [lider_id, skor]} formatında olmalı.
         """
-        if not self.oto_lider_etkin:
-            return
         if yeni_lider_ids is None:
             return
 
@@ -215,6 +216,11 @@ class LeaderManager:
                 if onceki_lider_id == yeni_lider_id:
                     if self.filo_ref.get(yeni_lider_id, "rol") != 1:
                         self.filo_ref.set(yeni_lider_id, "rol", 1)
+                    for rov in rov_listesi:
+                        if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                            continue
+                        if rov.id == yeni_lider_id:
+                            self._gnc_mod_ata(rov, 0)
                     continue
 
                 print(f"👑 Lider Değişimi | Grup: {g_id} | Yeni Lider: ROV-{yeni_lider_id}")
@@ -231,15 +237,9 @@ class LeaderManager:
                         from ursina import color
                         rov.color = color.red
                         # Lider: serbest mod (mod=0) — minimap hedefleri ve git_path alabilsin
-                        if hasattr(rov, "gnc") and rov.gnc is not None:
-                            try:
-                                rov.gnc.mod = 0
-                            except Exception:
-                                pass
+                        self._gnc_mod_ata(rov, 0)
                     else:
                         self.filo_ref.set(rov.id, "rol", 0)
-                        from ursina import color
-                        rov.color = color.white
 
                 # 4. Patlayan onceki liderin hedefini devret
                 if onceki_lider_id not in (None, -1) and onceki_lider_id != yeni_lider_id:

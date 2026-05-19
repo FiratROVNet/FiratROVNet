@@ -492,8 +492,11 @@ def _rovlar_to_rerun_arrays(rovs):
         if rov is None or getattr(rov, "is_destroyed", False):
             continue
         try:
+            is_empty = getattr(rov, "is_empty", None)
+            if callable(is_empty) and is_empty():
+                continue
             centers.append(_ursina_to_rerun_xyz(rov.position.x, rov.position.y, rov.position.z))
-        except (AttributeError, TypeError, ValueError):
+        except (AssertionError, AttributeError, TypeError, ValueError):
             continue
 
         rov_color = getattr(rov, "color", None)

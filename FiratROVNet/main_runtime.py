@@ -106,7 +106,11 @@ def konsol_komutlari_ekle(app, filo):
 
 
 def tahminler_al(app, tahminler_cache):
-    rov_sayisi = len(app.rovs)
+    filo = getattr(app, "filo", None)
+    if filo is not None and hasattr(filo, "rovs"):
+        rov_sayisi = len(filo.rovs)
+    else:
+        rov_sayisi = len([r for r in getattr(app, "rovs", []) if r and not getattr(r, "is_destroyed", False)])
     if tahminler_cache.shape[0] != rov_sayisi:
         return np.zeros(rov_sayisi, dtype=int)
     return tahminler_cache
@@ -169,7 +173,22 @@ def gruptaki_ilk_rov_id(filo, g_id):
     return None
 
 
+def aktif_rov_idleri(filo):
+    try:
+        ids = [
+            int(getattr(rov, "id"))
+            for rov in (filo.rovs or [])
+            if rov and not getattr(rov, "is_destroyed", False)
+        ]
+        return sorted(ids)
+    except Exception:
+        return []
+
+
 def sac_hud_toggle(filo, sac_hud, bilgi_rov_id):
+    if not filo.rovs:
+        print("ℹ️ SAC paneli için aktif ROV yok.")
+        return
     sac_hud.toggle()
     filo._sac_hud_visible = sac_hud.visible
     if not sac_hud.visible:
@@ -214,8 +233,14 @@ def sonraki_grup(filo, bilgi_rov_id, aktif_grup_index):
 
 
 def sonraki_rov(filo, bilgi_rov_id):
-    bilgi_rov_id += 1
-    bilgi_rov_id %= len(filo.rovs)
+    ids = aktif_rov_idleri(filo)
+    if not ids:
+        print("ℹ️ Aktif ROV yok. Runtime'da ROV ekledikten sonra tekrar deneyin.")
+        return bilgi_rov_id
+    if bilgi_rov_id in ids:
+        bilgi_rov_id = ids[(ids.index(bilgi_rov_id) + 1) % len(ids)]
+    else:
+        bilgi_rov_id = ids[0]
     filo.kamera_ayarla(rov_id=bilgi_rov_id)
     print(f"🔄 Aktif ROV: {bilgi_rov_id}")
     return bilgi_rov_id
@@ -256,7 +281,11 @@ def minimap_hedef_ata(app, filo, bilgi_rov_id):
 
 
 def lider_patlat(filo, bilgi_rov_id):
-    lider_bilgi = filo.find_leader_info(g_id=filo.rovs[bilgi_rov_id].group_id)
+    rov = filo.find_rov_by_id(bilgi_rov_id)
+    if rov is None:
+        print("ℹ️ Patlatılacak lider yok; aktif ROV bulunmuyor.")
+        return
+    lider_bilgi = filo.find_leader_info(g_id=rov.group_id)
     lider_id = lider_bilgi[0] if lider_bilgi else None
     lider_rov = filo.find_rov_by_id(lider_id) if lider_id is not None else None
     if lider_rov:

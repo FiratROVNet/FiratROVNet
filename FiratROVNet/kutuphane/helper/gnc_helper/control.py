@@ -205,6 +205,11 @@ class TemelGNCHelper:
         if isinstance(hedef_vektor, Vec3) and isinstance(engel_vektor, Vec3) and isinstance(rov_vektor, Vec3):
             self._bileske_vektoru_minimapte_ciz(self.rov.id, hedef_vektor*ham_hedef, engel_vektor*ham_engel, rov_vektor*ham_rov)
 
+        if self.rov.group_id==0 and False:
+            if rov_gucu > 0.1:
+                print(f"ROV-id:{self.rov.id}, ROV-Guc:{rov_gucu}, Ham-ROV-Guc:{ham_rov}")
+
+        
         apf_guc_kuyruklari_aktif = self._apf_guc_kuyruklari_aktif_mi()
 
         for i, _motor in enumerate(motorlar):
@@ -237,7 +242,7 @@ class TemelGNCHelper:
             filtrelenmis_gucler = birlesik
         if apf_guc_kuyruklari_aktif:
             self._apf_guc_kuyruklarini_guncelle(hedef_gucu, engel_gucu, rov_gucu)
-        self.filo_ref.motorlari_calistir(self.rov.id, filtrelenmis_gucler)
+        self.filo_ref.motorlari_calistir(self.rov.id, birlesik)
 
     def _apf_guc_kuyruklari_aktif_mi(self) -> bool:
         hud = getattr(self.filo_ref, "apf_guc_hud", None) if self.filo_ref is not None else None
@@ -346,8 +351,6 @@ class TemelGNCHelper:
             return
 
         if self.rov.role == 1:
-            # Lider her zaman formasyon pozisyonlarını hesaplar (mod=0 olsa bile),
-            # aksi halde takipçiler yeni_pozisyonlar'dan boş değer alır.
             f_obj = Formasyon(filo)
             lider_pos_sim = (lider.x, lider.z, lider.y)
             yeni_pozisyonlar = f_obj.pozisyonlar(
@@ -362,7 +365,6 @@ class TemelGNCHelper:
             filo.yeni_pozisyonlar[self.rov.group_id] = yeni_pozisyonlar
             return
 
-        # Takipçi: mod=0 (bağımsız) ise formasyon hedefini uygulama
         if self.rov.gnc.mod == 0:
             return
 
@@ -614,6 +616,11 @@ class TemelGNCHelper:
 
         # Hedef agirligini yeni etkilerle 1 kere hesapla (kaldirilan cift cagir)
         hedef_vektor, guc1 = self._hedef_vektoru_isle(sonuc, max_engel_etkisi)
+
+        if self.rov.role==1 and self.rov.group_id==0 and False:
+            print("engel_vektor", engel_vektor.length())
+            print("rov_vektor", rov_vektor.length())
+            print("hedef_vektor", hedef_vektor.length())
 
         return {
             'hedef_vektor': hedef_vektor,

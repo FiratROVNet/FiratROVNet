@@ -150,6 +150,27 @@ class Filo(FiloInitMixin):
     def _hazirla_global_ignore_listesi(self, rov_sayisi):
         return super()._hazirla_global_ignore_listesi(rov_sayisi)
 
+    def rov_sisteme_ekle(self, rov, bekle: bool = True, zaman_asimi: float = 5.0):
+        if rov is None:
+            return False
+        if self._is_main_thread():
+            return super().rov_sisteme_ekle(rov)
+
+        done_event = threading.Event()
+        result_box = {}
+        self._command_queue.put(('rov_sisteme_ekle_sync', (rov,), {
+            '_done_event': done_event,
+            '_result_box': result_box,
+        }))
+        if not bekle:
+            return True
+        if not done_event.wait(timeout=float(zaman_asimi)):
+            return False
+        if result_box.get('error') is not None:
+            self._last_error = result_box['error']  # type: ignore[assignment]
+            return False
+        return bool(result_box.get('result', False))
+
     # ============================================================
     # KURULUM VE SİSTEM YÖNETİMİ (SADELEŞTİRİLMİŞ)
     # ============================================================
@@ -552,7 +573,7 @@ class Filo(FiloInitMixin):
             veri = self.ortam_ref.simden_veriye()
             ai_aktif = getattr(cfg, 'ai_aktif', True)
             
-            active_rovs = [r for r in self.ortam_ref.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]  # type: ignore[union-attr]
+            active_rovs = self.rovs
 
             if ai_aktif and self.gat:  # type: ignore[union-attr]
                 try:
@@ -563,7 +584,7 @@ class Filo(FiloInitMixin):
                     active_idx = 0
                     for all_idx, rov in enumerate(self.ortam_ref.rovs):
                         # Destroyed/None ROV'ları atla
-                        if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                        if rov not in active_rovs:
                             continue
                         
                         # Active index bounds check
@@ -666,7 +687,18 @@ class Filo(FiloInitMixin):
         """
         if not self.ortam_ref or not hasattr(self.ortam_ref, 'rovs'):
             return []
-        return [r for r in self.ortam_ref.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]  # type: ignore[union-attr]
+        aktifler = []
+        for r in self.ortam_ref.rovs:  # type: ignore[union-attr]
+            if not r or (hasattr(r, 'is_destroyed') and r.is_destroyed):
+                continue
+            try:
+                is_empty = getattr(r, 'is_empty', None)
+                if callable(is_empty) and is_empty():
+                    continue
+            except Exception:
+                continue
+            aktifler.append(r)
+        return aktifler
 
     @property
     def g_rovs(self):
@@ -685,7 +717,12 @@ class Filo(FiloInitMixin):
         for g_id, grup in self.g_rovs.items():
             for rov in grup:
                 if rov and rov.id == rov_id:
-                    if not (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                    try:
+                        is_empty = getattr(rov, 'is_empty', None)
+                        bos_node = callable(is_empty) and is_empty()
+                    except Exception:
+                        bos_node = True
+                    if not (hasattr(rov, 'is_destroyed') and rov.is_destroyed) and not bos_node:
                         return rov
         return None
     
@@ -859,14 +896,54 @@ class Filo(FiloInitMixin):
 
     def rov_verilerini_temizle(self, rov_id):
             """Silinen ROV'un tüm izlerini GNC hafızasından siler."""
+            try:
+                rov_id = int(rov_id)
+            except Exception:
+                return
             
             # Vektör (Ok) temizliği
             if hasattr(self.helper, 'apf_temizle'):
                 self.helper.apf_temizle()
+
+            for attr in (
+                "_rov_hedefleri",
+                "_git_nokta_listesi",
+                "_git_mevcut_nokta_indeksi",
+                "_git_isaret",
+                "_git_hedef_derinligi",
+                "_formasyon_hedefleri",
+                "motorlar",
+                "motorlar_bv",
+            ):
+                data = getattr(self, attr, None)
+                if isinstance(data, dict):
+                    data.pop(rov_id, None)
+
+            for key in (rov_id, f"rov_{rov_id}"):
+                if isinstance(self.nav_queue, dict):
+                    self.nav_queue.pop(key, None)
+                if isinstance(self.current_target_id, dict):
+                    self.current_target_id.pop(key, None)
+
+            liderler = getattr(self.leader_manager, "mevcut_lider_id", None)
+            if isinstance(liderler, dict):
+                for g_id, lider_id in list(liderler.items()):
+                    if lider_id == rov_id:
+                        liderler[g_id] = -1
             
             # Kamera temizliği
             if self.camera_manager.kamera_var_mi(rov_id):
                 self.camera_manager.kamera_kaldir(rov_id)
+
+            kalan_rovlar = [rov for rov in self.rovs if getattr(rov, "id", None) != rov_id]
+            if kalan_rovlar and not self.camera_manager.aktif_kamera_listesi():
+                try:
+                    self.kamera_ayarla(rov_id=getattr(kalan_rovlar[0], "id"))
+                except Exception:
+                    pass
+
+            self._ignore_tuple_cache = ()  # type: ignore[assignment]
+            self._ignore_tuple_last_rov_count = -1
 
     def _apf_guc_hud_guncelle(self, process_input: bool = True, draw: bool = True):
         try:
@@ -1101,6 +1178,20 @@ class Filo(FiloInitMixin):
                     self._set_impl(*args, **kwargs)  # type: ignore[arg-type]
                 elif cmd == 'hedef':
                     self._hedef_impl(*args, **kwargs)
+                elif cmd == 'rov_sisteme_ekle_sync':
+                    done_event = kwargs.pop('_done_event', None)
+                    result_box = kwargs.pop('_result_box', None)
+                    try:
+                        result = super().rov_sisteme_ekle(*args)
+                        if isinstance(result_box, dict):
+                            result_box['result'] = result
+                    except Exception as e:
+                        if isinstance(result_box, dict):
+                            result_box['error'] = e
+                        LogSystem.log_exception(e)
+                    finally:
+                        if done_event is not None:
+                            done_event.set()
                 elif cmd == 'formasyon_sec_sync':
                     done_event = kwargs.pop('_done_event', None)
                     result_box = kwargs.pop('_result_box', None)
@@ -1335,7 +1426,7 @@ class TemelGNC:
         
         self.temel_gnc_helper = TemelGNCHelper(rov_entity, filo_ref, self)
 
-        self.mod = 0
+        self.mod = 1
         self.gorev = "idle"
         self.gorev_hedef = None
         self.onceki_group_id = None

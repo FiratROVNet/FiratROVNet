@@ -11,6 +11,7 @@ from FiratROVNet.main_runtime import (
     RerunRecorder,
     akademik_gorsel_kaydet,
     aktif_grup_idleri,
+    aktif_rov_idleri,
     kisayol_paneli_olustur,
     konsol_komutlari_ekle,
     lider_patlat,
@@ -31,7 +32,8 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 
 print("🔵 Fırat-GNC Sistemi Başlatılıyor...")
 app = Ortam()
-app.sim_olustur(n_rovs=(6, 4), n_islands=4, havuz_genisligi=200, rov_model="submarine")
+#app.sim_olustur(n_rovs=(6, 4), n_islands=4, havuz_genisligi=200, rov_model="submarine")
+app.sim_olustur(n_islands=4, havuz_genisligi=200, rov_model="submarine",seed=1)
 
 filo = Filo(ortam_ref=app)
 motor_hud = filo.panels.register("motor_hud", MotorHUD(filo))
@@ -62,8 +64,35 @@ def gps_al(rov_id):
     return gps if gps is not None else Vec3(0, 0, 0)
 
 
+def aktif_rov_secimini_dogrula():
+    global bilgi_rov_id, aktif_grup_index
+
+    if filo.find_rov_by_id(bilgi_rov_id) is not None:
+        return
+    ids = aktif_rov_idleri(filo)
+    if not ids:
+        return
+    bilgi_rov_id = ids[0]
+    mevcut_grup = getattr(filo.find_rov_by_id(bilgi_rov_id), "group_id", None)
+    grup_idleri = aktif_grup_idleri(filo)
+    if mevcut_grup in grup_idleri:
+        aktif_grup_index = grup_idleri.index(mevcut_grup)
+    if not filo.camera_manager.aktif_kamera_listesi():
+        filo.kamera_ayarla(rov_id=bilgi_rov_id)
+
+
 def hud_metni_olustur():
-    rov = filo.rovs[bilgi_rov_id] if 0 <= bilgi_rov_id < len(filo.rovs) else None
+    rov = filo.find_rov_by_id(bilgi_rov_id)
+    if rov is None:
+        avg_fps = int(sum(fps_history) / len(fps_history)) if fps_history else 0
+        return (
+            f"<yellow>       FPS: {avg_fps}<default>\n"
+            f"<orange>ROV yok<default>\n"
+            f"<cyan>Runtime konsoldan ROV eklenebilir<default>\n"
+            f"<azure>BAT: --<default>\n"
+            f"<lime>VEL: --<default>\n"
+            f"<gold>ANG: --<default>"
+        )
     gps = gps_al(bilgi_rov_id)
     batarya = filo.get(bilgi_rov_id, "batarya") or 0
     velocity = getattr(rov, "velocity", Vec3(0, 0, 0)) or Vec3(0, 0, 0)
@@ -91,6 +120,8 @@ def update():
     fps_history.append(instant_fps)
     if len(fps_history) > FPS_HISTORY_SIZE:
         fps_history.pop(0)
+
+    aktif_rov_secimini_dogrula()
 
     if scheduler.due("hud", PerformansAyarlari.HUD_HZ, dt):
         Profiler.start("0_hud_text_update")
@@ -163,7 +194,9 @@ def input(key):
         lider_patlat(filo, bilgi_rov_id)
     if key == "r":
         bilgi_rov_id = sonraki_rov(filo, bilgi_rov_id)
-        mevcut_grup = getattr(filo.rovs[bilgi_rov_id], "group_id", None)
+        if not filo.rovs:
+            return
+        mevcut_grup = getattr(filo.find_rov_by_id(bilgi_rov_id), "group_id", None)
         grup_idleri = aktif_grup_idleri(filo)
         if mevcut_grup in grup_idleri:
             aktif_grup_index = grup_idleri.index(mevcut_grup)
