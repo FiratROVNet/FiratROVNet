@@ -35,6 +35,96 @@ class FiloInitMixin:
     def aktif_liderlik_hedefleri(self) -> Any: ...
     def entity_patlat(self, hedef_entity, parca_sayisi=60) -> Any: ...
 
+    def _rov_aktif_mi(self, rov):
+        if rov is None or (hasattr(rov, "is_destroyed") and rov.is_destroyed):
+            return False
+        try:
+            is_empty = getattr(rov, "is_empty", None)
+            if callable(is_empty) and is_empty():
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _render_node_al(self):
+        render = getattr(getattr(self.ortam_ref, "app", None), "render", None)
+        if render is None:
+            render = getattr(getattr(application, "base", None), "render", None)
+        if render is None:
+            render = getattr(builtins, "render", None)
+        return render
+
+    def _rov_sistemlerini_kur(self, rov, render=None):
+        """Tek bir ROV icin GNC, sensor, fizik ve motor baglantilarini kurar."""
+        from panda3d.bullet import BulletBoxShape, BulletRigidBodyNode  # type: ignore[import]
+        from panda3d.core import Vec3 as PandaVec3  # type: ignore[import]
+        from FiratROVNet.gnc import Sensor, TemelGNC
+
+        if not self._rov_aktif_mi(rov):
+            return False
+
+        render = render if render is not None else self._render_node_al()
+        if render is None:
+            return False
+
+        rov.gnc = TemelGNC(rov, self)  # type: ignore[union-attr]
+        rov.sensor = Sensor(rov, self, rov.gnc)  # type: ignore[union-attr]
+        rov.gnc.sensor = rov.sensor  # type: ignore[union-attr]
+        if int(getattr(rov, "role", 0) or 0) == 1:
+            rov.gnc.mod = 0  # type: ignore[union-attr]
+
+        if getattr(rov, "physics_node", None) is None or getattr(rov, "physics_np", None) is None:
+            node = BulletRigidBodyNode(f"ROV_{rov.id}")  # type: ignore[union-attr]
+            node.setMass(Hidrodinamik.KUTLE)
+            node.setLinearDamping(Hidrodinamik.LINEAR_DAMPING)
+            node.setAngularDamping(Hidrodinamik.ANGULAR_DAMPING)
+
+            shape = BulletBoxShape(PandaVec3(1.5, 1.5, 1.5))
+            node.addShape(shape)
+
+            rov_np = render.attachNewNode(node)
+            rov_np.setPos(rov.position)  # type: ignore[union-attr]
+            self.world.attachRigidBody(node)
+
+            rov.physics_node = node  # type: ignore[union-attr]
+            rov.physics_np = rov_np  # type: ignore[union-attr]
+
+        self.motorlar[rov.id] = []  # type: ignore[index,union-attr]
+        try:
+            self.BlueROV2_motor_konfigurasyonu(rov)
+        except Exception as e:
+            logging.warning(
+                f"[Filo] ROV-{getattr(rov, 'id', '?')} için motor oluşturulamadı: {e}"
+            )
+
+        self.mevcut_rov_sayisi = -1
+        self._ignore_tuple_cache = ()  # type: ignore[assignment]
+        self._ignore_tuple_last_rov_count = -1
+        return True
+
+    def rov_sisteme_ekle(self, rov):
+        """Runtime'da eklenen ROV'u Filo sistemlerine kaydeder."""
+        basarili = self._rov_sistemlerini_kur(rov)
+        if not basarili:
+            return False
+        try:
+            self.tum_motor_bv_kutuphanelerini_guncelle()
+        except Exception as e:
+            logging.warning(
+                f"[Filo] ROV-{getattr(rov, 'id', '?')} motor vektörleri güncellenemedi: {e}"
+            )
+        try:
+            if self.ortam_ref and getattr(self.ortam_ref, "minimap", None):
+                self.ortam_ref.minimap._statik_yeniden_ciz()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "camera_manager") and not self.camera_manager.aktif_kamera_listesi():
+                self.kamera_ayarla(rov_id=rov.id)
+        except Exception:
+            pass
+        return True
+
     def _build_ignore_tuple(self):
         """
         🔹 Frame başında bir kere bütün ROV ve parçalarını raycast ignore listesine ekle.
@@ -46,7 +136,7 @@ class FiloInitMixin:
 
         ortam_rovs = [
             r for r in self.ortam_ref.rovs
-            if r and not (hasattr(r, "is_destroyed") and r.is_destroyed)
+            if self._rov_aktif_mi(r)
         ]  # type: ignore[union-attr]
         mevcut_count = len(ortam_rovs)
 
@@ -75,7 +165,7 @@ class FiloInitMixin:
 
             ortam_rovs = [
                 r for r in ortam.rovs
-                if r and not (hasattr(r, "is_destroyed") and r.is_destroyed)
+                if self._rov_aktif_mi(r)
             ]  # type: ignore[union-attr]
 
             ignores = []
@@ -91,61 +181,23 @@ class FiloInitMixin:
 
     def _baslatma_tamamla(self):
         """ROV'lar için fiziksel gövdeleri ve motorları kurar."""
-        from panda3d.bullet import BulletBoxShape, BulletRigidBodyNode  # type: ignore[import]
-        from panda3d.core import Vec3 as PandaVec3  # type: ignore[import]
-        from FiratROVNet.gnc import Sensor, TemelGNC
-
         ortam = self.ortam_ref
         if ortam is None:
             return
 
-        render = getattr(getattr(ortam, "app", None), "render", None)
+        render = self._render_node_al()
         self.mevcut_rov_sayisi = len(ortam.rovs)
 
-        if render is None:
-            render = getattr(getattr(application, "base", None), "render", None)
-        if render is None:
-            render = getattr(builtins, "render", None)
-        if render is None:
-            return
-
         for rov in ortam.rovs:
-            if rov is None:
+            if not self._rov_aktif_mi(rov):
                 continue
-
-            rov.gnc = TemelGNC(rov, self)  # type: ignore[union-attr]
-            rov.sensor = Sensor(rov, self, rov.gnc)  # type: ignore[union-attr]
-            rov.gnc.sensor = rov.sensor  # type: ignore[union-attr]
-
-            if self.motorlar.get(rov.id) is None:  # type: ignore[union-attr]
-                self.motorlar[rov.id] = []  # type: ignore[index]
-
-            node = BulletRigidBodyNode(f"ROV_{rov.id}")  # type: ignore[union-attr]
-            node.setMass(Hidrodinamik.KUTLE)
-            node.setLinearDamping(Hidrodinamik.LINEAR_DAMPING)
-            node.setAngularDamping(Hidrodinamik.ANGULAR_DAMPING)
-
-            shape = BulletBoxShape(PandaVec3(1.5, 1.5, 1.5))
-            node.addShape(shape)
-
-            rov_np = render.attachNewNode(node)
-            rov_np.setPos(rov.position)  # type: ignore[union-attr]
-            self.world.attachRigidBody(node)
-
-            rov.physics_node = node  # type: ignore[union-attr]
-            rov.physics_np = rov_np  # type: ignore[union-attr]
-
-            try:
-                self.BlueROV2_motor_konfigurasyonu(rov)
-            except Exception as e:
-                logging.warning(
-                    f"[Filo] ROV-{getattr(rov, 'id', '?')} için motor oluşturulamadı: {e}"
-                )
+            self._rov_sistemlerini_kur(rov, render=render)
 
         self.minimap(scale=1.0)
         self.motor_sema_kaydet()
         self.tum_motor_bv_kutuphanelerini_guncelle()
-        self.kamera_ayarla()
+        if any(self._rov_aktif_mi(rov) for rov in ortam.rovs):
+            self.kamera_ayarla()
 
     def _tick_sistem_hazirligi(self):
         """Command queue + physics step."""
@@ -157,7 +209,7 @@ class FiloInitMixin:
 
         if self.ortam_ref and hasattr(self.ortam_ref, "rovs"):
             for rov in self.ortam_ref.rovs:
-                if not rov or (hasattr(rov, "is_destroyed") and rov.is_destroyed):  # type: ignore[union-attr]
+                if not self._rov_aktif_mi(rov):  # type: ignore[union-attr]
                     continue
                 if getattr(rov, "physics_node", None) and getattr(rov, "physics_np", None):
                     p = rov.physics_np.getPos()  # type: ignore[union-attr]
@@ -213,7 +265,7 @@ class FiloInitMixin:
         Profiler.end("13_ignore_tuple_hazirla")
 
         for idx, rov in enumerate(ortam_rovs):
-            if not rov or (hasattr(rov, "is_destroyed") and rov.is_destroyed):
+            if not self._rov_aktif_mi(rov):
                 continue
 
             gat_kodu = int(tahminler[idx]) if idx < tahmin_len else 0  # type: ignore[index]

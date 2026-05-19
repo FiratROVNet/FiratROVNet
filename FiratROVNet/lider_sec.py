@@ -170,6 +170,13 @@ class LeaderManager:
         """
         self.filo_ref = filo_ref
         self.mevcut_lider_id = {}
+
+    def _gnc_mod_ata(self, rov, mod):
+        if hasattr(rov, "gnc") and rov.gnc is not None:
+            try:
+                rov.gnc.mod = int(mod)
+            except Exception:
+                pass
     
     def guncelle_liderler(self, yeni_lider_ids):
         """
@@ -209,6 +216,11 @@ class LeaderManager:
                 if onceki_lider_id == yeni_lider_id:
                     if self.filo_ref.get(yeni_lider_id, "rol") != 1:
                         self.filo_ref.set(yeni_lider_id, "rol", 1)
+                    for rov in rov_listesi:
+                        if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                            continue
+                        if rov.id == yeni_lider_id:
+                            self._gnc_mod_ata(rov, 0)
                     continue
 
                 print(f"👑 Lider Değişimi | Grup: {g_id} | Yeni Lider: ROV-{yeni_lider_id}")
@@ -225,11 +237,7 @@ class LeaderManager:
                         from ursina import color
                         rov.color = color.red
                         # Lider: serbest mod (mod=0) — minimap hedefleri ve git_path alabilsin
-                        if hasattr(rov, "gnc") and rov.gnc is not None:
-                            try:
-                                rov.gnc.mod = 0
-                            except Exception:
-                                pass
+                        self._gnc_mod_ata(rov, 0)
                     else:
                         self.filo_ref.set(rov.id, "rol", 0)
 

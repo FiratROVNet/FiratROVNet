@@ -350,9 +350,6 @@ class TemelGNCHelper:
         if not lider:
             return
 
-        if self.rov.gnc.mod == 0:
-            return
-
         if self.rov.role == 1:
             f_obj = Formasyon(filo)
             lider_pos_sim = (lider.x, lider.z, lider.y)
@@ -366,6 +363,9 @@ class TemelGNCHelper:
             if not hasattr(filo, 'yeni_pozisyonlar') or not isinstance(filo.yeni_pozisyonlar, dict):
                 filo.yeni_pozisyonlar = {}
             filo.yeni_pozisyonlar[self.rov.group_id] = yeni_pozisyonlar
+            return
+
+        if self.rov.gnc.mod == 0:
             return
 
         yeni_pozisyonlar = filo.yeni_pozisyonlar

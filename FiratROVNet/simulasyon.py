@@ -24,6 +24,18 @@ from FiratROVNet.utils import sim_to_ursina, ursina_to_sim  # type: ignore[impor
 from FiratROVNet.kutuphane.helper.EntityLoader import EntityLoader  # type: ignore[import-not-found]
 from FiratROVNet.kutuphane.helper.simulasyon_helper import OrtamHelper  # type: ignore[import-not-found]
 
+
+def rov_aktif_mi(rov):
+    if rov is None or getattr(rov, 'is_destroyed', False):
+        return False
+    try:
+        is_empty = getattr(rov, 'is_empty', None)
+        if callable(is_empty) and is_empty():
+            return False
+    except Exception:
+        return False
+    return True
+
 # ============================================================
 # 1. ROV SINIFI (Mantık ve Fizik)
 # ============================================================
@@ -31,7 +43,7 @@ class ROV(Entity):
     """Kesikli çizgi segment sayısı (havuz boyutu). Create-once, sonra sadece gösterme/gizleme."""
     CIZGI_HAVUZ_SEGMENT = 25
 
-    def __init__(self, rov_id,group_id, loader_ref=None, model_key='submarine', **kwargs):
+    def __init__(self, rov_id=None, group_id=None, loader_ref=None, model_key='submarine', role=None, rol=None, **kwargs):
         super().__init__()
         self.motorlar = []
         self.id = rov_id
@@ -39,7 +51,8 @@ class ROV(Entity):
         
         # Fiziksel ve Durumsal Durum
         self.velocity = Vec3(0, 0, 0)
-        self.battery, self.role, self.gat_kodu = 1.0, 0, 0
+        ilk_rol = role if role is not None else rol
+        self.battery, self.role, self.gat_kodu = 1.0, int(ilk_rol) if ilk_rol is not None else 0, 0
         self.rotation_y = 0.0
         
         # Sensör Verileri
@@ -74,14 +87,28 @@ class ROV(Entity):
         if not ortam_ref: return False
         self.environment_ref = ortam_ref
         if not hasattr(ortam_ref, 'rovs'): ortam_ref.rovs = []
+        if any(r is self and rov_aktif_mi(r) for r in getattr(ortam_ref, 'rovs', [])):
+            print(f"ℹ️ ROV-{self.id} zaten ortama ekli; tekrar ekleme atlandi.")
+            return True
         
         # ID'yi mevcut maksimumdan bir ileri ata (yeniden numaralandirma yok)
-        mevcut_ids = [getattr(r, 'id') for r in getattr(ortam_ref, 'rovs', []) if r is not None and hasattr(r, 'id')]
+        mevcut_ids = [getattr(r, 'id') for r in getattr(ortam_ref, 'rovs', []) if rov_aktif_mi(r) and hasattr(r, 'id')]
         self.id = (max(mevcut_ids) + 1) if mevcut_ids else 0
+        if self.group_id is None:
+            mevcut_grup_ids = [
+                getattr(r, 'group_id') for r in getattr(ortam_ref, 'rovs', [])
+                if r is not None and hasattr(r, 'group_id') and getattr(r, 'group_id') is not None
+            ]
+            self.group_id = (max(mevcut_grup_ids) + 1) if mevcut_grup_ids else 0
         if hasattr(ortam_ref, 'rovs') and isinstance(ortam_ref.rovs, list):
             ortam_ref.rovs.append(self)
         
         self._etiket_guncelle()
+        filo_attr = getattr(ortam_ref, 'filo', None)
+        if filo_attr is not None and hasattr(filo_attr, 'rov_sisteme_ekle'):
+            if not filo_attr.rov_sisteme_ekle(self):
+                print(f"⚠️ ROV-{self.id} ortama eklendi ancak Filo sistem kurulumu tamamlanamadi.")
+                return False
         return True
 
     def cikar(self):
@@ -119,9 +146,8 @@ class ROV(Entity):
             rovs = getattr(ortam, 'rovs', None)
             if isinstance(rovs, list):
                 for idx, r in enumerate(rovs):
-                    if r and getattr(r, 'id', None) == silinen_id:
+                    if r and (r is self or getattr(r, 'id', None) == silinen_id):
                         rovs[idx] = None
-                        break
 
             # 2. Görselleri temizle (havuz konteynerleri)
             if hasattr(self, 'label') and self.label: destroy(self.label)
@@ -129,6 +155,19 @@ class ROV(Entity):
             for lidar_id in (0, 1, 2, 3):
                 cont = getattr(self, 'lidar_cizgileri', {}).get(lidar_id)
                 if cont: destroy(cont)
+            physics_node = getattr(self, 'physics_node', None)
+            physics_np = getattr(self, 'physics_np', None)
+            filo_attr = getattr(ortam, 'filo', None)
+            if filo_attr is not None and physics_node is not None:
+                try:
+                    filo_attr.world.removeRigidBody(physics_node)
+                except Exception:
+                    pass
+            if physics_np is not None:
+                try:
+                    physics_np.removeNode()
+                except Exception:
+                    pass
 
             # 3. Listeyi yeniden numaralandirma yok
             print(f"✅ ROV-{silinen_id} ve tum gorsel izleri temizlendi.")
@@ -516,7 +555,7 @@ class Minimap(Entity):
             if not self.visible or not self.ortam_ref: return
             
             if hasattr(self.ortam_ref, 'rovs'):
-                mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) if r and not (getattr(r, 'is_destroyed', False))]
+                mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) if rov_aktif_mi(r)]
                 active_ids = {getattr(r, 'id', -1) for r in mevcut_rovlar}
                 
                 # --- ÖNCE SİLİNENLERİ KALDIR ---
@@ -527,7 +566,10 @@ class Minimap(Entity):
 
                 # --- SONRA MEVCUTLARI GÜNCELLE ---
                 for rov in mevcut_rovlar:
-                    target = self.dunya_to_harita(rov.x, rov.z)  # type: ignore
+                    try:
+                        target = self.dunya_to_harita(rov.x, rov.z)  # type: ignore
+                    except AssertionError:
+                        continue
 
                     if getattr(rov, 'id', -1) not in self.rov_ikonlari:
                         self.rov_ikonlari[getattr(rov, 'id', -1)] = self.loader.create_rov_icon(self, getattr(rov, 'id', -1), getattr(rov, 'color', color.white))
@@ -791,7 +833,7 @@ class Ortam:
     def g_rovs(self):
         self._g_rovs={}
         for rov in self.rovs:
-            if not rov or getattr(rov, 'is_destroyed', False):
+            if not rov_aktif_mi(rov):
                 continue
             __group_id=getattr(rov, 'group_id', 0)
             if not self._g_rovs.get(__group_id,False):
@@ -938,54 +980,78 @@ class Ortam:
 
         return all_groups_rovs
 
-    def sim_olustur(self, n_rovs=(6,), n_islands=5, n_rocks=20, havuz_genisligi=200, rov_model='submarine'):
-        self.havuz_genisligi = havuz_genisligi
-        
-        # Temizlik
-        for obj in [r for r in self.rovs if r] + [i for i in self.island_entities if i]: 
-            if obj: destroy(obj)
-        self.rovs, self.island_entities, self.island_positions, self.engel_bulutu = [], [], [], []
-        
-        # Dünya İnşası
-        size = havuz_genisligi * 2
-        self.loader.build_ocean(size=size)
-        self.loader.build_seabed(size=size)
-        self.loader.load_pool_human(havuz_genisligi=havuz_genisligi)
-        self.loader.build_boundaries(havuz_genisligi)
-        
-        # Kayaları ekle (n_rocks parametresi ile)
-        if n_rocks > 0:
-            self.loader.spawn_rocks(count=n_rocks, havuz_genisligi=havuz_genisligi)
-        
-        # 1. Adaları Sabit Noktalardan Yerleştir
-        count = min(n_islands, len(self.FIXED_ISLAND_POSITIONS))
-        chosen_islands = random.sample(self.FIXED_ISLAND_POSITIONS, count)
-        chosen_islands.insert(0,(0,0))
-        for i, pos in enumerate(chosen_islands):
-            self.Ada(i, x="ekle", y=pos)
+    def _rov_grup_konfig_normalize(self, n_rovs):
+        if n_rovs is None:
+            return ()
+        if isinstance(n_rovs, int):
+            return (n_rovs,) if n_rovs > 0 else ()
+        try:
+            return tuple(int(n) for n in n_rovs if int(n) > 0)
+        except (TypeError, ValueError):
+            return ()
 
-        # 2. ROV'ları Güvenli Noktalara Yerleştir
-        # n_rovs tuple'ından toplam ROV sayısını hesapla
-        toplam_rov_sayisi = sum(n_rovs)
-        print(f"🌊 Simülasyon Başlatılıyor: {toplam_rov_sayisi} ROV, {count} Ada")
+    def sim_olustur(self, n_rovs=None, n_islands=5, n_rocks=20, havuz_genisligi=200, rov_model='submarine', seed=False):
+        random_state = None
+        if seed is not False and seed is not None:
+            random_state = random.getstate()
+            random.seed(seed)
+            self.seed = seed
+        else:
+            self.seed = None
 
-        all_group = self._find_safe_rov_spawn_pos(n_rovs)
+        try:
+            self.havuz_genisligi = havuz_genisligi
+            n_rovs = self._rov_grup_konfig_normalize(n_rovs)
+            
+            # Temizlik
+            for obj in [r for r in self.rovs if r] + [i for i in self.island_entities if i]: 
+                if obj: destroy(obj)
+            self.rovs, self.island_entities, self.island_positions, self.engel_bulutu = [], [], [], []
+            
+            # Dünya İnşası
+            size = havuz_genisligi * 2
+            self.loader.build_ocean(size=size)
+            self.loader.build_seabed(size=size)
+            self.loader.load_pool_human(havuz_genisligi=havuz_genisligi)
+            self.loader.build_boundaries(havuz_genisligi)
+            
+            # 1. Adaları Sabit Noktalardan Yerleştir
+            count = min(n_islands, len(self.FIXED_ISLAND_POSITIONS))
+            chosen_islands = random.sample(self.FIXED_ISLAND_POSITIONS, count)
+            chosen_islands.insert(0,(0,0))
+            for i, pos in enumerate(chosen_islands):
+                self.Ada(i, x="ekle", y=pos)
 
-        # Global ROV ID counter
-        global_rov_id: int = 0
-        
-        for group_id, rovlar in enumerate(all_group):
-            for local_rov_id, rov_koordinat in enumerate(rovlar):
-                # sim_pos: (x, z_depth, y_coordinate) -> ursina: (x, y, z)
-                u_pos = Vec3(rov_koordinat[0], rov_koordinat[2], rov_koordinat[1])
+            # Kayaları ekle (n_rocks parametresi ile)
+            if n_rocks > 0:
+                self.loader.spawn_rocks(count=n_rocks, havuz_genisligi=havuz_genisligi)
+
+            # 2. ROV'ları Güvenli Noktalara Yerleştir
+            # n_rovs tuple'ından toplam ROV sayısını hesapla
+            toplam_rov_sayisi = sum(n_rovs)
+            seed_metni = f", seed={seed}" if seed is not False and seed is not None else ""
+            print(f"🌊 Simülasyon Başlatılıyor: {toplam_rov_sayisi} ROV, {count} Ada{seed_metni}")
+
+            all_group = self._find_safe_rov_spawn_pos(n_rovs) if toplam_rov_sayisi > 0 else []
+
+            # Global ROV ID counter
+            global_rov_id: int = 0
+            
+            for group_id, rovlar in enumerate(all_group):
+                for local_rov_id, rov_koordinat in enumerate(rovlar):
+                    # sim_pos: (x, z_depth, y_coordinate) -> ursina: (x, y, z)
+                    u_pos = Vec3(rov_koordinat[0], rov_koordinat[2], rov_koordinat[1])
+                        
+                    new_rov = ROV(rov_id=global_rov_id, group_id=group_id, position=u_pos, loader_ref=self.loader, model_key=rov_model)
+                    new_rov.ekle(self)
                     
-                new_rov = ROV(rov_id=global_rov_id, group_id=group_id, position=u_pos, loader_ref=self.loader, model_key=rov_model)
-                new_rov.ekle(self)
-                
-                global_rov_id = int(global_rov_id + 1)  # type: ignore
+                    global_rov_id = int(global_rov_id + 1)  # type: ignore
 
-        if getattr(self, "minimap", None):
-            self.minimap._statik_yeniden_ciz()
+            if getattr(self, "minimap", None):
+                self.minimap._statik_yeniden_ciz()
+        finally:
+            if random_state is not None:
+                random.setstate(random_state)
 
 
     def ROV(self, rov_id, x=None, y=None, z=None):
@@ -1017,7 +1083,7 @@ class Ortam:
             ROV'lar arası sonar iletişimini KESİKLİ ÇİZGİ Mesh'leri ile gösterir.
             Create-once per pair: her çift için tekil Mesh oluşturulur, her karede güncellenir.
             """
-            active_rovs = [r for r in self.rovs if r and not (hasattr(r, 'is_destroyed') and r.is_destroyed)]
+            active_rovs = [r for r in self.rovs if rov_aktif_mi(r)]
             bu_frame_aktif_olanlar = set()
             
             BASE_KALINLIK = 2  # Kalınlık 0.5 oranında inceltildi
