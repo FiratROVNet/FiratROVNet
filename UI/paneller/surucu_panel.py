@@ -15,10 +15,10 @@ import time as _time
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
     QFrame, QLabel, QPushButton, QSizePolicy, QMenu, QAction,
-    QComboBox, QLineEdit,
+    QComboBox, QLineEdit, QDialog, QFormLayout, QDialogButtonBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QMimeData, QPoint
-from PyQt5.QtGui import QDrag, QFont, QDoubleValidator
+from PyQt5.QtGui import QDrag, QFont, QDoubleValidator, QIntValidator
 
 from UI.tema import (
     VURGU, METiN, METiN_KOYU, YESiL, KIRMIZI, SARI, TURUNCU,
@@ -481,25 +481,6 @@ class LiderGrubu(_DropAlan):
         gorev_ust.addWidget(btn_dur)
         lay.addLayout(gorev_ust)
 
-        # ── Arama & Kurtarma: Tespit modu satırı ─────────────────────────
-        self._tespit_satiri = QWidget()
-        tespit_lay = QHBoxLayout(self._tespit_satiri)
-        tespit_lay.setContentsMargins(0, 0, 0, 0)
-        tespit_lay.setSpacing(3)
-        tespit_lbl = QLabel("🎯 Tespit:")
-        tespit_lbl.setFont(QFont("Consolas", 7))
-        tespit_lbl.setStyleSheet(f"color:{METiN_KOYU}; border:none;")
-        self._cmb_tespit = QComboBox()
-        for ad in ("Hibrit (renk+model)", "Sadece Renk", "Sadece Model"):
-            self._cmb_tespit.addItem(ad)
-        self._cmb_tespit.setStyleSheet(_COMBO_CSS)
-        self._cmb_tespit.setFixedHeight(22)
-        tespit_lay.addWidget(tespit_lbl)
-        tespit_lay.addWidget(self._cmb_tespit, 1)
-        self._tespit_satiri.setVisible(False)
-        lay.addWidget(self._tespit_satiri)
-        self._cmb_gorev.currentIndexChanged.connect(self._gorev_secildi)
-
         # Alan koordinatları (X1,Y1 → X2,Y2)
         alan_lbl = QLabel("  Alan: X1  Y1  →  X2  Y2")
         alan_lbl.setFont(QFont("Consolas", 7))
@@ -629,16 +610,6 @@ class LiderGrubu(_DropAlan):
         self._mod_lbl.setText("⚙ Lider Takip")
         self.komut_uretildi.emit(k, f"Grup-{g_id} → Formasyon: {isim} | mod=1 (Lider Takip)")
 
-    def _gorev_secildi(self, idx: int):
-        """Görev ComboBox değişince arama kurtarma'ya özel alanları göster/gizle."""
-        _, tp = _GOREVLER[idx]
-        self._tespit_satiri.setVisible(tp == "arama_kurtarma")
-
-    def _tespit_mod_str(self) -> str:
-        """Tespit modu ComboBox'ından 'hibrit'|'renk'|'model' döndürür."""
-        i = self._cmb_tespit.currentIndex()
-        return ("hibrit", "renk", "model")[i]
-
     def _alan_oku(self) -> tuple[float, float, float, float] | None:
         """X1,Y1,X2,Y2 alanlarını oku. Eksikse None döner."""
         def _f(w: QLineEdit) -> float | None:
@@ -656,7 +627,6 @@ class LiderGrubu(_DropAlan):
         idx   = self._cmb_gorev.currentIndex()
         _, tp = _GOREVLER[idx]
         g_id  = self.g_idx
-        mod   = None  # tespit modu (sadece arama_kurtarma için)
         alan  = self._alan_oku()
         if alan is None:
             for w in (self._ax1, self._ay1, self._ax2, self._ay2):
@@ -672,7 +642,6 @@ class LiderGrubu(_DropAlan):
                         f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}), "
                         f"surekli_tarama=True, sessiz=True)")
         elif tp == "arama_kurtarma":
-            mod = self._tespit_mod_str()
             k_baslat = (f"filo.arama_kurtarma_gorevi.baslat("
                         f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}), "
                         f"min_confidence=0.45, sessiz=True)")
@@ -693,8 +662,6 @@ class LiderGrubu(_DropAlan):
             f"[filo._rov_hedefleri.pop(r.id, None) for r in (filo.g_rovs.get({g_id}) or []) if r]",
             k_baslat,
         ]
-        if tp == "arama_kurtarma":
-            komutlar.append(f"filo.tespit_baslat_grup(g_id={g_id}, mod='{mod}')")
         komut_gonder("\n".join(komutlar))
         self.komut_uretildi.emit(
             k_baslat, f"Grup-{g_id} → Görev: {_GOREVLER[idx][0]} | Eski görevler durduruldu"
@@ -1349,15 +1316,66 @@ class SurucuPanel(QWidget):
                     g.takipci_cikar(rid)
         self._veri.pop(rid, None)
         self._baslangic_gps.pop(rid, None)
-        k = (f"_r=next((r for r in app.rovs if r and getattr(r,'id',None)=={rid}),None);"
-             f"_r and _r.cikar()")
+        k = f"ui_rov_cikar({int(rid)})"
         komut_gonder(k)
         self.komut_uretildi.emit(k, f"ROV-{rid} sim\u00fclasyondan \u00e7\u0131kart\u0131ld\u0131")
         self._stat_guncelle()
 
     def _sim_rov_ekle(self):
         """Sim\u00fclasyona yeni ROV ekle."""
-        k = "app.yeni_rov_ekle()"
+        dlg = QDialog(self)
+        dlg.setWindowTitle("ROV Ekle")
+        dlg.setStyleSheet(f"QDialog {{ background:#0a0d12; color:{METiN}; }} QLabel {{ color:{METiN}; }}")
+        form = QFormLayout(dlg)
+
+        dbl = QDoubleValidator(-9999.0, 9999.0, 2)
+
+        def _line(vars: str, validator=None):
+            edit = QLineEdit(vars)
+            edit.setStyleSheet(_INPUT_CSS)
+            if validator is not None:
+                edit.setValidator(validator)
+            return edit
+
+        x_edit = _line("0", dbl)
+        y_edit = _line("-10", dbl)
+        z_edit = _line("0", dbl)
+        group_edit = _line("", QIntValidator(0, 999999))
+        group_edit.setPlaceholderText("Boş: yeni grup")
+        model_edit = _line("submarine")
+        rol_combo = QComboBox()
+        rol_combo.addItem("Takipçi / normal (rol=0)", 0)
+        rol_combo.addItem("Lider (rol=1)", 1)
+        rol_combo.setStyleSheet(_COMBO_CSS)
+
+        form.addRow("X", x_edit)
+        form.addRow("Y", y_edit)
+        form.addRow("Z", z_edit)
+        form.addRow("Grup ID", group_edit)
+        form.addRow("Model", model_edit)
+        form.addRow("Rol", rol_combo)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+
+        def _float(edit: QLineEdit, default: float) -> float:
+            text = edit.text().strip().replace(",", ".")
+            return float(text) if text else default
+
+        group_text = group_edit.text().strip()
+        group_id = int(group_text) if group_text else None
+        position = (_float(x_edit, 0.0), _float(y_edit, -10.0), _float(z_edit, 0.0))
+        model_key = model_edit.text().strip() or "submarine"
+        rol = int(rol_combo.currentData())
+        k = (
+            "ui_rov_ekle("
+            f"group_id={group_id!r}, position={position!r}, "
+            f"model_key={model_key!r}, rol={rol})"
+        )
         komut_gonder(k)
         self.komut_uretildi.emit(k, "Yeni ROV sim\u00fclasyona ekleniyor...")
 

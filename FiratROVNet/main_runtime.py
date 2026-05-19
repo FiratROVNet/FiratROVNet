@@ -1,5 +1,9 @@
 import os
+import json
+import subprocess
+import sys
 import threading
+import time
 from datetime import datetime
 
 import numpy as np
@@ -103,6 +107,188 @@ def konsol_komutlari_ekle(app, filo):
     app.konsola_ekle("rovs", app.rovs)
     app.konsola_ekle("cfg", cfg)
     app.konsola_ekle("nav_queue", filo.nav_queue)
+
+
+class KomutaArayuzu:
+    def __init__(self, script_dir, app, filo):
+        self.script_dir = script_dir
+        self.app = app
+        self.filo = filo
+        self.durum_dosya = os.path.join(script_dir, "UI", "_rov_durumu.json")
+        self.kuyruk_dosya = os.path.join(script_dir, "KOMUT_KUYRUĞU.txt")
+        self.proc = None
+        self.dirty_until = 0.0
+        setattr(app, "mark_ui_state_dirty", self.mark_dirty)
+
+    def mark_dirty(self, burst_sure=1.2):
+        hedef = time.monotonic() + max(0.2, float(burst_sure))
+        if hedef > self.dirty_until:
+            self.dirty_until = hedef
+
+    def open(self):
+        if self.proc is not None and self.proc.poll() is None:
+            print("🖥️ Komuta Arayüzü zaten açık.")
+            return
+
+        env = os.environ.copy()
+        try:
+            from PyQt5.QtCore import QLibraryInfo
+
+            qt_plugins = QLibraryInfo.location(QLibraryInfo.PluginsPath)
+            if os.path.isdir(qt_plugins):
+                env["QT_QPA_PLATFORM_PLUGIN_PATH"] = qt_plugins
+                env["QT_PLUGIN_PATH"] = qt_plugins
+        except Exception:
+            env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+            env.pop("QT_PLUGIN_PATH", None)
+        env.pop("QT_QPA_PLATFORMTHEME", None)
+
+        script = os.path.join(self.script_dir, "UI", "baslat.py")
+        self.proc = subprocess.Popen([sys.executable, script], cwd=self.script_dir, env=env)
+        print(f"🖥️ Komuta Arayüzü açıldı (PID: {self.proc.pid}).")
+
+    def close(self):
+        if self.proc is None or self.proc.poll() is not None:
+            return
+        self.proc.terminate()
+        print("🖥️ Komuta Arayüzü kapatıldı.")
+
+    def toggle(self):
+        if self.proc is not None and self.proc.poll() is None:
+            self.close()
+            return
+        self.open()
+
+    def rov_ekle(self, group_id=None, position=None, x=0, y=-10, z=0, model_key=None, rol=0, role=None):
+        from FiratROVNet.simulasyon import ROV
+
+        group_id = self._opsiyonel_int(group_id)
+        rol_degeri = self._opsiyonel_int(role if role is not None else rol)
+        if rol_degeri is None:
+            rol_degeri = 0
+        if position is None:
+            position = (float(x), float(y), float(z))
+        model = model_key or getattr(self.app, "rov_model", "submarine")
+        rov = ROV(
+            group_id=group_id,
+            position=position,
+            loader_ref=self.app.loader,
+            model_key=model,
+            rol=rol_degeri,
+        )
+        sonuc = rov.ekle(self.app)
+        self.mark_dirty()
+        return sonuc
+
+    def rov_cikar(self, rov_id):
+        rov = self.filo.find_rov_by_id(int(rov_id))
+        if rov is None:
+            return False
+        sonuc = rov.cikar()
+        self.mark_dirty()
+        return sonuc
+
+    def durum_yaz(self):
+        try:
+            rovlar = []
+            for rov in self.filo.rovs:
+                try:
+                    gps = self.filo.get(rov.id, "gps") or (0, 0, 0)
+                    gorev = getattr(getattr(rov, "gnc", None), "gorev", "idle") or "idle"
+                    batarya = float(getattr(rov, "battery", 1.0))
+                    hiz_kaynak = getattr(rov, "velocity", None)
+                    hiz = float(hiz_kaynak.length() if hasattr(hiz_kaynak, "length") else 0.0)
+                    rovlar.append(
+                        {
+                            "id": int(rov.id),
+                            "rol": int(getattr(rov, "role", 0)),
+                            "gorev": str(gorev),
+                            "gps": [round(float(v), 1) for v in gps],
+                            "gat_kodu": int(getattr(rov, "gat_kodu", 0)),
+                            "batarya": round(batarya, 2),
+                            "hiz": round(hiz, 2),
+                            "grup_id": int(getattr(rov, "group_id", 0)),
+                        }
+                    )
+                except Exception:
+                    pass
+
+            gruplar = {}
+            for g_id, grup in self.filo.g_rovs.items():
+                aktif = [
+                    int(rov.id)
+                    for rov in (grup or [])
+                    if rov and not getattr(rov, "is_destroyed", False)
+                ]
+                if aktif:
+                    gruplar[str(int(g_id))] = aktif
+
+            veri = {"timestamp": time.time(), "rovlar": rovlar, "gruplar": gruplar, "bagli": True}
+            os.makedirs(os.path.dirname(self.durum_dosya), exist_ok=True)
+            tmp = self.durum_dosya + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as dosya:
+                json.dump(veri, dosya, ensure_ascii=False)
+            os.replace(tmp, self.durum_dosya)
+        except Exception as exc:
+            print(f"[UI-Durum] yazma hatası: {exc}")
+
+    def komut_oku(self):
+        try:
+            if not os.path.exists(self.kuyruk_dosya):
+                return
+            with open(self.kuyruk_dosya, "r", encoding="utf-8") as dosya:
+                satirlar = [satir.strip() for satir in dosya.readlines() if satir.strip()]
+            if not satirlar:
+                return
+            open(self.kuyruk_dosya, "w", encoding="utf-8").close()
+
+            from FiratROVNet.simulasyon import ROV
+
+            local_ns = {
+                "app": self.app,
+                "filo": self.filo,
+                "ROV": ROV,
+                "ui_rov_ekle": self.rov_ekle,
+                "ui_rov_cikar": self.rov_cikar,
+            }
+            yasakli_oruntuler = (
+                "Ortam(",
+                "Ursina(",
+                "sim_olustur(",
+                "__import__",
+                "import ",
+                "from ",
+            )
+            for komut in satirlar:
+                try:
+                    if any(oruntu in komut for oruntu in yasakli_oruntuler):
+                        print(f"[UI-Komut] ⛔ engellendi: {komut}")
+                        continue
+                    exec(komut, local_ns)  # noqa: S102
+                    self.mark_dirty()
+                    print(f"[UI-Komut] ✔ {komut}")
+                except Exception as exc:
+                    print(f"[UI-Komut] ✗ {komut} -> {exc}")
+        except Exception as exc:
+            print(f"[UI-Komut] okuma hatası: {exc}")
+
+    def guncelle(self, scheduler, dt):
+        yazildi = False
+        if scheduler.due("ui_durum_hizli", 2.0, dt, first=False) and time.monotonic() < self.dirty_until:
+            self.durum_yaz()
+            yazildi = True
+        if not yazildi and scheduler.due("ui_durum", 1.0, dt):
+            self.durum_yaz()
+        if scheduler.due("ui_komut", 2.0, dt):
+            self.komut_oku()
+
+    @staticmethod
+    def _opsiyonel_int(deger):
+        if deger is None:
+            return None
+        if isinstance(deger, str) and deger.strip().lower() in {"", "none", "null"}:
+            return None
+        return int(deger)
 
 
 def tahminler_al(app, tahminler_cache):

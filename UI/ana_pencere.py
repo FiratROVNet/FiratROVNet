@@ -64,7 +64,7 @@ td:first-child { color:#ffd740; white-space:nowrap; }
 <h3>ROV Paneli (sol sütun)</h3>
 <table>
 <tr><th>Buton</th><th>Ne yapar</th></tr>
-<tr><td>⭐ Lider Yap</td><td>Seçili ROV'u grubun lideri yapar (rol=1, gnc.mod=1)</td></tr>
+<tr><td>⭐ Lider Yap</td><td>Seçili ROV'u grubun lideri yapar (rol=1, gnc.mod=0)</td></tr>
 <tr><td>↩ Üsse Bırak</td><td>Seçili ROV'u gruptan çıkarır, bağımsız moda alır (gnc.mod=0)</td></tr>
 </table>
 

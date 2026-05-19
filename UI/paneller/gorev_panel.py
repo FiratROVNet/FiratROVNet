@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
     QSpinBox, QDoubleSpinBox, QPushButton, QGridLayout,
     QLineEdit, QComboBox, QTabWidget, QFrame, QCheckBox,
-    QSizePolicy, QTextBrowser, QScrollArea,
+    QSizePolicy, QTextBrowser,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QColor, QFont
@@ -161,25 +161,8 @@ class AramaKurtarmaSekmesi(QWidget):
     def __init__(self, sinyal, parent=None):
         super().__init__(parent)
         self.sinyal = sinyal
-
-        # Dış layout: sadece scroll area'yı tutar
-        dis_lay = QVBoxLayout(self)
-        dis_lay.setContentsMargins(0, 0, 0, 0)
-
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        # Tüm içerik bu iç widget'a gider
-        ic = QWidget()
-        ic.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        scroll.setWidget(ic)
-        dis_lay.addWidget(scroll)
-
-        lay = QVBoxLayout(ic)
+        lay = QVBoxLayout(self)
         lay.setSpacing(10)
-        lay.setContentsMargins(8, 8, 8, 8)
 
         alan_kutu = QGroupBox("ARAMA ALANI")
         alan_lay  = QVBoxLayout(alan_kutu)
@@ -225,84 +208,6 @@ class AramaKurtarmaSekmesi(QWidget):
 
         lay.addWidget(param_kutu)
 
-        # ── Tespit Modu Kartı ─────────────────────────────────────────────
-        tespit_kutu = QGroupBox("🎯 TESPİT MODU")
-        tespit_lay  = QGridLayout(tespit_kutu)
-        tespit_lay.setSpacing(8)
-        tespit_lay.setColumnStretch(1, 1)
-
-        tespit_lay.addWidget(_etiket("Mod"), 0, 0)
-        self.cmb_mod = QComboBox()
-        self.cmb_mod.addItem("🔀 Hibrit (renk + model)", "hibrit")
-        self.cmb_mod.addItem("🎨 Sadece Renk Filtresi",  "renk")
-        self.cmb_mod.addItem("🤖 Sadece YOLO Modeli",    "model")
-        tespit_lay.addWidget(self.cmb_mod, 0, 1)
-
-        tespit_lay.addWidget(_etiket("Güven Eşiği (hibrit)"), 1, 0)
-        self.spin_hibrit_conf = QDoubleSpinBox()
-        self.spin_hibrit_conf.setRange(0.05, 1.0)
-        self.spin_hibrit_conf.setValue(0.40)
-        self.spin_hibrit_conf.setSingleStep(0.05)
-        tespit_lay.addWidget(self.spin_hibrit_conf, 1, 1)
-
-        btn_mod_uygula = QPushButton("⚡ Modu Anında Uygula")
-        btn_mod_uygula.setToolTip("Tespit modunu çalışan simülasyona hemen uygular")
-        btn_mod_uygula.clicked.connect(self._tespit_mod_uygula)
-        tespit_lay.addWidget(btn_mod_uygula, 2, 0, 1, 2)
-
-        self.lbl_mod_durum = QLabel("—")
-        self.lbl_mod_durum.setStyleSheet(f"color: {VURGU}; font-size: 8pt;")
-        tespit_lay.addWidget(self.lbl_mod_durum, 3, 0, 1, 2)
-
-        lay.addWidget(tespit_kutu)
-
-        # ── Hedef Nesneler Kartı ──────────────────────────────────────────────
-        hedef_kutu = QGroupBox("📦 HEDEF NESNELER (Sahneye Ekle)")
-        hedef_lay  = QGridLayout(hedef_kutu)
-        hedef_lay.setSpacing(8)
-        hedef_lay.setColumnStretch(1, 1)
-
-        hedef_lay.addWidget(_etiket("Renk"), 0, 0)
-        self.cmb_nesne_renk = QComboBox()
-        for r in ("kirmizi", "sari", "mavi", "yesil", "turuncu"):
-            self.cmb_nesne_renk.addItem(r.capitalize(), r)
-        hedef_lay.addWidget(self.cmb_nesne_renk, 0, 1)
-
-        hedef_lay.addWidget(_etiket("X (Sim)"), 1, 0)
-        self.spin_nx = QDoubleSpinBox()
-        self.spin_nx.setRange(-200, 200); self.spin_nx.setValue(0.0)
-        hedef_lay.addWidget(self.spin_nx, 1, 1)
-
-        hedef_lay.addWidget(_etiket("Y (Sim)"), 2, 0)
-        self.spin_ny = QDoubleSpinBox()
-        self.spin_ny.setRange(-200, 200); self.spin_ny.setValue(0.0)
-        hedef_lay.addWidget(self.spin_ny, 2, 1)
-
-        hedef_lay.addWidget(_etiket("Derinlik Z"), 3, 0)
-        self.spin_nz = QDoubleSpinBox()
-        self.spin_nz.setRange(-60, 0); self.spin_nz.setValue(-18.0)
-        hedef_lay.addWidget(self.spin_nz, 3, 1)
-
-        hedef_lay.addWidget(_etiket("Boyut"), 4, 0)
-        self.spin_nboyut = QDoubleSpinBox()
-        self.spin_nboyut.setRange(0.5, 15.0); self.spin_nboyut.setValue(3.0)
-        hedef_lay.addWidget(self.spin_nboyut, 4, 1)
-
-        btn_nesne_ekle    = QPushButton("➕ Nesne Ekle")
-        btn_nesne_ekle.clicked.connect(self._hedef_nesne_ekle)
-        btn_nesne_temizle = QPushButton("🗑 Hepsini Temizle")
-        btn_nesne_temizle.clicked.connect(self._hedef_nesneleri_temizle)
-        nesne_btn_lay = QHBoxLayout()
-        nesne_btn_lay.addWidget(btn_nesne_ekle)
-        nesne_btn_lay.addWidget(btn_nesne_temizle)
-        hedef_lay.addLayout(nesne_btn_lay, 5, 0, 1, 2)
-
-        self.lbl_nesne_durum = QLabel("—")
-        self.lbl_nesne_durum.setStyleSheet(f"color: {VURGU}; font-size: 8pt;")
-        hedef_lay.addWidget(self.lbl_nesne_durum, 6, 0, 1, 2)
-
-        lay.addWidget(hedef_kutu)
-
         btn_lay = QHBoxLayout()
         btn_basla = QPushButton("▶  Aramayı Başlat")
         btn_basla.setObjectName("btn_basla")
@@ -314,42 +219,6 @@ class AramaKurtarmaSekmesi(QWidget):
         btn_lay.addWidget(btn_durdur)
         lay.addLayout(btn_lay)
         lay.addStretch()
-
-    def _hedef_nesne_ekle(self):
-        renk  = self.cmb_nesne_renk.currentData()
-        nx    = self.spin_nx.value()
-        ny    = self.spin_ny.value()
-        nz    = self.spin_nz.value()
-        boyut = self.spin_nboyut.value()
-        k = (
-            f"filo.hedef_nesne_ekle(renk_ismi='{renk}', "
-            f"sim_x={nx:.1f}, sim_y={ny:.1f}, sim_z={nz:.1f}, boyut={boyut:.1f})"
-        )
-        komut_gonder(k)
-        self.lbl_nesne_durum.setText(f"✔ Eklendi → {renk} ({nx:.0f},{ny:.0f},{nz:.0f})")
-        self.komut_uretildi.emit(k, f"Hedef nesne eklendi: {renk}")
-
-    def _hedef_nesneleri_temizle(self):
-        k = "filo.hedef_nesneleri_temizle()"
-        komut_gonder(k)
-        self.lbl_nesne_durum.setText("🗑 Tümü kaldırıldı")
-        self.komut_uretildi.emit(k, "Tüm hedef nesneler kaldırıldı")
-
-    def _tespit_mod_uygula(self):
-        """Seçilen tespit modunu anında çalışan tüm tespit görevlerine uygular."""
-        mod  = self.cmb_mod.currentData()
-        conf = self.spin_hibrit_conf.value()
-        g_id = self.spin_grup.value()
-        k = (
-            f"[filo.camera_manager.tespit_modu_sec(r.id, '{mod}') "
-            f"for r in (filo.g_rovs.get({g_id}) or []) if r is not None "
-            f"and r.id in filo.camera_manager.aktif_yolo_gorevleri];"
-            f"filo.camera_manager._global_tespit_mod='{mod}';"
-            f"filo.camera_manager._global_tespit_conf={conf:.2f}"
-        )
-        komut_gonder(k)
-        self.lbl_mod_durum.setText(f"✔ Uygulandı → {mod}  (eşik: {conf:.2f})")
-        self.komut_uretildi.emit(k, f"Tespit modu → {mod}")
 
     def _basla(self):
         x1, y1, x2, y2 = self._alan_al()
@@ -373,12 +242,7 @@ class AramaKurtarmaSekmesi(QWidget):
             f"Arama Kurtarma → Grup-{g_id} | Hedef: {siniflar_raw or 'hepsi'} "
             f"| Model: {model} | Güven: {guven:.2f}"
         )
-        # Tespit sistemini de başlat (seçilen modla)
-        mod_veri = self.cmb_mod.currentData()
-        tespit_komutu = f"filo.tespit_baslat_grup(g_id={g_id}, mod='{mod_veri}')"
         komut_gonder(komut, callback=lambda s: self.sinyal and self.sinyal.durum_guncellendi.emit(s, seviye_tespit(s)))
-        komut_gonder(tespit_komutu)
-        self.lbl_mod_durum.setText(f"▶ Tespit başlatıldı → {mod_veri}")
         self.komut_uretildi.emit(komut, aciklama)
 
     def _durdur(self):
@@ -862,8 +726,6 @@ class GorevPanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
 
         self.sekme = QTabWidget()
-        self.sekme.setMinimumWidth(420)
-        self.sekme.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.durum_sekme    = DurumSekmesi(sinyal)
         self.hareket_sekme  = HareketSekmesi(sinyal, rov_panel_ref=rov_panel_ref)

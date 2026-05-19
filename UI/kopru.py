@@ -16,6 +16,7 @@ from typing import Any
 
 # ── Simülasyon bağlantısı ─────────────────────────────────────────────────────
 _filo_ref = None          # Filo nesnesi (aynı işlemde çalışıyorsa)
+_app_ref = None           # Ortam nesnesi (aynı işlemde çalışıyorsa)
 _bagli   = False
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -29,11 +30,20 @@ _CACHE_SURE = 2.0   # saniye — bu süreden eski veri "bağlantı yok" sayılı
 _DURUM_OKU_CACHE_SURE = 0.35  # hizli UI geri bildirimi icin kisa onbellek
 
 
-def filo_bagla(filo):
+def filo_bagla(filo, app=None):
     """Ana simülasyondan çağrılır: `from UI.kopru import filo_bagla; filo_bagla(filo)`"""
-    global _filo_ref, _bagli
+    global _filo_ref, _app_ref, _bagli
     _filo_ref = filo
+    _app_ref = app if app is not None else getattr(filo, "ortam_ref", None)
     _bagli    = True
+
+
+def sim_bagla(app, filo=None):
+    """Aynı process UI kullanımında app ve filo referanslarını birlikte bağlar."""
+    global _filo_ref, _app_ref, _bagli
+    _app_ref = app
+    _filo_ref = filo if filo is not None else getattr(app, "filo", None)
+    _bagli = _filo_ref is not None
 
 
 def _durum_oku() -> dict:
@@ -75,7 +85,15 @@ def _calistir(komut: str) -> str:
     """
     if bagli_mi():
         try:
-            local_ns = {"filo": _filo_ref}
+            from FiratROVNet.simulasyon import ROV
+
+            local_ns = {
+                "filo": _filo_ref,
+                "app": _app_ref,
+                "ROV": ROV,
+                "ui_rov_ekle": rov_ekle,
+                "ui_rov_cikar": rov_cikar,
+            }
             exec(komut, local_ns)          # noqa: S102
             return f"✔ {komut}"
         except Exception as exc:
@@ -96,6 +114,34 @@ def komut_gonder(komut: str, callback=None):
         if callback:
             callback(sonuc)
     threading.Thread(target=_run, daemon=True).start()
+
+
+def rov_ekle(group_id=None, position=(0, -10, 0), model_key="submarine", rol=0):
+    """Güncel runtime API üzerinden yeni ROV ekler."""
+    if not bagli_mi() or _app_ref is None:
+        return _calistir(
+            "ui_rov_ekle("
+            f"group_id={group_id!r}, position={position!r}, "
+            f"model_key={model_key!r}, rol={int(rol)})"
+        )
+    from FiratROVNet.simulasyon import ROV
+
+    rov = ROV(
+        group_id=group_id,
+        position=position,
+        loader_ref=_app_ref.loader,
+        model_key=model_key,
+        rol=rol,
+    )
+    return rov.ekle(_app_ref)
+
+
+def rov_cikar(rov_id: int):
+    """Aktif ROV'u güncel filo aramasıyla güvenli şekilde çıkarır."""
+    if not bagli_mi():
+        return _calistir(f"ui_rov_cikar({int(rov_id)})")
+    rov = _filo_ref.find_rov_by_id(int(rov_id))
+    return bool(rov and rov.cikar())
 
 
 def seviye_tespit(sonuc: str) -> str:
