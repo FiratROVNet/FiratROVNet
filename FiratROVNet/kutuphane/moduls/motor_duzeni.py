@@ -57,8 +57,11 @@ class MotorDuzeni:
 
             rov_icin_bv_listesi = []
             for motor in motor_listesi:
-                rot = motor.motor_entity.rotation if getattr(motor, "motor_entity", None) else Vec3(0, 0, 0)
-                birim_vektor = self.filo._euler_deg_to_direction(Vec3(rot.x, rot.y, rot.z))
+                if getattr(motor, "motor_entity", None):
+                    rot = motor.motor_entity.rotation
+                    birim_vektor = self.filo._euler_deg_to_direction(Vec3(rot.x, rot.y, rot.z))
+                else:
+                    birim_vektor = getattr(motor, "r_bv", Vec3(0, 1, 0))
                 motor.r_bv = birim_vektor
                 rov_icin_bv_listesi.append(birim_vektor)
 

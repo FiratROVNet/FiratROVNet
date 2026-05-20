@@ -37,8 +37,6 @@ class DataMixin:
 
         rov_listesi = self.filo.ortam_ref.rovs
         if len(rov_listesi) == 0:
-            if not sessiz:
-                print("❌ [HATA] Henuz hic ROV yok.")
             return None
 
         # 3. ID Kontrolu

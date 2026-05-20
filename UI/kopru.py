@@ -22,6 +22,7 @@ _bagli   = False
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KUYRUK_DOSYA = os.path.join(_ROOT, "KOMUT_KUYRUĞU.txt")
 DURUM_DOSYA  = os.path.join(_ROOT, "UI", "_rov_durumu.json")
+MINIMAP_SECIM_DOSYA = os.path.join(_ROOT, "UI", "_minimap_secim.json")
 
 # Durum dosyası önbelleği
 _durum_cache: dict = {}
@@ -87,12 +88,22 @@ def _calistir(komut: str) -> str:
         try:
             from FiratROVNet.simulasyon import ROV
 
+            from FiratROVNet.main_runtime import (
+                ui_minimap_gorev_alan_temizle,
+                ui_minimap_secim_baslat,
+                ui_minimap_secim_iptal,
+                ui_minimap_secim_mod_kapat,
+            )
             local_ns = {
                 "filo": _filo_ref,
                 "app": _app_ref,
                 "ROV": ROV,
                 "ui_rov_ekle": rov_ekle,
                 "ui_rov_cikar": rov_cikar,
+                "ui_minimap_secim_baslat": ui_minimap_secim_baslat,
+                "ui_minimap_secim_iptal": ui_minimap_secim_iptal,
+                "ui_minimap_secim_mod_kapat": ui_minimap_secim_mod_kapat,
+                "ui_minimap_gorev_alan_temizle": ui_minimap_gorev_alan_temizle,
             }
             exec(komut, local_ns)          # noqa: S102
             return f"✔ {komut}"
@@ -114,6 +125,83 @@ def komut_gonder(komut: str, callback=None):
         if callback:
             callback(sonuc)
     threading.Thread(target=_run, daemon=True).start()
+
+
+def grup_id_oku(veri) -> int | None:
+    """ROV dict veya ham değerden grup id. None = üs (grupsuz); 0, 1, 2… = aktif grup."""
+    if isinstance(veri, dict):
+        raw = veri.get("grup_id", veri.get("group_id", None))
+    else:
+        raw = veri
+    if raw is None:
+        return None
+    try:
+        gid = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return None if gid < 0 else gid
+
+
+def ilk_bos_grup_id(kullanilan) -> int:
+    """Sıradaki boş grup numarası: 0 yoksa 0, doluysa 1, 2, … (arada boşluk bırakmaz)."""
+    dolu = {int(g) for g in kullanilan if g is not None}
+    g = 0
+    while g in dolu:
+        g += 1
+    return g
+
+
+def minimap_secim_oku() -> dict:
+    """Simülasyonun yazdığı minimap seçim durumunu okur."""
+    try:
+        with open(MINIMAP_SECIM_DOSYA, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def minimap_secim_baslat(mod: str = "alan", serit_araligi: float = 15.0) -> str:
+    """Simülasyonda minimap tıklama modunu açar (alan | nokta)."""
+    mod = "nokta" if str(mod).strip().lower() == "nokta" else "alan"
+    serit = max(1.0, float(serit_araligi or 15.0))
+    if bagli_mi() and _app_ref is not None:
+        from FiratROVNet.main_runtime import ui_minimap_secim_baslat
+        ui_minimap_secim_baslat(_app_ref, mod, serit_araligi=serit)
+        return f"✔ Minimap seçim: {mod}"
+    return _calistir(f"ui_minimap_secim_baslat(app, {mod!r}, serit_araligi={serit})")
+
+
+def minimap_secim_iptal(gorev_gorselini_temizle: bool = False) -> str:
+    if bagli_mi() and _app_ref is not None:
+        from FiratROVNet.main_runtime import ui_minimap_secim_iptal
+        ui_minimap_secim_iptal(_app_ref, gorev_gorselini_temizle=gorev_gorselini_temizle)
+        return "✔ Minimap seçim iptal"
+    arg = "True" if gorev_gorselini_temizle else "False"
+    return _calistir(f"ui_minimap_secim_iptal(app, gorev_gorselini_temizle={arg})")
+
+
+def minimap_secim_mod_kapat() -> str:
+    """Seçim modunu kapatır; görev alanı çizgileri kalır."""
+    if bagli_mi() and _app_ref is not None:
+        from FiratROVNet.main_runtime import ui_minimap_secim_mod_kapat
+        ui_minimap_secim_mod_kapat(_app_ref)
+        return "✔ Minimap seçim modu kapatıldı"
+    return _calistir("ui_minimap_secim_mod_kapat(app)")
+
+
+def minimap_gorev_alan_temizle() -> str:
+    if bagli_mi() and _app_ref is not None:
+        from FiratROVNet.main_runtime import ui_minimap_gorev_alan_temizle
+        ui_minimap_gorev_alan_temizle(_app_ref)
+        return "✔ Minimap görev alanı temizlendi"
+    return _calistir("ui_minimap_gorev_alan_temizle(app)")
+
+
+def rov_usye_al(rov_id: int) -> bool:
+    """ROV'u üsse alır (group_id=None, role=0)."""
+    if not bagli_mi() or _filo_ref is None:
+        return _calistir(f"filo.rov_usye_al({int(rov_id)})")
+    return bool(_filo_ref.rov_usye_al(int(rov_id)))
 
 
 def rov_ekle(group_id=None, position=None, model_key="submarine", rol=0):
@@ -175,7 +263,7 @@ def rov_listesi() -> list[dict]:
                     "gat_kodu": int(getattr(rov, "gat_kodu", 0)),
                     "batarya":  round(float(getattr(rov, "battery", 1.0)), 2),
                     "hiz":      0.0,
-                    "grup_id":  int(getattr(rov, "group_id", 0)),
+                    "grup_id":  getattr(rov, "group_id", None),
                 })
             return sonuc
         except Exception:
@@ -193,7 +281,7 @@ def rov_listesi() -> list[dict]:
                 "gat_kodu": r.get("gat_kodu", 0),
                 "batarya":  r.get("batarya", 1.0),
                 "hiz":      r.get("hiz", 0.0),
-                "grup_id":  r.get("grup_id", 0),
+                "grup_id":  r.get("grup_id"),
             }
             for r in d["rovlar"]
         ]

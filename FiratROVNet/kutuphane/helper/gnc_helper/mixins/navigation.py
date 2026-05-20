@@ -231,6 +231,10 @@ class NavigationMixin:
         A* ile yol planlar ve ROV'u mevcut derinligini koruyarak o yola sokar.
         rov_id ile bulunan ROV objesindeki rov.id kullanilir.
         """
+        ortam = getattr(self.filo, "ortam_ref", None)
+        if ortam is not None and getattr(ortam, "_ui_minimap_picker", None) is not None:
+            return
+
         # ROV'u bul
         rov = None
         if hasattr(self.filo, 'find_rov_by_id'):

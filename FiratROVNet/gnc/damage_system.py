@@ -170,6 +170,10 @@ class DamageSystem:
         if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
             return False
 
+        # ortam_ref guard — rov_hasar_kontrol ile tutarlı
+        if not hasattr(self.filo_ref, 'ortam_ref') or not self.filo_ref.ortam_ref:
+            return False
+
         # Çevredeki potansiyel engeller (Adalar ve Diğer ROV'lar)
         islands_and_rovs = self.filo_ref.ortam_ref.island_entities + self.filo_ref.ortam_ref.rovs
         

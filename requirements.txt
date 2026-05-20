@@ -22,5 +22,9 @@ rerun-sdk>=0.20.0
 qrcode>=7.4.2
 PyQt5>=5.15.0
 
+# --- Kullanıcı Arayüzü (UI) ---
+# PyQt5: Harici kontrol paneli (UI/) için gereklidir (v1.7.8+)
+PyQt5>=5.15.0
+
 # --- Sistem Araçları ---
 screeninfo

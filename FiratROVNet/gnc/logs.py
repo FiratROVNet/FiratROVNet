@@ -35,12 +35,16 @@ class LogSystem:
         """
         # 1. Hata İzleme (Exception Traceback)
         tb_list = traceback.extract_tb(e.__traceback__)
-        hata_frame = tb_list[-1]  # Hatayı veren yer
         
         print(f"\n--- HATA DETAYLARI ---")
         print(f"Hata Mesajı: {e}")
-        print(f"Hata Veren Fonksiyon: {hata_frame.name} (Satır: {hata_frame.lineno})")
-        print(f"Hata Kodu: {hata_frame.line}")
+
+        if tb_list:
+            hata_frame = tb_list[-1]  # Hatayı veren yer
+            print(f"Hata Veren Fonksiyon: {hata_frame.name} (Satır: {hata_frame.lineno})")
+            print(f"Hata Kodu: {hata_frame.line}")
+        else:
+            print("Hata Traceback: Mevcut değil (exception doğrudan raise edildi)")
 
         # 2. Hatayı Veren Fonksiyonu Çağıran (Hata Zinciri içindeki bir üst)
         if len(tb_list) > 1:

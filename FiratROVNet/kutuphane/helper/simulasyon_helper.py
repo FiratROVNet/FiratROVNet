@@ -10,14 +10,20 @@ import os
 import random
 from typing import List, Optional, Tuple
 
+import numpy as np
 import torch
 
 from ursina import Vec3, Mesh, Entity, color, distance
 
 try:
-    from FiratROVNet.config import GATLimitleri
+    from FiratROVNet.config import GATLimitleri, PerformansAyarlari
 except ImportError:
-    from ..config import GATLimitleri
+    from ..config import GATLimitleri, PerformansAyarlari
+
+try:
+    from FiratROVNet.native.gat_fast import gat_graph_hesapla
+except Exception:
+    gat_graph_hesapla = None
 
 
 # -----------------------------------------------------------------------------
@@ -173,7 +179,7 @@ def kayalari_olustur(
             color=color.rgb(gri, gri, gri),
             texture='noise',
             scale=(s_x, s_y, s_z),
-            position=(x, sea_floor_y, z),
+            position=(x, y, z),
             rotation=(random.randint(0, 360), random.randint(0, 360), random.randint(0, 360)),
             collider='sphere',
             unlit=True
@@ -279,7 +285,10 @@ class OrtamHelper:
             MiniData: x (n x 9), edge_index (2 x E)
         """
         engeller = getattr(self.ortam, 'engeller', []) or []
-        aktif_rovs = [r for r in getattr(self.ortam, 'rovs', []) if r is not None]
+        aktif_rovs = [
+            r for r in getattr(self.ortam, 'rovs', [])
+            if r is not None and not getattr(r, 'is_destroyed', False)
+        ]
 
         if not aktif_rovs:
             return MiniData(
@@ -294,57 +303,121 @@ class OrtamHelper:
             'COLLISION': GATLimitleri.CARPISMA
         }
         n = len(aktif_rovs)
-        positions = [r.position for r in aktif_rovs]
-        x = torch.zeros((n, 9), dtype=torch.float)
+        positions = np.empty((n, 3), dtype=np.float32)
+        velocities = np.zeros((n, 3), dtype=np.float32)
+        batteries = np.ones((n,), dtype=np.float32)
+        roles = np.zeros((n,), dtype=np.float32)
 
-        # Mesafe matrisi (tek seferde hesapla)
-        dist_matrix = [[0.0] * n for _ in range(n)]
         for i in range(n):
-            for j in range(n):
-                if i != j:
-                    dist_matrix[i][j] = distance(positions[i], positions[j])
-
-        sources, targets = [], []
-        for i in range(n):
-            code = 0
-            # Kod 5: Liderden uzak
-            if i != 0 and dist_matrix[i][0] > L['LEADER']:
-                code = 5
-            # Kod 3: Bağlantı kopması
-            dists_other = [dist_matrix[i][j] for j in range(n) if j != i]
-            if dists_other and min(dists_other) > L['DISCONNECT']:
-                code = 3
-            # Kod 1: Engel yakınlığı
-            min_engel = 999.0
-            for engel in engeller:
-                d = distance(positions[i], engel.position) - 6.0
-                min_engel = min(min_engel, d)
-            if min_engel < L['OBSTACLE']:
-                code = 1
-            # Kod 2: Çarpışma riski
-            for j in range(n):
-                if i != j and dist_matrix[i][j] < L['COLLISION']:
-                    code = 2
-                    break
-
             rov = aktif_rovs[i]
-            x[i][0] = code / 5.0
-            x[i][1] = getattr(rov, 'battery', 100.0)
-            x[i][2] = 0.9
-            x[i][3] = min(1.0, abs(getattr(rov, 'y', 0.0)) / 100.0)
-            x[i][4] = getattr(getattr(rov, 'velocity', None), 'x', 0.0) or 0.0
-            x[i][5] = getattr(getattr(rov, 'velocity', None), 'z', 0.0) or 0.0
-            x[i][6] = 1.0 if getattr(rov, 'role', 0) == 1 else 0.0
-            if n > 1:
-                min_rov_d = min(dist_matrix[i][j] for j in range(n) if j != i)
-                x[i][7] = min(min_rov_d / 100.0, 1.0)
-            if i != 0:
-                x[i][8] = min(dist_matrix[i][0] / 100.0, 1.0)
+            pos = getattr(rov, 'position', Vec3(0, 0, 0))
+            positions[i] = (
+                float(getattr(pos, 'x', 0.0) or 0.0),
+                float(getattr(pos, 'y', 0.0) or 0.0),
+                float(getattr(pos, 'z', 0.0) or 0.0),
+            )
+            vel = getattr(rov, 'velocity', None)
+            if vel is not None:
+                velocities[i] = (
+                    float(getattr(vel, 'x', 0.0) or 0.0),
+                    float(getattr(vel, 'y', 0.0) or 0.0),
+                    float(getattr(vel, 'z', 0.0) or 0.0),
+                )
+            batteries[i] = float(getattr(rov, 'battery', 1.0) or 0.0)
+            roles[i] = 1.0 if getattr(rov, 'role', 0) == 1 else 0.0
 
-            for j in range(n):
-                if i != j and dist_matrix[i][j] < L['DISCONNECT']:
-                    sources.append(i)
-                    targets.append(j)
+        engel_positions = []
+        for engel in engeller:
+            pos = getattr(engel, 'position', None)
+            if pos is None:
+                continue
+            try:
+                engel_positions.append((float(pos.x), float(pos.y), float(pos.z)))
+            except (AttributeError, TypeError, ValueError):
+                continue
 
-        edge_index = torch.tensor([sources, targets], dtype=torch.long)
-        return MiniData(x, edge_index)
+        if gat_graph_hesapla is not None:
+            try:
+                eng_np = (
+                    np.asarray(engel_positions, dtype=np.float32)
+                    if engel_positions
+                    else np.empty((0, 3), dtype=np.float32)
+                )
+                x_np, edge_np = gat_graph_hesapla(
+                    positions,
+                    velocities,
+                    batteries,
+                    roles,
+                    eng_np,
+                    float(L['LEADER']),
+                    float(L['DISCONNECT']),
+                    float(L['OBSTACLE']),
+                    float(L['COLLISION']),
+                    int(getattr(PerformansAyarlari, 'GAT_MAKS_KOMSU', 0) or 0),
+                )
+                return MiniData(torch.from_numpy(x_np), torch.from_numpy(edge_np))
+            except Exception:
+                pass
+
+        if n > 1:
+            delta = positions[:, None, :] - positions[None, :, :]
+            dist_matrix = np.linalg.norm(delta, axis=2).astype(np.float32)
+            np.fill_diagonal(dist_matrix, np.inf)
+            min_rov_dist = np.min(dist_matrix, axis=1)
+        else:
+            dist_matrix = np.full((1, 1), np.inf, dtype=np.float32)
+            min_rov_dist = np.full((1,), np.inf, dtype=np.float32)
+
+        leader_indices = np.flatnonzero(roles > 0.5)
+        leader_idx = int(leader_indices[0]) if leader_indices.size else 0
+        leader_dist = dist_matrix[:, leader_idx].copy() if n > 1 else np.zeros((n,), dtype=np.float32)
+        if 0 <= leader_idx < n:
+            leader_dist[leader_idx] = 0.0
+
+        codes = np.zeros((n,), dtype=np.float32)
+        codes[(roles < 0.5) & (leader_dist > L['LEADER'])] = 5.0
+        codes[min_rov_dist > L['DISCONNECT']] = 3.0
+
+        if engel_positions:
+            eng_np = np.asarray(engel_positions, dtype=np.float32)
+            eng_delta = positions[:, None, :] - eng_np[None, :, :]
+            min_engel = np.min(np.linalg.norm(eng_delta, axis=2), axis=1) - 6.0
+            codes[min_engel < L['OBSTACLE']] = 1.0
+
+        if n > 1:
+            codes[np.any(dist_matrix < L['COLLISION'], axis=1)] = 2.0
+
+        x_np = np.zeros((n, 9), dtype=np.float32)
+        x_np[:, 0] = codes / 5.0
+        x_np[:, 1] = batteries
+        x_np[:, 2] = 0.9
+        x_np[:, 3] = np.clip(np.abs(positions[:, 1]) / 100.0, 0.0, 1.0)
+        x_np[:, 4] = velocities[:, 0]
+        x_np[:, 5] = velocities[:, 2]
+        x_np[:, 6] = roles
+        x_np[:, 7] = np.clip(min_rov_dist / 100.0, 0.0, 1.0)
+        x_np[:, 8] = np.clip(leader_dist / 100.0, 0.0, 1.0)
+
+        if n > 1:
+            max_komsu = int(getattr(PerformansAyarlari, 'GAT_MAKS_KOMSU', 0) or 0)
+            menzil_ici = dist_matrix < L['DISCONNECT']
+            if max_komsu > 0 and n - 1 > max_komsu:
+                edge_mask = np.zeros_like(menzil_ici, dtype=bool)
+                for i in range(n):
+                    adaylar = np.flatnonzero(menzil_ici[i])
+                    if adaylar.size > max_komsu:
+                        sirali_idx = np.argpartition(dist_matrix[i, adaylar], max_komsu - 1)[:max_komsu]
+                        adaylar = adaylar[sirali_idx]
+                    edge_mask[i, adaylar] = True
+            else:
+                edge_mask = menzil_ici
+            np.fill_diagonal(edge_mask, False)
+        else:
+            edge_mask = dist_matrix < L['DISCONNECT']
+        sources, targets = np.nonzero(edge_mask)
+        if sources.size:
+            edge_np = np.vstack((sources, targets)).astype(np.int64)
+            edge_index = torch.from_numpy(edge_np)
+        else:
+            edge_index = torch.zeros((2, 0), dtype=torch.long)
+        return MiniData(torch.from_numpy(x_np), edge_index)

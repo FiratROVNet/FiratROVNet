@@ -1,3 +1,4 @@
+import math
 import os
 import json
 import subprocess
@@ -7,13 +8,14 @@ import time
 from datetime import datetime
 
 import numpy as np
-from ursina import camera, mouse
+from ursina import camera, mouse, time as utime
 
-from FiratROVNet.config import cfg
+from FiratROVNet.config import PerformansAyarlari, cfg
 from FiratROVNet.kutuphane.moduls.Panels import kisayol_paneli_olustur
 from FiratROVNet.kutuphane.moduls.profiler import Profiler
 from FiratROVNet.tools.rerun_ayarla import (
     QR,
+    rerun_sahne_logla,
     rerun_baslat,
     rerun_kayit_baslat,
     rerun_kayit_durdur,
@@ -38,6 +40,306 @@ class FrameScheduler:
             return True
         self._accum[name] = current
         return False
+
+
+class RuntimeOzellikleri:
+    """Ana dongude tek noktadan acilip kapatilabilen runtime adimlari."""
+
+    def __init__(
+        self,
+        hud_text=True,
+        motor_hud=True,
+        profiler_hud=True,
+        sac_train=True,
+        sac_hud=True,
+        gat=False,
+        gorseller=True,
+        lider=True,
+        rerun=True,
+        ui=True,
+        pid_ui=True,
+        apf_hud=True,
+        navigasyon=True,
+        rovler=True,
+        alan_tarama=True,
+    ):
+        self.hud_text = bool(hud_text)
+        self.motor_hud = bool(motor_hud)
+        self.profiler_hud = bool(profiler_hud)
+        self.sac_train = bool(sac_train)
+        self.sac_hud = bool(sac_hud)
+        self.gat = bool(gat)
+        self.gorseller = bool(gorseller)
+        self.lider = bool(lider)
+        self.rerun = bool(rerun)
+        self.ui = bool(ui)
+        self.pid_ui = bool(pid_ui)
+        self.apf_hud = bool(apf_hud)
+        self.navigasyon = bool(navigasyon)
+        self.rovler = bool(rovler)
+        self.alan_tarama = bool(alan_tarama)
+
+
+class AnaDonguRuntime:
+    """main.py'yi sade tutan, ac/kapat destekli ana simulasyon dongusu."""
+
+    FPS_HISTORY_SIZE = 10
+
+    def __init__(self, script_dir, app, filo, motor_hud, profiler_hud, sac_hud, rerun, ui, ozellikler=None):
+        self.script_dir = script_dir
+        self.app = app
+        self.filo = filo
+        self.motor_hud = motor_hud
+        self.profiler_hud = profiler_hud
+        self.sac_hud = sac_hud
+        self.rerun = rerun
+        self.ui = ui
+        self.ozellikler = ozellikler or RuntimeOzellikleri()
+        self.scheduler = FrameScheduler()
+        self.fps_history = []
+        self.fps_sum = 0.0
+        self.rerun_step = 0
+        self.tahminler_cache = np.zeros(0, dtype=int)
+        self.last_hud_state = None
+        self.bilgi_rov_id = 0
+        self.aktif_grup_index = 0
+
+    def aktif_rov_secimini_dogrula(self):
+        if self.filo.find_rov_by_id(self.bilgi_rov_id) is not None:
+            return
+        ids = aktif_rov_idleri(self.filo)
+        if not ids:
+            return
+        self.bilgi_rov_id = ids[0]
+        mevcut_grup = getattr(self.filo.find_rov_by_id(self.bilgi_rov_id), "group_id", None)
+        grup_idleri = aktif_grup_idleri(self.filo)
+        if mevcut_grup in grup_idleri:
+            self.aktif_grup_index = grup_idleri.index(mevcut_grup)
+        if not self.filo.camera_manager.aktif_kamera_listesi():
+            self.filo.kamera_ayarla(rov_id=self.bilgi_rov_id)
+
+    def hud_durumu_olustur(self):
+        rov = self.filo.find_rov_by_id(self.bilgi_rov_id)
+        avg_fps = int(self.fps_sum / len(self.fps_history)) if self.fps_history else 0
+        if rov is None:
+            return ("yok", avg_fps)
+
+        pos = getattr(rov, "position", None)
+        if pos is None:
+            gps_x, gps_y, gps_z = 0, 0, 0
+        else:
+            gps_x = int(float(getattr(pos, "x", 0.0) or 0.0))
+            gps_y = int(float(getattr(pos, "z", 0.0) or 0.0))
+            gps_z = int(float(getattr(pos, "y", 0.0) or 0.0))
+
+        velocity = getattr(rov, "velocity", None)
+        velocity_len = float(velocity.length()) if velocity is not None and hasattr(velocity, "length") else 0.0
+        batarya = float(getattr(rov, "battery", 0.0) or 0.0)
+        angular_speed = float(getattr(rov, "rotation_y", 0.0) or 0.0)
+        grup_id = int(getattr(rov, "group_id", 0) or 0)
+        rol = int(getattr(rov, "role", 0) or 0)
+        rol_metin = f"Lider-{self.bilgi_rov_id} " if rol == 1 else f"Takipci-{self.bilgi_rov_id} "
+
+        return (
+            "rov",
+            avg_fps,
+            rol_metin,
+            grup_id,
+            gps_x,
+            gps_y,
+            gps_z,
+            round(batarya, 2),
+            round(velocity_len, 2),
+            round(angular_speed, 2),
+        )
+
+    @staticmethod
+    def hud_metni_olustur(state):
+        if state[0] == "yok":
+            _, avg_fps = state
+            return (
+                f"<yellow>       FPS: {avg_fps}<default>\n"
+                f"<orange>ROV yok<default>\n"
+                f"<cyan>Runtime konsoldan ROV eklenebilir<default>\n"
+                f"<azure>BAT: --<default>\n"
+                f"<lime>VEL: --<default>\n"
+                f"<gold>ANG: --<default>"
+            )
+
+        (
+            _,
+            avg_fps,
+            rol_metin,
+            grup_id,
+            gps_x,
+            gps_y,
+            gps_z,
+            batarya,
+            velocity_len,
+            angular_speed,
+        ) = state
+        return (
+            f"<yellow>       FPS: {avg_fps}<default>\n"
+            f"<orange>{rol_metin}Grup-{grup_id}<default>\n"
+            f"<cyan>GPS: {gps_x}, {gps_y}, {gps_z}<default>\n"
+            f"<azure>BAT: {batarya:.2f} J<default>\n"
+            f"<lime>VEL: {velocity_len:.2f} m/s<default>\n"
+            f"<gold>ANG: {angular_speed:.2f} rad/s<default>"
+        )
+
+    def _fps_guncelle(self, dt):
+        instant_fps = (1.0 / dt) if dt > 0 else 0
+        self.fps_history.append(instant_fps)
+        self.fps_sum += instant_fps
+        if len(self.fps_history) > self.FPS_HISTORY_SIZE:
+            self.fps_sum -= self.fps_history.pop(0)
+        return instant_fps
+
+    def ozellik_ayarla(self, ad, aktif=True):
+        if not hasattr(self.ozellikler, ad):
+            print(f"⚠️ Runtime özelliği bulunamadı: {ad}")
+            return False
+        setattr(self.ozellikler, ad, bool(aktif))
+        print(f"✅ Runtime özelliği güncellendi: {ad}={bool(aktif)}")
+        return True
+
+    def _hud_guncelle(self, dt):
+        if not self.ozellikler.hud_text:
+            return
+        hud_text_hz = getattr(PerformansAyarlari, "HUD_TEXT_HZ", PerformansAyarlari.HUD_HZ)
+        if self.scheduler.due("hud", hud_text_hz, dt):
+            Profiler.start("0_hud_text_update")
+            hud_state = self.hud_durumu_olustur()
+            if hud_state != self.last_hud_state:
+                self.app.rov_label.text = self.hud_metni_olustur(hud_state)
+                self.last_hud_state = hud_state
+            Profiler.end("0_hud_text_update")
+
+    def _motor_hud_guncelle(self, dt):
+        if not self.ozellikler.motor_hud:
+            return
+        if self.scheduler.due("motor_hud", PerformansAyarlari.MOTOR_HUD_HZ, dt):
+            Profiler.start("0_motor_hud_update")
+            self.motor_hud.update(self.bilgi_rov_id)
+            Profiler.end("0_motor_hud_update")
+
+    def _profiler_hud_guncelle(self, dt, instant_fps):
+        if not self.ozellikler.profiler_hud:
+            return
+        if self.scheduler.due("profiler_hud", PerformansAyarlari.HUD_HZ, dt):
+            avg = (self.fps_sum / len(self.fps_history)) if self.fps_history else instant_fps
+            self.profiler_hud.update(avg)
+
+    def _sac_guncelle(self, dt):
+        if self.ozellikler.sac_train and self.sac_hud.visible and self.scheduler.due("sac_train", 10.0, dt):
+            mevcut_rov = self.filo.find_rov_by_id(self.bilgi_rov_id)
+            varsayilan_grup_id = getattr(mevcut_rov, "group_id", None)
+            egitim_rovleri = self.filo.sac.canli_egitim_rovleri_al(varsayilan_grup_id=varsayilan_grup_id)
+            if egitim_rovleri:
+                Profiler.start("0_sac_canli_egitim")
+                self.filo.sac.canli_egitim_adimi(rov_id=egitim_rovleri)
+                Profiler.end("0_sac_canli_egitim")
+
+        if self.ozellikler.sac_hud and self.scheduler.due("sac_hud", 10.0, dt):
+            Profiler.start("0_sac_hud_update")
+            self.filo._sac_hud_visible = self.sac_hud.visible
+            self.sac_hud.update()
+            Profiler.end("0_sac_hud_update")
+
+    def _gat_due(self, dt):
+        return bool(self.ozellikler.gat and self.scheduler.due("gat", PerformansAyarlari.GAT_HZ, dt))
+
+    def _filo_guncelle(self, dt):
+        self.tahminler_cache = tahminler_al(self.app, self.tahminler_cache)
+        if not self.ozellikler.gat:
+            self.tahminler_cache.fill(0)
+        guncelle_gorseller = (
+            self.ozellikler.gorseller
+            and self.scheduler.due("gorseller", PerformansAyarlari.GORSELLER_HZ, dt)
+        )
+        guncelle_lider = (
+            self.ozellikler.lider
+            and self.scheduler.due("lider", PerformansAyarlari.LIDER_HZ, dt)
+        )
+        self.filo.guncelle_hepsi(
+            self.tahminler_cache,
+            guncelle_gorseller=guncelle_gorseller,
+            guncelle_lider=guncelle_lider,
+            gat_aktif=self._gat_due(dt),
+            pid_ui_aktif=self.ozellikler.pid_ui,
+            apf_hud_aktif=self.ozellikler.apf_hud,
+            navigasyon_aktif=self.ozellikler.navigasyon,
+            rovler_aktif=self.ozellikler.rovler,
+            alan_tarama_aktif=self.ozellikler.alan_tarama,
+        )
+
+    def _rerun_guncelle(self, dt):
+        if not self.ozellikler.rerun:
+            self.rerun_step += 1
+            return
+        if not self.rerun.sink_busy and self.scheduler.due("rerun", PerformansAyarlari.RERUN_HZ, dt):
+            Profiler.start("0_rerun_sahne_logla")
+            rerun_sahne_logla(app=self.app, filo=self.filo, step=self.rerun_step)
+            Profiler.end("0_rerun_sahne_logla")
+        self.rerun_step += 1
+
+    def guncelle(self):
+        Profiler.enabled = bool(getattr(PerformansAyarlari, "PROFILER_AKTIF", True))
+        Profiler.start("FRAME_TOTAL")
+
+        dt = getattr(utime, "dt", 0) or 0.016
+        instant_fps = self._fps_guncelle(dt)
+
+        self.aktif_rov_secimini_dogrula()
+        self._hud_guncelle(dt)
+        self._motor_hud_guncelle(dt)
+        self._profiler_hud_guncelle(dt, instant_fps)
+        self._sac_guncelle(dt)
+        self._filo_guncelle(dt)
+        self._rerun_guncelle(dt)
+        if self.ozellikler.ui:
+            self.ui.guncelle(self.scheduler, dt)
+
+        Profiler.end("FRAME_TOTAL")
+
+    def girdi_isle(self, key):
+        if key in ("f", "F"):
+            akademik_gorsel_kaydet(self.script_dir)
+        if key in ("m", "M"):
+            self.motor_hud.toggle()
+        if key in ("h", "H"):
+            self.profiler_hud.toggle()
+        if key in ("b", "B"):
+            self.filo.toggle_pid_ui()
+        if key in ("v", "V"):
+            self.rerun.toggle()
+        if key in ("u", "U"):
+            self.ui.toggle()
+        if key in ("e", "E"):
+            sac_hud_toggle(self.filo, self.sac_hud, self.bilgi_rov_id)
+        if key in ("2", "num 2") and self.sac_hud.visible:
+            sonraki_sac_rov(self.filo, self.sac_hud)
+        if key in ("g", "G"):
+            self.bilgi_rov_id, self.aktif_grup_index = sonraki_grup(
+                self.filo,
+                self.bilgi_rov_id,
+                self.aktif_grup_index,
+            )
+        if key == "p":
+            lider_patlat(self.filo, self.bilgi_rov_id)
+        if key == "r":
+            self.bilgi_rov_id = sonraki_rov(self.filo, self.bilgi_rov_id)
+            if not self.filo.rovs:
+                return
+            mevcut_grup = getattr(self.filo.find_rov_by_id(self.bilgi_rov_id), "group_id", None)
+            grup_idleri = aktif_grup_idleri(self.filo)
+            if mevcut_grup in grup_idleri:
+                self.aktif_grup_index = grup_idleri.index(mevcut_grup)
+        if key == "escape":
+            if getattr(self.app, "_ui_minimap_picker", None):
+                ui_minimap_secim_iptal(self.app)
+        if key == "left mouse down":
+            minimap_tiklama_isle(self.app, self.filo, self.bilgi_rov_id)
 
 
 class RerunRecorder:
@@ -101,6 +403,8 @@ def konsol_komutlari_ekle(app, filo):
         if rov is None:
             print(f"⚠️ ROV-{rov_id} bulunamadı.")
             return False
+        if group_id is None or (isinstance(group_id, str) and str(group_id).strip().lower() in ("", "none")):
+            return filo.rov_usye_al(int(rov_id))
         yeni_grup = int(group_id)
         rov.group_id = yeni_grup
         if role is not None:
@@ -109,7 +413,7 @@ def konsol_komutlari_ekle(app, filo):
                 rov._etiket_guncelle()
         if mod is not None and getattr(rov, "gnc", None) is not None:
             rov.gnc.mod = int(mod)
-        if yeni_grup > 0:
+        if yeni_grup >= 0:
             if not isinstance(getattr(filo, "aktif_formasyon", None), dict):
                 filo.aktif_formasyon = {}
             filo.aktif_formasyon.setdefault(
@@ -128,6 +432,7 @@ def konsol_komutlari_ekle(app, filo):
     app.konsola_ekle("get", lambda rov_id, veri_tipi: filo.get(rov_id, veri_tipi))
     app.konsola_ekle("set", lambda rov_id, ayar_adi, deger: filo.set(rov_id, ayar_adi, deger))
     app.konsola_ekle("grup_degistir", grup_degistir)
+    app.konsola_ekle("rov_usye_al", filo.rov_usye_al)
     app.konsola_ekle("Ada", lambda ada_id, x=None, y=None: app.Ada(ada_id, x, y))
     app.konsola_ekle("ROV", lambda rov_id, x=None, y=None, z=None: app.ROV(rov_id, x, y, z))
     app.konsola_ekle("filo", filo)
@@ -243,7 +548,7 @@ class KomutaArayuzu:
                             "gat_kodu": int(getattr(rov, "gat_kodu", 0)),
                             "batarya": round(batarya, 2),
                             "hiz": round(hiz, 2),
-                            "grup_id": int(getattr(rov, "group_id", 0)),
+                            "grup_id": getattr(rov, "group_id", None),
                         }
                     )
                 except Exception:
@@ -251,6 +556,8 @@ class KomutaArayuzu:
 
             gruplar = {}
             for g_id, grup in self.filo.g_rovs.items():
+                if g_id is None:
+                    continue
                 aktif = [
                     int(rov.id)
                     for rov in (grup or [])
@@ -286,6 +593,10 @@ class KomutaArayuzu:
                 "ROV": ROV,
                 "ui_rov_ekle": self.rov_ekle,
                 "ui_rov_cikar": self.rov_cikar,
+                "ui_minimap_secim_baslat": ui_minimap_secim_baslat,
+                "ui_minimap_secim_iptal": ui_minimap_secim_iptal,
+                "ui_minimap_secim_mod_kapat": ui_minimap_secim_mod_kapat,
+                "ui_minimap_gorev_alan_temizle": ui_minimap_gorev_alan_temizle,
                 "grup_degistir": getattr(self.app, "konsol_verileri", {}).get("grup_degistir"),
             }
             yasakli_oruntuler = (
@@ -376,6 +687,8 @@ def aktif_grup_idleri(filo):
     gruplar = []
     try:
         for g_id, grup in filo.g_rovs.items():
+            if g_id is None:
+                continue
             aktif = [rov for rov in (grup or []) if rov and not getattr(rov, "is_destroyed", False)]
             if aktif:
                 gruplar.append(g_id)
@@ -469,14 +782,275 @@ def sonraki_rov(filo, bilgi_rov_id):
     return bilgi_rov_id
 
 
+def minimap_secim_dosya_yolu(app) -> str:
+    script_dir = getattr(app, "_firat_script_dir", None)
+    if not script_dir:
+        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(script_dir, "UI", "_minimap_secim.json")
+
+
+def _minimap_secim_yaz(app, payload: dict):
+    yol = minimap_secim_dosya_yolu(app)
+    payload = {**payload, "timestamp": time.time()}
+    os.makedirs(os.path.dirname(yol), exist_ok=True)
+    tmp = yol + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as dosya:
+        json.dump(payload, dosya, ensure_ascii=False)
+    os.replace(tmp, yol)
+
+
+def ui_minimap_secim_aktif(app) -> bool:
+    """UI harita seçim modu açıkken minimap tıklaması navigasyon/A* tetiklemez."""
+    return getattr(app, "_ui_minimap_picker", None) is not None
+
+
+def _poligon_kapat_yakin_mi(yeni: tuple[float, float], ilk: tuple[float, float], n_kose: int, havuz_gen: float) -> bool:
+    if n_kose < 3:
+        return False
+    esik = max(12.0, float(havuz_gen) * 0.06)
+    return math.hypot(yeni[0] - ilk[0], yeni[1] - ilk[1]) <= esik
+
+
+def _poligon_ozet(noktalar: list) -> tuple[float, float, float, float, float, float]:
+    xs = [float(p[0]) for p in noktalar]
+    ys = [float(p[1]) for p in noktalar]
+    x_min, x_max = min(xs), max(xs)
+    y_min, y_max = min(ys), max(ys)
+    cx = sum(xs) / len(xs)
+    cy = sum(ys) / len(ys)
+    return x_min, y_min, x_max, y_max, cx, cy
+
+
+def minimap_tiklama_to_sim(app, local_pos) -> tuple[float, float] | None:
+    """Minimap yerel tıklamayı simülasyon X,Y (düzlem) koordinatına çevirir."""
+    if local_pos is None:
+        return None
+    havuz = float(getattr(app, "havuz_genisligi", 200) or 200)
+    olcek = havuz * 2.0
+    return float(local_pos.x) * olcek, float(local_pos.y) * olcek
+
+
+def ui_minimap_secim_baslat(app, mod: str = "alan", serit_araligi: float = 15.0):
+    mod = "nokta" if str(mod).strip().lower() == "nokta" else "alan"
+    serit = max(1.0, float(serit_araligi or 15.0))
+    setattr(app, "_ui_minimap_serit_araligi", serit)
+    app._ui_minimap_picker = {"mod": mod, "noktalar": [], "serit_araligi": serit}
+    mm = getattr(app, "minimap", None)
+    if mm is not None:
+        mm.visible = True
+        mm.update_path([])
+        if mod == "alan" and hasattr(mm, "alan_secim_baslat"):
+            mm.alan_secim_baslat()
+    mesaj = (
+        "Minimap: köşeleri tıklayın, kapatmak için 1. noktaya tekrar tıklayın (A* kapalı)"
+        if mod == "alan"
+        else "Minimap: hedef noktaya sol tıklayın (A* kapalı)"
+    )
+    _minimap_secim_yaz(
+        app,
+        {
+            "aktif": True,
+            "tamamlandi": False,
+            "iptal": False,
+            "mod": mod,
+            "noktalar": [],
+            "mesaj": mesaj,
+        },
+    )
+    print(f"🗺️ [UI] Haritadan seçim: {mesaj} (Esc = iptal)")
+
+
+def ui_minimap_gorev_alan_temizle(app):
+    """Aktif görev minimap alan çizimini kaldırır."""
+    mm = getattr(app, "minimap", None)
+    if mm is not None and hasattr(mm, "alan_gorev_temizle"):
+        mm.alan_gorev_temizle()
+    setattr(app, "_ui_minimap_gorev_poligon", None)
+
+
+def ui_minimap_secim_mod_kapat(app):
+    """Seçim modunu kapatır; tamamlanmış alan çizimine dokunmaz (JSON iptal yazmaz)."""
+    app._ui_minimap_picker = None
+    mm = getattr(app, "minimap", None)
+    if mm is not None and hasattr(mm, "alan_secim_gecici_temizle"):
+        mm.alan_secim_gecici_temizle()
+    poligon = getattr(app, "_ui_minimap_gorev_poligon", None)
+    if mm is not None and poligon and hasattr(mm, "alan_gorev_goster"):
+        serit = float(getattr(app, "_ui_minimap_serit_araligi", 15.0) or 15.0)
+        mm.alan_gorev_goster(poligon, serit_araligi=serit)
+    elif mm is not None and hasattr(mm, "alan_gorev_gorsel_yenile"):
+        mm.alan_gorev_gorsel_yenile()
+
+
+def ui_minimap_secim_iptal(app, gorev_gorselini_temizle: bool = False, durum_yaz: bool = True):
+    """Seçimi iptal eder. durum_yaz=False: JSON'a iptal yazmaz (tamamlanmış alan korunur)."""
+    app._ui_minimap_picker = None
+    
+    # Minimap referansını güvenli şekilde al
+    mm = getattr(app, "minimap", None)
+    if not mm and hasattr(app, "ortam_ref"):
+        mm = getattr(app.ortam_ref, "minimap", None)
+
+    if mm is not None:
+        if gorev_gorselini_temizle:
+            # GÖREV DURDURULDUYSA: Hem geçiciyi hem kalıcı altın alanı temizle
+            if hasattr(mm, "alan_gorev_temizle"):
+                mm.alan_gorev_temizle()
+            if hasattr(mm, "alan_secim_gecici_temizle"):
+                mm.alan_secim_gecici_temizle()
+        else:
+            # SEÇİM BİTTİYSE: Sadece fareyle çizilen mavi/geçici noktaları temizle (Altın çokgen kalır)
+            if hasattr(mm, "alan_secim_gecici_temizle"):
+                mm.alan_secim_gecici_temizle()
+                
+        mm.update_path([])
+
+    if gorev_gorselini_temizle:
+        # Mevcut ui_minimap_gorev_alan_temizle çağrınız
+        try:
+            ui_minimap_gorev_alan_temizle(app)
+        except NameError:
+            pass
+
+    if durum_yaz:
+        _minimap_secim_yaz(
+            app,
+            {
+                "aktif": False,
+                "tamamlandi": False,
+                "iptal": True,
+                "mod": None,
+                "noktalar": [],
+                "mesaj": "Seçim iptal edildi.",
+            },
+        )
+        print("🗺️ [UI] Haritadan seçim iptal edildi.")
+
+
+def minimap_ui_secim_isle(app, filo, bilgi_rov_id) -> bool:
+    """Aktif UI seçim modundaysa tıklamayı işler ve True döner."""
+    picker = getattr(app, "_ui_minimap_picker", None)
+    if not picker or not (hasattr(app, "minimap") and mouse.hovered_entity == app.minimap):
+        return False
+
+    sim_xy = minimap_tiklama_to_sim(app, mouse.point)
+    if sim_xy is None:
+        return True
+
+    sx, sy = sim_xy
+    mod = picker.get("mod", "alan")
+    mm = getattr(app, "minimap", None)
+
+    if mod == "nokta":
+        app._ui_minimap_picker = None
+        _minimap_secim_yaz(
+            app,
+            {
+                "aktif": False,
+                "tamamlandi": True,
+                "iptal": False,
+                "mod": "nokta",
+                "x": sx,
+                "y": sy,
+                "merkez_x": sx,
+                "merkez_y": sy,
+                "noktalar": [[sx, sy]],
+                "mesaj": f"Nokta: ({sx:.1f}, {sy:.1f})",
+            },
+        )
+        print(f"🗺️ [UI] Seçilen nokta: X={sx:.1f}  Y={sy:.1f}")
+        return True
+
+    # ── Çokgen alan: köşe ekle veya 1. noktaya dönünce kapat ──
+    havuz = float(getattr(app, "havuz_genisligi", 200) or 200)
+    mevcut = list(picker.get("noktalar") or [])
+
+    if len(mevcut) >= 3 and _poligon_kapat_yakin_mi((sx, sy), tuple(mevcut[0]), len(mevcut), havuz):
+        poligon = mevcut
+        x_min, y_min, x_max, y_max, cx, cy = _poligon_ozet(poligon)
+        app._ui_minimap_picker = None
+        if mm is not None and hasattr(mm, "alan_gorev_goster"):
+            serit = float(picker.get("serit_araligi", getattr(app, "_ui_minimap_serit_araligi", 15.0)) or 15.0)
+            mm.alan_gorev_goster(poligon, serit_araligi=serit)
+            setattr(app, "_ui_minimap_gorev_poligon", poligon)
+            setattr(app, "_ui_minimap_serit_araligi", serit)
+            if hasattr(mm, "alan_gorev_gorsel_yenile"):
+                mm.alan_gorev_gorsel_yenile()
+        _minimap_secim_yaz(
+            app,
+            {
+                "aktif": False,
+                "tamamlandi": True,
+                "iptal": False,
+                "mod": "alan",
+                "x_min": x_min,
+                "y_min": y_min,
+                "x_max": x_max,
+                "y_max": y_max,
+                "merkez_x": cx,
+                "merkez_y": cy,
+                "noktalar": poligon,
+                "mesaj": (
+                    f"Alan merkezi: ({cx:.1f}, {cy:.1f}) | "
+                    f"Tarama kutusu: ({x_min:.0f},{y_min:.0f})–({x_max:.0f},{y_max:.0f})"
+                ),
+            },
+        )
+        print(
+            f"🗺️ [UI] Alan seçildi | merkez=({cx:.1f},{cy:.1f}) | "
+            f"kutu=[{x_min:.1f}–{x_max:.1f}]×[{y_min:.1f}–{y_max:.1f}]"
+        )
+        return True
+
+    mevcut.append([round(sx, 1), round(sy, 1)])
+    picker["noktalar"] = mevcut
+    if mm is not None and hasattr(mm, "alan_secim_ciz"):
+        mm.alan_secim_ciz(mevcut, kapatildi=False)
+
+    if len(mevcut) == 1:
+        mesaj = f"Köşe 1: ({sx:.1f}, {sy:.1f}) — diğer köşeleri tıklayın"
+    elif len(mevcut) == 2:
+        mesaj = f"Köşe {len(mevcut)} eklendi — en az 3 köşe, sonra 1. noktaya tıklayarak kapatın"
+    else:
+        mesaj = (
+            f"Köşe {len(mevcut)} eklendi — alanı kapatmak için "
+            f"1. noktaya ({mevcut[0][0]:.0f}, {mevcut[0][1]:.0f}) tekrar tıklayın"
+        )
+    _minimap_secim_yaz(
+        app,
+        {
+            "aktif": True,
+            "tamamlandi": False,
+            "iptal": False,
+            "mod": "alan",
+            "noktalar": mevcut,
+            "mesaj": mesaj,
+        },
+    )
+    print(f"🗺️ [UI] Köşe {len(mevcut)}: ({sx:.1f}, {sy:.1f})")
+    return True
+
+
+def minimap_tiklama_isle(app, filo, bilgi_rov_id):
+    """Sol tık: önce UI koordinat seçimi, yoksa normal navigasyon hedefi."""
+    if minimap_ui_secim_isle(app, filo, bilgi_rov_id):
+        dirty = getattr(app, "mark_ui_state_dirty", None)
+        if callable(dirty):
+            dirty()
+        return
+    minimap_hedef_ata(app, filo, bilgi_rov_id)
+
+
 def minimap_hedef_ata(app, filo, bilgi_rov_id):
+    if ui_minimap_secim_aktif(app):
+        return
     if not (hasattr(app, "minimap") and mouse.hovered_entity == app.minimap):
         return
-    local_pos = mouse.point
-    if local_pos is None:
+    sim_xy = minimap_tiklama_to_sim(app, mouse.point)
+    if sim_xy is None:
         return
-
-    sim_x, sim_y, mevcut_z = local_pos.x * 400, local_pos.y * 400, -20
+    sim_x, sim_y = sim_xy
+    mevcut_z = -20
     rov = filo.find_rov_by_id(bilgi_rov_id)
     if rov is None:
         return
@@ -524,9 +1098,10 @@ def uygulamayi_calistir(app, rerun_recorder):
         print("\n🛑 Simülasyon durduruldu.")
     finally:
         rerun_recorder.stop_if_recording()
-        try:
-            Profiler.rapor_ver()
-        except Exception:
-            pass
+        if getattr(PerformansAyarlari, "PROFILER_TERMINAL_RAPOR", False):
+            try:
+                Profiler.rapor_ver()
+            except Exception:
+                pass
         os.system("stty sane")
         os._exit(0)

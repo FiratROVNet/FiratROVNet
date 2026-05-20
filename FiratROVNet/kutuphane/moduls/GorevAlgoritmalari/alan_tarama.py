@@ -6,14 +6,13 @@ from typing import Any
 from .ortak import (
     TaramaAlani,
     alan_normalize,
-    gorev_grubu_olustur,
-    idle_grup_rovlari,
+    aktif_grup_rovlari,
     kopma_menzili,
     lider_rov_bul,
     rov_gorev_ata,
     rov_gorev_bosalt,
 )
-from ..rov_deger_onerisi import GorevHedefi, en_iyi_rovlari_sec
+from ..rov_deger_onerisi import GorevHedefi
 from ....config import AlanTaramaAyarlari
 
 
@@ -30,6 +29,12 @@ class AlanTaramaPlani:
     kaynak_grup_id: int | None = None
     yaklasma_hedefi: tuple[float, float, float] | None = None
     asama: str = field(default=AlanTaramaAyarlari.ASAMA)
+    # Lider taramanın başladığı konum — görev tamamlanınca geri dönülür
+    baslangic_konum: tuple[float, float] | None = None
+    # True → her ROV kendi şeridini bağımsız tarar (arama_kurtarma modu)
+    herkese_rota: bool = False
+    # True → rota bitince durmadan baştan tekrar başlat (sonsuz devriye)
+    surekli_tarama: bool = False
 
 
 class AlanTaramaGorevi:
@@ -41,9 +46,15 @@ class AlanTaramaGorevi:
     ayni formasyon birden fazla bantta gezdirilir.
     """
 
+    # Sonsuz yaklasma bekleme problemi icin zaman asimi (saniye)
+    _YAKLASMA_TIMEOUT_SN: float = 120.0
+    # A* cagrisinin verimli kalmasi icin maksimum waypoint sayisi
+    _A_STAR_MAKS_WAYPOINT: int = 30
+
     def __init__(self, filo_ref):
         self.filo = filo_ref
         self.aktif_planlar: dict[int, AlanTaramaPlani] = {}
+        self._yaklasma_sure: dict[int, float] = {}  # {grup_id: baslangic_zaman}
 
     def plan_olustur(
         self,
@@ -57,17 +68,28 @@ class AlanTaramaGorevi:
         gorev_adi: str = "alan_tarama",
     ) -> AlanTaramaPlani:
         tarama_alani = alan_normalize(alan, z=derinlik)
-        hedef_bilgisi = GorevHedefi(gorev_adi=gorev_adi, grup_id=grup_id, alan=tarama_alani)
-        if gereken_rov_sayisi is None:
-            gereken_rov_sayisi = len(idle_grup_rovlari(self.filo, grup_id))
-        rovs = en_iyi_rovlari_sec(self.filo, hedef_bilgisi, gereken_rov_sayisi=gereken_rov_sayisi)
+
+        # filo.g_rovs grup_id=0'ı otomatik olarak 1'e taşır (numaralandırma 1'den başlar).
+        # Kullanıcı grup_id=0 verirse mevcut ilk gruba yönlendir.
+        if grup_id == 0 and not aktif_grup_rovlari(self.filo, 0):
+            mevcut = sorted(k for k in self.filo.g_rovs.keys() if k > 0)
+            if mevcut:
+                grup_id = mevcut[0]
+
+        # Grup rovlarını doğrudan al — lider (role=1) dahil.
+        # en_iyi_rovlari_sec rol_carpani=0.0 ile lideri devre dışı bırakıyordu;
+        # gorev_grubu_olustur group_id'leri değiştirip UI grubunu bozuyordu.
+        rovs: list[Any] = aktif_grup_rovlari(self.filo, grup_id)
+        if gereken_rov_sayisi is not None and int(gereken_rov_sayisi) > 0:
+            rovs = rovs[:int(gereken_rov_sayisi)]
         if not rovs:
-            raise ValueError(f"Grup-{grup_id} icin idle durumda ROV bulunamadi.")
+            mevcut_gruplar = sorted(k for k in self.filo.g_rovs.keys() if k > 0)
+            raise ValueError(
+                f"Grup-{grup_id} için ROV bulunamadı. "
+                f"Mevcut gruplar: {mevcut_gruplar or 'yok — ROVları önce gruba atayın.'}"
+            )
 
         kaynak_grup_id = grup_id
-        gorev_grup_id = gorev_grubu_olustur(self.filo, rovs)
-        if gorev_grup_id is not None:
-            grup_id = gorev_grup_id
 
         lider = lider_rov_bul(self.filo, grup_id, rovs)
         lider_id = int(getattr(lider, "id", rovs[0].id)) if lider else int(rovs[0].id)
@@ -122,6 +144,8 @@ class AlanTaramaGorevi:
         gereken_rov_sayisi: int | None = None,
         gorev_adi: str = "alan_tarama",
         bagimsiz_mod: bool = True,
+        herkese_rota: bool = False,
+        surekli_tarama: bool = False,
         sessiz: bool = True,
     ) -> AlanTaramaPlani:
         plan = self.plan_olustur(
@@ -134,12 +158,22 @@ class AlanTaramaGorevi:
             gereken_rov_sayisi=gereken_rov_sayisi,
             gorev_adi=gorev_adi,
         )
+        plan.herkese_rota = herkese_rota
+        plan.surekli_tarama = surekli_tarama
+        # Aynı grup için aktif plan varsa temiz kapat — ROVlar orphan kalmasın
+        if grup_id in self.aktif_planlar:
+            try:
+                self.durdur(grup_id, lideri_takip_et=False, gorselleri_koru=True)
+            except Exception:
+                pass
         self.aktif_planlar[grup_id] = plan
+        self._yaklasma_sure[grup_id] = 0.0  # zaman sayacını sıfırla
         self._yaklasma_baslat(plan, sessiz=sessiz)
         return plan
 
-    def durdur(self, grup_id: int, lideri_takip_et: bool = True) -> None:
+    def durdur(self, grup_id: int, lideri_takip_et: bool = True, gorselleri_koru: bool = False) -> None:
         plan = self.aktif_planlar.pop(grup_id, None)
+        self._yaklasma_sure.pop(grup_id, None)  # zaman sayacını temizle
         if not plan:
             return
         try:
@@ -148,6 +182,9 @@ class AlanTaramaGorevi:
             pass
         for rov_id in plan.rota_by_rov:
             rov_gorev_bosalt(self.filo, rov_id, lideri_takip_et=lideri_takip_et)
+        if not gorselleri_koru:
+            from FiratROVNet.kutuphane.moduls.GorevAlgoritmalari.ortak import minimap_gorev_alanini_temizle
+            minimap_gorev_alanini_temizle(self.filo)
 
     def guncelle(self, grup_id: int | None = None, lideri_takip_et: bool = True) -> list[int]:
         """Rotasi biten plan ROV'larini idle'a alir. Donus: biten grup idleri."""
@@ -156,22 +193,52 @@ class AlanTaramaGorevi:
         for p_grup_id, plan in planlar:
             if grup_id is not None and p_grup_id != grup_id:
                 continue
+                
+            self._plan_liderini_sabitle(plan)
+            
             tamamlandi = True
             if plan.asama == "yaklasma":
-                self._plan_liderini_sabitle(plan)
-                if self._yaklasma_tamamlandi_mi(plan):
+                # Yaklasma zaman sayacını güncelle
+                try:
+                    from ursina import time as _u_time
+                    self._yaklasma_sure[p_grup_id] = (
+                        self._yaklasma_sure.get(p_grup_id, 0.0) + (_u_time.dt or 0.016)
+                    )
+                except Exception:
+                    pass
+                # Zaman aşımı: ROV hedefe ulaşamadıysa taramayı zorla başlat
+                asimi = self._yaklasma_sure.get(p_grup_id, 0.0) >= self._YAKLASMA_TIMEOUT_SN
+                if self._yaklasma_tamamlandi_mi(plan) or asimi:
+                    if asimi and not self._yaklasma_tamamlandi_mi(plan):
+                        print(f"⚠️ [ALAN_TARAMA] Grup-{p_grup_id} yaklasma zaman asimi ({self._YAKLASMA_TIMEOUT_SN:.0f}s) — tarama zorla baslatiliyor.")
+                    self._yaklasma_sure.pop(p_grup_id, None)
                     self._tarama_baslat(plan, lideri_bagimsiz_yap=True, sessiz=False)
                 continue
-            for rov_id in plan.rota_by_rov:
-                if not self._rov_tarama_bitti_mi(rov_id):
-                    tamamlandi = False
-                    break
+            # herkese_rota=True ise dışarıdan (AramaKurtarmaGorevi) yönetilir — burada bitirme
+            if plan.herkese_rota:
+                continue
+            # Tarama bitimi: sadece lider rotasını tamamladı mı? Takipçiler formasyonda zaten.
+            kontrol_rov = plan.lider_id if plan.lider_id is not None else next(iter(plan.rota_by_rov), None)
+            if kontrol_rov is None or not self._rov_tarama_bitti_mi(kontrol_rov):
+                tamamlandi = False
             if tamamlandi:
-                self.durdur(p_grup_id, lideri_takip_et=lideri_takip_et)
-                biten_gruplar.append(p_grup_id)
+                if plan.surekli_tarama:
+                    # Sonsuz devriye: rota bitince baştan tekrar başlat, durdurma
+                    self._tarama_baslat(plan, lideri_bagimsiz_yap=False, sessiz=True)
+                else:
+                    self.durdur(p_grup_id, lideri_takip_et=lideri_takip_et)
+                    biten_gruplar.append(p_grup_id)
         return biten_gruplar
 
     def _yaklasma_baslat(self, plan: AlanTaramaPlani, sessiz: bool) -> None:
+        # Liderin mevcut konumunu başlangıç noktası olarak kaydet (görev bitince geri döner)
+        if plan.lider_id is not None and plan.baslangic_konum is None:
+            try:
+                gps = self.filo.get(plan.lider_id, "gps")
+                plan.baslangic_konum = (float(gps[0]), float(gps[1]))
+            except Exception:
+                plan.baslangic_konum = None
+
         hedef_bilgisi = GorevHedefi(gorev_adi=plan.gorev_adi, grup_id=plan.grup_id, alan=plan.alan)
         for rov_id in plan.rota_by_rov:
             rov = self.filo.find_rov_by_id(rov_id)
@@ -180,20 +247,39 @@ class AlanTaramaGorevi:
             eski_gorev = str(getattr(getattr(rov, "gnc", None), "gorev", "idle") or "idle")
             if eski_gorev != "idle" and eski_gorev != plan.gorev_adi:
                 rov_gorev_bosalt(self.filo, rov_id, lideri_takip_et=False)
-            rov_gorev_ata(rov, plan.gorev_adi, mod=1, gorev_hedef=hedef_bilgisi)
+            # Lider bağımsız hareket eder (mod=0), takipçiler formasyonu takip eder (mod=1)
+            lider_mi = (rov_id == plan.lider_id)
+            rov_gorev_ata(rov, plan.gorev_adi, mod=(0 if lider_mi else 1), gorev_hedef=hedef_bilgisi)
 
+        # formasyon_sec(dinamik=True) ÇAĞRILMIYOR — arka plan thread'inden çağrılırsa
+        # done_event.wait(10s) ile bloklar → Ursina frame loop durur → "bağlantı yok".
+        # Bunun yerine aktif_formasyon[g_id]'yi doğrudan set ediyoruz (ağır hull hesabı yok).
+        # Mevcut formasyon varsa koru; yoksa varsayılan LINE ata → takipçiler mod=1 ile çalışır.
         try:
-            self.filo.formasyon_sec(g_id=plan.grup_id, dinamik=True, sessiz=sessiz)
-        except Exception as exc:
-            if not sessiz:
-                print(f"⚠️ [ALAN_TARAMA] Formasyon secilemedi: {exc}")
+            af = getattr(self.filo, "aktif_formasyon", None)
+            if not isinstance(af, dict):
+                self.filo.aktif_formasyon = {}
+                af = self.filo.aktif_formasyon
+            if not af.get(plan.grup_id):
+                af[plan.grup_id] = {
+                    "id": "LINE", "aralik": 10, "is_3d": False,
+                    "yaw": 0, "g_id": plan.grup_id,
+                }
+        except Exception:
+            pass
 
         if plan.lider_id is not None and plan.yaklasma_hedefi is not None:
-            self._plan_liderini_sabitle(plan)
+            # _plan_liderini_sabitle burada kasıtlı olarak ÇAĞRILMIYOR.
+            # Çağrılırsa rov.role değişir → UI _sim_statine_gore_yerlestir tetikler
+            # → _lider_kaldir tüm grubu yok eder → "siliyor sonra yüklüyor" görünür.
+            # guncelle() zaten her frame yaklasma aşamasında _plan_liderini_sabitle
+            # çağırır; roller 1 tick içinde kendiliğinden düzelir.
             self.filo.git_path(plan.lider_id, plan.yaklasma_hedefi, ai=True, isaret=True)
         plan.asama = "yaklasma"
 
     def _yaklasma_tamamlandi_mi(self, plan: AlanTaramaPlani) -> bool:
+        # Sadece liderin yaklaşma noktasına varması yeterli — takipçi formasyon
+        # bekleme koşulu taramayı süresiz blokluyor.
         if plan.lider_id is None:
             return True
         lider = self.filo.find_rov_by_id(plan.lider_id)
@@ -201,10 +287,7 @@ class AlanTaramaGorevi:
             return self._rov_tarama_bitti_mi(plan.lider_id)
         try:
             gps = self.filo.get(plan.lider_id, "gps")
-            lider_vardi = self._lider_yaklasma_hedefine_vardi(plan, gps)
-            if not lider_vardi:
-                return False
-            return self._takipciler_formasyona_yakin_mi(plan)
+            return self._lider_yaklasma_hedefine_vardi(plan, gps)
         except Exception:
             return self._rov_tarama_bitti_mi(plan.lider_id)
 
@@ -289,35 +372,112 @@ class AlanTaramaGorevi:
         return True
 
     def _tarama_baslat(self, plan: AlanTaramaPlani, lideri_bagimsiz_yap: bool, sessiz: bool) -> None:
-        plan.asama = "tarama"
+        # Grup birlikte tarar: lider rotayı alır (mod=0), takipçiler formasyonu korur (mod=1).
+        # Formasyon silinmez — takipçiler lideri formasyonda takip eder, grup dağılmaz.
         self._plan_liderini_sabitle(plan)
-        try:
-            self.filo.aktif_formasyon[plan.grup_id] = None
-        except Exception:
-            pass
         if not sessiz:
-            print(f"✅ [ALAN_TARAMA] Grup-{plan.grup_id} yaklaşma tamamlandı, bağımsız tarama başlatılıyor.")
-        for rov_id, rota in plan.rota_by_rov.items():
-            if not rota:
-                continue
+            print(f"✅ [ALAN_TARAMA] Grup-{plan.grup_id} yaklaşma tamamlandı, grup taraması başlatılıyor.")
+        hedef_bilgisi = GorevHedefi(gorev_adi=plan.gorev_adi, grup_id=plan.grup_id, alan=plan.alan)
+
+        # ── Herkese rota modu (arama_kurtarma): tüm ROVlar bağımsız şeritlerini A* ile tarar ──
+        if plan.herkese_rota:
+            # Formasyonu kapat — herkes bağımsız hareket edecek
+            try:
+                af = getattr(self.filo, "aktif_formasyon", None)
+                if isinstance(af, dict):
+                    af[plan.grup_id] = None
+            except Exception:
+                pass
+            for rov_id in plan.rota_by_rov:
+                rov = self.filo.find_rov_by_id(rov_id)
+                if not rov:
+                    continue
+                rov_gorev_ata(rov, plan.gorev_adi, mod=0, gorev_hedef=hedef_bilgisi)
+                rov_rota = plan.rota_by_rov.get(rov_id)
+                if not rov_rota:
+                    continue
+                try:
+                    gps = self.filo.get(rov_id, "gps")
+                    bslngc: tuple[float, float] = (float(gps[0]), float(gps[1]))
+                except Exception:
+                    bslngc = (float(rov_rota[0][0]), float(rov_rota[0][1]))
+                genisletilmis = self._a_star_rota_genislet(bslngc, rov_rota, plan.derinlik)
+                self.filo.git(rov_id, genisletilmis, z=plan.derinlik, ai=True, sessiz=sessiz)
+            plan.asama = "tarama"
+            return
+
+        lider_rota = plan.rota_by_rov.get(plan.lider_id) if plan.lider_id is not None else None
+        for rov_id in plan.rota_by_rov:
             rov = self.filo.find_rov_by_id(rov_id)
             if not rov:
                 continue
-            hedef_bilgisi = GorevHedefi(gorev_adi=plan.gorev_adi, grup_id=plan.grup_id, alan=plan.alan)
-            rov_gorev_ata(rov, plan.gorev_adi, mod=0, gorev_hedef=hedef_bilgisi)
-            self.filo.git(rov_id, rota, z=plan.derinlik, ai=True, sessiz=sessiz)
+            lider_mi = (rov_id == plan.lider_id)
+            if lider_mi and lider_rota:
+                # Lider: bağımsız mod, A* ile engel-kaçınmalı genişletilmiş rota
+                rov_gorev_ata(rov, plan.gorev_adi, mod=0, gorev_hedef=hedef_bilgisi)
+
+                # Liderin mevcut konumunu al (yaklaşma sonrası)
+                try:
+                    gps = self.filo.get(rov_id, "gps")
+                    baslangic_2d: tuple[float, float] = (float(gps[0]), float(gps[1]))
+                except Exception:
+                    baslangic_2d = (
+                        float(plan.yaklasma_hedefi[0]) if plan.yaklasma_hedefi else 0.0,
+                        float(plan.yaklasma_hedefi[1]) if plan.yaklasma_hedefi else 0.0,
+                    )
+
+                # A* ile engel-kaçınmalı rota genişlet
+                if not sessiz:
+                    print(f"🔍 [ALAN_TARAMA] A* rota genişletiliyor ({len(lider_rota)} waypoint)…")
+                genisletilmis = self._a_star_rota_genislet(baslangic_2d, lider_rota, plan.derinlik)
+                if not sessiz:
+                    print(f"✅ [ALAN_TARAMA] Genişletilmiş rota: {len(genisletilmis)} waypoint")
+
+                # Görev tamamlanınca başlangıç noktasına dön (surekli_tarama=True ise atla)
+                if plan.baslangic_konum is not None and not plan.surekli_tarama:
+                    son_nokta = genisletilmis[-1] if genisletilmis else baslangic_2d
+                    ev_rota = self._a_star_rota_genislet(
+                        son_nokta, [plan.baslangic_konum], plan.derinlik
+                    )
+                    genisletilmis.extend(ev_rota)
+                    if not sessiz:
+                        print(f"🏠 [ALAN_TARAMA] Eve dönüş yolu eklendi → {plan.baslangic_konum}")
+
+                self.filo.git(rov_id, genisletilmis, z=plan.derinlik, ai=True, sessiz=sessiz)
+            else:
+                # Takipçi: formasyon modu (mod=1), lider peşinde kalır — grup dağılmaz
+                rov_gorev_ata(rov, plan.gorev_adi, mod=1, gorev_hedef=hedef_bilgisi)
+        # Lider git() çağrısı yapıldıktan sonra aşamayı değiştir.
+        plan.asama = "tarama"
 
     def _plan_liderini_sabitle(self, plan: AlanTaramaPlani) -> None:
         if plan.lider_id is None:
             return
+            
+        lider_rov = self.filo.find_rov_by_id(plan.lider_id)
+        if lider_rov is None or (hasattr(lider_rov, 'is_destroyed') and lider_rov.is_destroyed):
+            leader_manager = getattr(self.filo, "leader_manager", None)
+            if leader_manager is not None and hasattr(leader_manager, "mevcut_lider_id"):
+                yeni_lider_id = leader_manager.mevcut_lider_id.get(plan.grup_id, -1)
+                if yeni_lider_id >= 0 and yeni_lider_id != plan.lider_id:
+                    if plan.lider_id in plan.rota_by_rov:
+                        rota = plan.rota_by_rov.pop(plan.lider_id)
+                        plan.rota_by_rov[yeni_lider_id] = rota
+                    plan.lider_id = yeni_lider_id
+            return
+            
         for rov_id in plan.rota_by_rov:
             rov = self.filo.find_rov_by_id(rov_id)
             if rov is None:
                 continue
+            beklenen_rol = 1 if rov_id == plan.lider_id else 0
+            # Zaten doğruysa atla — gereksiz rov.role değişimi UI cascade'i tetikler
+            if int(getattr(rov, "role", 0)) == beklenen_rol:
+                continue
             try:
-                rov.set("rol", 1 if rov_id == plan.lider_id else 0)
+                rov.set("rol", beklenen_rol)
             except Exception:
-                rov.role = 1 if rov_id == plan.lider_id else 0
+                rov.role = beklenen_rol
         leader_manager = getattr(self.filo, "leader_manager", None)
         if leader_manager is not None and hasattr(leader_manager, "mevcut_lider_id"):
             try:
@@ -335,3 +495,38 @@ class AlanTaramaGorevi:
             return raw
         scale = limit / max_abs
         return [v * scale for v in raw]
+
+    def _a_star_rota_genislet(
+        self,
+        baslangic: tuple[float, float],
+        rota: list[tuple[float, float]],
+        derinlik: float,
+    ) -> list[tuple[float, float]]:
+        """
+        Ham lawnmower rota waypoint'leri arasını A* ile engel-kaçınmalı
+        alt-patikalarla doldurur. Dönen liste düzleştirilmiş (x, y) waypoint listesi.
+        A* yoksa veya başarısız olursa orijinal rotayı düz döner.
+        Performans: rota waypoint sayısı _A_STAR_MAKS_WAYPOINT üzerindeyse A* atlanır.
+        """
+        helper = getattr(self.filo, "helper", None)
+        if helper is None or not hasattr(helper, "_a_star_path_planla"):
+            return list(rota)
+        # Çok uzun rotalarda A* çağrısı frame drop yapar — doğrudan döndür
+        if len(rota) > self._A_STAR_MAKS_WAYPOINT:
+            return list(rota)
+
+        genisletilmis: list[tuple[float, float]] = []
+        onceki = baslangic
+        for hedef in rota:
+            h = (float(hedef[0]), float(hedef[1]))
+            try:
+                alt_yol = helper._a_star_path_planla(onceki, h, duzlem_z=derinlik)
+                if alt_yol and len(alt_yol) > 1:
+                    # İlk nokta zaten önceki konumda — atla, fazla düğüm ekleme
+                    genisletilmis.extend((float(p[0]), float(p[1])) for p in alt_yol[1:])
+                else:
+                    genisletilmis.append(h)
+            except Exception:
+                genisletilmis.append(h)
+            onceki = h
+        return genisletilmis

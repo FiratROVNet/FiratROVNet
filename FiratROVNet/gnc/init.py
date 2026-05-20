@@ -268,9 +268,14 @@ class FiloInitMixin:
             if not self._rov_aktif_mi(rov):
                 continue
 
+            rov_id = getattr(rov, "id", idx)
+            detay = bool(getattr(PerformansAyarlari, "PROFILER_ROV_DETAY", True))
+            rov_total_name = f"4_rov_total/ROV-{rov_id}" if detay else "4_rov_total"
+            Profiler.start(rov_total_name)
             gat_kodu = int(tahminler[idx]) if idx < tahmin_len else 0  # type: ignore[index]
 
             try:
+                Profiler.start("4a_rov_physics_state")
                 p = rov.physics_np.getPos()
 
                 if not (
@@ -310,25 +315,38 @@ class FiloInitMixin:
                         rov.physics_node.setLinearVelocity(Vec3(0, 0, 0))
                         v = Vec3(0, 0, 0)
                     rov.velocity = Vec3(v.x, v.y, v.z)
+                Profiler.end("4a_rov_physics_state")
             except Exception:
+                Profiler.end("4a_rov_physics_state")
+                Profiler.end(rov_total_name)
                 continue
 
             joule_esigi = 120.0
+            Profiler.start("4b_rov_hasar_kontrol")
             state = self.damage_system.rov_hasar_kontrol_direct(rov, joule_esigi=joule_esigi)
+            Profiler.end("4b_rov_hasar_kontrol")
             if state:
+                Profiler.end(rov_total_name)
                 self.entity_patlat(rov, parca_sayisi=80)
                 continue
 
             try:
                 if hasattr(rov, "_guncelle_sensorler"):
                     Profiler.start("13_rov._guncelle_sensorler()")
+                    if detay:
+                        Profiler.start(f"13_sensor/ROV-{rov_id}")
                     rov._guncelle_sensorler()
+                    if detay:
+                        Profiler.end(f"13_sensor/ROV-{rov_id}")
                     Profiler.end("13_rov._guncelle_sensorler()")
             except Exception as e:
                 if "!is_empty()" not in str(e):
                     print(f"⚠️ [FİLO] ROV-{rov.id} Sensör Hatası: {e}")
+                if detay:
+                    Profiler.end(f"13_sensor/ROV-{rov_id}")
                 Profiler.end("13_rov._guncelle_sensorler()")
 
+            Profiler.start("4c_rov_batarya_limit")
             try:
                 if hasattr(rov, "velocity") and rov.velocity and rov.velocity.length() > 0.01:
                     rov.battery -= FizikSabitleri.BATARYA_SOMURME_KATSAYISI * dt
@@ -342,16 +360,25 @@ class FiloInitMixin:
                     rov.y = sea_floor_y
             except Exception:
                 pass
+            Profiler.end("4c_rov_batarya_limit")
 
             try:
                 if hasattr(rov, "gnc") and rov.gnc:
                     Profiler.start("14_rov.gnc.guncelle(gat_kodu=gat_kodu)")
+                    if detay:
+                        Profiler.start(f"14_gnc/ROV-{rov_id}")
                     rov.gnc.guncelle(gat_kodu=gat_kodu)
+                    if detay:
+                        Profiler.end(f"14_gnc/ROV-{rov_id}")
                     Profiler.end("14_rov.gnc.guncelle(gat_kodu=gat_kodu)")
             except Exception as e:
                 if "!is_empty()" not in str(e):
                     print(f"⚠️ [FİLO] ROV-{rov.id} GNC Hatası: {e}")
+                if detay:
+                    Profiler.end(f"14_gnc/ROV-{rov_id}")
+                Profiler.end("14_rov.gnc.guncelle(gat_kodu=gat_kodu)")
                 LogSystem.log_exception(e)
+            Profiler.end(rov_total_name)
 
     def _tick_sistem_guncellemeleri(self, guncelle_gorseller: bool):
         """Queued commands + sonar/minimap + obstacle cloud."""

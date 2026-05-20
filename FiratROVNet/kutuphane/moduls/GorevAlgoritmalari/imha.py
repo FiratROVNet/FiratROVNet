@@ -100,7 +100,8 @@ class ImhaGorevi:
                     return ImhaSonucu(False, tespit=tespit, mesaj="Tespit yapan ROV bulunamadi.")
                 gps = self.filo.get(tespit.rov_id, "gps")
                 z = float(gps[2]) if gps is not None and len(gps) >= 3 else -20.0
-                self.hedef = (float(rov.x), float(rov.z), z)
+                # GPS sim koordinatlarını kullan (rov.x/rov.z Ursina koordinatı olduğundan karışıklık çıkar)
+                self.hedef = (float(gps[0]), float(gps[1]), z)
                 self.hedef_entity = None
                 rov_gorev_ata(rov, "imha", mod=0, gorev_hedef=GorevHedefi(gorev_adi="imha", koordinat=self.hedef))
                 self.filo.git(tespit.rov_id, self.hedef[0], self.hedef[1], self.hedef[2], ai=True, sessiz=True)
@@ -123,14 +124,17 @@ class ImhaGorevi:
         self.durdur(lideri_takip_et=True)
         return sonuc
 
-    def durdur(self, lideri_takip_et: bool = True) -> None:
-        self.arama.durdur(lideri_takip_et=lideri_takip_et)
+    def durdur(self, lideri_takip_et: bool = True, gorselleri_koru: bool = False) -> None:
+        self.arama.durdur(lideri_takip_et=lideri_takip_et, gorselleri_koru=gorselleri_koru)
         if self.gorevli_rov_id is not None:
             rov_gorev_bosalt(self.filo, self.gorevli_rov_id, lideri_takip_et=lideri_takip_et)
         self.hedef = None
         self.gorevli_rov_id = None
         self.tespit = None
         self.hedef_entity = None
+        if not gorselleri_koru:
+            from FiratROVNet.kutuphane.moduls.GorevAlgoritmalari.ortak import minimap_gorev_alanini_temizle
+            minimap_gorev_alanini_temizle(self.filo)
 
     def _en_yakin_rov(self, grup_id: int, hedef: tuple[float, float, float]):
         adaylar = en_iyi_rovlari_sec(

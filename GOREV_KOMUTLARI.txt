@@ -1,0 +1,422 @@
+================================================================
+  FiratROVNet — GÖREV KOMUTLARI REFERANS KILAVUZU
+  Konsol'da `filo` objesi üzerinden çalışır.
+  Koordinat sistemi: X=sağ, Y=ileri, Z=derinlik (negatif = aşağı)
+================================================================
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  HIZLI BAŞLANGIÇ — SIK KULLANILAN KOMUTLAR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  filo.rovs                          # Tüm ROV listesini göster
+  filo.g_rovs                        # Grupları göster: {grup_id: [rov, ...]}
+  filo.find_rov_by_id(0)             # ID ile ROV nesnesini bul
+
+  filo.get(0, "gps")                 # ROV-0 konumu → (x, y, z)
+  filo.get(0, "batarya")             # ROV-0 pil durumu → 0.0–1.0
+  filo.get(0, "hiz")                 # ROV-0 hızı → (vx, vy, vz)
+  filo.get(0, "rol")                 # ROV-0 rolü → 0=takipçi, 1=lider
+
+  filo.git(0, 100, 50, -20)          # ROV-0'ı (100, 50, -20)'ye gönder
+  filo.move(0, "ileri", 0.8)         # ROV-0'ı ileri it (guc: 0.0–1.0)
+
+  # Tüm ROV'ların pozisyonunu listele
+  for r in filo.rovs:
+      print(r.id, filo.get(r.id, "gps"))
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BÖLÜM 1 — GRUP YÖNETİMİ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Bir ROV'un görev durumunu öğren
+  filo.rovs[0].gnc.gorev             # → "idle", "alan_tarama", "imha" vb.
+
+  # Takipçi modunu değiştir
+  #   new_mode=1 → takipçiler liderle birlikte hareket eder
+  #   new_mode=0 → takipçiler bağımsız (APF devrede)
+  filo.change_mode(g_id=0, new_mode=1)   # Grup-0 takipçileri lidere bağla
+  filo.change_mode(g_id=0, new_mode=0)   # Grup-0 takipçilerini serbest bırak
+
+  # Bir ROV'un rolünü değiştir (1=lider, 0=takipçi)
+  filo.rovs[0].role = 1              # ROV-0'ı lider yap
+  filo.rovs[3].role = 0              # ROV-3'ü takipçi yap
+
+  # Lider bilgisini al
+  lider_id, lider_gps = filo.find_leader_info(g_id=0)
+  print("Lider:", lider_id, "→", lider_gps)
+
+  # ROV'u idle durumuna döndür (görevi bırak)
+  filo.alan_tarama_gorevi.durdur(grup_id=0)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BÖLÜM 2 — HAREKET VE NAVIGASYON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ── Tek Nokta ──────────────────────────────────────────────────
+
+  filo.git(rov_id=0, x=100, y=50, z=-20)       # ROV-0'ı hedefe gönder
+  filo.git(0, 100, 50, -20, ai=True)            # ai=True → GAT tabanlı yol planlaması
+  filo.git(0, 100, 50, -20, ai=False)           # ai=False → düz APF hareketi
+  filo.git(0, 50, 50)                           # z verilmezse mevcut derinlik korunur
+
+  # ROV-0'ı başka bir ROV'un konumuna gönder
+  filo.git(0, 1, "rov")                         # ROV-0 → ROV-1'in pozisyonuna git
+
+  ── Çoklu Waypoint ─────────────────────────────────────────────
+
+  # Rota listesiyle gönderin — ROV sırayla her noktaya uğrar
+  filo.git(0, [(0,0), (100,0), (100,100), (0,100)], z=-20, ai=True)
+
+  ── Grubu Hedefe Gönder ────────────────────────────────────────
+
+  # Tüm grup-0 ROV'larını hedefe gönder (lider önce, takipçiler arkasında)
+  filo.git_grup(grup_id=0, x=100, y=100, z=-15, ai=True)
+
+  ── Manuel Motor Komutu ────────────────────────────────────────
+
+  # Yönler: ileri, geri, sağ, sol, çık (yüzey), bat (derine), dur
+  filo.move(0, "ileri", 0.8)         # ROV-0 ileri, %80 güç
+  filo.move(0, "bat",   1.0)         # ROV-0 tam güçle derine bat
+  filo.move(0, "dur",   0.0)         # ROV-0 dur
+
+  ── Derinlik Komutu ────────────────────────────────────────────
+
+  # ROV-0'ın x,y konumunu koruyarak sadece derinliği değiştir
+  filo.bat_gps(rov_id=0, z=-30)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BÖLÜM 3 — FORMASYON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ── Kullanılabilir Formasyon İsimleri ──────────────────────────
+
+  LINE      Tek sıra
+  COLUMN    Sütun (art arda)
+  V_SHAPE   V şekli (kuş uçuşu)
+  WEDGE     Kama
+  TRIANGLE  Üçgen
+  CROSS     Haç
+  SPREAD    Yayılım (geniş alan)
+  STAR      Yıldız
+  HEXAGON   Altıgen
+  WAVE      Dalga
+  SPIRAL    Spiral
+  TSHAPE    T şekli
+
+  ── Temel Kullanım ─────────────────────────────────────────────
+
+  filo.formasyon("LINE",     aralik=15, g_id=0)
+  filo.formasyon("V_SHAPE",  aralik=20, g_id=0)
+  filo.formasyon("SPREAD",   aralik=40, g_id=0)  # Geniş tarama için
+  filo.formasyon("TRIANGLE", aralik=15, g_id=0)
+
+  # 3D formasyon (Z ekseninde de yayılım)
+  filo.formasyon("LINE", aralik=15, is_3d=True, g_id=0)
+
+  ── Otomatik Formasyon Seçimi ───────────────────────────────────
+
+  # Convex hull bazlı en uygun formasyon seçilir
+  filo.formasyon_sec()                           # Varsayılan grup
+  filo.formasyon_sec(g_id=1)                     # Grup-1 için
+
+  ── Pratik Örnekler ────────────────────────────────────────────
+
+  # Grup-0'ı kama formasyonuna sok, lider hedefe gitsin, takipçiler takip etsin
+  filo.formasyon("WEDGE", aralik=15, g_id=0)
+  filo.change_mode(g_id=0, new_mode=1)
+  filo.git(0, 100, 50, -20, ai=True)
+
+  # İki grup farklı formasyon alsın
+  filo.formasyon("V_SHAPE", aralik=15, g_id=0)
+  filo.formasyon("COLUMN",  aralik=12, g_id=1)
+
+  # Geniş alana yayıl, bağımsız hareket
+  filo.formasyon("SPREAD", aralik=40, g_id=0)
+  filo.change_mode(g_id=0, new_mode=0)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BÖLÜM 4 — ALAN TARAMA GÖREVİ
+  (Boustrophedon / Lawn-mower — paralel şeritlerle zigzag tarama)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ── Temel Kullanım ─────────────────────────────────────────────
+
+  # Grup-0 ile (0,0)–(200,200) alanını varsayılan ayarlarla tara
+  filo.alan_tarama_gorevi.baslat(grup_id=0, alan=(0, 0, 200, 200))
+
+  ── Tüm Parametreler ───────────────────────────────────────────
+
+  filo.alan_tarama_gorevi.baslat(
+      grup_id            = 0,              # Hangi grup tarasın
+      alan               = (0, 0, 200, 200),  # (x_min, y_min, x_max, y_max)
+      derinlik           = -20.0,          # Tarama derinliği (metre, negatif)
+      serit_araligi      = 15.0,           # Paralel şeritler arası mesafe (m)
+      iletisim_menzili   = None,           # None → config'den GATLimitleri.KOPMA alır
+      gereken_rov_sayisi = None,           # None → gruptaki tüm idle ROV'lar
+      gorev_adi          = "alan_tarama",
+      sessiz             = True,           # False → konsola ayrıntılı log yazar
+  )
+
+  ── Alan Formatları ────────────────────────────────────────────
+
+  alan=(0, 0, 200, 200)                     # tuple (x_min, y_min, x_max, y_max)
+  alan=(0, 0, 200, 200, -15)                # tuple 5'li: son eleman z derinliği
+  alan={"x_min":0,"y_min":0,"x_max":200,"y_max":200,"z":-15}  # dict
+
+  ── Örnekler ───────────────────────────────────────────────────
+
+  # 1) İki grup eş zamanlı farklı bölge tarasın
+  filo.alan_tarama_gorevi.baslat(grup_id=0, alan=(-150, 0, 0, 200), derinlik=-20.0, sessiz=False)
+  filo.alan_tarama_gorevi.baslat(grup_id=1, alan=(0, 0, 150, 200),  derinlik=-20.0, sessiz=False)
+
+  # 2) Sığ ve dar kanal tarama (geniş şerit = hızlı tarama)
+  filo.alan_tarama_gorevi.baslat(grup_id=0, alan=(-50,-150,50,150), derinlik=-10.0, serit_araligi=10.0)
+
+  # 3) Sadece 2 ROV ile hızlı genel tarama
+  filo.alan_tarama_gorevi.baslat(grup_id=0, alan=(0,0,300,300), gereken_rov_sayisi=2, serit_araligi=30.0)
+
+  ── Durum Sorgulama ────────────────────────────────────────────
+
+  filo.alan_tarama_gorevi.aktif_planlar                   # Tüm aktif planlar
+  filo.alan_tarama_gorevi.aktif_planlar[0].asama          # "yaklasma" veya "tarama"
+  filo.alan_tarama_gorevi.aktif_planlar[0].lider_id       # Lider ROV ID'si
+  filo.alan_tarama_gorevi.aktif_planlar[0].rota_by_rov    # {rov_id: [(x,y), ...]}
+
+  ── Durdurma / Güncelleme ──────────────────────────────────────
+
+  filo.alan_tarama_gorevi.guncelle()                # Biten ROV'ları idle'a al
+  filo.alan_tarama_gorevi.guncelle(grup_id=0)       # Sadece grup-0 güncelle
+  filo.alan_tarama_gorevi.durdur(grup_id=0)         # Durdur, lider takibine geç
+  filo.alan_tarama_gorevi.durdur(grup_id=0, lideri_takip_et=False)  # Tamamen durdur
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BÖLÜM 5 — ARAMA KURTARMA GÖREVİ
+  (Alan tara + YOLO ile hedef sınıfını görünce dur)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ── Temel Kullanım ─────────────────────────────────────────────
+
+  # Grup-0 ile (0,0)–(200,200) alanında "person" ara
+  filo.arama_kurtarma_gorevi.baslat(
+      grup_id=0,
+      alan=(0, 0, 200, 200),
+      hedef_siniflari=["person"],
+  )
+
+  ── Tüm Parametreler ───────────────────────────────────────────
+
+  filo.arama_kurtarma_gorevi.baslat(
+      grup_id            = 0,
+      alan               = (0, 0, 200, 200),
+      hedef_siniflari    = ["person"],     # YOLO sınıf isimleri; None → tüm sınıflar
+      model_path         = "yolov8n.pt",   # YOLO model dosyası
+      derinlik           = -20.0,
+      min_confidence     = 0.5,            # YOLO güven eşiği (0.0–1.0)
+      gereken_rov_sayisi = None,
+      sessiz             = True,
+  )
+
+  ── Örnekler ───────────────────────────────────────────────────
+
+  # 1) Birden fazla hedef sınıfı
+  filo.arama_kurtarma_gorevi.baslat(
+      grup_id=0, alan=(0, 0, 400, 400),
+      hedef_siniflari=["person", "boat", "diver"],
+      min_confidence=0.6,
+  )
+
+  # 2) Tüm haritayı tara, yüksek güven eşiğiyle insan tespit et
+  filo.arama_kurtarma_gorevi.baslat(
+      grup_id=0,
+      alan=(-150, -150, 150, 150),
+      hedef_siniflari=["person"],
+      min_confidence=0.75,
+      sessiz=False,
+  )
+
+  # 3) Özel eğitilmiş model kullan
+  filo.arama_kurtarma_gorevi.baslat(
+      grup_id=0, alan=(0, 0, 200, 200),
+      model_path="my_underwater_model.pt",
+  )
+
+  ── Tespit Sonucunu Sorgula ────────────────────────────────────
+
+  tespit = filo.arama_kurtarma_gorevi.son_tespit
+  if tespit:
+      print("Bulan ROV  :", tespit.rov_id)
+      print("Sınıf      :", tespit.class_name)   # "person" vb.
+      print("Güven      :", tespit.confidence)   # 0.0–1.0
+      print("Kamera bbox:", tespit.bbox)          # (x1, y1, x2, y2)
+
+  filo.arama_kurtarma_gorevi.aktif_plan           # Aktif plan (None = görev yok)
+
+  ── Durdurma / Güncelleme ──────────────────────────────────────
+
+  filo.arama_kurtarma_gorevi.guncelle()           # YOLO kontrol + rota güncelle
+  filo.arama_kurtarma_gorevi.durdur()             # Görevi durdur
+  filo.arama_kurtarma_gorevi.durdur(lideri_takip_et=False)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BÖLÜM 6 — İMHA GÖREVİ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ── 6a. Koordinat ile İmha (Bilinen hedefe git, imha et) ───────
+
+  filo.imha_gorevi.koordinat_imha_baslat(
+      grup_id       = 0,
+      hedef         = (100.0, 80.0, -15.0),   # (x, y, z)
+      imha_mesafesi = 8.0,    # Bu mesafeye girince patlat (metre; varsayılan 8)
+      sessiz        = True,
+      hedef_entity  = None,   # Ursina Entity nesnesi (varsa patlama efekti verilir)
+  )
+
+  # Örnek: Bilinen mayın konumunu imha et, 5 m'ye girince patlasın
+  filo.imha_gorevi.koordinat_imha_baslat(
+      grup_id=0, hedef=(50, 80, -20), imha_mesafesi=5.0
+  )
+
+  # Sonucu kontrol et
+  sonuc = filo.imha_gorevi.guncelle()
+  if sonuc and sonuc.basarili:
+      print("Hedef imha edildi:", sonuc.mesaj)
+
+  ── 6b. Alan Tarayarak İmha (YOLO ile bul, sonra imha et) ──────
+
+  filo.imha_gorevi.alan_imha_baslat(
+      grup_id            = 0,
+      alan               = (0, 0, 200, 200),
+      hedef_siniflari    = ["mine", "bomb"],  # None → tüm sınıflar
+      model_path         = "yolov8n.pt",
+      derinlik           = -20.0,
+      imha_mesafesi      = 8.0,
+      gereken_rov_sayisi = None,
+      sessiz             = True,
+  )
+
+  # Örnek: Geniş alanda mayın tara ve imha et
+  filo.imha_gorevi.alan_imha_baslat(
+      grup_id=0, alan=(-200,-200,200,200),
+      hedef_siniflari=["mine"], imha_mesafesi=6.0, sessiz=False,
+  )
+
+  ── Durum Sorgulama ────────────────────────────────────────────
+
+  filo.imha_gorevi.hedef            # Aktif hedef koordinatı (x, y, z) veya None
+  filo.imha_gorevi.gorevli_rov_id   # İmha ROV'unun ID'si
+  filo.imha_gorevi.imha_mesafesi    # Patlama tetikleme mesafesi
+  filo.imha_gorevi.tespit           # Son YOLO tespiti (YoloTespit objesi veya None)
+
+  ── Durdurma / Güncelleme ──────────────────────────────────────
+
+  sonuc = filo.imha_gorevi.guncelle()           # İmha tamamlandıysa ImhaSonucu döner
+  filo.imha_gorevi.durdur()                     # Görevi durdur
+  filo.imha_gorevi.durdur(lideri_takip_et=False)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BÖLÜM 7 — KAMERA VE YOLO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # ROV-0'a kamera ekle
+  filo.camera_manager.kamera_ekle(rov_id=0)
+
+  # ROV-0'da YOLO başlat (model_path varsayılan: "yolov8n.pt")
+  filo.yolo_baslat(rov_id=0)
+  filo.yolo_baslat(rov_id=0, model_path="yolov8n.pt", islem_hizi=3)
+
+  # ROV-0'ın YOLO'sunu durdur
+  filo.yolo_durdur(rov_id=0)
+
+  # Son tespitleri görüntüle
+  filo.camera_manager.yolo_son_tespitler       # {rov_id: [tespit_dict, ...]}
+  filo.camera_manager.yolo_son_tespitler[0]    # ROV-0'ın tespitleri
+
+  # Örnek: Grup liderlerine kamera + YOLO aç, sonra görev başlat
+  for rov in filo.g_rovs.get(0, []):
+      if getattr(rov, 'role', 0) == 1:
+          filo.camera_manager.kamera_ekle(rov_id=rov.id)
+          filo.yolo_baslat(rov.id)
+  filo.arama_kurtarma_gorevi.baslat(grup_id=0, alan=(0, 0, 200, 200))
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BÖLÜM 8 — PID PANELİ (Stabilizasyon Kontrolü)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Paneli aç / kapat (B tuşu veya konsol)
+  filo.toggle_pid_ui()           # Aç/kapat (geçiş)
+  filo.toggle_pid_ui(True)       # Aç
+  filo.toggle_pid_ui(False)      # Kapat
+
+  # PID parametrelerini güncelle
+  filo.pid_parametresi_guncelle("Kp",  0.04)
+  filo.pid_parametresi_guncelle("Ki",  0.001)
+  filo.pid_parametresi_guncelle("Kd",  0.01)
+  filo.pid_parametresi_guncelle("COB", 0.9)   # Ağırlık merkezi yüksekliği
+
+  # Mevcut PID değerlerini oku
+  print(filo.pid.Kp, filo.pid.Ki, filo.pid.Kd)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BÖLÜM 9 — ENGEL VE HARİTA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Minimap HUD'u göster/gizle
+  filo.minimap()
+
+  # Engelleri ve ada çevrelerini birleşik liste olarak al (A* planlaması için)
+  engeller = filo.get_engel_ve_ada()
+  # → [[x1,y1], [x2,y2], ...] veya None
+
+  # Mevcut ada cevrelerini al
+  ada_list = filo.ada_cevre(offset=0.0)
+
+  # APF vektörlerini görselleştir
+  filo.apf(rov_id=0)             # ROV-0'ın APF vektörlerini çiz
+  filo.apf_temizle()             # Tüm APF vektör çizimlerini temizle
+
+  # ROV-0'a yakın engelleri bul (menzil: metre)
+  filo.engel_bul(rov_id=0, menzil=20.0, debug=True)
+
+  # Hull bilgisi al
+  info = filo.get_hull_information(sample_count=50, g_id=0)
+  print(info["hull_center"], info["formasyon_id"])
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BÖLÜM 10 — MOTOR VE FİZİK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Motor şemasını kaydet (SCHEMA/ klasörüne PDF + JSON)
+  filo.motor_sema_kaydet()               # İlk ROV için
+  filo.motor_sema_kaydet(rov=filo.rovs[2])  # Belirli ROV için
+
+  # Motorları doğrudan güç dizisiyle çalıştır (6 motor)
+  filo.motorlari_calistir(rov_id=0, gucler=[0.5, 0.5, 0.0, 0.0, 0.3, 0.3])
+
+  # ROV dönme hareketleri (güç: 0.0–1.0)
+  filo.yaw(filo.rovs[0],   guc=0.1)
+  filo.roll(filo.rovs[0],  guc=0.1)
+  filo.pitch(filo.rovs[0], guc=0.1)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  HATIRLATMALAR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  • Görev başlatmadan önce ROV'ların "idle" durumda olması gerekir.
+  • sessiz=False parametresiyle her görev konsola ayrıntılı log yazar.
+  • Görevler otomatik geçici grup oluşturur; bitince orijinal gruba döner.
+  • change_mode(g_id, 1) → takipçiler liderle birlikte hareket eder.
+  • change_mode(g_id, 0) → takipçiler bağımsız hareket eder (APF devrede).
+  • Koordinat: X=sağ, Y=ileri, Z=derinlik (negatif = aşağı).
+  • GAT (ai=True) yol planlamasını; APF çarpışmadan kaçınmayı yönetir.

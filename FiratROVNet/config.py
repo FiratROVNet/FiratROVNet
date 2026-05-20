@@ -124,16 +124,35 @@ class PerformansAyarlari:
     """FPS dostu varsayilanlar. 0 veya daha kucuk Hz degeri ilgili isi kapatir."""
 
     HUD_HZ = 5.0
+    HUD_TEXT_HZ = 2.0
     MOTOR_HUD_HZ = 10.0
     GORSELLER_HZ = 10.0
-    RERUN_HZ = 10.0
-    GAT_HZ = 5.0
+    RERUN_HZ = 2.0
+    GAT_HZ = 2.0
+    GAT_MAKS_KOMSU = 8
     LIDER_HZ = 5.0
     OCEAN_HZ = 20.0
     YOLO_CAPTURE_HZ = 5.0
+    # Aynı anda en fazla kaç ROV'un YOLO çalıştırabileceği (GPU bellek koruması)
+    MAX_YOLO_AKTIF = 2
 
     PHYSICS_MAX_SUBSTEPS = 4
     PHYSICS_STEP = 1.0 / 60.0
+
+    ROV_MOTOR_GORSELLERI = False
+    ROV_GUVENLIK_ALANI_GORUNUR = False
+    ROV_SENSOR_CIZGILERI_LAZY = True
+
+    PROFILER_AKTIF = True
+    PROFILER_RAPOR_ARALIGI_SN = 5.0
+    PROFILER_TOP_N = 12
+    PROFILER_ROV_DETAY = True
+    PROFILER_TERMINAL_RAPOR = False
+
+    RERUN_MAKS_ENGEL_NOKTASI = 2500
+    RERUN_MAKS_TARAMA_NOKTASI = 12000
+    RERUN_STATIK_LOG_TEKRAR_ADIMI = 300
+    RERUN_TARAMA_LOG_ADIMI = 5
 
 
 class RolDerinlikAyarlari:
@@ -270,11 +289,79 @@ class AlanTaramaAyarlari:
     ASAMA = "yaklasma"
 
 
+class SonarHaritalamaAyarlari:
+    """
+    Multibeam sonar temelli 3D zemin haritalama ayarları.
+    ROV'un altına bakan sonar konisi, her hareket adımında deniz tabanı
+    noktaları üretir ve Rerun'da bathymetrik 3D harita oluşturur.
+    """
+    # Sonar koni yarı açısı (her tarafa kaç derece — toplam swath = 2x)
+    SWATH_ACISI_DERECE = 60.0
+    # Across-track örnekleme (swath genişliği boyunca nokta sayısı)
+    NOKTA_SAYISI = 18
+    # Along-track örnekleme (hareket yönünde şerit sayısı)
+    ALONG_TRACK_SAYI = 3
+    # Yeni tarama için minimum hareket eşiği (metre)
+    MIN_HAREKET_ESIGI = 3.0
+    # Tampondaki maksimum nokta sayısı (bellek sınırı)
+    MAKSIMUM_NOKTA = 100_000
+    # Rerun'da görselleştirme noktası yarıçapı
+    NOKTA_RADIUS = 0.55
+    # Zemin yüzey gürültüsü standart sapması (m) — gerçekçi deniz tabanı dokusu
+    GURULTU_SIGMA = 0.35
+
+
+class TespitAyarlari:
+    """
+    ROV kamera tespit sistemi ayarları.
+    MOD seçenekleri: 'renk' | 'model' | 'hibrit'
+      - renk   : Sadece HSV renk maskesi ile tespit
+      - model  : Sadece YOLO modeli ile tespit
+      - hibrit : Önce YOLO; güven < HIBRIT_MIN_CONF ise renk filtresi devreye girer
+    """
+    MOD = "hibrit"            # Aktif tespit modu
+    HIBRIT_MIN_CONF = 0.40    # Hibrit modda YOLO güveni bu değerin altındaysa renk filtresi çalışır
+
+    # Offscreen render buffer çözünürlüğü
+    KAMERA_GENISLIK = 640
+    KAMERA_YUKSEKLIK = 480
+
+    # HSV renk aralıkları — her giriş (isim, lower_hsv, upper_hsv) tuple'ı
+    # H: 0-179, S: 0-255, V: 0-255  (OpenCV HSV)
+    RENK_ARALIKLAR = [
+        ("kirmizi",  (0,   120,  70),  (10,  255, 255)),
+        ("kirmizi2", (170, 120,  70),  (179, 255, 255)),  # kırmızı wrap-around
+        ("sari",     (20,  100,  100), (35,  255, 255)),
+        ("mavi",     (100, 120,  70),  (130, 255, 255)),
+        ("yesil",    (40,  70,   70),  (80,  255, 255)),
+        ("turuncu",  (10,  150,  100), (20,  255, 255)),
+    ]
+
+    # Kontur minimum piksel alanı (gürültü filtresi)
+    MIN_KONTUR_ALANI = 400
+
+
 class AramaKurtarmaAyarlari:
     """
     Arama kurtarma görevi için varsayılan ayarlar.
     """
     MIN_CONFIDENCE = 0.45
+
+
+class HedefNesneAyarlari:
+    """
+    Arama kurtarma senaryosunda sahneye yerleştirilen renkli hedef nesneler.
+    """
+    # (isim, HSV-yakın BGR renk tuple, boyut)
+    NESNE_TIPLERI: list[tuple[str, tuple[int, int, int], float]] = [
+        ("kirmizi",  (0,   0,   220), 3.0),
+        ("sari",     (0,   220, 220), 3.0),
+        ("mavi",     (220, 60,  0  ), 3.0),
+        ("yesil",    (0,   180, 0  ), 3.0),
+        ("turuncu",  (0,   140, 255), 3.0),
+    ]
+    VARSAYILAN_DERINLIK: float = -18.0   # Sim Z koordinatı (negatif = derin)
+    MAKSIMUM_NESNE: int = 20
 
 
 class ImhaAyarlari:
