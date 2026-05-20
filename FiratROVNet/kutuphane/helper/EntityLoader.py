@@ -483,13 +483,16 @@ class EntityLoader:
             rotation=(0, -90, 0)
         )
         
-        # Güvenlik Alanı (Safety Zone)
-        radius = rov_entity.sensor_config.get("engel_mesafesi", GATLimitleri.ENGEL) / 2.0
-        rov_entity.safety_zone = Entity(
-            parent=rov_entity, model='cube', scale=radius * 2,
-            collider=None, color=color.rgba(255, 0, 0, 50),
-            visible=True, unlit=True
-        )
+        # Güvenlik alanı varsayılan olarak çizilmez; APF/GAT hesabı sensor_config üzerinden devam eder.
+        if getattr(PerformansAyarlari, "ROV_GUVENLIK_ALANI_GORUNUR", False):
+            radius = rov_entity.sensor_config.get("engel_mesafesi", GATLimitleri.ENGEL) / 2.0
+            rov_entity.safety_zone = Entity(
+                parent=rov_entity, model='cube', scale=radius * 2,
+                collider=None, color=color.rgba(255, 0, 0, 50),
+                visible=True, unlit=True
+            )
+        else:
+            rov_entity.safety_zone = None
 
 
     def rock(self, scale, position):

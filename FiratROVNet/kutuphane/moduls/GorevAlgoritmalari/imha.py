@@ -124,16 +124,17 @@ class ImhaGorevi:
         self.durdur(lideri_takip_et=True)
         return sonuc
 
-    def durdur(self, lideri_takip_et: bool = True) -> None:
-        self.arama.durdur(lideri_takip_et=lideri_takip_et)
+    def durdur(self, lideri_takip_et: bool = True, gorselleri_koru: bool = False) -> None:
+        self.arama.durdur(lideri_takip_et=lideri_takip_et, gorselleri_koru=gorselleri_koru)
         if self.gorevli_rov_id is not None:
             rov_gorev_bosalt(self.filo, self.gorevli_rov_id, lideri_takip_et=lideri_takip_et)
         self.hedef = None
         self.gorevli_rov_id = None
         self.tespit = None
         self.hedef_entity = None
-        from FiratROVNet.kutuphane.moduls.GorevAlgoritmalari.ortak import minimap_gorev_alanini_temizle
-        minimap_gorev_alanini_temizle(self.filo)
+        if not gorselleri_koru:
+            from FiratROVNet.kutuphane.moduls.GorevAlgoritmalari.ortak import minimap_gorev_alanini_temizle
+            minimap_gorev_alanini_temizle(self.filo)
 
     def _en_yakin_rov(self, grup_id: int, hedef: tuple[float, float, float]):
         adaylar = en_iyi_rovlari_sec(

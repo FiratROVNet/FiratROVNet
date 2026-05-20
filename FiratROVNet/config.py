@@ -124,10 +124,12 @@ class PerformansAyarlari:
     """FPS dostu varsayilanlar. 0 veya daha kucuk Hz degeri ilgili isi kapatir."""
 
     HUD_HZ = 5.0
+    HUD_TEXT_HZ = 2.0
     MOTOR_HUD_HZ = 10.0
     GORSELLER_HZ = 10.0
-    RERUN_HZ = 10.0
-    GAT_HZ = 5.0
+    RERUN_HZ = 2.0
+    GAT_HZ = 2.0
+    GAT_MAKS_KOMSU = 8
     LIDER_HZ = 5.0
     OCEAN_HZ = 20.0
     YOLO_CAPTURE_HZ = 5.0
@@ -136,6 +138,21 @@ class PerformansAyarlari:
 
     PHYSICS_MAX_SUBSTEPS = 4
     PHYSICS_STEP = 1.0 / 60.0
+
+    ROV_MOTOR_GORSELLERI = False
+    ROV_GUVENLIK_ALANI_GORUNUR = False
+    ROV_SENSOR_CIZGILERI_LAZY = True
+
+    PROFILER_AKTIF = True
+    PROFILER_RAPOR_ARALIGI_SN = 5.0
+    PROFILER_TOP_N = 12
+    PROFILER_ROV_DETAY = True
+    PROFILER_TERMINAL_RAPOR = False
+
+    RERUN_MAKS_ENGEL_NOKTASI = 2500
+    RERUN_MAKS_TARAMA_NOKTASI = 12000
+    RERUN_STATIK_LOG_TEKRAR_ADIMI = 300
+    RERUN_TARAMA_LOG_ADIMI = 5
 
 
 class RolDerinlikAyarlari:

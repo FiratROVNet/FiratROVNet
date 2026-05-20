@@ -8,13 +8,14 @@ import time
 from datetime import datetime
 
 import numpy as np
-from ursina import camera, mouse
+from ursina import camera, mouse, time as utime
 
-from FiratROVNet.config import cfg
+from FiratROVNet.config import PerformansAyarlari, cfg
 from FiratROVNet.kutuphane.moduls.Panels import kisayol_paneli_olustur
 from FiratROVNet.kutuphane.moduls.profiler import Profiler
 from FiratROVNet.tools.rerun_ayarla import (
     QR,
+    rerun_sahne_logla,
     rerun_baslat,
     rerun_kayit_baslat,
     rerun_kayit_durdur,
@@ -39,6 +40,306 @@ class FrameScheduler:
             return True
         self._accum[name] = current
         return False
+
+
+class RuntimeOzellikleri:
+    """Ana dongude tek noktadan acilip kapatilabilen runtime adimlari."""
+
+    def __init__(
+        self,
+        hud_text=True,
+        motor_hud=True,
+        profiler_hud=True,
+        sac_train=True,
+        sac_hud=True,
+        gat=False,
+        gorseller=True,
+        lider=True,
+        rerun=True,
+        ui=True,
+        pid_ui=True,
+        apf_hud=True,
+        navigasyon=True,
+        rovler=True,
+        alan_tarama=True,
+    ):
+        self.hud_text = bool(hud_text)
+        self.motor_hud = bool(motor_hud)
+        self.profiler_hud = bool(profiler_hud)
+        self.sac_train = bool(sac_train)
+        self.sac_hud = bool(sac_hud)
+        self.gat = bool(gat)
+        self.gorseller = bool(gorseller)
+        self.lider = bool(lider)
+        self.rerun = bool(rerun)
+        self.ui = bool(ui)
+        self.pid_ui = bool(pid_ui)
+        self.apf_hud = bool(apf_hud)
+        self.navigasyon = bool(navigasyon)
+        self.rovler = bool(rovler)
+        self.alan_tarama = bool(alan_tarama)
+
+
+class AnaDonguRuntime:
+    """main.py'yi sade tutan, ac/kapat destekli ana simulasyon dongusu."""
+
+    FPS_HISTORY_SIZE = 10
+
+    def __init__(self, script_dir, app, filo, motor_hud, profiler_hud, sac_hud, rerun, ui, ozellikler=None):
+        self.script_dir = script_dir
+        self.app = app
+        self.filo = filo
+        self.motor_hud = motor_hud
+        self.profiler_hud = profiler_hud
+        self.sac_hud = sac_hud
+        self.rerun = rerun
+        self.ui = ui
+        self.ozellikler = ozellikler or RuntimeOzellikleri()
+        self.scheduler = FrameScheduler()
+        self.fps_history = []
+        self.fps_sum = 0.0
+        self.rerun_step = 0
+        self.tahminler_cache = np.zeros(0, dtype=int)
+        self.last_hud_state = None
+        self.bilgi_rov_id = 0
+        self.aktif_grup_index = 0
+
+    def aktif_rov_secimini_dogrula(self):
+        if self.filo.find_rov_by_id(self.bilgi_rov_id) is not None:
+            return
+        ids = aktif_rov_idleri(self.filo)
+        if not ids:
+            return
+        self.bilgi_rov_id = ids[0]
+        mevcut_grup = getattr(self.filo.find_rov_by_id(self.bilgi_rov_id), "group_id", None)
+        grup_idleri = aktif_grup_idleri(self.filo)
+        if mevcut_grup in grup_idleri:
+            self.aktif_grup_index = grup_idleri.index(mevcut_grup)
+        if not self.filo.camera_manager.aktif_kamera_listesi():
+            self.filo.kamera_ayarla(rov_id=self.bilgi_rov_id)
+
+    def hud_durumu_olustur(self):
+        rov = self.filo.find_rov_by_id(self.bilgi_rov_id)
+        avg_fps = int(self.fps_sum / len(self.fps_history)) if self.fps_history else 0
+        if rov is None:
+            return ("yok", avg_fps)
+
+        pos = getattr(rov, "position", None)
+        if pos is None:
+            gps_x, gps_y, gps_z = 0, 0, 0
+        else:
+            gps_x = int(float(getattr(pos, "x", 0.0) or 0.0))
+            gps_y = int(float(getattr(pos, "z", 0.0) or 0.0))
+            gps_z = int(float(getattr(pos, "y", 0.0) or 0.0))
+
+        velocity = getattr(rov, "velocity", None)
+        velocity_len = float(velocity.length()) if velocity is not None and hasattr(velocity, "length") else 0.0
+        batarya = float(getattr(rov, "battery", 0.0) or 0.0)
+        angular_speed = float(getattr(rov, "rotation_y", 0.0) or 0.0)
+        grup_id = int(getattr(rov, "group_id", 0) or 0)
+        rol = int(getattr(rov, "role", 0) or 0)
+        rol_metin = f"Lider-{self.bilgi_rov_id} " if rol == 1 else f"Takipci-{self.bilgi_rov_id} "
+
+        return (
+            "rov",
+            avg_fps,
+            rol_metin,
+            grup_id,
+            gps_x,
+            gps_y,
+            gps_z,
+            round(batarya, 2),
+            round(velocity_len, 2),
+            round(angular_speed, 2),
+        )
+
+    @staticmethod
+    def hud_metni_olustur(state):
+        if state[0] == "yok":
+            _, avg_fps = state
+            return (
+                f"<yellow>       FPS: {avg_fps}<default>\n"
+                f"<orange>ROV yok<default>\n"
+                f"<cyan>Runtime konsoldan ROV eklenebilir<default>\n"
+                f"<azure>BAT: --<default>\n"
+                f"<lime>VEL: --<default>\n"
+                f"<gold>ANG: --<default>"
+            )
+
+        (
+            _,
+            avg_fps,
+            rol_metin,
+            grup_id,
+            gps_x,
+            gps_y,
+            gps_z,
+            batarya,
+            velocity_len,
+            angular_speed,
+        ) = state
+        return (
+            f"<yellow>       FPS: {avg_fps}<default>\n"
+            f"<orange>{rol_metin}Grup-{grup_id}<default>\n"
+            f"<cyan>GPS: {gps_x}, {gps_y}, {gps_z}<default>\n"
+            f"<azure>BAT: {batarya:.2f} J<default>\n"
+            f"<lime>VEL: {velocity_len:.2f} m/s<default>\n"
+            f"<gold>ANG: {angular_speed:.2f} rad/s<default>"
+        )
+
+    def _fps_guncelle(self, dt):
+        instant_fps = (1.0 / dt) if dt > 0 else 0
+        self.fps_history.append(instant_fps)
+        self.fps_sum += instant_fps
+        if len(self.fps_history) > self.FPS_HISTORY_SIZE:
+            self.fps_sum -= self.fps_history.pop(0)
+        return instant_fps
+
+    def ozellik_ayarla(self, ad, aktif=True):
+        if not hasattr(self.ozellikler, ad):
+            print(f"⚠️ Runtime özelliği bulunamadı: {ad}")
+            return False
+        setattr(self.ozellikler, ad, bool(aktif))
+        print(f"✅ Runtime özelliği güncellendi: {ad}={bool(aktif)}")
+        return True
+
+    def _hud_guncelle(self, dt):
+        if not self.ozellikler.hud_text:
+            return
+        hud_text_hz = getattr(PerformansAyarlari, "HUD_TEXT_HZ", PerformansAyarlari.HUD_HZ)
+        if self.scheduler.due("hud", hud_text_hz, dt):
+            Profiler.start("0_hud_text_update")
+            hud_state = self.hud_durumu_olustur()
+            if hud_state != self.last_hud_state:
+                self.app.rov_label.text = self.hud_metni_olustur(hud_state)
+                self.last_hud_state = hud_state
+            Profiler.end("0_hud_text_update")
+
+    def _motor_hud_guncelle(self, dt):
+        if not self.ozellikler.motor_hud:
+            return
+        if self.scheduler.due("motor_hud", PerformansAyarlari.MOTOR_HUD_HZ, dt):
+            Profiler.start("0_motor_hud_update")
+            self.motor_hud.update(self.bilgi_rov_id)
+            Profiler.end("0_motor_hud_update")
+
+    def _profiler_hud_guncelle(self, dt, instant_fps):
+        if not self.ozellikler.profiler_hud:
+            return
+        if self.scheduler.due("profiler_hud", PerformansAyarlari.HUD_HZ, dt):
+            avg = (self.fps_sum / len(self.fps_history)) if self.fps_history else instant_fps
+            self.profiler_hud.update(avg)
+
+    def _sac_guncelle(self, dt):
+        if self.ozellikler.sac_train and self.sac_hud.visible and self.scheduler.due("sac_train", 10.0, dt):
+            mevcut_rov = self.filo.find_rov_by_id(self.bilgi_rov_id)
+            varsayilan_grup_id = getattr(mevcut_rov, "group_id", None)
+            egitim_rovleri = self.filo.sac.canli_egitim_rovleri_al(varsayilan_grup_id=varsayilan_grup_id)
+            if egitim_rovleri:
+                Profiler.start("0_sac_canli_egitim")
+                self.filo.sac.canli_egitim_adimi(rov_id=egitim_rovleri)
+                Profiler.end("0_sac_canli_egitim")
+
+        if self.ozellikler.sac_hud and self.scheduler.due("sac_hud", 10.0, dt):
+            Profiler.start("0_sac_hud_update")
+            self.filo._sac_hud_visible = self.sac_hud.visible
+            self.sac_hud.update()
+            Profiler.end("0_sac_hud_update")
+
+    def _gat_due(self, dt):
+        return bool(self.ozellikler.gat and self.scheduler.due("gat", PerformansAyarlari.GAT_HZ, dt))
+
+    def _filo_guncelle(self, dt):
+        self.tahminler_cache = tahminler_al(self.app, self.tahminler_cache)
+        if not self.ozellikler.gat:
+            self.tahminler_cache.fill(0)
+        guncelle_gorseller = (
+            self.ozellikler.gorseller
+            and self.scheduler.due("gorseller", PerformansAyarlari.GORSELLER_HZ, dt)
+        )
+        guncelle_lider = (
+            self.ozellikler.lider
+            and self.scheduler.due("lider", PerformansAyarlari.LIDER_HZ, dt)
+        )
+        self.filo.guncelle_hepsi(
+            self.tahminler_cache,
+            guncelle_gorseller=guncelle_gorseller,
+            guncelle_lider=guncelle_lider,
+            gat_aktif=self._gat_due(dt),
+            pid_ui_aktif=self.ozellikler.pid_ui,
+            apf_hud_aktif=self.ozellikler.apf_hud,
+            navigasyon_aktif=self.ozellikler.navigasyon,
+            rovler_aktif=self.ozellikler.rovler,
+            alan_tarama_aktif=self.ozellikler.alan_tarama,
+        )
+
+    def _rerun_guncelle(self, dt):
+        if not self.ozellikler.rerun:
+            self.rerun_step += 1
+            return
+        if not self.rerun.sink_busy and self.scheduler.due("rerun", PerformansAyarlari.RERUN_HZ, dt):
+            Profiler.start("0_rerun_sahne_logla")
+            rerun_sahne_logla(app=self.app, filo=self.filo, step=self.rerun_step)
+            Profiler.end("0_rerun_sahne_logla")
+        self.rerun_step += 1
+
+    def guncelle(self):
+        Profiler.enabled = bool(getattr(PerformansAyarlari, "PROFILER_AKTIF", True))
+        Profiler.start("FRAME_TOTAL")
+
+        dt = getattr(utime, "dt", 0) or 0.016
+        instant_fps = self._fps_guncelle(dt)
+
+        self.aktif_rov_secimini_dogrula()
+        self._hud_guncelle(dt)
+        self._motor_hud_guncelle(dt)
+        self._profiler_hud_guncelle(dt, instant_fps)
+        self._sac_guncelle(dt)
+        self._filo_guncelle(dt)
+        self._rerun_guncelle(dt)
+        if self.ozellikler.ui:
+            self.ui.guncelle(self.scheduler, dt)
+
+        Profiler.end("FRAME_TOTAL")
+
+    def girdi_isle(self, key):
+        if key in ("f", "F"):
+            akademik_gorsel_kaydet(self.script_dir)
+        if key in ("m", "M"):
+            self.motor_hud.toggle()
+        if key in ("h", "H"):
+            self.profiler_hud.toggle()
+        if key in ("b", "B"):
+            self.filo.toggle_pid_ui()
+        if key in ("v", "V"):
+            self.rerun.toggle()
+        if key in ("u", "U"):
+            self.ui.toggle()
+        if key in ("e", "E"):
+            sac_hud_toggle(self.filo, self.sac_hud, self.bilgi_rov_id)
+        if key in ("2", "num 2") and self.sac_hud.visible:
+            sonraki_sac_rov(self.filo, self.sac_hud)
+        if key in ("g", "G"):
+            self.bilgi_rov_id, self.aktif_grup_index = sonraki_grup(
+                self.filo,
+                self.bilgi_rov_id,
+                self.aktif_grup_index,
+            )
+        if key == "p":
+            lider_patlat(self.filo, self.bilgi_rov_id)
+        if key == "r":
+            self.bilgi_rov_id = sonraki_rov(self.filo, self.bilgi_rov_id)
+            if not self.filo.rovs:
+                return
+            mevcut_grup = getattr(self.filo.find_rov_by_id(self.bilgi_rov_id), "group_id", None)
+            grup_idleri = aktif_grup_idleri(self.filo)
+            if mevcut_grup in grup_idleri:
+                self.aktif_grup_index = grup_idleri.index(mevcut_grup)
+        if key == "escape":
+            if getattr(self.app, "_ui_minimap_picker", None):
+                ui_minimap_secim_iptal(self.app)
+        if key == "left mouse down":
+            minimap_tiklama_isle(self.app, self.filo, self.bilgi_rov_id)
 
 
 class RerunRecorder:
@@ -577,32 +878,53 @@ def ui_minimap_secim_mod_kapat(app):
     if mm is not None and poligon and hasattr(mm, "alan_gorev_goster"):
         serit = float(getattr(app, "_ui_minimap_serit_araligi", 15.0) or 15.0)
         mm.alan_gorev_goster(poligon, serit_araligi=serit)
+    elif mm is not None and hasattr(mm, "alan_gorev_gorsel_yenile"):
+        mm.alan_gorev_gorsel_yenile()
 
 
-def ui_minimap_secim_iptal(app, gorev_gorselini_temizle: bool = False):
+def ui_minimap_secim_iptal(app, gorev_gorselini_temizle: bool = False, durum_yaz: bool = True):
+    """Seçimi iptal eder. durum_yaz=False: JSON'a iptal yazmaz (tamamlanmış alan korunur)."""
     app._ui_minimap_picker = None
+    
+    # Minimap referansını güvenli şekilde al
     mm = getattr(app, "minimap", None)
+    if not mm and hasattr(app, "ortam_ref"):
+        mm = getattr(app.ortam_ref, "minimap", None)
+
     if mm is not None:
         if gorev_gorselini_temizle:
-            if hasattr(mm, "alan_secim_temizle"):
-                mm.alan_secim_temizle()
-        elif hasattr(mm, "alan_secim_gecici_temizle"):
-            mm.alan_secim_gecici_temizle()
+            # GÖREV DURDURULDUYSA: Hem geçiciyi hem kalıcı altın alanı temizle
+            if hasattr(mm, "alan_gorev_temizle"):
+                mm.alan_gorev_temizle()
+            if hasattr(mm, "alan_secim_gecici_temizle"):
+                mm.alan_secim_gecici_temizle()
+        else:
+            # SEÇİM BİTTİYSE: Sadece fareyle çizilen mavi/geçici noktaları temizle (Altın çokgen kalır)
+            if hasattr(mm, "alan_secim_gecici_temizle"):
+                mm.alan_secim_gecici_temizle()
+                
         mm.update_path([])
+
     if gorev_gorselini_temizle:
-        ui_minimap_gorev_alan_temizle(app)
-    _minimap_secim_yaz(
-        app,
-        {
-            "aktif": False,
-            "tamamlandi": False,
-            "iptal": True,
-            "mod": None,
-            "noktalar": [],
-            "mesaj": "Seçim iptal edildi.",
-        },
-    )
-    print("🗺️ [UI] Haritadan seçim iptal edildi.")
+        # Mevcut ui_minimap_gorev_alan_temizle çağrınız
+        try:
+            ui_minimap_gorev_alan_temizle(app)
+        except NameError:
+            pass
+
+    if durum_yaz:
+        _minimap_secim_yaz(
+            app,
+            {
+                "aktif": False,
+                "tamamlandi": False,
+                "iptal": True,
+                "mod": None,
+                "noktalar": [],
+                "mesaj": "Seçim iptal edildi.",
+            },
+        )
+        print("🗺️ [UI] Haritadan seçim iptal edildi.")
 
 
 def minimap_ui_secim_isle(app, filo, bilgi_rov_id) -> bool:
@@ -652,6 +974,8 @@ def minimap_ui_secim_isle(app, filo, bilgi_rov_id) -> bool:
             mm.alan_gorev_goster(poligon, serit_araligi=serit)
             setattr(app, "_ui_minimap_gorev_poligon", poligon)
             setattr(app, "_ui_minimap_serit_araligi", serit)
+            if hasattr(mm, "alan_gorev_gorsel_yenile"):
+                mm.alan_gorev_gorsel_yenile()
         _minimap_secim_yaz(
             app,
             {
@@ -774,9 +1098,10 @@ def uygulamayi_calistir(app, rerun_recorder):
         print("\n🛑 Simülasyon durduruldu.")
     finally:
         rerun_recorder.stop_if_recording()
-        try:
-            Profiler.rapor_ver()
-        except Exception:
-            pass
+        if getattr(PerformansAyarlari, "PROFILER_TERMINAL_RAPOR", False):
+            try:
+                Profiler.rapor_ver()
+            except Exception:
+                pass
         os.system("stty sane")
         os._exit(0)

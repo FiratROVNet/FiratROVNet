@@ -18,7 +18,7 @@ if 'lines' not in Mesh._modes:
 # Yerel modül importları
 from FiratROVNet.config import (  # type: ignore[import-not-found]
     SensorAyarlari, GATLimitleri, HareketAyarlari, 
-    FizikSabitleri, ROVModelleri
+    FizikSabitleri, ROVModelleri, PerformansAyarlari
 )
 from FiratROVNet.utils import sim_to_ursina, ursina_to_sim  # type: ignore[import-not-found]
 from FiratROVNet.kutuphane.helper.EntityLoader import EntityLoader  # type: ignore[import-not-found]
@@ -81,7 +81,7 @@ class ROV(Entity):
 
         self.group_id = group_id # Grup ID bilgisi
 
-        # Havuz: sonar ve lidar kesikli çizgileri tek sefer oluştur; çizimde sadece güncelle/göster/gizle
+        # Havuz: performans modunda çizgi Entity'leri ilk ihtiyaç anında oluşturulur.
         self._cizgi_havuzlari_olustur()
 
     def ekle(self, ortam_ref):
@@ -181,6 +181,7 @@ class ROV(Entity):
 
             # 2. Görselleri temizle (havuz konteynerleri)
             if hasattr(self, 'label') and self.label: destroy(self.label)
+            if hasattr(self, 'safety_zone') and self.safety_zone: destroy(self.safety_zone)
             if hasattr(self, 'engel_cizgi') and self.engel_cizgi: destroy(self.engel_cizgi)
             for lidar_id in (0, 1, 2, 3):
                 cont = getattr(self, 'lidar_cizgileri', {}).get(lidar_id)
@@ -349,7 +350,6 @@ class ROV(Entity):
             self.role = int(deger)
             if getattr(self, 'label', None):
                 self.label.text = f"{'LIDER' if self.role == 1 else 'ROV'}-{self.id}"  # type: ignore
-                self.color = color.red if self.role == 1 else color.white
         elif ayar == "yaw":
             self.rotation_y = float(deger)
             self.rotation = Vec3(0, self.rotation_y, 0)
@@ -361,7 +361,8 @@ class ROV(Entity):
 
     def _cizgi_havuzlari_olustur(self):
         """Sonar ve lidar kesikli çizgileri için tekil mesh nesnelerini oluşturur."""
-        from ursina import Entity
+        if getattr(PerformansAyarlari, "ROV_SENSOR_CIZGILERI_LAZY", True):
+            return
         # Sonar (engel) çizgisi tekil Mesh
         self.engel_cizgi = Entity(add_to_scene_entities=True, enabled=False, unlit=True)
         # Lidar (4 yön) çizgisi tekil Mesh
@@ -373,7 +374,8 @@ class ROV(Entity):
         """Sonar engel çizgisi. Tekil mesh güncellenir."""
         cizgi = self.engel_cizgi
         if cizgi is None:
-            return
+            cizgi = Entity(add_to_scene_entities=True, enabled=False, unlit=True)
+            self.engel_cizgi = cizgi
         
         c = color.red if mesafe < 5 else (color.orange if mesafe < 10 else color.yellow)
         delta = hedef - self.world_position
@@ -405,7 +407,8 @@ class ROV(Entity):
         """Lidar engel çizgisi. Tekil mesh güncellenir."""
         cont = self.lidar_cizgileri.get(lidar_id)
         if cont is None:
-            return
+            cont = Entity(add_to_scene_entities=True, enabled=False, alpha=0.6, unlit=True)
+            self.lidar_cizgileri[lidar_id] = cont
             
         delta = hedef - self.world_position
         if delta.is_nan() or delta.length() <= 1e-6:
@@ -491,6 +494,33 @@ class Minimap(Entity):
         self.alan_secim_noktalari = []
         self.alan_gorev_noktalari = []
 
+    def _alan_cizim_entityleri(self) -> set:
+        """Alan seçim/görev çizimleri — goster() bunları yanlışlıkla kapatmasın."""
+        ents: set = set()
+        for lst in (
+            getattr(self, "_alan_secim_gecici_gorseller", None),
+            getattr(self, "_alan_gorev_gorseller", None),
+        ):
+            if not lst:
+                continue
+            for ent in lst:
+                if ent is None:
+                    continue
+                ents.add(ent)
+                for sub in getattr(ent, "children", []) or []:
+                    ents.add(sub)
+        return ents
+
+    def alan_gorev_gorsel_yenile(self):
+        """goster() sonrası alan çizimlerinin görünür kalmasını sağlar."""
+        if not self.visible:
+            return
+        for ent in self._alan_cizim_entityleri():
+            try:
+                ent.enabled = True  # type: ignore
+            except Exception:
+                pass
+
     # --- KRİTİK GÜNCELLEME: goster metodu ---
     def goster(self, durum=True, convex=False, a_star=False, scale=None, **kwargs):
         """GNC sisteminden gelen convex ve a_star parametrelerini karşılar."""
@@ -499,15 +529,20 @@ class Minimap(Entity):
             self.scale = (eff, eff)
         
         self.visible = durum
-        # Tüm çocukları (grid, ikonlar vb) toplu kapat/aç
+        alan_korunan = self._alan_cizim_entityleri()
+        # Tüm çocukları (grid, ikonlar vb) toplu kapat/aç — alan çizgileri ayrı
         for child in getattr(self, 'children', []):
-            child.enabled = durum  # type: ignore
+            if child in alan_korunan:
+                child.enabled = True if durum else False  # Alan çizgileri minimap görünürse daima kalsın
+            else:
+                child.enabled = durum  # type: ignore
         
         # Hull ve Path görünürlüğünü özel olarak ayarla
         h_entity = getattr(self, 'hull_entity', None)
         p_entity = getattr(self, 'path_entity', None)
         if h_entity is not None: h_entity.enabled = (convex and durum)  # type: ignore
         if p_entity is not None: p_entity.enabled = (a_star and durum)  # type: ignore
+        self.alan_gorev_gorsel_yenile()
 
     # --- KRİTİK GÜNCELLEME: update_hull metodu ---
     def update_hull(self, points):
@@ -632,16 +667,14 @@ class Minimap(Entity):
                 mevcut_rovlar = [r for r in list(self.ortam_ref.rovs) if rov_aktif_mi(r)]
                 active_ids = {getattr(r, 'id', -1) for r in mevcut_rovlar}
                 
-                # --- ÖNCE SİLİNENLERİ KALDIR ---
                 for rid in list(self.rov_ikonlari.keys()):
                     if rid not in active_ids:
                         destroy(self.rov_ikonlari[rid])
                         self.rov_ikonlari.pop(rid, None)
 
-                # --- SONRA MEVCUTLARI GÜNCELLE ---
                 for rov in mevcut_rovlar:
                     try:
-                        target = self.dunya_to_harita(rov.x, rov.z)  # type: ignore
+                        target = self.dunya_to_harita(rov.x, rov.z)
                     except AssertionError:
                         continue
 
@@ -650,8 +683,8 @@ class Minimap(Entity):
                     icon = self.rov_ikonlari.get(getattr(rov, 'id', -1))
                     if icon:
                         icon.position = target
-                        icon.rotation_z = -float(rov.rotation_y)  # type: ignore
-                        icon.color = getattr(rov, 'color', color.white)  # type: ignore
+                        icon.rotation_z = -float(rov.rotation_y)
+                        icon.color = getattr(rov, 'color', color.white)
 
             self._vektor_ve_hedef_guncelle()
 
@@ -922,6 +955,7 @@ class Minimap(Entity):
                 color=color.rgba(0, 220, 200, 140),
                 enabled=self.visible,
                 unlit=True,
+                add_to_scene_entities=False,
             )
         ]
 
@@ -931,26 +965,76 @@ class Minimap(Entity):
         self.alan_secim_noktalari = []
 
     def alan_secim_gecici_temizle(self):
+        """Sadece seçim sırasındaki turkuaz/kırmızı geçici çizgileri ve köşe noktalarını temizler."""
         from ursina import destroy  # type: ignore[import-not-found]
-        for ent in list(getattr(self, "_alan_secim_gecici_gorseller", []) or []):
-            if ent is not None:
+        if hasattr(self, '_gecici_secim_ent') and self._gecici_secim_ent:
+            for ent in self._gecici_secim_ent:
+                destroy(ent)
+        self._gecici_secim_ent = []
+        
+        if hasattr(self, '_alan_secim_gecici_gorseller') and self._alan_secim_gecici_gorseller:
+            for ent in self._alan_secim_gecici_gorseller:
                 destroy(ent)
         self._alan_secim_gecici_gorseller = []
 
+
+
+
     def alan_gorev_temizle(self):
-        """Aktif görev alanı çizimini minimap'ten kaldırır (görev durdurulunca)."""
+        """Tamamlanmış kalıcı görev alanını ve aktif görev çizimlerini temizler."""
         from ursina import destroy  # type: ignore[import-not-found]
+        if hasattr(self, '_kalici_gorev_ent') and self._kalici_gorev_ent:
+            for ent in self._kalici_gorev_ent:
+                destroy(ent)
+        self._kalici_gorev_ent = []
+        
         for ent in list(getattr(self, "_alan_gorev_gorseller", []) or []):
             if ent is not None:
                 destroy(ent)
         self._alan_gorev_gorseller = []
         self.alan_gorev_noktalari = []
 
-    def alan_secim_temizle(self):
-        """Seçim + görev alanı çizimlerinin tamamını temizler."""
+    def alan_gecici_ciz(self, noktalar: list, mouse_pos=None):
+        """Seçim sırasında fareyi takip eden anlık (geçici) alanı çizer."""
         self.alan_secim_gecici_temizle()
-        self.alan_gorev_temizle()
-        self.alan_secim_noktalari = []
+        if not noktalar:
+            return
+            
+        from ursina import Entity, Mesh, color
+        verts = []
+        
+        # Seçilen köşe noktaları
+        for p in noktalar:
+            mp = self.dunya_to_harita(p[0], p[1])
+            verts.append((mp.x, mp.y, -0.15))
+            
+            nokta = Entity(
+                parent=self, model='circle', scale=0.015,
+                color=color.cyan, position=(mp.x, mp.y, -0.17),
+                unlit=True, enabled=self.visible
+            )
+            self._gecici_secim_ent.append(nokta)
+
+        # Fare imlecinin anlık pozisyonu
+        if mouse_pos:
+            mmp = self.dunya_to_harita(mouse_pos[0], mouse_pos[1])
+            verts.append((mmp.x, mmp.y, -0.15))
+            
+            fare_nokta = Entity(
+                parent=self, model='circle', scale=0.015,
+                color=color.red, position=(mmp.x, mmp.y, -0.17),
+                unlit=True, enabled=self.visible
+            )
+            self._gecici_secim_ent.append(fare_nokta)
+
+        # Çizgileri birleştir
+        if len(verts) > 1:
+            cizgi = Entity(
+                parent=self,
+                model=Mesh(vertices=verts, mode='line', thickness=2),
+                color=color.cyan, unlit=True, enabled=self.visible
+            )
+            self._gecici_secim_ent.append(cizgi)
 
     def _alan_poligon_ciz(
         self,
@@ -982,6 +1066,7 @@ class Minimap(Entity):
                 position=(mp.x, mp.y, self._ALAN_Z_NOKTA),
                 enabled=self.visible,
                 unlit=True,
+                add_to_scene_entities=False,
             )
             gorseller.append(nokta)
             if ilk and kapatildi and len(mp_noktalar) >= 3:
@@ -1007,6 +1092,7 @@ class Minimap(Entity):
                     color=kenar_renk,
                     enabled=self.visible,
                     unlit=True,
+                    add_to_scene_entities=False,
                 )
             )
 
@@ -1020,6 +1106,7 @@ class Minimap(Entity):
                     color=color.rgba(0, 255, 180, 90),
                     enabled=self.visible,
                     unlit=True,
+                    add_to_scene_entities=False,
                 )
             )
         return gorseller
@@ -1038,23 +1125,125 @@ class Minimap(Entity):
         )
 
     def alan_gorev_goster(self, noktalar: list, serit_araligi: float = 15.0):
-        """Seçim tamamlandıktan sonra görev bitene kadar kalıcı alan + tarama çizgileri."""
-        self.alan_secim_gecici_temizle()
-        self.alan_secim_noktalari = []
-        self.alan_gorev_noktalari = [list(p) for p in (noktalar or [])]
-        self.alan_gorev_temizle()
-        if not self.alan_gorev_noktalari:
-            return
-        self._alan_gorev_gorseller = self._alan_poligon_ciz(
-            self.alan_gorev_noktalari,
-            kapatildi=True,
-            kenar_kalinlik=self._ALAN_CIZGI_KALINLIK,
-            dolgu_kalinlik=self._ALAN_DOLGU_KALINLIK,
-        )
-        self._alan_gorev_gorseller.extend(
-            self._alan_tarama_deseni_ciz(self.alan_gorev_noktalari, serit_araligi=serit_araligi)
-        )
-
+            """Seçim tamamlandıktan sonra görev bitene kadar KALICI alanı ve iç çapraz tarama çizgilerini gösterir."""
+            from ursina import Entity, Mesh, color
+            
+            # Önce tüm geçici ve önceki kalıcı çizgileri temizleyelim ki üst üste binmesin
+            self.alan_secim_gecici_temizle()
+            self.alan_gorev_temizle()
+            
+            if not noktalar or len(noktalar) < 3:
+                return
+                
+            # 1. HATA ÇÖZÜMÜ: Noktaları Temizleme
+            # Görev başlatıldığında gelen noktalardaki tekrarları ve açık uçları temizliyoruz.
+            temiz_noktalar = []
+            for p in noktalar:
+                mevcut = (float(p[0]), float(p[1]))
+                # Ardışık tekrar eden noktaları atla
+                if not temiz_noktalar or mevcut != temiz_noktalar[-1]:
+                    temiz_noktalar.append(mevcut)
+                    
+            # Eğer son nokta, ilk noktanın aynısı ise onu çıkar (zaten zorla kapalı döngü çizeceğiz)
+            if len(temiz_noktalar) > 2 and temiz_noktalar[-1] == temiz_noktalar[0]:
+                temiz_noktalar.pop()
+                
+            n_points = len(temiz_noktalar)
+            if n_points < 3:
+                return
+                
+            self.alan_gorev_noktalari = [list(p) for p in temiz_noktalar]
+            
+            # --- 1. Kalıcı Sınır Çizgisi (Altın Rengi Çokgen) ---
+            sinir_verts = []
+            for i in range(n_points):
+                p1 = temiz_noktalar[i]
+                p2 = temiz_noktalar[(i + 1) % n_points] # (i+1) % N formülü son köşeyi İLK köşeye kesin bağlar
+                
+                mp1 = self.dunya_to_harita(p1[0], p1[1])
+                mp2 = self.dunya_to_harita(p2[0], p2[1])
+                
+                sinir_verts.append((mp1.x, mp1.y, -0.15))
+                sinir_verts.append((mp2.x, mp2.y, -0.15))
+            
+            kenarlik = Entity(
+                parent=self,
+                model=Mesh(vertices=sinir_verts, mode='lines', thickness=2.5),
+                color=color.gold,
+                unlit=True,
+                enabled=self.visible
+            )
+            self._kalici_gorev_ent.append(kenarlik)
+            
+            # --- 2. İç Tarama Şeritleri (Sınır İhlalsiz Kusursuz Çapraz Tarama) ---
+            tarama_verts = []
+            
+            # Çapraz çizgiler için x + z = c (45 derece) doğrusunu kullanacağız.
+            c_degerleri = [p[0] + p[1] for p in temiz_noktalar]
+            min_c = min(c_degerleri)
+            max_c = max(c_degerleri)
+            
+            # Daha "sık" bir tarama deseni için görsel aralığı daraltıyoruz (%35'e indirdik)
+            gorsel_aralik = max(1.5, serit_araligi * 0.35)
+            
+            c = min_c + gorsel_aralik
+            while c < max_c:
+                kesisimler = []
+                
+                # 2. HATA ÇÖZÜMÜ: Kusursuz Kesişim (Scanline Algoritması)
+                for i in range(n_points):
+                    p1 = temiz_noktalar[i]
+                    p2 = temiz_noktalar[(i + 1) % n_points]
+                    
+                    x1, z1 = p1[0], p1[1]
+                    x2, z2 = p2[0], p2[1]
+                    
+                    v1 = x1 + z1
+                    v2 = x2 + z2
+                    
+                    if v1 == v2:
+                        continue  # Çizgi kenara paralel ise yoksay
+                    
+                    # Sadece [min, max) aralığını kontrol et. 
+                    # (Bu matematiksel kural taramanın tam köşeye denk gelmesi durumunda çizginin dışarı fırlamasını engeller)
+                    v_min = min(v1, v2)
+                    v_max = max(v1, v2)
+                    
+                    if v_min <= c < v_max:
+                        # Çizginin kenarı tam olarak nerede kestiğini hesapla
+                        t = (c - v1) / (v2 - v1)
+                        kx = x1 + t * (x2 - x1)
+                        kz = z1 + t * (z2 - z1)
+                        kesisimler.append((kx, kz))
+                
+                # Kesişim noktalarını X eksenine göre sırala
+                kesisimler.sort(key=lambda p: p[0])
+                
+                # Noktaları iç bölge olarak çiftler halinde bağla
+                for i in range(0, len(kesisimler) - 1, 2):
+                    p_bas = kesisimler[i]
+                    p_bit = kesisimler[i+1]
+                    
+                    mp_bas = self.dunya_to_harita(p_bas[0], p_bas[1])
+                    mp_bit = self.dunya_to_harita(p_bit[0], p_bit[1])
+                    
+                    # Z koordinatını -0.16 yaparak altın kenarlığın (-0.15) altında kalmasını sağlıyoruz
+                    tarama_verts.append((mp_bas.x, mp_bas.y, -0.16))
+                    tarama_verts.append((mp_bit.x, mp_bit.y, -0.16))
+                    
+                c += gorsel_aralik
+                
+            # Çizgileri ekrana altın sarısı (gold) renginde çizdir
+            if tarama_verts:
+                tarama_ent = Entity(
+                    parent=self,
+                    model=Mesh(vertices=tarama_verts, mode='lines', thickness=0.5),
+                    color=color.gold,  # İÇ ÇİZGİLER ARTIK ALTIN SARISI
+                    alpha=0.45,        # Sınır çizgisi kadar parlak olmaması için hafif saydam
+                    unlit=True,
+                    enabled=self.visible
+                )
+                self._kalici_gorev_ent.append(tarama_ent)
 # ============================================================
 # 3. ORTAM SINIFI (Simülasyon Dünyası)
 # ============================================================
@@ -1389,100 +1578,90 @@ class Ortam:
         root = Entity(position=(0, 0, 0), name="ileri_karakol", add_to_scene_entities=True)
         self.ileri_karakol_gorselleri.append(root)
 
-        def ekle(model, position, scale, renk, alpha=1.0, **kwargs):
-            ent = Entity(parent=root, model=model, position=position, scale=scale, color=renk, **kwargs)
-            if alpha < 1.0:
-                ent.alpha = alpha
-                ent.transparent = True
-            self.ileri_karakol_gorselleri.append(ent)
-            return ent
-
         govde_renk = color.rgb(18/255, 28/255, 34/255)
         guverte_renk = color.rgb(72/255, 86/255, 90/255)
         kenar_renk = color.rgb(44/255, 210/255, 198/255)
         cam_renk = color.rgb(105/255, 205/255, 232/255)
-        cati_renk = color.rgb(230/255, 238/255, 230/255)
         panel_renk = color.rgb(20/255, 48/255, 78/255)
         isik_renk = color.rgb(255/255, 205/255, 82/255)
 
-        platform = Entity(
-            parent=root,
-            model='cube',
-            position=(cx, surface_y + 0.02, cz),
-            scale=(sx, 0.16, sz),
-            color=color.rgb(36/255, 58/255, 64/255),
-            unlit=False,
-            transparent=True,
-            alpha=0.62,
-            collider='box',
-        )
-        platform.double_sided = True
-        self.ileri_karakol_gorselleri.append(platform)
+        verts = []
+        tris = []
+        colors = []
 
-        ekle('cube', (cx, elevated_y + 0.33, cz), (sx * 0.72, 0.36, sz * 0.72), govde_renk, unlit=False, collider='box')
-        ekle('cube', (cx, elevated_y + 0.62, cz), (sx * 0.68, 0.18, sz * 0.68), guverte_renk, unlit=False)
+        def kutu_ekle(position, scale, renk):
+            px, py, pz = position
+            sx2, sy2, sz2 = scale[0] / 2.0, scale[1] / 2.0, scale[2] / 2.0
+            base = len(verts)
+            corners = [
+                (px - sx2, py - sy2, pz - sz2), (px + sx2, py - sy2, pz - sz2),
+                (px + sx2, py + sy2, pz - sz2), (px - sx2, py + sy2, pz - sz2),
+                (px - sx2, py - sy2, pz + sz2), (px + sx2, py - sy2, pz + sz2),
+                (px + sx2, py + sy2, pz + sz2), (px - sx2, py + sy2, pz + sz2),
+            ]
+            verts.extend(corners)
+            colors.extend([renk] * 8)
+            tris.extend([
+                (base + 0, base + 1, base + 2), (base + 0, base + 2, base + 3),
+                (base + 5, base + 4, base + 7), (base + 5, base + 7, base + 6),
+                (base + 4, base + 0, base + 3), (base + 4, base + 3, base + 7),
+                (base + 1, base + 5, base + 6), (base + 1, base + 6, base + 2),
+                (base + 3, base + 2, base + 6), (base + 3, base + 6, base + 7),
+                (base + 4, base + 5, base + 1), (base + 4, base + 1, base + 0),
+            ])
 
-        # Ince korkuluklar ve guvenlik seridi.
-        kenarlar = (
+        leg_top_y = elevated_y + 0.55
+        leg_height = max(1.0, leg_top_y - sea_floor_y)
+        leg_center_y = sea_floor_y + (leg_height / 2.0)
+        bina_z = cz + sz * 0.08
+        kule_x, kule_z = cx + sx * 0.26, cz + sz * 0.22
+
+        kutu_ekle((cx, surface_y + 0.02, cz), (sx, 0.16, sz), color.rgb(36/255, 58/255, 64/255))
+        kutu_ekle((cx, elevated_y + 0.33, cz), (sx * 0.72, 0.36, sz * 0.72), govde_renk)
+        kutu_ekle((cx, elevated_y + 0.62, cz), (sx * 0.68, 0.18, sz * 0.68), guverte_renk)
+        for pos, scale in (
             ((cx, elevated_y + 1.05, y_min + 1.0), (sx - 2.0, 0.32, 0.34)),
             ((cx, elevated_y + 1.05, y_max - 1.0), (sx - 2.0, 0.32, 0.34)),
             ((x_min + 1.0, elevated_y + 1.05, cz), (0.34, 0.32, sz - 2.0)),
             ((x_max - 1.0, elevated_y + 1.05, cz), (0.34, 0.32, sz - 2.0)),
-        )
-        for pos, scale in kenarlar:
-            ekle('cube', pos, scale, kenar_renk, unlit=True)
-
-        # Deniz tabanina inen ayaklar karakolu su ustunde daha inandirici gosterir.
-        leg_top_y = elevated_y + 0.55
-        leg_height = max(1.0, leg_top_y - sea_floor_y)
-        leg_center_y = sea_floor_y + (leg_height / 2.0)
+        ):
+            kutu_ekle(pos, scale, kenar_renk)
         for px in (x_min + 6.0, x_max - 6.0):
             for pz in (y_min + 6.0, y_max - 6.0):
-                ekle('cube', (px, leg_center_y, pz), (1.35, leg_height, 1.35), color.rgb(42/255, 58/255, 60/255), alpha=0.76, unlit=False, collider='box')
-                ekle('sphere', (px, elevated_y + 2.45, pz), (1.55, 1.55, 1.55), isik_renk, unlit=True)
-
-        # Ana kontrol binasi: cam bantli, duz catili modern modul.
-        bina_z = cz + sz * 0.08
-        duvar_renk = color.rgb(160/255, 170/255, 175/255)
-        cati_renk_yeni = color.rgb(110/255, 120/255, 130/255)
-
-        ekle('cube', (cx - sx * 0.05, elevated_y + 2.15, bina_z), (sx * 0.34, 3.0, sz * 0.22), duvar_renk, unlit=False, collider='box')
-        ekle('cube', (cx - sx * 0.05, elevated_y + 2.58, bina_z - sz * 0.115), (sx * 0.31, 0.78, 0.6), cam_renk, alpha=0.7, unlit=True)
-        ekle('cube', (cx - sx * 0.05, elevated_y + 2.58, bina_z + sz * 0.115), (sx * 0.31, 0.78, 0.6), cam_renk, alpha=0.7, unlit=True)
-        ekle('cube', (cx - sx * 0.05, elevated_y + 3.86, bina_z), (sx * 0.39, 0.35, sz * 0.27), cati_renk_yeni, unlit=False)
-
-        # Gunes panelleri ve servis ekipmani.
+                kutu_ekle((px, leg_center_y, pz), (1.35, leg_height, 1.35), color.rgb(42/255, 58/255, 60/255))
+                kutu_ekle((px, elevated_y + 2.45, pz), (1.15, 1.15, 1.15), isik_renk)
+        kutu_ekle((cx - sx * 0.05, elevated_y + 2.15, bina_z), (sx * 0.34, 3.0, sz * 0.22), color.rgb(160/255, 170/255, 175/255))
+        kutu_ekle((cx - sx * 0.05, elevated_y + 2.58, bina_z - sz * 0.115), (sx * 0.31, 0.78, 0.6), cam_renk)
+        kutu_ekle((cx - sx * 0.05, elevated_y + 2.58, bina_z + sz * 0.115), (sx * 0.31, 0.78, 0.6), cam_renk)
+        kutu_ekle((cx - sx * 0.05, elevated_y + 3.86, bina_z), (sx * 0.39, 0.35, sz * 0.27), color.rgb(110/255, 120/255, 130/255))
         for px in (cx + sx * 0.15, cx + sx * 0.29):
-            panel = ekle('cube', (px, elevated_y + 1.65, cz - sz * 0.20), (sx * 0.16, 0.12, sz * 0.18), panel_renk, unlit=False)
-            panel.rotation_x = -10
-            ekle('cube', (px, elevated_y + 1.73, cz - sz * 0.20), (sx * 0.14, 0.035, 0.18), color.rgb(82/255, 176/255, 220/255), unlit=True)
-            ekle('cube', (px, elevated_y + 1.74, cz - sz * 0.155), (sx * 0.14, 0.032, 0.12), color.rgb(82/255, 176/255, 220/255), alpha=0.82, unlit=True)
-            ekle('cube', (px, elevated_y + 1.75, cz - sz * 0.245), (sx * 0.14, 0.032, 0.12), color.rgb(82/255, 176/255, 220/255), alpha=0.82, unlit=True)
+            kutu_ekle((px, elevated_y + 1.65, cz - sz * 0.20), (sx * 0.16, 0.12, sz * 0.18), panel_renk)
+            kutu_ekle((px, elevated_y + 1.73, cz - sz * 0.20), (sx * 0.14, 0.035, 0.18), color.rgb(82/255, 176/255, 220/255))
+        kutu_ekle((cx, elevated_y + 0.82, y_min + 3.2), (sx * 0.36, 0.18, 5.8), color.rgb(92/255, 105/255, 104/255))
+        kutu_ekle((cx, elevated_y + 0.95, y_min + 0.5), (sx * 0.26, 0.14, 1.1), kenar_renk)
+        kutu_ekle((cx - sx * 0.12, elevated_y + 0.94, y_min + 3.4), (0.32, 0.72, 5.6), color.rgb(38/255, 170/255, 160/255))
+        kutu_ekle((cx + sx * 0.12, elevated_y + 0.94, y_min + 3.4), (0.32, 0.72, 5.6), color.rgb(38/255, 170/255, 160/255))
+        kutu_ekle((kule_x, elevated_y + 3.15, kule_z), (1.0, 5.2, 1.0), color.rgb(205/255, 214/255, 212/255))
+        kutu_ekle((kule_x, elevated_y + 5.05, kule_z), (5.4, 0.18, 0.34), color.rgb(54/255, 220/255, 210/255))
+        kutu_ekle((kule_x, elevated_y + 5.05, kule_z), (0.34, 0.18, 5.4), color.rgb(54/255, 220/255, 210/255))
+        kutu_ekle((kule_x, elevated_y + 6.05, kule_z), (2.0, 1.0, 2.0), color.rgb(158/255, 226/255, 234/255))
 
-        # ROV cikis/iskele koridoru.
-        ekle('cube', (cx, elevated_y + 0.82, y_min + 3.2), (sx * 0.36, 0.18, 5.8), color.rgb(92/255, 105/255, 104/255), unlit=False, collider='box')
-        ekle('cube', (cx, elevated_y + 0.95, y_min + 0.5), (sx * 0.26, 0.14, 1.1), kenar_renk, unlit=True)
-        ekle('cube', (cx - sx * 0.12, elevated_y + 0.94, y_min + 3.4), (0.32, 0.72, 5.6), color.rgb(38/255, 170/255, 160/255), alpha=0.74, unlit=True)
-        ekle('cube', (cx + sx * 0.12, elevated_y + 0.94, y_min + 3.4), (0.32, 0.72, 5.6), color.rgb(38/255, 170/255, 160/255), alpha=0.74, unlit=True)
+        mesh = Mesh(vertices=verts, triangles=tris, colors=colors, static=True)
+        karakol_mesh = Entity(parent=root, model=mesh, unlit=False, add_to_scene_entities=True)
+        karakol_mesh.model.generate()
+        self.ileri_karakol_gorselleri.append(karakol_mesh)
 
-        # Haberlesme/sensor kulesi.
-        kule_x, kule_z = cx + sx * 0.26, cz + sz * 0.22
-        ekle('cube', (kule_x, elevated_y + 3.15, kule_z), (1.0, 5.2, 1.0), color.rgb(205/255, 214/255, 212/255), unlit=False)
-        ekle('cube', (kule_x, elevated_y + 5.05, kule_z), (5.4, 0.18, 0.34), color.rgb(54/255, 220/255, 210/255), unlit=True)
-        ekle('cube', (kule_x, elevated_y + 5.05, kule_z), (0.34, 0.18, 5.4), color.rgb(54/255, 220/255, 210/255), unlit=True)
-        ekle('sphere', (kule_x, elevated_y + 6.05, kule_z), (2.2, 1.05, 2.2), color.rgb(158/255, 226/255, 234/255), alpha=0.8, unlit=True)
-
-        self.ileri_karakol_gorselleri.append(
-            Text(
-                text="ILERI KARAKOL",
-                parent=root,
-                position=(cx, elevated_y + 7.25, cz),
-                origin=(0, 0),
-                scale=6,
-                billboard=True,
-                color=color.rgb(160/255, 240/255, 255/255),
-            )
+        collider = Entity(
+            parent=root,
+            model='cube',
+            position=(cx, elevated_y + 1.2, cz),
+            scale=(sx, 6.0, sz),
+            color=color.clear,
+            visible=False,
+            collider='box',
+            add_to_scene_entities=True,
         )
+        self.ileri_karakol_gorselleri.append(collider)
 
 
     def ROV(self, rov_id, x=None, y=None, z=None):

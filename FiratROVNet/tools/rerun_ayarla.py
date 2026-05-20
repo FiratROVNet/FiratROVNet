@@ -9,6 +9,8 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import numpy as np
 import rerun as rr
 
+from FiratROVNet.config import PerformansAyarlari
+
 try:
     import qrcode
 except ImportError:
@@ -334,6 +336,20 @@ def _engel_renkleri_hesapla(yukseklikler, sea_floor_y, surface_y):
     return np.clip(np.rint(renkler), 0, 255).astype(np.uint8)
 
 
+def _rr_downsample_np(arr, max_count):
+    if arr is None:
+        return arr
+    try:
+        n = int(arr.shape[0])
+    except Exception:
+        return arr
+    max_count = int(max_count or 0)
+    if max_count <= 0 or n <= max_count:
+        return arr
+    idx = np.linspace(0, n - 1, max_count, dtype=np.int64)
+    return arr[idx]
+
+
 # ---------------------------------------------------------------------------
 # Multibeam sonar 3D zemin haritalama
 # ---------------------------------------------------------------------------
@@ -536,6 +552,7 @@ def rerun_sahne_logla(app, filo, step):
     if not isinstance(engel_kaynak, list) or len(engel_kaynak) == 0:
         engel_kaynak = getattr(app, "engel_bulutu", None)
     engel_points = _engel_bulutu_to_points3d(engel_kaynak)
+    engel_points = _rr_downsample_np(engel_points, getattr(PerformansAyarlari, "RERUN_MAKS_ENGEL_NOKTASI", 2500))
     surface_y = float(getattr(app, "WATER_SURFACE_Y_BASE", 0.0))
     sea_floor_y = float(getattr(app, "SEA_FLOOR_Y", -50.0))
     _rr_set_step(step)
@@ -556,60 +573,66 @@ def rerun_sahne_logla(app, filo, step):
         radii = np.full((engel_points.shape[0],), _RERUN_ENGEL_RADIUS, dtype=np.float32)
         rr.log("engeller", rr.Points3D(engel_points, colors=colors, radii=radii))
 
-    ada_merkezleri = []
-    ada_radii = []
-    for ada in getattr(app, "island_positions", []) or []:
-        if ada is None or len(ada) < 3:
-            continue
-        try:
-            ada_x = float(ada[0])
-            ada_z = float(ada[1])
-            ada_radius = float(ada[2])
-        except (TypeError, ValueError):
-            continue
-        ada_merkezleri.append(_ursina_to_rerun_xyz(ada_x, surface_y + 0.35, ada_z))
-        ada_radii.append(max(1.4, ada_radius * 0.18))
+    statik_tekrar = int(getattr(PerformansAyarlari, "RERUN_STATIK_LOG_TEKRAR_ADIMI", 300) or 0)
+    statik_son_adim = getattr(app, "_rr_statik_son_adim", None)
+    statik_logla = statik_son_adim is None or (statik_tekrar > 0 and int(step) - int(statik_son_adim) >= statik_tekrar)
+    if statik_logla:
+        app._rr_statik_son_adim = int(step)
+        ada_merkezleri = []
+        ada_radii = []
+        for ada in getattr(app, "island_positions", []) or []:
+            if ada is None or len(ada) < 3:
+                continue
+            try:
+                ada_x = float(ada[0])
+                ada_z = float(ada[1])
+                ada_radius = float(ada[2])
+            except (TypeError, ValueError):
+                continue
+            ada_merkezleri.append(_ursina_to_rerun_xyz(ada_x, surface_y + 0.35, ada_z))
+            ada_radii.append(max(1.4, ada_radius * 0.18))
 
-    if ada_merkezleri:
-        ada_merkezleri_np = np.asarray(ada_merkezleri, dtype=np.float32)
-        ada_radii_np = np.asarray(ada_radii, dtype=np.float32)
-        ada_colors = np.repeat(_RERUN_ADA_RENK, ada_merkezleri_np.shape[0], axis=0)
-        rr.log("adalar/merkezler", rr.Points3D(ada_merkezleri_np, colors=ada_colors, radii=ada_radii_np))
-    else:
-        rr.log(
-            "adalar/merkezler",
-            rr.Points3D(
-                np.empty((0, 3), dtype=np.float32),
-                colors=np.empty((0, 3), dtype=np.uint8),
-                radii=np.empty((0,), dtype=np.float32),
-            ),
-        )
+        if ada_merkezleri:
+            ada_merkezleri_np = np.asarray(ada_merkezleri, dtype=np.float32)
+            ada_radii_np = np.asarray(ada_radii, dtype=np.float32)
+            ada_colors = np.repeat(_RERUN_ADA_RENK, ada_merkezleri_np.shape[0], axis=0)
+            rr.log("adalar/merkezler", rr.Points3D(ada_merkezleri_np, colors=ada_colors, radii=ada_radii_np))
+        else:
+            rr.log(
+                "adalar/merkezler",
+                rr.Points3D(
+                    np.empty((0, 3), dtype=np.float32),
+                    colors=np.empty((0, 3), dtype=np.uint8),
+                    radii=np.empty((0,), dtype=np.float32),
+                ),
+            )
 
-    ada_cevre_noktalari = []
-    for nokta in filo.ada_cevre(sessiz=True) or []:
-        if nokta is None or len(nokta) < 2:
-            continue
-        try:
-            nokta_x = float(nokta[0])
-            nokta_z = float(nokta[1])
-        except (TypeError, ValueError):
-            continue
-        ada_cevre_noktalari.append(_ursina_to_rerun_xyz(nokta_x, surface_y + 0.35, nokta_z))
+        ada_cevre_noktalari = []
+        for nokta in filo.ada_cevre(sessiz=True) or []:
+            if nokta is None or len(nokta) < 2:
+                continue
+            try:
+                nokta_x = float(nokta[0])
+                nokta_z = float(nokta[1])
+            except (TypeError, ValueError):
+                continue
+            ada_cevre_noktalari.append(_ursina_to_rerun_xyz(nokta_x, surface_y + 0.35, nokta_z))
 
-    if ada_cevre_noktalari:
-        ada_cevre_np = np.asarray(ada_cevre_noktalari, dtype=np.float32)
-        ada_cevre_colors = np.repeat(_RERUN_ADA_CEVRE_RENK, ada_cevre_np.shape[0], axis=0)
-        ada_cevre_radii = np.full((ada_cevre_np.shape[0],), _RERUN_ADA_CEVRE_RADIUS, dtype=np.float32)
-        rr.log("adalar/cevre_noktalari", rr.Points3D(ada_cevre_np, colors=ada_cevre_colors, radii=ada_cevre_radii))
-    else:
-        rr.log(
-            "adalar/cevre_noktalari",
-            rr.Points3D(
-                np.empty((0, 3), dtype=np.float32),
-                colors=np.empty((0, 3), dtype=np.uint8),
-                radii=np.empty((0,), dtype=np.float32),
-            ),
-        )
+        if ada_cevre_noktalari:
+            ada_cevre_np = np.asarray(ada_cevre_noktalari, dtype=np.float32)
+            ada_cevre_np = _rr_downsample_np(ada_cevre_np, getattr(PerformansAyarlari, "RERUN_MAKS_ENGEL_NOKTASI", 2500))
+            ada_cevre_colors = np.repeat(_RERUN_ADA_CEVRE_RENK, ada_cevre_np.shape[0], axis=0)
+            ada_cevre_radii = np.full((ada_cevre_np.shape[0],), _RERUN_ADA_CEVRE_RADIUS, dtype=np.float32)
+            rr.log("adalar/cevre_noktalari", rr.Points3D(ada_cevre_np, colors=ada_cevre_colors, radii=ada_cevre_radii))
+        else:
+            rr.log(
+                "adalar/cevre_noktalari",
+                rr.Points3D(
+                    np.empty((0, 3), dtype=np.float32),
+                    colors=np.empty((0, 3), dtype=np.uint8),
+                    radii=np.empty((0,), dtype=np.float32),
+                ),
+            )
 
     rov_centers, rov_colors, rov_half_sizes = _rovlar_to_rerun_arrays(getattr(app, "rovs", None))
     if rov_centers.shape[0] == 0:
@@ -637,8 +660,18 @@ def rerun_sahne_logla(app, filo, step):
     try:
         from FiratROVNet.config import SonarHaritalamaAyarlari
         tarama_raw = getattr(app, 'rerun_tarama_haritasi', [])
-        if tarama_raw:
+        tarama_adimi = max(1, int(getattr(PerformansAyarlari, "RERUN_TARAMA_LOG_ADIMI", 5) or 1))
+        try:
+            tarama_len = len(tarama_raw) if tarama_raw is not None else 0
+        except TypeError:
+            tarama_len = 0
+        tarama_logla = tarama_len > 0 and (
+            int(step) % tarama_adimi == 0 or tarama_len != int(getattr(app, "_rr_son_tarama_len", -1))
+        )
+        if tarama_logla:
+            app._rr_son_tarama_len = tarama_len
             tarama_np = np.asarray(tarama_raw, dtype=np.float32)
+            tarama_np = _rr_downsample_np(tarama_np, getattr(PerformansAyarlari, "RERUN_MAKS_TARAMA_NOKTASI", 12000))
             # Ursina (x, y, z) → Rerun (x, z, y) koordinat dönüşümü
             tarama_rr = tarama_np[:, [0, 2, 1]]
             tarama_renkler = _batimetri_renkleri_hesapla(
@@ -650,7 +683,8 @@ def rerun_sahne_logla(app, filo, step):
                 dtype=np.float32,
             )
             rr.log("tarama/zemin_haritasi", rr.Points3D(tarama_rr, colors=tarama_renkler, radii=tarama_radii))
-        else:
+        elif tarama_len == 0 and getattr(app, "_rr_son_tarama_len", None) != 0:
+            app._rr_son_tarama_len = 0
             rr.log(
                 "tarama/zemin_haritasi",
                 rr.Points3D(

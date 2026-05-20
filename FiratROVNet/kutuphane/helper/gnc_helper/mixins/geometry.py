@@ -3,8 +3,15 @@ from __future__ import annotations
 import math
 from typing import Any, Optional, Protocol, cast
 
+import numpy as np
 from FiratROVNet.config import GATLimitleri
 from ursina import Vec3, raycast, color, Entity, destroy
+
+try:
+    from FiratROVNet.native.gat_fast import rov_kacinma_hesapla, statik_engeller_hesapla
+except Exception:
+    rov_kacinma_hesapla = None
+    statik_engeller_hesapla = None
 
 
 class _FiloLike(Protocol):
@@ -211,6 +218,34 @@ class GeometryMixin:
         if rov is None or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
             return []
         rx, ry, rz = float(rov.x), float(rov.y), float(rov.z)
+
+        if statik_engeller_hesapla is not None:
+            try:
+                islands = [
+                    (float(ip[0]), float(ip[1]), float(ip[2]))
+                    for ip in ortam.island_positions
+                    if ip is not None and len(ip) >= 3
+                ]
+                if islands:
+                    coords, distances, radii = statik_engeller_hesapla(
+                        rx,
+                        ry,
+                        rz,
+                        float(menzil),
+                        np.asarray(islands, dtype=np.float64),
+                    )
+                    return [
+                        {
+                            'yon': 'ada',
+                            'mesafe': float(distances[i]),
+                            'koordinat': (float(coords[i, 0]), float(coords[i, 1]), float(coords[i, 2])),
+                            'radius': float(radii[i]),
+                        }
+                        for i in range(len(distances))
+                    ]
+            except Exception:
+                pass
+
         sonuclar = []
         for ip in ortam.island_positions:
             if ip is None or len(ip) < 3:
@@ -557,6 +592,46 @@ class GeometryMixin:
         pos_self = self._vektor_poz_al_3d(rov_id, ortam)
         if not pos_self:
             return []
+
+        if rov_kacinma_hesapla is not None:
+            try:
+                other_ids = []
+                other_positions = []
+                for r_ent in ortam.rovs:
+                    if r_ent is None or getattr(r_ent, 'id', None) == rov_id:
+                        continue
+                    if getattr(r_ent, 'is_destroyed', False):
+                        continue
+                    other_ids.append(int(r_ent.id))
+                    other_positions.append((float(r_ent.x), float(r_ent.z), float(-r_ent.y)))
+
+                if not other_positions:
+                    return []
+
+                ids, coords, units, distances = rov_kacinma_hesapla(
+                    np.asarray(pos_self, dtype=np.float64),
+                    np.asarray(other_positions, dtype=np.float64),
+                    np.asarray(other_ids, dtype=np.int64),
+                    float(menzil),
+                )
+                result = []
+                for i in range(len(distances)):
+                    unit = (float(units[i, 0]), float(units[i, 1]), float(units[i, 2]))
+                    coord = (float(coords[i, 0]), float(coords[i, 1]), float(coords[i, 2]))
+                    result.append({
+                        'rov_id': int(ids[i]),
+                        'koordinat': coord,
+                        'vektor_bilgi': {
+                            'baslangic_3d': pos_self,
+                            'bitis_3d': coord,
+                            'birim_vektor_3d': unit,
+                            'uzaklik_metre': float(distances[i]),
+                        },
+                        'mesafe': float(distances[i]),
+                    })
+                return result
+            except Exception:
+                pass
 
         result = []
         for r_ent in ortam.rovs:

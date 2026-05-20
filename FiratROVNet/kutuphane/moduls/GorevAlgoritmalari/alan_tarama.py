@@ -163,7 +163,7 @@ class AlanTaramaGorevi:
         # Aynı grup için aktif plan varsa temiz kapat — ROVlar orphan kalmasın
         if grup_id in self.aktif_planlar:
             try:
-                self.durdur(grup_id, lideri_takip_et=False)
+                self.durdur(grup_id, lideri_takip_et=False, gorselleri_koru=True)
             except Exception:
                 pass
         self.aktif_planlar[grup_id] = plan
@@ -171,7 +171,7 @@ class AlanTaramaGorevi:
         self._yaklasma_baslat(plan, sessiz=sessiz)
         return plan
 
-    def durdur(self, grup_id: int, lideri_takip_et: bool = True) -> None:
+    def durdur(self, grup_id: int, lideri_takip_et: bool = True, gorselleri_koru: bool = False) -> None:
         plan = self.aktif_planlar.pop(grup_id, None)
         self._yaklasma_sure.pop(grup_id, None)  # zaman sayacını temizle
         if not plan:
@@ -182,8 +182,9 @@ class AlanTaramaGorevi:
             pass
         for rov_id in plan.rota_by_rov:
             rov_gorev_bosalt(self.filo, rov_id, lideri_takip_et=lideri_takip_et)
-        from FiratROVNet.kutuphane.moduls.GorevAlgoritmalari.ortak import minimap_gorev_alanini_temizle
-        minimap_gorev_alanini_temizle(self.filo)
+        if not gorselleri_koru:
+            from FiratROVNet.kutuphane.moduls.GorevAlgoritmalari.ortak import minimap_gorev_alanini_temizle
+            minimap_gorev_alanini_temizle(self.filo)
 
     def guncelle(self, grup_id: int | None = None, lideri_takip_et: bool = True) -> list[int]:
         """Rotasi biten plan ROV'larini idle'a alir. Donus: biten grup idleri."""
@@ -192,9 +193,11 @@ class AlanTaramaGorevi:
         for p_grup_id, plan in planlar:
             if grup_id is not None and p_grup_id != grup_id:
                 continue
+                
+            self._plan_liderini_sabitle(plan)
+            
             tamamlandi = True
             if plan.asama == "yaklasma":
-                self._plan_liderini_sabitle(plan)
                 # Yaklasma zaman sayacını güncelle
                 try:
                     from ursina import time as _u_time
@@ -450,6 +453,19 @@ class AlanTaramaGorevi:
     def _plan_liderini_sabitle(self, plan: AlanTaramaPlani) -> None:
         if plan.lider_id is None:
             return
+            
+        lider_rov = self.filo.find_rov_by_id(plan.lider_id)
+        if lider_rov is None or (hasattr(lider_rov, 'is_destroyed') and lider_rov.is_destroyed):
+            leader_manager = getattr(self.filo, "leader_manager", None)
+            if leader_manager is not None and hasattr(leader_manager, "mevcut_lider_id"):
+                yeni_lider_id = leader_manager.mevcut_lider_id.get(plan.grup_id, -1)
+                if yeni_lider_id >= 0 and yeni_lider_id != plan.lider_id:
+                    if plan.lider_id in plan.rota_by_rov:
+                        rota = plan.rota_by_rov.pop(plan.lider_id)
+                        plan.rota_by_rov[yeni_lider_id] = rota
+                    plan.lider_id = yeni_lider_id
+            return
+            
         for rov_id in plan.rota_by_rov:
             rov = self.filo.find_rov_by_id(rov_id)
             if rov is None:

@@ -17,10 +17,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch_geometric.nn import GATConv
 import numpy as np
-# Pencere açmadan sadece dosyaya çiz (beyaz sayfa flash'ı önler)
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 from FiratROVNet.gnc import Filo
 from FiratROVNet.model_paths import GAT_MODEL, path_str
 
@@ -93,17 +89,18 @@ class GAT_Modeli(torch.nn.Module):
             except Exception:
                 pass
 
-    def forward(self, x, edge_index, return_attention=False):
+    def forward(self, x, edge_index, return_attention=False, log_probs=True):
         x = self.conv1(x, edge_index)
         x = F.elu(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
         
         if return_attention:
             x, (ei, alpha) = self.conv2(x, edge_index, return_attention_weights=True)
-            return F.log_softmax(x, dim=1), ei, alpha
+            out = F.log_softmax(x, dim=1) if log_probs else x
+            return out, ei, alpha
         else:
             x = self.conv2(x, edge_index)
-            return F.log_softmax(x, dim=1)
+            return F.log_softmax(x, dim=1) if log_probs else x
 
 
 def train(epochs=1000, lr=0.001, hidden_channels=16, num_heads=4, 
@@ -286,6 +283,11 @@ def _kaydet_grafik(epoch_numbers, losses, accuracies, dosya_adi):
     """
     if not epoch_numbers or not losses or not accuracies:
         return
+
+    # Pencere açmadan sadece dosyaya çiz (beyaz sayfa flash'ı önler).
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
     
     # Grafik oluştur
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))

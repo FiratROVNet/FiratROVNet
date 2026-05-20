@@ -69,19 +69,36 @@ class FiratAnalizci:
         
         self.model.eval()
 
-    def analiz_et(self, veri):
+    def analiz_et(self, veri, return_attention=False):
         """
         GAT verisini analiz eder ve tahminleri döndürür.
         
         Args:
             veri: torch_geometric.data.Data objesi
+            return_attention (bool): True ise attention ağırlıklarını da döndürür.
         
         Returns:
             tuple: (tahminler, edge_idx, alpha)
         """
-        with torch.no_grad():
-            out, edge_idx, alpha = self.model(veri.x, veri.edge_index, return_attention=True)
-            tahminler = out.argmax(dim=1).numpy()
+        with torch.inference_mode():
+            x = veri.x.to(self.device, non_blocking=True)
+            edge_index = veri.edge_index.to(self.device, non_blocking=True)
+            if return_attention:
+                out, edge_idx, alpha = self.model(
+                    x,
+                    edge_index,
+                    return_attention=True,
+                    log_probs=False,
+                )
+            else:
+                out = self.model(
+                    x,
+                    edge_index,
+                    return_attention=False,
+                    log_probs=False,
+                )
+                edge_idx, alpha = None, None
+            tahminler = out.argmax(dim=1).cpu().numpy()
         return tahminler, edge_idx, alpha
 
 

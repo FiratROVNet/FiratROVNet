@@ -178,7 +178,7 @@ class Filo(FiloInitMixin):
     def _baslatma_tamamla(self):
         sonuc = super()._baslatma_tamamla()
         self._init_pid_ui()
-        self.toggle_pid_ui(True)
+        self.toggle_pid_ui(False)
         return sonuc
             
 
@@ -439,8 +439,12 @@ class Filo(FiloInitMixin):
             if getattr(m, "motor_entity", None) is not None:
                 pos = m.motor_entity.position
                 pos_t = (getattr(pos, "x", pos[0]), getattr(pos, "y", pos[1]), getattr(pos, "z", pos[2]))
-            elif hasattr(m, "l_pos") and m.l_pos is not None:
-                pos_t = (m.l_pos.x, m.l_pos.y, m.l_pos.z)
+            elif getattr(m, "l_pos_ursina", None) is not None:
+                pos = m.l_pos_ursina
+                pos_t = (pos.x, pos.y, pos.z)
+            elif getattr(m, "metre_pos", None) is not None:
+                pos = m.metre_pos
+                pos_t = (pos.x, pos.y, pos.z)
             else:
                 continue
             # Yön: görsel rotasyon güncellendiyse ondan hesapla, yoksa yon_vec
@@ -570,27 +574,39 @@ class Filo(FiloInitMixin):
             if not self.ortam_ref:
                 return
             
-            veri = self.ortam_ref.simden_veriye()
+            Profiler.start("0_gat/simden_veriye")
+            try:
+                veri = self.ortam_ref.simden_veriye()
+            finally:
+                Profiler.end("0_gat/simden_veriye")
             ai_aktif = getattr(cfg, 'ai_aktif', True)
             
             active_rovs = self.rovs
 
             if ai_aktif and self.gat:  # type: ignore[union-attr]
                 try:
-                    tahminler_yeni, _, _ = self.gat.analiz_et(veri)  # type: ignore[union-attr]
+                    Profiler.start("0_gat/model_inference")
+                    try:
+                        tahminler_yeni, _, _ = self.gat.analiz_et(veri)  # type: ignore[union-attr]
+                    finally:
+                        Profiler.end("0_gat/model_inference")
                     
                     # GAT predictions'ı doğru indekslere ata
                     # tahminler_yeni active_rovs sırasında predictions döndürür
-                    active_idx = 0
-                    for all_idx, rov in enumerate(self.ortam_ref.rovs):
-                        # Destroyed/None ROV'ları atla
-                        if rov not in active_rovs:
-                            continue
-                        
-                        # Active index bounds check
-                        if active_idx < len(tahminler_yeni) and all_idx < len(tahminler):  # type: ignore[arg-type]
-                            tahminler[all_idx] = tahminler_yeni[active_idx]
-                        active_idx += 1
+                    Profiler.start("0_gat/tahmin_dagit")
+                    try:
+                        active_idx = 0
+                        for all_idx, rov in enumerate(self.ortam_ref.rovs):
+                            # Destroyed/None ROV'ları atla
+                            if rov not in active_rovs:
+                                continue
+                            
+                            # Active index bounds check
+                            if active_idx < len(tahminler_yeni) and all_idx < len(tahminler):  # type: ignore[arg-type]
+                                tahminler[all_idx] = tahminler_yeni[active_idx]
+                            active_idx += 1
+                    finally:
+                        Profiler.end("0_gat/tahmin_dagit")
                 except Exception as e:
                     print(f"⚠️ GAT analiz hatası: {e}")
             
@@ -669,11 +685,11 @@ class Filo(FiloInitMixin):
             gat_kodu = tahminler[idx]
             rov.gat_kodu = gat_kodu
             
-            # Renk ayarı (Lider sabit kırmızı, diğerleri GAT'a göre)
+            # Lider her zaman kirmizi; takipciler GAT koduna gore renklendirilir.
             if rov.role == 1:
                 rov.color = color.red
             else:
-                rov.color = kod_renkleri.get(gat_kodu, color.white)
+                rov.color = kod_renkleri.get(gat_kodu, color.orange)
             
             # Label (Etiket) ayarları
             rov.label.color = rov.color
@@ -741,6 +757,27 @@ class Filo(FiloInitMixin):
             dirty()
         if not sessiz:
             print(f"✅ ROV-{rov.id} üsse alındı (group_id=None).")
+        return True
+
+    def rov_gruba_gorev_aktar(self, rov_id: int, g_id: int, sessiz: bool = False) -> bool:
+        """Yeni katılan ROV'a, grubun mevcut görevini atar (gerekirse planı yeniden başlatır)."""
+        if g_id not in self.g_rovs:
+            if not sessiz:
+                print(f"⚠️ [GÖREV AKTARIMI] Grup-{g_id} bulunamadı.")
+            return False
+            
+        rov = self.find_rov_by_id(rov_id)
+        if not rov:
+            if not sessiz:
+                print(f"⚠️ [GÖREV AKTARIMI] ROV-{rov_id} bulunamadı.")
+            return False
+
+        # Grup için aktif bir tarama planı varsa ve herkese rota dağıtılmışsa (ör: Arama Kurtarma),
+        # yeni katılan ROV için alanın yeniden paylaştırılması gerekebilir.
+        # Şimdilik takipçi olarak (mod=1) eklendiğinden, formasyon sistemi otomatik olarak
+        # onu liderin arkasına yerleştirecek ve göreve dahil edecektir.
+        if not sessiz:
+            print(f"✅ ROV-{rov_id}, Grup-{g_id} görev döngüsüne dahil edildi.")
         return True
 
     def _get_all_rovs_positions(self):
@@ -849,7 +886,18 @@ class Filo(FiloInitMixin):
     def _tick_sistem_guncellemeleri(self, guncelle_gorseller: bool):
         return super()._tick_sistem_guncellemeleri(guncelle_gorseller)
             
-    def guncelle_hepsi(self, tahminler, guncelle_gorseller=True, guncelle_lider=True):
+    def guncelle_hepsi(
+        self,
+        tahminler,
+        guncelle_gorseller=True,
+        guncelle_lider=True,
+        gat_aktif=False,
+        pid_ui_aktif=True,
+        apf_hud_aktif=True,
+        navigasyon_aktif=True,
+        rovler_aktif=True,
+        alan_tarama_aktif=True,
+    ):
         """
         Tüm GNC sistemlerini koordineli şekilde günceller.
         guncelle_gorseller=False iken sonar/minimap/engel bulut atlanır (FPS için throttle).
@@ -860,10 +908,30 @@ class Filo(FiloInitMixin):
         4. ROV Başına İşlemler   → Hasar, GNC, Motor komutları
         5. Sistem Güncellemeleri → Sonar, Minimap, engel bulut (guncelle_gorseller=True ise)
         """
+        if gat_aktif:
+            Profiler.start("0_guncelle_gat_analizi")
+            try:
+                try:
+                    tahminler.fill(0)
+                except AttributeError:
+                    for idx in range(len(tahminler)):
+                        tahminler[idx] = 0
+                self.guncelle_gat_analizi(tahminler)
+            finally:
+                Profiler.end("0_guncelle_gat_analizi")
+
         # 🔹 IGNORE TUPLE CACHE GÜNCELLE (Frame başında bir kere)
+        Profiler.start("0a_build_ignore_tuple")
         self._build_ignore_tuple()
-        self.pid_ui.update()
-        self._apf_guc_hud_guncelle(process_input=True, draw=False)
+        Profiler.end("0a_build_ignore_tuple")
+        if pid_ui_aktif:
+            Profiler.start("0b_pid_ui.update")
+            self.pid_ui.update()
+            Profiler.end("0b_pid_ui.update")
+        if apf_hud_aktif:
+            Profiler.start("0c_apf_hud_input")
+            self._apf_guc_hud_guncelle(process_input=True, draw=False)
+            Profiler.end("0c_apf_hud_input")
         
         Profiler.start("1_sistem_hazirligi")
         self._tick_sistem_hazirligi()
@@ -872,32 +940,41 @@ class Filo(FiloInitMixin):
         if not self.ortam_ref:
             return
 
-        Profiler.start("2_navigasyon")
-        self._tick_navigasyon_ve_gorseller(tahminler)
-        Profiler.end("2_navigasyon")
+        if navigasyon_aktif:
+            Profiler.start("2_navigasyon")
+            self._tick_navigasyon_ve_gorseller(tahminler)
+            Profiler.end("2_navigasyon")
 
         if guncelle_lider:
             Profiler.start("3_lider_yonetimi")
             self._tick_lider_yonetimi()
             Profiler.end("3_lider_yonetimi")
 
-        Profiler.start("4_rovlar")
-        self._tick_rovler(tahminler)
-        Profiler.end("4_rovlar")
-        self._apf_guc_hud_guncelle(process_input=False, draw=True)
+        if rovler_aktif:
+            Profiler.start("4_rovlar")
+            self._tick_rovler(tahminler)
+            Profiler.end("4_rovlar")
+        if apf_hud_aktif:
+            Profiler.start("4b_apf_hud_draw")
+            self._apf_guc_hud_guncelle(process_input=False, draw=True)
+            Profiler.end("4b_apf_hud_draw")
 
 
         Profiler.start("5_sistem_guncellemeleri")
         self._tick_sistem_guncellemeleri(guncelle_gorseller)
         Profiler.end("5_sistem_guncellemeleri")
 
-        try:
-            self.alan_tarama_guncelle()
-        except Exception as e:
-            self._last_error = e  # type: ignore[assignment]
-            if not getattr(self, "_alan_tarama_guncelle_hatasi_yazildi", False):
-                print(f"⚠️ [ALAN_TARAMA] Güncelleme hatası: {e}")
-                self._alan_tarama_guncelle_hatasi_yazildi = True
+        if alan_tarama_aktif:
+            try:
+                Profiler.start("6_alan_tarama_guncelle")
+                self.alan_tarama_guncelle()
+                Profiler.end("6_alan_tarama_guncelle")
+            except Exception as e:
+                Profiler.end("6_alan_tarama_guncelle")
+                self._last_error = e  # type: ignore[assignment]
+                if not getattr(self, "_alan_tarama_guncelle_hatasi_yazildi", False):
+                    print(f"⚠️ [ALAN_TARAMA] Güncelleme hatası: {e}")
+                    self._alan_tarama_guncelle_hatasi_yazildi = True
 
     def carpisma_enerjisi_hesapla(self, *args, **kwargs):
         """Hasar hesaplamalarını damage_system'a yönlendir."""
@@ -917,10 +994,42 @@ class Filo(FiloInitMixin):
                 rov_id = int(rov_id)
             except Exception:
                 return
+
+            rov = self.find_rov_by_id(rov_id)
+            grup_id = getattr(rov, "group_id", None) if rov is not None else None
+            rol = getattr(rov, "role", getattr(rov, "rol", None)) if rov is not None else None
             
             # Vektör (Ok) temizliği
             if hasattr(self.helper, 'apf_temizle'):
                 self.helper.apf_temizle()
+
+            # Lider devri için mirası sakla
+            if not hasattr(self, '_olum_mirasi'):
+                self._olum_mirasi = {}
+            mevcut_miras = self._olum_mirasi.get(rov_id, {})
+            hedef = getattr(self, '_rov_hedefleri', {}).get(rov_id)
+            rota = getattr(self, '_git_nokta_listesi', {}).get(rov_id)
+            indeks = getattr(self, '_git_mevcut_nokta_indeksi', {}).get(rov_id)
+            derinlik = getattr(self, '_git_hedef_derinligi', {}).get(rov_id)
+            konum = None
+            if rov is not None:
+                try:
+                    gps = rov.get("gps") if hasattr(rov, "get") else self.get(rov_id, "gps")
+                    if gps is not None and len(gps) >= 3:
+                        konum = (float(gps[0]), float(gps[1]), float(gps[2]))
+                except Exception:
+                    konum = None
+            yeni_miras = {
+                'hedef': hedef if hedef is not None else mevcut_miras.get('hedef'),
+                'rota': rota if rota else mevcut_miras.get('rota'),
+                'indeks': indeks if indeks is not None else mevcut_miras.get('indeks'),
+                'derinlik': derinlik if derinlik is not None else mevcut_miras.get('derinlik'),
+                'konum': konum if konum is not None else mevcut_miras.get('konum'),
+                'grup_id': grup_id if grup_id is not None else mevcut_miras.get('grup_id'),
+                'rol': rol if rol is not None else mevcut_miras.get('rol'),
+            }
+            if any(yeni_miras.get(k) is not None for k in ('hedef', 'rota', 'indeks', 'derinlik', 'konum', 'grup_id', 'rol')):
+                self._olum_mirasi[rov_id] = yeni_miras
 
             for attr in (
                 "_rov_hedefleri",
@@ -946,7 +1055,9 @@ class Filo(FiloInitMixin):
             if isinstance(liderler, dict):
                 for g_id, lider_id in list(liderler.items()):
                     if lider_id == rov_id:
-                        liderler[g_id] = -1
+                        # Eski lider id'si LeaderManager'da kalsın; bir sonraki
+                        # lider değişiminde rota/hedef mirasını bu id üzerinden devredecek.
+                        continue
             
             # Kamera temizliği
             if self.camera_manager.kamera_var_mi(rov_id):

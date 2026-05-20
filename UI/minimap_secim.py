@@ -14,6 +14,7 @@ from UI.kopru import (
     minimap_secim_oku,
     minimap_secim_baslat,
     minimap_secim_iptal,
+    minimap_secim_mod_kapat,
 )
 from UI.tema import METiN, METiN_KOYU, VURGU, PANEL_KENAR
 
@@ -105,12 +106,15 @@ class MinimapSecimYardimcisi(QObject):
 
     @classmethod
     def iptal(cls):
-        cls._aktif()._durdur()
+        cls._aktif()._durdur(iptal_et=True)
 
-    def _durdur(self, sessiz: bool = False):
+    def _durdur(self, sessiz: bool = False, iptal_et: bool = False):
         self._timer.stop()
         self._callback = None
-        minimap_secim_iptal(gorev_gorselini_temizle=False)
+        if iptal_et:
+            minimap_secim_iptal(gorev_gorselini_temizle=False)
+        else:
+            minimap_secim_mod_kapat()
         for fn in self._bitis_fnleri:
             try:
                 fn()
@@ -127,24 +131,11 @@ class MinimapSecimYardimcisi(QObject):
         mesaj = d.get("mesaj")
         if mesaj and self._sinyal is not None and d.get("aktif"):
             self._sinyal.durum_guncellendi.emit(str(mesaj), "warn")
-        if d.get("iptal"):
-            self._timer.stop()
-            self._callback = None
-            minimap_secim_iptal(gorev_gorselini_temizle=False)
-            for fn in self._bitis_fnleri:
-                try:
-                    fn()
-                except Exception:
-                    pass
-            self._bitis_fnleri.clear()
-            if self._sinyal is not None:
-                self._sinyal.durum_guncellendi.emit("Harita seçimi iptal edildi.", "ok")
-            return
+        # tamamlandi önce — ardından gelen iptal JSON'u alan çizimini silmesin
         if d.get("tamamlandi") and self._callback:
             cb = self._callback
             self._callback = None
             self._timer.stop()
-            # Sim zaten alan_gorev_goster çizdi; iptal/mod_kapat çizgileri siliyordu
             cb(d)
             for fn in self._bitis_fnleri:
                 try:
@@ -159,6 +150,19 @@ class MinimapSecimYardimcisi(QObject):
                 self._sinyal.durum_guncellendi.emit(
                     f"Haritadan koordinat alındı.{merkez}", "ok"
                 )
+            return
+        if d.get("iptal"):
+            self._timer.stop()
+            self._callback = None
+            # Sim zaten iptal komutunu uyguladı; tekrar kuyruğa iptal gönderme
+            for fn in self._bitis_fnleri:
+                try:
+                    fn()
+                except Exception:
+                    pass
+            self._bitis_fnleri.clear()
+            if self._sinyal is not None:
+                self._sinyal.durum_guncellendi.emit("Harita seçimi iptal edildi.", "ok")
 
     def bitiste(self, fn):
         self._bitis_fnleri.append(fn)

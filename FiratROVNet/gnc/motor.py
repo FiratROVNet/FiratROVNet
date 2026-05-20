@@ -4,7 +4,7 @@ from ursina import Vec3, Entity, color  # type: ignore[import]
 from ursina.models.procedural.cylinder import Cylinder  # type: ignore[import]
 from panda3d.bullet import BulletRigidBodyNode  # type: ignore[import]
 from panda3d.core import Vec3 as P3Vec  # type: ignore[import]
-from FiratROVNet.config import Hidrodinamik  # type: ignore[import]
+from FiratROVNet.config import Hidrodinamik, PerformansAyarlari  # type: ignore[import]
 
 class Motor:
     def __init__(self, rov_entity: Entity, filo_ref=None):
@@ -26,6 +26,7 @@ class Motor:
         self.r_bv = Vec3(0, 0, 0)     # Birim itki vektörü
         self.is_vertical = False
         self.guc = 0.0
+        self.rot_deg = Vec3(0, 0, 0)
 
     def ekle(self, koordinat_metre: Vec3 = Vec3(0,0,0), yon_vec=(0,0,0), guc=0.0):
         """
@@ -41,6 +42,7 @@ class Motor:
         
         # 2. Giriş rotasyonunu Vec3 formatına getir
         rot_deg = Vec3(yon_vec) if isinstance(yon_vec, (list, tuple, Vec3)) else Vec3(0,0,0)
+        self.rot_deg = rot_deg
 
         # 3. FİZİKSEL YÖN HESABI
         # Ursinalı özel "sol elli" mantıktan çıkmaması ve tork vektörlerinin doğru yönlere çalışabilmesi için Orjinal _euler_deg_to_direction metodu kullanılmalı. 
@@ -71,6 +73,11 @@ class Motor:
         # 5. RENK MANTIĞI
         self.is_vertical = abs(rot_deg.y) == 0 and (abs(rot_deg.x) > 5 or abs(rot_deg.z) > 5)
         motor_color = color.azure if self.is_vertical else color.green
+
+        if not getattr(PerformansAyarlari, "ROV_MOTOR_GORSELLERI", False):
+            self._color = motor_color
+            self._find_physics_node()
+            return
 
         # 6. PIVOT ENTITY (Ana Taşıyıcı ve Rotasyon Merkezi)
         self.motor_entity = Entity(

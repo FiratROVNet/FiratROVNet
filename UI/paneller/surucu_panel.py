@@ -671,9 +671,9 @@ class LiderGrubu(_DropAlan):
         # thread zamanlama belirsizliği nedeniyle durdur() baslat()'tan SONRA
         # çalışarak yeni planı hemen popping'leyip ROV'ları idle'a alabilir.
         komutlar = [
-            f"filo.alan_tarama_gorevi.durdur(grup_id={g_id})",
-            f"filo.arama_kurtarma_gorevi.durdur(lideri_takip_et=False)",
-            f"filo.imha_gorevi.durdur(lideri_takip_et=False)",
+            f"filo.alan_tarama_gorevi.durdur(grup_id={g_id}, gorselleri_koru=True)",
+            f"filo.arama_kurtarma_gorevi.durdur(lideri_takip_et=False, gorselleri_koru=True)",
+            f"filo.imha_gorevi.durdur(lideri_takip_et=False, gorselleri_koru=True)",
             f"[filo._rov_hedefleri.pop(r.id, None) for r in (filo.g_rovs.get({g_id}) or []) if r]",
             k_baslat,
         ]

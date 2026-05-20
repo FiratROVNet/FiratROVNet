@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.so
+build/
 .env
 .vscode/
 .cursor/
@@ -13,3 +15,10 @@ Videos/
 KOMUT_KUYRUĞU.txt
 UI/_rov_durumu.json
 UI/_rov_durumu.json.tmp
+
+# Runtime UI state files
+UI/_minimap_secim.json
+UI/_rov_durumu.json
+
+# Temporary fix scripts
+fix_*.py

@@ -112,7 +112,7 @@ class AramaKurtarmaGorevi:
 
         return None
 
-    def durdur(self, lideri_takip_et: bool = True) -> None:
+    def durdur(self, lideri_takip_et: bool = True, gorselleri_koru: bool = False) -> None:
         plan = self.aktif_plan
         if not plan:
             return
@@ -122,5 +122,5 @@ class AramaKurtarmaGorevi:
             kamera_rov_id = next(iter(plan.rota_by_rov), None)
         if kamera_rov_id is not None:
             self.filo.yolo_durdur(kamera_rov_id)
-        self.alan_tarama.durdur(plan.kaynak_grup_id if plan.kaynak_grup_id is not None else plan.grup_id, lideri_takip_et=lideri_takip_et)
+        self.alan_tarama.durdur(plan.kaynak_grup_id if plan.kaynak_grup_id is not None else plan.grup_id, lideri_takip_et=lideri_takip_et, gorselleri_koru=gorselleri_koru)
         self.aktif_plan = None

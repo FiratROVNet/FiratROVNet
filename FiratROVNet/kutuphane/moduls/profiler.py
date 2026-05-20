@@ -7,9 +7,14 @@ class Profiler:
     _history = {}
     _starts = {}
     _stack = []  # Hiyerarşiyi takip eden yığın
+    _last_auto_report = 0.0
+    enabled = True
+    sample_window = 120
 
     @staticmethod
     def start(name):
+        if not Profiler.enabled:
+            return
         # Eğer stack'te biri varsa, o şu anki fonksiyonun ebeveynidir
         parent_name = Profiler._stack[-1] if Profiler._stack else None
         
@@ -19,19 +24,33 @@ class Profiler:
         # İlk defa karşılaşıyorsak hiyerarşiyi kaydet
         if name not in Profiler._history:
             Profiler._history[name] = {
-                "samples": deque(maxlen=10),
-                "parent": parent_name
+                "samples": deque(maxlen=Profiler.sample_window),
+                "parent": parent_name,
+                "total": 0.0,
+                "count": 0,
+                "max": 0.0,
+                "last": 0.0,
             }
         
-        Profiler._starts[name] = pytime.perf_counter()
+        Profiler._starts.setdefault(name, []).append(pytime.perf_counter())
 
     @staticmethod
     def end(name):
-        if name in Profiler._starts:
-            dt = pytime.perf_counter() - Profiler._starts[name]
+        if not Profiler.enabled:
+            return
+        starts = Profiler._starts.get(name)
+        if starts:
+            dt = pytime.perf_counter() - starts.pop()
+            if not starts:
+                Profiler._starts.pop(name, None)
             samples = Profiler._history[name]["samples"]
             if samples is not None:
                 samples.append(dt)
+            Profiler._history[name]["total"] += dt
+            Profiler._history[name]["count"] += 1
+            Profiler._history[name]["last"] = dt
+            if dt > Profiler._history[name]["max"]:
+                Profiler._history[name]["max"] = dt
             
             # Görev bittiği için stack'ten çıkar (en üstteki olması gerekir)
             if Profiler._stack and Profiler._stack[-1] == name:
@@ -45,6 +64,68 @@ class Profiler:
     def _natural_sort_key(s):
         return [int(text) if text.isdigit() else text.lower()
                 for text in re.split('([0-9]+)', s)]
+
+    @staticmethod
+    def reset():
+        Profiler._history.clear()
+        Profiler._starts.clear()
+        Profiler._stack.clear()
+        Profiler._last_auto_report = 0.0
+
+    @staticmethod
+    def snapshot():
+        rows = []
+        for name, data in Profiler._history.items():
+            samples = data.get("samples")
+            if not samples:
+                continue
+            avg = sum(float(s) for s in samples) / len(samples)
+            total_window = sum(float(s) for s in samples)
+            rows.append({
+                "name": name,
+                "parent": data.get("parent"),
+                "avg": avg,
+                "last": data.get("last", 0.0),
+                "max": data.get("max", 0.0),
+                "window_total": total_window,
+                "count": data.get("count", 0),
+            })
+        return rows
+
+    @staticmethod
+    def darboğaz_raporu(top_n=15, fps=None):
+        rows = Profiler.snapshot()
+        if not rows:
+            return
+        rows = sorted(rows, key=lambda r: (r["avg"], r["window_total"]), reverse=True)
+        baslik = f"📊 CANLI DARBOĞAZ RAPORU | Top {top_n}"
+        if fps is not None:
+            baslik += f" | FPS: {fps:.1f}"
+        print("\n" + "=" * 96)
+        print(baslik)
+        print("-" * 96)
+        print(f"{'Blok'.ljust(48)} {'Ort(ms)':>10} {'Son(ms)':>10} {'Max(ms)':>10} {'N':>7} {'Parent'}")
+        print("-" * 96)
+        for row in rows[:max(1, int(top_n))]:
+            print(
+                f"{row['name'][:48].ljust(48)} "
+                f"{row['avg'] * 1000:10.3f} "
+                f"{row['last'] * 1000:10.3f} "
+                f"{row['max'] * 1000:10.3f} "
+                f"{row['count']:7d} "
+                f"{row.get('parent') or '-'}"
+            )
+        print("=" * 96 + "\n")
+
+    @staticmethod
+    def auto_report(interval_s=5.0, top_n=15, fps=None):
+        now = pytime.perf_counter()
+        if Profiler._last_auto_report <= 0.0:
+            Profiler._last_auto_report = now
+            return
+        if now - Profiler._last_auto_report >= max(0.5, float(interval_s)):
+            Profiler._last_auto_report = now
+            Profiler.darboğaz_raporu(top_n=top_n, fps=fps)
 
     @staticmethod
     def rapor_ver():
