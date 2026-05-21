@@ -20,6 +20,7 @@ alphashape>=1.3.1
 matplotlib>=3.5.0
 rerun-sdk>=0.20.0
 qrcode>=7.4.2
+opencv-python-headless>=4.8.0
 
 # --- Kullanıcı Arayüzü (UI) ---
 # PyQt5: Harici kontrol paneli (UI/) için gereklidir (v1.7.8+)
