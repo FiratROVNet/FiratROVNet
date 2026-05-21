@@ -1121,6 +1121,11 @@ class Filo(FiloInitMixin):
             if isinstance(getattr(self, "_apf_guc_hud_rov_ids", None), list):
                 self._apf_guc_hud_rov_ids = [rid for rid in self._apf_guc_hud_rov_ids if int(rid) != rov_id]
 
+            try:
+                Profiler.discard_rov(rov_id)
+            except Exception:
+                pass
+
             liderler = getattr(self.leader_manager, "mevcut_lider_id", None)
             if isinstance(liderler, dict):
                 for g_id, lider_id in list(liderler.items()):

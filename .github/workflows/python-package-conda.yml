@@ -1,39 +1,76 @@
-name: Python Package using Conda
+name: CI
 
-on: [push]
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - "feature/**"
+  pull_request:
+    branches:
+      - main
+      - develop
+      - "feature/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-linux:
+  validate:
+    name: Lint and tests (Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     defaults:
       run:
-        shell: bash -l {0} # Conda komutlarının çalışması için kritik ayar
+        shell: bash -l {0}
+    env:
+      PYTHONUNBUFFERED: "1"
+      DISPLAY: ":0"
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_QPA_PLATFORM: offscreen
 
     steps:
-      # 1. Kodları İndir (Bu olmazsa environment.yml dosyasını göremez)
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # 2. Conda Ortamını Kur (Otomatik Dosya Bulma Modu)
       - name: Set up Miniconda
         uses: conda-incubator/setup-miniconda@v3
         with:
-          activate-environment: GNN  # environment.yml içindeki 'name: GNN' ile aynı olmalı
-          environment-file: environment.yml # Dosya kök dizinde olduğu için direkt adını yazıyoruz
+          activate-environment: firat-rovnet-env
+          environment-file: environment.yml
           auto-activate-base: false
           auto-update-conda: true
 
-      # 3. Hata Denetimi (Lint)
-      - name: Lint with flake8
+      - name: Show environment
         run: |
-          conda install flake8
-          # Python sözdizimi hataları
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-          # Uyarılar
-          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+          python --version
+          python -m pip --version
+          conda info --envs
 
-      # 4. Testleri Çalıştır
-      - name: Run Tests
+      - name: Install CI tools
         run: |
-          export DISPLAY=:0
-          export LIBGL_ALWAYS_SOFTWARE=1
-          python run_tests.py
+          python -m pip install --upgrade pip
+          python -m pip install flake8 pytest
+
+      - name: Lint fatal errors
+        run: |
+          flake8 . \
+            --count \
+            --select=E9,F63,F7,F82 \
+            --show-source \
+            --statistics \
+            --exclude=.git,__pycache__,.pytest_cache,.mypy_cache,.venv,venv,build,dist
+
+      - name: Lint style warnings
+        continue-on-error: true
+        run: |
+          flake8 . \
+            --count \
+            --max-complexity=10 \
+            --max-line-length=127 \
+            --statistics \
+            --exclude=.git,__pycache__,.pytest_cache,.mypy_cache,.venv,venv,build,dist
+
+      - name: Run headless test suite
+        run: python run_tests.py

@@ -73,6 +73,31 @@ class Profiler:
         Profiler._last_auto_report = 0.0
 
     @staticmethod
+    def discard_matching(predicate):
+        """Belirli profiler bloklarını geçmişten ve bekleyen ölçümlerden çıkarır."""
+        if not callable(predicate):
+            return
+        for name in list(Profiler._history.keys()):
+            try:
+                matched = bool(predicate(name))
+            except Exception:
+                matched = False
+            if matched:
+                Profiler._history.pop(name, None)
+                Profiler._starts.pop(name, None)
+                Profiler._stack = [item for item in Profiler._stack if item != name]
+
+    @staticmethod
+    def discard_rov(rov_id):
+        """Silinen ROV'a ait detay profiler satırlarını HUD/rapordan kaldırır."""
+        try:
+            rid = int(rov_id)
+        except Exception:
+            return
+        pattern = re.compile(rf"(?<!\d)ROV-{rid}(?!\d)")
+        Profiler.discard_matching(lambda name: pattern.search(str(name)) is not None)
+
+    @staticmethod
     def snapshot():
         rows = []
         for name, data in Profiler._history.items():
