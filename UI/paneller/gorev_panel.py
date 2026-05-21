@@ -128,14 +128,27 @@ class AlanTaramaSekmesi(QWidget):
         param_lay.addWidget(_etiket("Şerit Aralığı (m)"), 1, 0)
         param_lay.addWidget(self.spin_serit, 1, 1)
 
+        param_lay.addWidget(_etiket("ROV Başına Alan (m²)"), 2, 0)
+        self.spin_m2 = QDoubleSpinBox()
+        self.spin_m2.setRange(10.0, 100000.0)
+        self.spin_m2.setValue(500.0)
+        self.spin_m2.setSingleStep(50.0)
+        param_lay.addWidget(self.spin_m2, 2, 1)
+
+        param_lay.addWidget(_etiket("ROV Sayısı (0=otomatik)"), 3, 0)
+        self.spin_rov_say = QSpinBox()
+        self.spin_rov_say.setRange(0, 50)
+        self.spin_rov_say.setToolTip("0 → görev algoritması gereken ROV sayısını otomatik seçer")
+        param_lay.addWidget(self.spin_rov_say, 3, 1)
+
         self.chk_sessiz = QCheckBox("Sessiz mod (log kapalı)")
         self.chk_sessiz.setChecked(True)
-        param_lay.addWidget(self.chk_sessiz, 2, 0, 1, 2)
+        param_lay.addWidget(self.chk_sessiz, 4, 0, 1, 2)
 
         self.chk_surekli = QCheckBox("Sürekli tarama (rota bitince yeniden başlat)")
         self.chk_surekli.setChecked(True)
         self.chk_surekli.setToolTip("İşaretliyse ROVlar alana sonsuz döngüde gezinir, görev elle durdurulana kadar durmaz")
-        param_lay.addWidget(self.chk_surekli, 3, 0, 1, 2)
+        param_lay.addWidget(self.chk_surekli, 5, 0, 1, 2)
 
         lay.addWidget(param_kutu)
 
@@ -157,14 +170,18 @@ class AlanTaramaSekmesi(QWidget):
         g_id     = self.spin_grup.value()
         derinlik = self.spin_derinlik.value()
         serit    = self.spin_serit.value()
+        m2       = self.spin_m2.value()
+        n_rov    = self.spin_rov_say.value()
         sessiz   = self.chk_sessiz.isChecked()
         surekli  = self.chk_surekli.isChecked()
+        n_rov_str = f"gereken_rov_sayisi={n_rov}, " if n_rov > 0 else ""
 
         komut = (
             f"filo.alan_tarama_gorevi.baslat("
             f"grup_id={g_id}, alan=({x1},{y1},{x2},{y2}), "
             f"derinlik={derinlik}, serit_araligi={serit}, "
-            f"surekli_tarama={surekli}, sessiz={sessiz})"
+            f"rov_basina_varsayilan_alan_m2={m2}, "
+            f"{n_rov_str}surekli_tarama={surekli}, sessiz={sessiz})"
         )
         aciklama = (
             f"Alan Tarama → Grup-{g_id} | Alan:({x1},{y1})–({x2},{y2}) "

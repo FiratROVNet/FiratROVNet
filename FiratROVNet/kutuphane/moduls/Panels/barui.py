@@ -1,3 +1,5 @@
+import os
+
 from ursina import *  # type: ignore[import]
 
 
@@ -5,17 +7,17 @@ class BARUI:
     def __init__(self, app=None, root_position=(-0.58, 0.32), panel_scale=(0.46, 0.36)):
         self._owns_app = False
         self.app = app
+        self._headless = self._headless_modda_mi()
 
         # If no app is provided, attach to an existing Ursina app when possible.
-        if self.app is None:
+        if self.app is None and not self._headless:
             try:
                 from ursina import application  # type: ignore[import]
                 if getattr(application, 'base', None) is None:
                     self.app = Ursina()
                     self._owns_app = True
             except Exception:
-                self.app = Ursina()
-                self._owns_app = True
+                self._headless = True
 
         self.root_position = root_position
         self.panel_scale = panel_scale
@@ -29,6 +31,14 @@ class BARUI:
         self.labels = {}
         self.values = {}
         self.default_precision = 3
+
+    @staticmethod
+    def _headless_modda_mi() -> bool:
+        for name in ("CI", "FIRAT_ROVNET_HEADLESS", "URSINA_HEADLESS", "QT_QPA_PLATFORM"):
+            value = os.environ.get(name, "").lower()
+            if value in {"1", "true", "yes", "on", "offscreen"}:
+                return True
+        return False
 
     def _get_precision(self, name: str):
         bar = self.sliders.get(name, {})
@@ -74,6 +84,8 @@ class BARUI:
 
     def _get_bar_bounds(self, name: str):
         bar = self.sliders[name]
+        if self._headless:
+            return 0.0, 1.0
         center_x = float(bar['bar_root'].x) + float(bar['track_center_x'])
         half_width = float(bar['half_width'])
         return center_x - half_width, center_x + half_width
@@ -86,6 +98,8 @@ class BARUI:
         bar_ui.create_bar('Kd', -1.0, 1.0, 1.0, (0.0, -0.10), callback=callback)
 
     def _ensure_root(self):
+        if self._headless:
+            return
         if self._ui_root is not None:
             return
 
@@ -109,6 +123,16 @@ class BARUI:
         x_pos, y_pos = float(position[0]), float(position[1])
         start_value = max(min_value, min(max_value, float(default)))
         p = self.default_precision if precision is None else max(0, int(precision))
+
+        if self._headless:
+            self.values[name] = round(start_value, p)
+            self.sliders[name] = {
+                'min_value': float(min_value),
+                'max_value': float(max_value),
+                'precision': p,
+                'callback': callback,
+            }
+            return None
 
         bar_root = Entity(parent=self._ui_root, position=(x_pos, y_pos, 0))
 
@@ -343,6 +367,8 @@ class BARUI:
         v = max(bar['min_value'], min(bar['max_value'], float(value)))
         p = self._get_precision(name)
         self.values[name] = round(v, p)
+        if self._headless:
+            return
         min_x, max_x = self._get_bar_bounds(name)
         bar['min_x'] = min_x
         bar['max_x'] = max_x

@@ -670,10 +670,7 @@ class LiderGrubu(_DropAlan):
         # Birden fazla ayrı komut_gonder() çağrısı ayrı thread'ler başlatır;
         # thread zamanlama belirsizliği nedeniyle durdur() baslat()'tan SONRA
         # çalışarak yeni planı hemen popping'leyip ROV'ları idle'a alabilir.
-        komutlar = [
-            f"filo.alan_tarama_gorevi.durdur(grup_id={g_id}, gorselleri_koru=True)",
-            f"filo.arama_kurtarma_gorevi.durdur(lideri_takip_et=False, gorselleri_koru=True)",
-            f"filo.imha_gorevi.durdur(lideri_takip_et=False, gorselleri_koru=True)",
+        komutlar = self._gorev_durdur_hepsi_komutlari(g_id, gorselleri_koru=True) + [
             f"[filo._rov_hedefleri.pop(r.id, None) for r in (filo.g_rovs.get({g_id}) or []) if r]",
             k_baslat,
         ]
@@ -682,15 +679,20 @@ class LiderGrubu(_DropAlan):
             k_baslat, f"Grup-{g_id} → Görev: {_GOREVLER[idx][0]} | Eski görevler durduruldu"
         )
 
+    @staticmethod
+    def _gorev_durdur_hepsi_komutlari(g_id: int, gorselleri_koru: bool = False) -> list[str]:
+        koru = "True" if gorselleri_koru else "False"
+        return [
+            f"filo.alan_tarama_gorevi.durdur(grup_id={g_id}, gorselleri_koru={koru})",
+            f"filo.arama_kurtarma_gorevi.durdur(lideri_takip_et=False, gorselleri_koru={koru})",
+            f"filo.imha_gorevi.durdur(lideri_takip_et=False, gorselleri_koru={koru})",
+            "ui_minimap_gorev_alan_temizle(app)",
+        ]
+
     def _gorev_durdur_hepsi(self, sessizce: bool = False):
         """Bu grup için tüm görev tiplerini durdurur (navigasyon hedefleri korunur)."""
         g_id = self.g_idx
-        for k in (
-            f"filo.alan_tarama_gorevi.durdur(grup_id={g_id})",
-            "filo.arama_kurtarma_gorevi.durdur(lideri_takip_et=False)",
-            "filo.imha_gorevi.durdur(lideri_takip_et=False)",
-            "ui_minimap_gorev_alan_temizle(app)",
-        ):
+        for k in self._gorev_durdur_hepsi_komutlari(g_id):
             komut_gonder(k)
         if not sessizce:
             self.komut_uretildi.emit(

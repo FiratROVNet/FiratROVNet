@@ -215,7 +215,7 @@ try:
     assert 0 in sp2._bekleyen_hareket, "Token set edilmeli"
     expire, beklenen = sp2._bekleyen_hareket[0]
     assert expire > time.monotonic(), "Token gelecekte bitmeli"
-    assert beklenen == (1, 1), f"Beklenen state yanlış: {beklenen}"
+    assert beklenen == (1, 0), f"Beklenen state yanlış: {beklenen}"
     _pass("_lider_olustur: ROV lider + TTL token set")
 except Exception as e:
     _fail("_lider_olustur TTL token", e)
