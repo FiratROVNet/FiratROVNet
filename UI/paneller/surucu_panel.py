@@ -991,6 +991,22 @@ class SurucuPanel(QWidget):
                     if rid in g.takipci_idleri():
                         g.takipci_cikar(rid)
                         break
+            self._son_sim_state.pop(rid, None)
+            self._bekleyen_hareket.pop(rid, None)
+
+        # Lider silinince _lider_kaldir(emit_komut=False) takipçileri geçici olarak
+        # üs paneline taşır. Sim tarafında group_id değişmediği için aşağıdaki state
+        # karşılaştırması bunu yakalayamaz; grup id'si olan kartları zorla toparla.
+        for rov in rovlar:
+            gid = grup_id_oku(rov)
+            if gid is None:
+                continue
+            rid = int(rov["id"])
+            konum, lid = self._rov_konumu_bul(rid)
+            grup = self._liderler.get(lid) if lid is not None else None
+            if konum not in ("leader", "follower") or (grup is not None and grup.g_idx != gid):
+                self._bekleyen_hareket.pop(rid, None)
+                self._sim_statine_gore_yerlestir([rov])
 
         # ── Sim-kaynaklı rol/grup değişikliklerini algıla → yeniden yerleştir ──
         # Süresi dolmuş token'ları önce temizle

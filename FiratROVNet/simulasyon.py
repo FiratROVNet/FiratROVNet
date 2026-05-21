@@ -152,6 +152,7 @@ class ROV(Entity):
             filo_attr = getattr(ortam, 'filo', None)
             if filo_attr is not None:
                 filo_attr.rov_verilerini_temizle(silinen_id)
+            self.is_destroyed = True
 
             # --- YENİ: Sonar çizgilerini (İletişim okları) temizle ---
             sonar_dict = getattr(ortam, 'sonar_cizgiler', None)

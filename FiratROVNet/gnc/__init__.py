@@ -663,38 +663,45 @@ class Filo(FiloInitMixin):
                 physics_node.applyForce(bullet_force, bullet_offset)
 
     def guncelle_gorseller_ve_renkler(self, tahminler):
-        """ROV renkleri ve label'larını GAT koduna göre güncelle."""
-        if not self.ortam_ref:
-            return
-        
-        kod_renkleri = {
-            0: color.orange, 1: color.red, 2: color.black, 3: color.yellow, 4: color.magenta
-        }
-        durum_txts = ["OK", "ENGEL", "CARPISMA", "KOPUK", "UZAK"]
-        
-        # app.rovs içinde her ROV'un indeksini al ve tahminler'den eşleştir
-        for idx, rov in enumerate(self.ortam_ref.rovs):
-            # Destroyed veya None ROV'ları atla
-            if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
-                continue
+            """ROV renkleri ve label'larını GAT koduna göre güncelle."""
+            if not self.ortam_ref:
+                return
             
-            # Tahminler indeksi bounds check yap
-            if idx >= len(tahminler):
-                continue
+            kod_renkleri = {
+                0: color.orange, 1: color.red, 2: color.black, 3: color.yellow, 4: color.magenta
+            }
+            durum_txts = ["OK", "ENGEL", "CARPISMA", "KOPUK", "UZAK"]
             
-            gat_kodu = tahminler[idx]
-            rov.gat_kodu = gat_kodu
+            # Sadece aktif ROV'ları sayarak tahminler listesiyle eşleştireceğiz
+            active_idx = 0 
             
-            # Lider her zaman kirmizi; takipciler GAT koduna gore renklendirilir.
-            if rov.role == 1:
-                rov.color = color.red
-            else:
-                rov.color = kod_renkleri.get(gat_kodu, color.orange)
-            
-            # Label (Etiket) ayarları
-            rov.label.color = rov.color
-            durum_metni = durum_txts[gat_kodu] if 0 <= gat_kodu < len(durum_txts) else f"GAT:{gat_kodu}"
-            rov.label.text = f"{durum_metni}{rov.id}"
+            for idx, rov in enumerate(self.ortam_ref.rovs):
+                # Yok olmuş veya ölü ROV'ları atla
+                if not rov or (hasattr(rov, 'is_destroyed') and rov.is_destroyed):
+                    continue
+                
+                # Güvenli GAT Kodu Alımı (İndeks hatasını / beyaz ROV sorunun kökten önler)
+                gat_kodu = 0
+                if active_idx < len(tahminler):
+                    gat_kodu = tahminler[active_idx]
+                else:
+                    gat_kodu = getattr(rov, 'gat_kodu', 0) # Eğer tahmin yetmezse son kodunda kal
+                    
+                active_idx += 1
+                rov.gat_kodu = gat_kodu
+                
+                # Renklendirme Mantığı: Lider HER ZAMAN kırmızı, diğerleri GAT koduna göre
+                # Lider rolünün farklı isimlendirme olasılıklarına karşı güvenlik (role/rol)
+                if getattr(rov, 'role', getattr(rov, 'rol', 0)) == 1:
+                    rov.color = color.red
+                else:
+                    rov.color = kod_renkleri.get(gat_kodu, color.orange)
+                
+                # Label (Etiket) ayarları
+                if hasattr(rov, 'label') and rov.label:
+                    rov.label.color = rov.color
+                    durum_metni = durum_txts[gat_kodu] if 0 <= gat_kodu < len(durum_txts) else f"GAT:{gat_kodu}"
+                    rov.label.text = f"{durum_metni}{getattr(rov, 'id', '')}"
 
     @property
     def rovs(self):
@@ -891,7 +898,7 @@ class Filo(FiloInitMixin):
         tahminler,
         guncelle_gorseller=True,
         guncelle_lider=True,
-        gat_aktif=False,
+        gat_aktif=True,
         pid_ui_aktif=True,
         apf_hud_aktif=True,
         navigasyon_aktif=True,
@@ -1011,6 +1018,15 @@ class Filo(FiloInitMixin):
             rota = getattr(self, '_git_nokta_listesi', {}).get(rov_id)
             indeks = getattr(self, '_git_mevcut_nokta_indeksi', {}).get(rov_id)
             derinlik = getattr(self, '_git_hedef_derinligi', {}).get(rov_id)
+            rov_kuyruk_key = f"rov_{rov_id}"
+            nav_queue = []
+            current_target_id = None
+            if isinstance(getattr(self, "nav_queue", None), dict):
+                raw_queue = self.nav_queue.get(rov_kuyruk_key, [])
+                if isinstance(raw_queue, list):
+                    nav_queue = [dict(item) if isinstance(item, dict) else item for item in raw_queue]
+            if isinstance(getattr(self, "current_target_id", None), dict):
+                current_target_id = self.current_target_id.get(rov_kuyruk_key)
             konum = None
             if rov is not None:
                 try:
@@ -1027,8 +1043,10 @@ class Filo(FiloInitMixin):
                 'konum': konum if konum is not None else mevcut_miras.get('konum'),
                 'grup_id': grup_id if grup_id is not None else mevcut_miras.get('grup_id'),
                 'rol': rol if rol is not None else mevcut_miras.get('rol'),
+                'nav_queue': nav_queue if nav_queue else mevcut_miras.get('nav_queue'),
+                'current_target_id': current_target_id if current_target_id is not None else mevcut_miras.get('current_target_id'),
             }
-            if any(yeni_miras.get(k) is not None for k in ('hedef', 'rota', 'indeks', 'derinlik', 'konum', 'grup_id', 'rol')):
+            if any(yeni_miras.get(k) is not None for k in ('hedef', 'rota', 'indeks', 'derinlik', 'konum', 'grup_id', 'rol', 'nav_queue', 'current_target_id')):
                 self._olum_mirasi[rov_id] = yeni_miras
 
             for attr in (
@@ -1050,6 +1068,58 @@ class Filo(FiloInitMixin):
                     self.nav_queue.pop(key, None)
                 if isinstance(self.current_target_id, dict):
                     self.current_target_id.pop(key, None)
+
+            if isinstance(getattr(self, "nav_queue", None), dict):
+                for key, kuyruk in list(self.nav_queue.items()):
+                    if isinstance(kuyruk, list):
+                        self.nav_queue[key] = [
+                            item for item in kuyruk
+                            if not (isinstance(item, dict) and item.get("rov_id") == rov_id)
+                        ]
+
+            if isinstance(getattr(self, "yeni_pozisyonlar", None), dict):
+                for key, value in list(self.yeni_pozisyonlar.items()):
+                    if key == rov_id:
+                        self.yeni_pozisyonlar.pop(key, None)
+                    elif isinstance(value, dict):
+                        value.pop(rov_id, None)
+
+            sac = getattr(self, "sac", None)
+            if sac is not None:
+                for attr in (
+                    "_last_states",
+                    "_episode_steps",
+                    "_previous_angles",
+                    "_prev_actions",
+                    "_filtered_rates",
+                    "_metric_history",
+                    "_loss_metric_history",
+                    "_last_loss_metrics",
+                ):
+                    data = getattr(sac, attr, None)
+                    if isinstance(data, dict):
+                        data.pop(rov_id, None)
+                done_set = getattr(sac, "_done_since_last_step", None)
+                if isinstance(done_set, set):
+                    done_set.discard(rov_id)
+                egitim_set = getattr(sac, "canli_egitim_rov_ids", None)
+                if isinstance(egitim_set, set):
+                    egitim_set.discard(rov_id)
+                if getattr(sac, "aktif_canli_egitim_rov_id", None) == rov_id:
+                    sac.aktif_canli_egitim_rov_id = None
+
+            for hud_attr in ("apf_guc_hud",):
+                hud = getattr(self, hud_attr, None)
+                if hud is not None:
+                    for marker_method in ("_rov_marker_temizle", "_minimap_marker_temizle"):
+                        temizle = getattr(hud, marker_method, None)
+                        if callable(temizle):
+                            try:
+                                temizle()
+                            except Exception:
+                                pass
+            if isinstance(getattr(self, "_apf_guc_hud_rov_ids", None), list):
+                self._apf_guc_hud_rov_ids = [rid for rid in self._apf_guc_hud_rov_ids if int(rid) != rov_id]
 
             liderler = getattr(self.leader_manager, "mevcut_lider_id", None)
             if isinstance(liderler, dict):

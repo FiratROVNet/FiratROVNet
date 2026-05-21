@@ -157,6 +157,9 @@ def entity_patlat(hedef_entity, parca_sayisi=60, filo_ref=None):
     """
     if not hedef_entity or not hasattr(hedef_entity, 'world_position'): 
         return
+    if getattr(hedef_entity, '_patlama_temizlendi', False) or getattr(hedef_entity, 'is_destroyed', False):
+        return
+    setattr(hedef_entity, '_patlama_temizlendi', True)
 
     # --- YENİ EKLEME: Verileri anında temizle ---
     rov_id = getattr(hedef_entity, 'id', None)
