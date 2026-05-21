@@ -315,6 +315,8 @@ class AnaDonguRuntime:
             self.rerun.toggle()
         if key in ("u", "U"):
             self.ui.toggle()
+        if key in ("y", "Y"):
+            yolo_toggle(self.filo, self.bilgi_rov_id)
         if key in ("e", "E"):
             sac_hud_toggle(self.filo, self.sac_hud, self.bilgi_rov_id)
         if key in ("2", "num 2") and self.sac_hud.visible:
@@ -748,6 +750,35 @@ def sonraki_sac_rov(filo, sac_hud):
     if aktif_sac_rov_id is not None:
         filo.sac.reset(rov_id=aktif_sac_rov_id)
         print(f"🧠 SAC grafiği ROV-{aktif_sac_rov_id}")
+
+
+def yolo_toggle(filo, bilgi_rov_id):
+    rov = filo.find_rov_by_id(bilgi_rov_id)
+    if rov is None:
+        print("ℹ️ YOLO için aktif ROV yok.")
+        return False
+
+    rov_id = int(getattr(rov, "id", bilgi_rov_id))
+    camera_manager = getattr(filo, "camera_manager", None)
+    if camera_manager is None:
+        print("⚠️ YOLO kamera yöneticisi bulunamadı.")
+        return False
+
+    aktif_yolo = getattr(camera_manager, "aktif_yolo_gorevleri", {})
+    if isinstance(aktif_yolo, dict) and rov_id in aktif_yolo:
+        return bool(filo.yolo_durdur(rov_id))
+
+    if hasattr(filo, "kamera_ayarla"):
+        try:
+            filo.kamera_ayarla(rov_id=rov_id)
+        except Exception:
+            pass
+
+    if filo.yolo_baslat(rov_id):
+        return True
+
+    print(f"⚠️ ROV-{rov_id} için YOLO başlatılamadı. Kamera/model hazır olmayabilir.")
+    return False
 
 
 def sonraki_grup(filo, bilgi_rov_id, aktif_grup_index):

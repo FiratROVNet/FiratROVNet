@@ -247,61 +247,66 @@ class LeaderManager:
                     if eski_lider_yok:
                         miras = getattr(self.filo_ref, '_olum_mirasi', {}).get(onceki_lider_id, {})
                         eski_hedef = miras.get('hedef')
+                        eski_rov_kuyruk_key = f"rov_{onceki_lider_id}"
+                        yeni_rov_kuyruk_key = f"rov_{yeni_lider_id}"
+                        miras_kuyruk = miras.get('nav_queue') or []
+                        if isinstance(miras_kuyruk, list) and miras_kuyruk:
+                            aktarilan_kuyruk = []
+                            for item in miras_kuyruk:
+                                if isinstance(item, dict):
+                                    yeni_item = dict(item)
+                                    if yeni_item.get("rov_id") == onceki_lider_id:
+                                        yeni_item["rov_id"] = yeni_lider_id
+                                    aktarilan_kuyruk.append(yeni_item)
+                                else:
+                                    aktarilan_kuyruk.append(item)
+                            mevcut_kuyruk = self.filo_ref.nav_queue.get(yeni_rov_kuyruk_key, [])
+                            self.filo_ref.nav_queue[yeni_rov_kuyruk_key] = aktarilan_kuyruk + (mevcut_kuyruk if isinstance(mevcut_kuyruk, list) else [])
+                        miras_hedef_id = miras.get('current_target_id')
+                        if miras_hedef_id is not None:
+                            self.filo_ref.current_target_id[yeni_rov_kuyruk_key] = miras_hedef_id
+                        self.filo_ref.nav_queue.pop(eski_rov_kuyruk_key, None)
+                        self.filo_ref.current_target_id.pop(eski_rov_kuyruk_key, None)
 
                         eski_rota = miras.get('rota')
+                        hedef_z = miras.get('derinlik')
+                        if hedef_z is None and eski_hedef is not None and len(eski_hedef) >= 3:
+                            hedef_z = eski_hedef[2]
+                        if hedef_z is None:
+                            try:
+                                yeni_lider_gps = self.filo_ref.get(yeni_lider_id, "gps")
+                                if yeni_lider_gps is not None and len(yeni_lider_gps) >= 3:
+                                    hedef_z = yeni_lider_gps[2]
+                            except Exception:
+                                hedef_z = None
+
+                        aktif_hedef = None
                         if eski_rota:
                             eski_indeks = miras.get('indeks', 0)
-                            
+                            try:
+                                eski_indeks = int(eski_indeks)
+                            except Exception:
+                                eski_indeks = 0
+
                             if 0 <= eski_indeks < len(eski_rota):
-                                yeni_lider_gps = self.filo_ref.get(yeni_lider_id, "gps")
-                                eski_lider_konum = miras.get('konum')
-                                hedef_z = miras.get('derinlik')
-                                if hedef_z is None and eski_hedef is not None and len(eski_hedef) >= 3:
-                                    hedef_z = eski_hedef[2]
-                                
-                                if yeni_lider_gps:
-                                    baslangic_2d = (float(yeni_lider_gps[0]), float(yeni_lider_gps[1]))
-                                    if eski_lider_konum is not None and len(eski_lider_konum) >= 2:
-                                        hedef_2d = (float(eski_lider_konum[0]), float(eski_lider_konum[1]))
-                                    else:
-                                        wp = eski_rota[eski_indeks]
-                                        hedef_2d = (float(wp[0]), float(wp[1]))
-                                    
-                                    # Yeni liderden patlama konumuna A* baglanti ciz; sonra eski rotanin kalanini ekle.
-                                    baglanti_yolu = []
-                                    try:
-                                        path_planla = getattr(self.filo_ref, "_a_star_path_planla", None)
-                                        if path_planla is None:
-                                            path_planla = getattr(getattr(self.filo_ref, "helper", None), "_a_star_path_planla", None)
-                                        if callable(path_planla):
-                                            baglanti_yolu = path_planla(baslangic_2d, hedef_2d, duzlem_z=yeni_lider_gps[2])
-                                    except Exception:
-                                        pass
-                                        
-                                    if not baglanti_yolu:
-                                        baglanti_yolu = [baslangic_2d, hedef_2d]
-                                        
-                                    kalan_rota = [list(p) for p in eski_rota[eski_indeks:]]
-                                    yeni_rota = [list(p) for p in baglanti_yolu] + kalan_rota
-                                    
-                                    # Yeni rotayi ata (git() fonksiyonu bunu _git_nokta_listesi'ne koyacak)
-                                    self.filo_ref.git(yeni_lider_id, yeni_rota, z=hedef_z, ai=True, sessiz=True)
-                                    
-                                    # Minimap path guncellemesi (opsiyonel ama gorsel icin iyi olur)
-                                    ortam = getattr(self.filo_ref, "ortam_ref", None)
-                                    if ortam and hasattr(ortam, "minimap") and ortam.minimap:
-                                        try:
-                                            ortam.minimap.update_path(yeni_rota)
-                                        except Exception:
-                                            pass
-                            
-                            self.filo_ref._git_nokta_listesi.pop(onceki_lider_id, None)
-                            self.filo_ref._git_mevcut_nokta_indeksi.pop(onceki_lider_id, None)
-                            if hasattr(self.filo_ref, '_git_hedef_derinligi'):
-                                self.filo_ref._git_hedef_derinligi.pop(onceki_lider_id, None)
-                        elif eski_hedef is not None:
-                            self.filo_ref._rov_hedefleri[yeni_lider_id] = eski_hedef
-                            self.filo_ref.git(yeni_lider_id, eski_hedef[0], eski_hedef[1], eski_hedef[2], ai=True, sessiz=True)
+                                kalan_rota = [p for p in eski_rota[eski_indeks:] if p and len(p) >= 2]
+                                hedef_wp = kalan_rota[-1] if kalan_rota else None
+                                if hedef_wp is not None:
+                                    aktif_hedef = (float(hedef_wp[0]), float(hedef_wp[1]), float(hedef_z if hedef_z is not None else 0.0))
+                        elif eski_hedef is not None and len(eski_hedef) >= 2:
+                            aktif_hedef = (
+                                float(eski_hedef[0]),
+                                float(eski_hedef[1]),
+                                float(eski_hedef[2] if len(eski_hedef) >= 3 else (hedef_z if hedef_z is not None else 0.0)),
+                            )
+
+                        if aktif_hedef is not None:
+                            self.filo_ref.git_path(yeni_lider_id, aktif_hedef, isaret=True)
+
+                        self.filo_ref._git_nokta_listesi.pop(onceki_lider_id, None)
+                        self.filo_ref._git_mevcut_nokta_indeksi.pop(onceki_lider_id, None)
+                        if hasattr(self.filo_ref, '_git_hedef_derinligi'):
+                            self.filo_ref._git_hedef_derinligi.pop(onceki_lider_id, None)
 
             except Exception as e:
                 from .gnc.logs import LogSystem
