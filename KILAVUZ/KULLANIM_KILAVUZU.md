@@ -270,6 +270,24 @@ if senaryo.filo:
 senaryo.temizle()
 ```
 
+### Headless CI ve Testler
+
+CI ortamında grafik penceresi açılmadığı için test paketi varsayılan olarak headless çalışır:
+
+```bash
+python run_tests.py
+```
+
+`run_tests.py`, `FIRAT_ROVNET_HEADLESS=1` ve `URSINA_HEADLESS=1` bayraklarını ayarlar. Bu modda gerçek Ursina pencere testi atlanır; GAT, GNC, config, entegrasyon ve PyQt panel testleri çalışmaya devam eder. UI panel testleri `QT_QPA_PLATFORM=offscreen` ile çalışır ve bağlantısız komut kuyruğunu repo dosyasını kirletmemek için `/tmp/firat_rovnet_ui_test_komut_kuyrugu.txt` yoluna yönlendirir.
+
+Kendi bağlantısız UI testlerinizde kuyruk dosyasını değiştirmek için:
+
+```bash
+FIRAT_ROVNET_KUYRUK_DOSYA=/tmp/komut_kuyrugu.txt \
+QT_QPA_PLATFORM=offscreen \
+python tests/test_ui_panels.py
+```
+
 ---
 
 ## 🤖 GAT (Graf Dikkat Ağı) Sistemi

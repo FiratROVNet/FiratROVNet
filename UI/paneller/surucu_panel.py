@@ -692,7 +692,13 @@ class LiderGrubu(_DropAlan):
     def _gorev_durdur_hepsi(self, sessizce: bool = False):
         """Bu grup için tüm görev tiplerini durdurur (navigasyon hedefleri korunur)."""
         g_id = self.g_idx
-        for k in self._gorev_durdur_hepsi_komutlari(g_id):
+        komutlar = [
+            f"filo.alan_tarama_gorevi.durdur(grup_id={g_id}, gorselleri_koru=False)",
+            "filo.arama_kurtarma_gorevi.durdur(lideri_takip_et=False, gorselleri_koru=False)",
+            "filo.imha_gorevi.durdur(lideri_takip_et=False, gorselleri_koru=False)",
+            "ui_minimap_gorev_alan_temizle(app)",
+        ]
+        for k in komutlar:
             komut_gonder(k)
         if not sessizce:
             self.komut_uretildi.emit(

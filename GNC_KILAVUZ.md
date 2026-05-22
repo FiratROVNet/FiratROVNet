@@ -346,6 +346,17 @@ filo.alan_tarama_gorevi.guncelle(grup_id=0)
 filo.alan_tarama_gorevi.durdur(grup_id=0, lideri_takip_et=True)
 ```
 
+UI sürü panelindeki "Görev Durdur" akışı aynı grup için üç görev tipini birlikte temizler:
+
+```python
+filo.alan_tarama_gorevi.durdur(grup_id=0, gorselleri_koru=False)
+filo.arama_kurtarma_gorevi.durdur(lideri_takip_et=False, gorselleri_koru=False)
+filo.imha_gorevi.durdur(lideri_takip_et=False, gorselleri_koru=False)
+ui_minimap_gorev_alan_temizle(app)
+```
+
+Yeni bir görev başlatılırken panel önce mevcut alan tarama, arama-kurtarma ve imha görevlerini durdurur; ardından yeni görevi tek komut sırası içinde başlatır. Bu sayede eski görev thread'i yeni planı hemen iptal etmez.
+
 Plan içindeki önemli alanlar:
 
 | Alan | Açıklama |
@@ -720,4 +731,3 @@ Kayıt varsayılan olarak `hull_information.json` dosyasına append mantığıyl
 | Lider dalmıyor | Lider derinliği güvenlik aralığıyla sınırlandırılır |
 | Lidar `-1` dönüyor | O yönde menzil içinde hit yok |
 | Formasyon seçilemiyor | Hull/engel verisi yetersiz olabilir; fallback uygulanır |
-

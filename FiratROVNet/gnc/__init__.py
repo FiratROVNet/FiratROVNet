@@ -927,6 +927,9 @@ class Filo(FiloInitMixin):
             finally:
                 Profiler.end("0_guncelle_gat_analizi")
 
+        if not self.ortam_ref:
+            return
+
         # 🔹 IGNORE TUPLE CACHE GÜNCELLE (Frame başında bir kere)
         Profiler.start("0a_build_ignore_tuple")
         self._build_ignore_tuple()
@@ -943,9 +946,6 @@ class Filo(FiloInitMixin):
         Profiler.start("1_sistem_hazirligi")
         self._tick_sistem_hazirligi()
         Profiler.end("1_sistem_hazirligi")
-
-        if not self.ortam_ref:
-            return
 
         if navigasyon_aktif:
             Profiler.start("2_navigasyon")
@@ -1150,8 +1150,16 @@ class Filo(FiloInitMixin):
 
     def _apf_guc_hud_guncelle(self, process_input: bool = True, draw: bool = True):
         try:
+            if not self.ortam_ref:
+                return
+            if os.environ.get("FIRAT_ROVNET_HEADLESS", "").lower() in {"1", "true", "yes", "on"}:
+                return
+            if os.environ.get("URSINA_HEADLESS", "").lower() in {"1", "true", "yes", "on"}:
+                return
             if self.apf_guc_hud is None:
                 from FiratROVNet.kutuphane.moduls.Panels import APFGucHUD  # type: ignore[import-not-found]
+                if APFGucHUD is None:
+                    return
                 self.apf_guc_hud = self.panels.register("apf_guc", APFGucHUD(self))
                 if self._apf_guc_hud_rov_ids is not None:
                     self.apf_guc_hud.set_rov_ids(self._apf_guc_hud_rov_ids)

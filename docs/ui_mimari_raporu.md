@@ -47,6 +47,7 @@ main.py → UI.kopru.filo_bagla(filo) → exec(komut) direkt çalışır
 
 **Komut akışı (UI → Sim):**
 - `kopru.komut_gonder()` → arka plan thread → `KOMUT_KUYRUĞU.txt`'ye satır ekleme
+- Test/CI ortamında kuyruk yolu `FIRAT_ROVNET_KUYRUK_DOSYA` ile değiştirilebilir; `run_tests.py` UI panel testleri için `/tmp/firat_rovnet_ui_test_komut_kuyrugu.txt` kullanır.
 - Simülasyon tarafında güvenlik filtresi: `Ortam(`, `Ursina(`, `sim_olustur(` engellenmiş
 - `exec()` kullanımı — bkz. §3 Güvenlik
 
@@ -67,6 +68,7 @@ main.py → UI.kopru.filo_bagla(filo) → exec(komut) direkt çalışır
 ### 2.3 Test Edilebilirlik
 - `QT_QPA_PLATFORM=offscreen` ile CI'da GUI'siz test mümkün.
 - Paneller bağımsız instantiate edilebiliyor (sinyal objesi inject ile).
+- `FIRAT_ROVNET_HEADLESS=1` ve `URSINA_HEADLESS=1` modunda test paketi gerçek Ursina penceresi açmayı denemez; pencere testi skip edilir, panel ve GNC testleri devam eder.
 
 ---
 

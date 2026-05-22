@@ -20,7 +20,10 @@ _app_ref = None           # Ortam nesnesi (aynı işlemde çalışıyorsa)
 _bagli   = False
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-KUYRUK_DOSYA = os.path.join(_ROOT, "KOMUT_KUYRUĞU.txt")
+KUYRUK_DOSYA = os.environ.get(
+    "FIRAT_ROVNET_KUYRUK_DOSYA",
+    os.path.join(_ROOT, "KOMUT_KUYRUĞU.txt"),
+)
 DURUM_DOSYA  = os.path.join(_ROOT, "UI", "_rov_durumu.json")
 MINIMAP_SECIM_DOSYA = os.path.join(_ROOT, "UI", "_minimap_secim.json")
 
